@@ -521,6 +521,7 @@ describe("architecture proof isolation", { concurrency: false }, () => {
 				"context-pack",
 				"conventional-commit",
 				"isolated-review",
+				"kg-claim",
 				"minimalist",
 				"quality-gates",
 				"spec-first",

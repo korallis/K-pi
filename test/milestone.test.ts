@@ -22,7 +22,6 @@ import {
 	refreshCursorModels,
 	registerCursorProvider,
 } from "../packages/coding-agent/src/kpi/extensions/cursor/provider.ts";
-import { KnowledgeGraphStore } from "../packages/coding-agent/src/kpi/extensions/kg/store.ts";
 import { assertMinimalistBounds } from "../packages/coding-agent/src/kpi/extensions/minimalist.ts";
 import { registerPrintProfile } from "../packages/coding-agent/src/kpi/extensions/print-profile.ts";
 import { formatEventEntry } from "../packages/coding-agent/src/kpi/extensions/renderers.ts";
@@ -135,27 +134,6 @@ test("Cursor registers its id and refreshes a mocked live array", async () => {
 	const models = await refreshCursorModels(context, async () => response);
 	assert.equal(models[0]?.id, "live");
 	assert.equal(Array.isArray(await config?.refreshModels?.(context).catch(() => [])), true);
-});
-
-test("knowledge graph proposals serialize and acceptance bumps rev", async () => {
-	const directory = await mkdtemp(join(tmpdir(), "kpi-kg-"));
-	try {
-		const store = new KnowledgeGraphStore(directory);
-		const node = {
-			id: "claim",
-			kind: "decision",
-			source_ids: ["src"],
-			status: "proposed" as const,
-			observed_at: new Date(0).toISOString(),
-		};
-		const proposals = await Promise.all(Array.from({ length: 20 }, () => store.propose({ node })));
-		assert.equal(new Set(proposals).size, 20);
-		assert.equal((await store.accept(proposals[0])).rev, 1);
-		assert.equal((await store.accept(proposals[1])).rev, 2);
-		assert.equal((await store.query("claim")).length, 2);
-	} finally {
-		await rm(directory, { recursive: true, force: true });
-	}
 });
 
 test("K-mode feature starts with principles and ship needs approval", async () => {

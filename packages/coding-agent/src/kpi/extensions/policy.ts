@@ -6,6 +6,8 @@ import { CONFIG_DIR_NAME, getKpiResourceDir } from "../../config.ts";
 
 import { type ExtensionAPI, isToolCallEventType, type ToolCallEvent } from "../../core/extensions/types.ts";
 
+import { isAuthoritativeKnowledgeGraphPath } from "./kg/store.ts";
+
 export interface PolicyConfig {
 	deny: string[];
 	commit: {
@@ -183,6 +185,12 @@ export function evaluateToolCall(event: ToolCallEvent, options: PolicyEvaluation
 			return {
 				allowed: false,
 				reason: `Policy reserved ${artifact} for ${PROTECTED_RUN_ARTIFACT_OWNERS[artifact]}: ${event.input.path}`,
+			};
+		}
+		if (isAuthoritativeKnowledgeGraphPath(options.cwd, event.input.path)) {
+			return {
+				allowed: false,
+				reason: `Policy reserved the authoritative knowledge graph for the control plane: ${event.input.path}`,
 			};
 		}
 		if (!isWriteAllowed(options.cwd, event.input.path, options.writeAllow)) {
