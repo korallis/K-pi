@@ -530,10 +530,134 @@ function shipMarkerPath(jobDirectory: string): string {
 	return join(jobDirectory, "ship.json");
 }
 
-async function readShipMarker(jobDirectory: string): Promise<ShipMarker | undefined> {
+/** The trailer that binds a commit to the job that decided to make it. */
+export const SHIP_TRAILER_NAME = "KPI-Job";
+
+const COMMIT_SHA_PATTERN = /^[0-9a-f]{40}$/u;
+
+/** The marker's shape. Anything else is not this control plane's record. */
+function parseShipMarker(value: unknown): ShipMarker | undefined {
+	if (!isJsonObject(value)) {
+		return undefined;
+	}
+	const { job_id: jobId, head, subject, at } = value;
+	if (typeof jobId !== "string" || jobId.length === 0) return undefined;
+	if (typeof head !== "string" || !COMMIT_SHA_PATTERN.test(head)) return undefined;
+	if (typeof subject !== "string" || subject.length === 0) return undefined;
+	if (typeof at !== "string" || Number.isNaN(Date.parse(at))) return undefined;
+	if (Object.keys(value).length !== 4) return undefined;
+	return { job_id: jobId, head, subject, at };
+}
+
+interface ShipCommit {
+	head: string;
+	subject: string;
+}
+
+async function commitsSince(
+	projectRoot: string,
+	previousHead: string | undefined,
+): Promise<{ head: string; subject: string; body: string }[]> {
+	const range = previousHead === undefined ? "HEAD" : `${previousHead}..HEAD`;
+	let stdout: string;
 	try {
-		const parsed: unknown = JSON.parse(await readFile(shipMarkerPath(jobDirectory), "utf8"));
-		return isJsonObject(parsed) && typeof parsed.head === "string" ? (parsed as unknown as ShipMarker) : undefined;
+		({ stdout } = await execFile("git", ["log", range, "--format=%H%x1f%s%x1f%B%x1e"], { cwd: projectRoot }));
+	} catch {
+		return [];
+	}
+	return stdout
+		.split("\u001e")
+		.map((record) => record.replace(/^\n/u, ""))
+		.filter((record) => record.length > 0)
+		.map((record) => {
+			const [head, subject, body] = record.split("\u001f");
+			return { head: head ?? "", subject: subject ?? "", body: body ?? "" };
+		});
+}
+
+/** Whether a commit message carries this job's trailer on a line of its own. */
+function carriesJobTrailer(body: string, jobId: string): boolean {
+	return body.split(/\r?\n/u).some((line) => line.trimEnd() === `${SHIP_TRAILER_NAME}: ${jobId}`);
+}
+
+async function isAncestorOfHead(projectRoot: string, head: string): Promise<boolean> {
+	try {
+		await execFile("git", ["merge-base", "--is-ancestor", head, "HEAD"], { cwd: projectRoot });
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * This job's commit, identified by its own trailer rather than by HEAD having
+ * moved. Unrelated commits - a hook, a concurrent operator, a later fix - are
+ * not this job's decision and must never let a job skip shipping.
+ *
+ * Fails closed on ambiguity: two commits claiming the same job id mean nobody
+ * can say which decision was recorded.
+ */
+export async function findJobCommit(
+	projectRoot: string,
+	jobId: string,
+	previousHead: string | undefined,
+): Promise<ShipCommit | undefined> {
+	const marked = (await commitsSince(projectRoot, previousHead)).filter((commit) =>
+		carriesJobTrailer(commit.body, jobId),
+	);
+	if (marked.length === 0) {
+		return undefined;
+	}
+	if (marked.length > 1) {
+		throw new Error(
+			`Ambiguous ship commits for ${jobId}: ${marked.map((commit) => commit.head.slice(0, 8)).join(", ")}`,
+		);
+	}
+	const [commit] = marked;
+	if (!CONVENTIONAL_COMMIT_PATTERN.test(commit.subject)) {
+		throw new Error(`Ship commit is not Conventional Commits: ${commit.subject}`);
+	}
+	if (!(await isAncestorOfHead(projectRoot, commit.head))) {
+		throw new Error(`Ship commit ${commit.head.slice(0, 8)} is not an ancestor of HEAD`);
+	}
+	return { head: commit.head, subject: commit.subject };
+}
+
+/**
+ * The marker only counts when it still describes a real commit of this job. A
+ * marker that is malformed, names another job, or disagrees with the commit it
+ * claims is not evidence - and must not let a job skip shipping.
+ */
+async function readShipMarker(
+	projectRoot: string,
+	jobDirectory: string,
+	jobId: string,
+): Promise<ShipMarker | undefined> {
+	let parsed: ShipMarker | undefined;
+	try {
+		parsed = parseShipMarker(JSON.parse(await readFile(shipMarkerPath(jobDirectory), "utf8")));
+	} catch {
+		return undefined;
+	}
+	if (parsed === undefined || parsed.job_id !== jobId) {
+		return undefined;
+	}
+	const commits = await commitsSince(projectRoot, undefined);
+	const claimed = commits.find((commit) => commit.head === parsed.head);
+	if (
+		claimed === undefined ||
+		claimed.subject !== parsed.subject ||
+		!carriesJobTrailer(claimed.body, jobId) ||
+		!(await isAncestorOfHead(projectRoot, parsed.head))
+	) {
+		return undefined;
+	}
+	return parsed;
+}
+
+async function startingHeadFor(jobDirectory: string): Promise<string | undefined> {
+	try {
+		return (await readFile(join(jobDirectory, "previous-head.txt"), "utf8")).trim() || undefined;
 	} catch {
 		return undefined;
 	}
@@ -542,24 +666,25 @@ async function readShipMarker(jobDirectory: string): Promise<ShipMarker | undefi
 /**
  * Whether this job has already made its one commit decision.
  *
- * Checkpoints are at-least-once, so a replay must be able to tell that the
- * commit already happened. The marker is the durable record, and HEAD itself is
- * the fallback for the window between the commit and the marker: if HEAD has
- * moved past the head the job started from, the commit exists and no second one
- * may be created.
+ * Checkpoints are at-least-once, so a replay has to be able to tell that the
+ * commit already happened. The evidence is this job's own trailer: the validated
+ * marker, or the commit carrying `KPI-Job: <job id>` in the range the job owns.
+ *
+ * HEAD having moved is deliberately not evidence. Any unrelated commit - a hook,
+ * a concurrent operator, a later fix - would otherwise let a job skip shipping
+ * and be accepted as DONE without ever having committed its own work.
  */
-async function alreadyShipped(projectRoot: string, jobDirectory: string): Promise<boolean> {
-	if ((await readShipMarker(jobDirectory)) !== undefined) {
+async function alreadyShipped(projectRoot: string, jobDirectory: string, jobId: string): Promise<boolean> {
+	if ((await readShipMarker(projectRoot, jobDirectory, jobId)) !== undefined) {
 		return true;
 	}
-	let startingHead: string | undefined;
 	try {
-		startingHead = (await readFile(join(jobDirectory, "previous-head.txt"), "utf8")).trim() || undefined;
+		return (await findJobCommit(projectRoot, jobId, await startingHeadFor(jobDirectory))) !== undefined;
 	} catch {
+		// Ambiguous or malformed history: fail closed. The run does not get to
+		// claim it shipped, and finalization will report why.
 		return false;
 	}
-	const head = await gitHead(projectRoot);
-	return head !== undefined && head !== startingHead;
 }
 
 /**
@@ -567,12 +692,20 @@ async function alreadyShipped(projectRoot: string, jobDirectory: string): Promis
  * its commit has been verified, so a later replay sees the decision instead of
  * repeating it.
  */
-async function writeShipMarker(projectRoot: string, jobDirectory: string, jobId: string, subject: string): Promise<void> {
-	const head = await gitHead(projectRoot);
-	if (head === undefined) {
+async function writeShipMarker(
+	projectRoot: string,
+	jobDirectory: string,
+	jobId: string,
+	subject: string,
+	head?: string,
+): Promise<void> {
+	// The marker names the commit that was verified, not whatever HEAD happens to
+	// be when the record is written.
+	const recorded = head ?? (await gitHead(projectRoot));
+	if (recorded === undefined) {
 		return;
 	}
-	const marker: ShipMarker = { job_id: jobId, head, subject, at: new Date().toISOString() };
+	const marker: ShipMarker = { job_id: jobId, head: recorded, subject, at: new Date().toISOString() };
 	await atomicWrite(shipMarkerPath(jobDirectory), `${JSON.stringify(marker, null, 2)}\n`);
 }
 
@@ -634,7 +767,7 @@ function loopFacts(
 				"test.passed": testPassed,
 				"bounds.held": boundsReason === undefined,
 				"fingerprints.fresh": fresh,
-				"ship.shipped": await alreadyShipped(projectRoot, jobDirectory),
+				"ship.shipped": await alreadyShipped(projectRoot, jobDirectory, task.job_id),
 			};
 		},
 	};
@@ -645,6 +778,12 @@ interface DriveResult {
 	stopState: StopState;
 	terminalStatus?: TerminalStatus;
 	reason?: string;
+	/**
+	 * Whether the ship node ran during this pass. A run that shipped is held to
+	 * the one-commit rule; a replay that recovered an earlier decision is not,
+	 * because later unrelated commits are none of its business.
+	 */
+	shippedThisRun?: boolean;
 	/** The engine already emitted the one `loop.terminal` event for this run. */
 	terminalEmitted?: boolean;
 }
@@ -660,6 +799,7 @@ async function driveUntilPause(
 ): Promise<DriveResult> {
 	let state = engine.state;
 	let currentStopState = stopState;
+	let shippedThisRun = false;
 	while (state.status === "running") {
 		if (state.active.some((node) => node === "specify" || node === "plan" || node === "plan-check")) {
 			try {
@@ -686,6 +826,7 @@ async function driveUntilPause(
 				return {
 					state,
 					stopState: currentStopState,
+					shippedThisRun,
 					terminalStatus: "UNSAFE",
 					reason: error instanceof Error ? error.message : String(error),
 				};
@@ -693,6 +834,11 @@ async function driveUntilPause(
 		}
 
 		const completedNodes = [...state.active];
+		if (completedNodes.includes("ship")) {
+			// The commit decision is being made in this pass, whatever the superstep
+			// goes on to do with it.
+			shippedThisRun = true;
+		}
 		state = await engine.runSuperstep();
 		if (state.status === "exhausted") {
 			// The engine owns cap exhaustion end to end: it has already written the
@@ -700,6 +846,7 @@ async function driveUntilPause(
 			return {
 				state,
 				stopState: currentStopState,
+				shippedThisRun,
 				terminalStatus: "EXHAUSTED",
 				reason: state.terminal?.reason ?? "graph exhausted a configured cap",
 				terminalEmitted: true,
@@ -713,6 +860,7 @@ async function driveUntilPause(
 			return {
 				state,
 				stopState: currentStopState,
+				shippedThisRun,
 				terminalStatus: terminal?.status ?? "BLOCKED",
 				reason:
 					terminal?.status === "UNSAFE"
@@ -727,6 +875,7 @@ async function driveUntilPause(
 				return {
 					state,
 					stopState: currentStopState,
+					shippedThisRun,
 					terminalStatus: "BLOCKED",
 					reason: "review did not produce an output fingerprint",
 				};
@@ -742,6 +891,7 @@ async function driveUntilPause(
 				return {
 					state,
 					stopState: currentStopState,
+					shippedThisRun,
 					terminalStatus: currentStopState.status,
 					reason:
 						currentStopState.status === "NO_PROGRESS"
@@ -753,7 +903,7 @@ async function driveUntilPause(
 		await writeState(jobDirectory, task, state, currentStopState);
 		await onStateChange?.();
 	}
-	return { state, stopState: currentStopState };
+	return { state, stopState: currentStopState, shippedThisRun };
 }
 
 async function writeTerminalState(
@@ -780,7 +930,19 @@ async function writeTerminalState(
 	await writeState(jobDirectory, task, result.state, result.stopState, status, result.reason);
 }
 
-export async function verifyShippedCommit(projectRoot: string, previousHead: string | undefined): Promise<string> {
+/**
+ * Verifies the commit a ship node just made: exactly one commit, conventional
+ * subject, and this job's trailer so the commit is attributable to the decision
+ * that produced it.
+ *
+ * `jobId` is optional only so the commit-subject contract can be exercised on
+ * its own; a run always passes it.
+ */
+export async function verifyShippedCommit(
+	projectRoot: string,
+	previousHead: string | undefined,
+	jobId?: string,
+): Promise<string> {
 	const head = await gitHead(projectRoot);
 	if (head === undefined || head === previousHead) {
 		throw new Error("Ship node did not create a commit");
@@ -800,7 +962,45 @@ export async function verifyShippedCommit(projectRoot: string, previousHead: str
 	if (!CONVENTIONAL_COMMIT_PATTERN.test(subject)) {
 		throw new Error(`Ship commit is not Conventional Commits: ${subject}`);
 	}
+	if (jobId !== undefined) {
+		const marked = await findJobCommit(projectRoot, jobId, previousHead);
+		if (marked === undefined) {
+			throw new Error(`Ship commit does not carry ${SHIP_TRAILER_NAME}: ${jobId}`);
+		}
+		if (marked.head !== head) {
+			throw new Error(`Ship commit ${marked.head.slice(0, 8)} is not HEAD`);
+		}
+	}
 	return subject;
+}
+
+/**
+ * Records the one commit decision, whether this run made it or recovered it.
+ *
+ * A run that shipped in this pass is held to the one-commit rule. A replay whose
+ * marker was lost finalizes the job's own marked commit instead - later
+ * unrelated commits do not hide it, and nothing new is committed.
+ */
+async function finalizeShip(
+	projectRoot: string,
+	jobDirectory: string,
+	jobId: string,
+	previousHead: string | undefined,
+	shippedThisRun: boolean,
+): Promise<void> {
+	if ((await readShipMarker(projectRoot, jobDirectory, jobId)) !== undefined) {
+		return;
+	}
+	if (shippedThisRun) {
+		const subject = await verifyShippedCommit(projectRoot, previousHead, jobId);
+		await writeShipMarker(projectRoot, jobDirectory, jobId, subject);
+		return;
+	}
+	const recovered = await findJobCommit(projectRoot, jobId, previousHead);
+	if (recovered === undefined) {
+		throw new Error(`No commit carries ${SHIP_TRAILER_NAME}: ${jobId}`);
+	}
+	await writeShipMarker(projectRoot, jobDirectory, jobId, recovered.subject, recovered.head);
 }
 export async function resumeLoop(
 	jobId: string,
@@ -900,12 +1100,27 @@ export async function resumeLoop(
 			await dependencies.onStateChange?.();
 			return { jobId, status: "BLOCKED", graphState: result.state };
 		}
-		// Same one-decision rule on resume: the marker, not the graph state, says
-		// whether this job has already committed.
-		if ((await readShipMarker(jobDirectory)) === undefined) {
-			const previousHead = (await readFile(join(jobDirectory, "previous-head.txt"), "utf8")).trim() || undefined;
-			const subject = await verifyShippedCommit(ctx.cwd, previousHead);
-			await writeShipMarker(ctx.cwd, jobDirectory, jobId, subject);
+		// Same one-decision rule on resume: this job's own marked commit, or the
+		// validated marker recording it, and never a second commit.
+		try {
+			await finalizeShip(
+				ctx.cwd,
+				jobDirectory,
+				jobId,
+				await startingHeadFor(jobDirectory),
+				result.shippedThisRun === true,
+			);
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			const blocked: DriveResult = {
+				state: result.state,
+				stopState: result.stopState,
+				terminalStatus: "BLOCKED",
+				reason: message,
+			};
+			await writeTerminalState(jobDirectory, eventsPath, task, blocked);
+			await dependencies.onStateChange?.();
+			return { jobId, status: "BLOCKED", graphState: result.state };
 		}
 		await writeState(jobDirectory, task, result.state, result.stopState, "DONE");
 		await dependencies.onStateChange?.();
@@ -1088,14 +1303,8 @@ export async function runLoop(
 		}
 
 		try {
-			// One job, one commit decision. The marker is that decision: if it is
-			// already there the run is a replay and nothing is verified or committed
-			// again. Otherwise this run shipped, so its commit is verified and the
-			// decision is recorded durably.
-			if ((await readShipMarker(job.directory)) === undefined) {
-				const subject = await verifyShippedCommit(ctx.cwd, previousHead);
-				await writeShipMarker(ctx.cwd, job.directory, job.jobId, subject);
-			}
+			// One job, one commit decision, identified by this job's own trailer.
+			await finalizeShip(ctx.cwd, job.directory, job.jobId, previousHead, result.shippedThisRun === true);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			const blocked: DriveResult = {

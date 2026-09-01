@@ -139,7 +139,7 @@
     {
       "id": "ship",
       "type": "agent",
-      "prompt": "Apply the conventional-commit skill. Create exactly one approved commit whose subject matches ^(feat|fix|docs|refactor|test|chore)(\\(.+\\))?: . Never push.",
+      "prompt": "Apply the conventional-commit skill. Create exactly one approved commit whose subject matches ^(feat|fix|docs|refactor|test|chore)(\\(.+\\))?: and whose message ends with this exact trailer line, with no quoting or punctuation around it:\nKPI-Job: {{job_id}}\nThat trailer is how the control plane recognises this job's commit, so it must appear exactly once. Never push.",
       "context": {
         "mode": "thread",
         "threadKey": "ship"

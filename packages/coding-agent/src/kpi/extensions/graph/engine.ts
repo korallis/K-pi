@@ -552,7 +552,9 @@ export class GraphEngine {
 
 	private nodePrompt(node: AgentGraphNode): string {
 		const lines = [
-			node.prompt,
+			// The run's own identity, substituted so a prompt can state the exact
+			// trailer or path a node must produce instead of describing it.
+			node.prompt.replaceAll("{{job_id}}", this.options.jobId),
 			"",
 			`Job: ${this.options.jobId}`,
 			`Run directory: ${this.runDirectory()}`,

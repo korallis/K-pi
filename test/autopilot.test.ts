@@ -113,8 +113,11 @@ function autoSessions(
 					} else if (currentNode === "review") {
 						lastAssistantText = behavior.reviewResponse ?? verdict;
 					} else if (currentNode === "ship") {
+						// The commit carries the trailer the prompt asked for: that is how
+						// the control plane recognises this job's own commit.
+						const trailer = /^KPI-Job: [^\s`]+$/mu.exec(prompt)?.[0] ?? "";
 						await git(directory, "add", "-A");
-						await git(directory, "commit", "-m", "feat(health): add healthcheck endpoint");
+						await git(directory, "commit", "-m", `feat(health): add healthcheck endpoint\n\n${trailer}`);
 					}
 				},
 				getLastAssistantText: () => lastAssistantText,
@@ -304,7 +307,12 @@ test("shipping twice for one job leaves one marker and one commit", async () => 
 		// the marker. Replaying the run must be a no-op: the graph routes past ship.
 		const resumeExecuted: string[] = [];
 		const replay = commandHarness(directory, autoSessions(directory, resumeExecuted), jobId);
-		await replay.command(`resume ${jobId}`, replay.context).catch(() => undefined);
+		await replay.command(jobId, replay.context);
+		assert.deepEqual(
+			replay.notifications.filter((message) => message.includes("failed")),
+			[],
+			"the replay itself must not fail",
+		);
 		assert.equal(await git(directory, "rev-parse", "HEAD"), shipped, "no second commit");
 		assert.equal(await git(directory, "rev-list", "--count", `${initialHead}..HEAD`), "1");
 		assert.equal(resumeExecuted.includes("ship"), false, "the ship node never ran again");
@@ -335,7 +343,12 @@ test("a replay whose checkpoint predates the commit still refuses a second one",
 
 		const resumeExecuted: string[] = [];
 		const replay = commandHarness(directory, autoSessions(directory, resumeExecuted), jobId);
-		await replay.command(`resume ${jobId}`, replay.context).catch(() => undefined);
+		await replay.command(jobId, replay.context);
+		assert.deepEqual(
+			replay.notifications.filter((message) => message.includes("failed")),
+			[],
+			"the replay itself must not fail",
+		);
 
 		assert.equal(await git(directory, "rev-parse", "HEAD"), shipped, "HEAD is untouched");
 		assert.equal(await git(directory, "rev-list", "--count", `${initialHead}..HEAD`), "1", "still one commit");
@@ -394,6 +407,237 @@ test("autopilot cannot release from model prose alone", async () => {
 		assert.notEqual(document.status, "DONE");
 		assert.equal(document.release, undefined, "release was never approved");
 		assert.deepEqual(harness.confirmations, [], "and autopilot never asked a human");
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+/** The job-marked commit for a run, as the control plane identifies it. */
+async function markedCommits(directory: string, jobId: string): Promise<string[]> {
+	const log = await git(directory, "log", "--format=%H%x1f%B%x1e");
+	return log
+		.split("\u001e")
+		.map((record) => record.replace(/^\n/u, ""))
+		.filter((record) => record.length > 0)
+		.flatMap((record) => {
+			const [head, body] = record.split("\u001f");
+			return (body ?? "").split(/\r?\n/u).some((line) => line.trimEnd() === `KPI-Job: ${jobId}`) ? [head] : [];
+		});
+}
+
+test("an unrelated conventional commit never counts as this job shipping", async () => {
+	const directory = await fixture("healthcheck-auto");
+	const jobId = "20260831-healthcheck-unrelated";
+	const executed: string[] = [];
+	// The ship node commits nothing. Something else does - a hook, another
+	// operator, a stray fix - with a perfectly conventional subject.
+	const factory: GraphAgentSessionFactory = async (sessionOptions) => {
+		let currentNode = "";
+		let lastAssistantText: string | undefined;
+		return {
+			session: {
+				sessionId: "unrelated-session",
+				async prompt(prompt) {
+					const detected = nodeId(prompt);
+					if (detected !== "retry") currentNode = detected;
+					executed.push(currentNode || detected);
+					if (currentNode === "implement") {
+						await writeFile(join(directory, "src", "server.js"), implementedServer);
+						await writeFile(join(directory, "src", "unrelated.js"), "export const x = 1;\n");
+						await git(directory, "add", "src/unrelated.js");
+						await git(directory, "commit", "-m", "chore(deps): unrelated housekeeping");
+					} else if (currentNode === "test") {
+						lastAssistantText = JSON.stringify({
+							head: await git(directory, "rev-parse", "HEAD"),
+							commands: [{ cmd: "npm test", exit: 0 }],
+							ac_results: ["AC-01", "AC-02", "AC-03", "AC-04", "AC-05"].map((id) => ({ id, passed: true })),
+						});
+					} else if (currentNode === "review") {
+						lastAssistantText = verdict;
+					}
+					// The ship node deliberately commits nothing.
+				},
+				getLastAssistantText: () => lastAssistantText,
+				getActiveToolNames: () => [...(sessionOptions.tools ?? [])],
+				dispose() {},
+			},
+		};
+	};
+	const harness = commandHarness(directory, factory, jobId);
+	try {
+		const task = await readFile(join(directory, "task.txt"), "utf8");
+		await harness.command(`--mode autopilot ${task}`, harness.context).catch(() => undefined);
+
+		assert.ok(executed.includes("ship"), "the unrelated commit did not let the job skip shipping");
+		const document = await state(directory, jobId);
+		assert.notEqual(document.status, "DONE", "an unrelated commit is not this job's decision");
+		assert.equal(document.status, "BLOCKED");
+		assert.match(String(document.reason), /KPI-Job: 20260831-healthcheck-unrelated/u);
+		await assert.rejects(readFile(join(directory, ".kpi", "runs", jobId, "ship.json"), "utf8"), { code: "ENOENT" });
+		assert.deepEqual(await markedCommits(directory, jobId), [], "no commit claims this job");
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("a crash after the marked commit recovers exactly once, even behind later commits", async () => {
+	const directory = await fixture("healthcheck-auto");
+	const jobId = "20260831-healthcheck-recover";
+	const initialHead = await git(directory, "rev-parse", "HEAD");
+	const executed: string[] = [];
+	const harness = commandHarness(directory, autoSessions(directory, executed), jobId);
+	try {
+		const task = await readFile(join(directory, "task.txt"), "utf8");
+		await harness.command(`--mode autopilot ${task}`, harness.context);
+		const [shipCommit] = await markedCommits(directory, jobId);
+		assert.ok(shipCommit !== undefined, "the run made a job-marked commit");
+
+		// The crash window: the commit exists, the marker does not, and the state
+		// document still says the run was going.
+		const runDirectory = join(directory, ".kpi", "runs", jobId);
+		await rm(join(runDirectory, "ship.json"));
+		const document = JSON.parse(await readFile(join(runDirectory, "state.json"), "utf8")) as Record<string, unknown>;
+		document.status = "RUNNING";
+		await writeFile(join(runDirectory, "state.json"), `${JSON.stringify(document, null, 2)}\n`);
+
+		// Life went on: unrelated commits landed on top of the job's commit.
+		await writeFile(join(directory, "later.txt"), "later\n");
+		await git(directory, "add", "later.txt");
+		await git(directory, "commit", "-m", "docs(notes): unrelated follow-up");
+		const headBeforeReplay = await git(directory, "rev-parse", "HEAD");
+
+		const resumeExecuted: string[] = [];
+		const replay = commandHarness(directory, autoSessions(directory, resumeExecuted), jobId);
+		await replay.command(jobId, replay.context);
+		assert.deepEqual(
+			replay.notifications.filter((message) => message.includes("failed")),
+			[],
+			"the replay itself must not fail",
+		);
+
+		assert.equal(resumeExecuted.includes("ship"), false, "the ship node never ran again");
+		assert.equal(await git(directory, "rev-parse", "HEAD"), headBeforeReplay, "no new commit was created");
+		assert.deepEqual(await markedCommits(directory, jobId), [shipCommit], "still exactly one marked commit");
+		const marker = JSON.parse(await readFile(join(runDirectory, "ship.json"), "utf8")) as Record<string, unknown>;
+		assert.equal(marker.head, shipCommit, "the marker names the job's own commit, not HEAD");
+		assert.equal(marker.job_id, jobId);
+		assert.equal((await state(directory, jobId)).status, "DONE");
+		assert.equal(
+			await git(directory, "rev-list", "--count", `${initialHead}..HEAD`),
+			"2",
+			"one ship commit plus the unrelated follow-up",
+		);
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("two commits claiming one job fail closed", async () => {
+	const directory = await fixture("healthcheck-auto");
+	const jobId = "20260831-healthcheck-duplicate";
+	const executed: string[] = [];
+	// A confused ship node makes its commit twice, both carrying the trailer.
+	const factory: GraphAgentSessionFactory = async (sessionOptions) => {
+		let currentNode = "";
+		let lastAssistantText: string | undefined;
+		return {
+			session: {
+				sessionId: "duplicate-session",
+				async prompt(prompt) {
+					const detected = nodeId(prompt);
+					if (detected !== "retry") currentNode = detected;
+					executed.push(currentNode || detected);
+					if (currentNode === "implement") {
+						await writeFile(join(directory, "src", "server.js"), implementedServer);
+					} else if (currentNode === "test") {
+						lastAssistantText = JSON.stringify({
+							head: await git(directory, "rev-parse", "HEAD"),
+							commands: [{ cmd: "npm test", exit: 0 }],
+							ac_results: ["AC-01", "AC-02", "AC-03", "AC-04", "AC-05"].map((id) => ({ id, passed: true })),
+						});
+					} else if (currentNode === "review") {
+						lastAssistantText = verdict;
+					} else if (currentNode === "ship") {
+						const trailer = /^KPI-Job: [^\s`]+$/mu.exec(prompt)?.[0] ?? "";
+						await git(directory, "add", "-A");
+						await git(directory, "commit", "-m", `feat(health): first attempt\n\n${trailer}`);
+						await writeFile(join(directory, "src", "again.js"), "export const y = 2;\n");
+						await git(directory, "add", "-A");
+						await git(directory, "commit", "-m", `feat(health): second attempt\n\n${trailer}`);
+					}
+				},
+				getLastAssistantText: () => lastAssistantText,
+				getActiveToolNames: () => [...(sessionOptions.tools ?? [])],
+				dispose() {},
+			},
+		};
+	};
+	const harness = commandHarness(directory, factory, jobId);
+	try {
+		const task = await readFile(join(directory, "task.txt"), "utf8");
+		await harness.command(`--mode autopilot ${task}`, harness.context).catch(() => undefined);
+
+		const document = await state(directory, jobId);
+		assert.notEqual(document.status, "DONE", "an ambiguous decision is never accepted");
+		assert.equal(document.status, "BLOCKED");
+		assert.match(String(document.reason), /2 commits instead of one|Ambiguous ship commits/u);
+		await assert.rejects(readFile(join(directory, ".kpi", "runs", jobId, "ship.json"), "utf8"), { code: "ENOENT" });
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("a forged or mismatched ship marker is ignored and never skips shipping", async () => {
+	const directory = await fixture("healthcheck-auto");
+	const jobId = "20260831-healthcheck-forged";
+	const executed: string[] = [];
+	const harness = commandHarness(directory, autoSessions(directory, executed), jobId);
+	try {
+		const task = await readFile(join(directory, "task.txt"), "utf8");
+		await harness.command(`--mode autopilot ${task}`, harness.context);
+		const runDirectory = join(directory, ".kpi", "runs", jobId);
+		const markerPath = join(runDirectory, "ship.json");
+		const genuine = JSON.parse(await readFile(markerPath, "utf8")) as Record<string, unknown>;
+		const shipped = await git(directory, "rev-parse", "HEAD");
+
+		const forgeries: { name: string; marker: unknown }[] = [
+			{ name: "another job's id", marker: { ...genuine, job_id: "20260831-someone-else" } },
+			{ name: "a head that is not a commit", marker: { ...genuine, head: "f".repeat(40) } },
+			{ name: "a subject the commit does not have", marker: { ...genuine, subject: "feat(x): invented" } },
+			{ name: "a short head", marker: { ...genuine, head: "abc123" } },
+			{ name: "a missing timestamp", marker: { job_id: jobId, head: shipped, subject: genuine.subject } },
+			{ name: "an unparseable timestamp", marker: { ...genuine, at: "not-a-date" } },
+			{ name: "extra smuggled fields", marker: { ...genuine, approved: true } },
+			{ name: "not an object at all", marker: "shipped" },
+		];
+
+		for (const forgery of forgeries) {
+			await writeFile(markerPath, `${JSON.stringify(forgery.marker, null, 2)}\n`);
+			// A forged marker must not be accepted as the decision. The job's real
+			// commit is still there, so recovery finalizes from git and overwrites
+			// the forgery with the truth.
+			const replayExecuted: string[] = [];
+			const replay = commandHarness(directory, autoSessions(directory, replayExecuted), jobId);
+			const document = JSON.parse(await readFile(join(runDirectory, "state.json"), "utf8")) as Record<
+				string,
+				unknown
+			>;
+			document.status = "RUNNING";
+			await writeFile(join(runDirectory, "state.json"), `${JSON.stringify(document, null, 2)}\n`);
+			await replay.command(jobId, replay.context);
+		assert.deepEqual(
+			replay.notifications.filter((message) => message.includes("failed")),
+			[],
+			"the replay itself must not fail",
+		);
+
+			assert.equal(replayExecuted.includes("ship"), false, `${forgery.name}: no second commit attempt`);
+			assert.equal(await git(directory, "rev-parse", "HEAD"), shipped, `${forgery.name}: HEAD is untouched`);
+			const rewritten = JSON.parse(await readFile(markerPath, "utf8")) as Record<string, unknown>;
+			assert.equal(rewritten.job_id, jobId, `${forgery.name}: the marker was rewritten from git`);
+			assert.equal(rewritten.head, shipped, `${forgery.name}: the marker names the real commit`);
+			assert.equal(rewritten.subject, genuine.subject, `${forgery.name}: with the real subject`);
+		}
 	} finally {
 		await rm(directory, { recursive: true, force: true });
 	}

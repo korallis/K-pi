@@ -253,6 +253,9 @@ function relativeWritePath(cwd: string, path: string): string | undefined {
 const PROTECTED_RUN_ARTIFACT_OWNERS = {
 	"verdict.json": "the reviewer",
 	"release.approved": "the release.set node",
+	// The record of this job's one commit decision. A node that could write it
+	// could make the loop skip shipping and still be accepted as done.
+	"ship.json": "the control plane",
 } as const;
 
 type ProtectedRunArtifact = keyof typeof PROTECTED_RUN_ARTIFACT_OWNERS;

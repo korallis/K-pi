@@ -187,6 +187,35 @@ test("implementer tools cannot write deterministic release approval", async () =
 	);
 });
 
+test("the ship marker is control-plane state on every mutation path", async () => {
+	const active: ActivePolicyState = { ...gated, writeAllow: [".kpi/runs/**", "**"] };
+	// The record of the one commit decision. A node that could write it could make
+	// the loop skip shipping and still be accepted as done.
+	const decision = await evaluateToolCall(write("/fixture/.kpi/runs/job-1/ship.json"), { active, cwd, policy });
+	assert.equal(decision.kind, "deny");
+	assert.match(decision.kind === "deny" ? decision.reason : "", /reserved ship\.json for the control plane/u);
+
+	for (const command of [
+		'echo "{}" > .kpi/runs/job-1/ship.json',
+		"touch .kpi/runs/job-1/ship.json",
+		"cat forged.json | tee .kpi/runs/job-1/ship.json",
+		"cp /tmp/forged.json .kpi/runs/job-1/ship.json",
+		"sh -c 'echo x > .kpi/runs/job-1/ship.json'",
+		"rm .kpi/runs/job-1/ship.json",
+		"git checkout HEAD -- .kpi/runs/job-1/ship.json",
+	]) {
+		for (const state of [active, { ...active, mode: "autopilot" as const }]) {
+			const shellDecision = await evaluateToolCall(bash(command), { active: state, cwd, policy });
+			assert.equal(shellDecision.kind, "deny", `${state.mode}: ${command}`);
+			assert.match(
+				shellDecision.kind === "deny" ? shellDecision.reason : "",
+				/reserved [^\s]*ship\.json for the control plane/u,
+				command,
+			);
+		}
+	}
+});
+
 test("the authoritative knowledge graph is denied to write and edit", async () => {
 	const active: ActivePolicyState = { ...gated, writeAllow: ["**"] };
 	for (const path of [".kpi/kg/nodes.jsonl", ".kpi/kg/edges.jsonl", ".kpi/kg/sources.jsonl"]) {

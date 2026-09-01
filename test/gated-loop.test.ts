@@ -12,6 +12,7 @@ import type { ExtensionCommandContext } from "../packages/coding-agent/src/core/
 import { registerControlPlane } from "../packages/coding-agent/src/kpi/extensions/control-plane.ts";
 import {
 	CONVENTIONAL_COMMIT_PATTERN,
+	findJobCommit,
 	verifyShippedCommit,
 } from "../packages/coding-agent/src/kpi/extensions/gated-loop.ts";
 import {
@@ -139,8 +140,11 @@ function loopSessions(
 						lastAssistantText = options.reviewResponses?.[reviewAttempt] ?? validVerdict;
 						reviewAttempt += 1;
 					} else if (currentNode === "ship") {
+						// The commit carries the trailer the prompt asked for: that is how
+						// the control plane recognises this job's own commit.
+						const trailer = /^KPI-Job: [^\s`]+$/mu.exec(prompt)?.[0] ?? "";
 						await git(directory, "add", "-A");
-						await git(directory, "commit", "-m", "feat(health): add healthcheck endpoint");
+						await git(directory, "commit", "-m", `feat(health): add healthcheck endpoint\n\n${trailer}`);
 					}
 				},
 				getLastAssistantText: () => lastAssistantText,
@@ -367,6 +371,104 @@ test("ship commit subject matches the conventional commit contract", async () =>
 		const subject = await verifyShippedCommit(directory, previousHead);
 		assert.equal(subject, "fix(ship): validate commit subject");
 		assert.match(subject, CONVENTIONAL_COMMIT_PATTERN);
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("ship verification identifies the job's own commit by its trailer", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "k-pi-trailer-"));
+	try {
+		await git(directory, "init");
+		await git(directory, "config", "user.email", "fixture@example.test");
+		await git(directory, "config", "user.name", "Fixture");
+		await writeFile(join(directory, "file.txt"), "seed\n");
+		await git(directory, "add", "-A");
+		await git(directory, "commit", "-m", "chore: seed");
+		const previousHead = await git(directory, "rev-parse", "HEAD");
+
+		// An unrelated conventional commit is not this job's decision.
+		await writeFile(join(directory, "other.txt"), "other\n");
+		await git(directory, "add", "-A");
+		await git(directory, "commit", "-m", "chore(deps): unrelated");
+		assert.equal(await findJobCommit(directory, "job-a", previousHead), undefined);
+		await assert.rejects(
+			verifyShippedCommit(directory, previousHead, "job-a"),
+			/does not carry KPI-Job: job-a/u,
+			"a commit without the trailer cannot pass verification",
+		);
+
+		// The job's own commit is found, whatever lands on top of it afterwards.
+		await writeFile(join(directory, "shipped.txt"), "shipped\n");
+		await git(directory, "add", "-A");
+		await git(directory, "commit", "-m", `feat(ship): the job's commit\n\nKPI-Job: job-a`);
+		const shipped = await git(directory, "rev-parse", "HEAD");
+		await writeFile(join(directory, "later.txt"), "later\n");
+		await git(directory, "add", "-A");
+		await git(directory, "commit", "-m", "docs(readme): later work");
+
+		assert.deepEqual(await findJobCommit(directory, "job-a", previousHead), {
+			head: shipped,
+			subject: "feat(ship): the job's commit",
+		});
+		assert.equal(await findJobCommit(directory, "job-b", previousHead), undefined, "another job's id finds nothing");
+
+		// A trailer inside a sentence is not a trailer line.
+		await writeFile(join(directory, "prose.txt"), "prose\n");
+		await git(directory, "add", "-A");
+		await git(directory, "commit", "-m", "chore(x): mentions KPI-Job: job-c in prose");
+		assert.equal(await findJobCommit(directory, "job-c", previousHead), undefined);
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("two commits claiming one job id fail closed", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "k-pi-ambiguous-"));
+	try {
+		await git(directory, "init");
+		await git(directory, "config", "user.email", "fixture@example.test");
+		await git(directory, "config", "user.name", "Fixture");
+		await writeFile(join(directory, "file.txt"), "seed\n");
+		await git(directory, "add", "-A");
+		await git(directory, "commit", "-m", "chore: seed");
+		const previousHead = await git(directory, "rev-parse", "HEAD");
+
+		for (const attempt of ["first", "second"]) {
+			await writeFile(join(directory, `${attempt}.txt`), `${attempt}\n`);
+			await git(directory, "add", "-A");
+			await git(directory, "commit", "-m", `feat(ship): ${attempt} attempt\n\nKPI-Job: job-d`);
+		}
+
+		await assert.rejects(
+			findJobCommit(directory, "job-d", previousHead),
+			/Ambiguous ship commits for job-d/u,
+			"nobody can say which commit was the decision",
+		);
+		await assert.rejects(verifyShippedCommit(directory, previousHead, "job-d"), /2 commits instead of one/u);
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("a non-conventional job-marked commit is rejected", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "k-pi-nonconventional-"));
+	try {
+		await git(directory, "init");
+		await git(directory, "config", "user.email", "fixture@example.test");
+		await git(directory, "config", "user.name", "Fixture");
+		await writeFile(join(directory, "file.txt"), "seed\n");
+		await git(directory, "add", "-A");
+		await git(directory, "commit", "-m", "chore: seed");
+		const previousHead = await git(directory, "rev-parse", "HEAD");
+		await writeFile(join(directory, "shipped.txt"), "shipped\n");
+		await git(directory, "add", "-A");
+		await git(directory, "commit", "-m", "shipped it\n\nKPI-Job: job-e");
+
+		await assert.rejects(
+			findJobCommit(directory, "job-e", previousHead),
+			/not Conventional Commits: shipped it/u,
+		);
 	} finally {
 		await rm(directory, { recursive: true, force: true });
 	}
