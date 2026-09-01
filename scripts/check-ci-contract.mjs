@@ -12,11 +12,11 @@
  *      removing upstream publish machinery cannot silently break `npm run check`.
  *   3. No workflow or root script carries upstream publish, release, registry,
  *      governance, issue automation, or pnpm/peer-install machinery.
- *   4. Write tokens, pushes and merges live in exactly two reviewed workflows:
- *      `cursor-review.yml` may push its autofix commit, `auto-merge.yml` may ask
- *      GitHub to merge a PR *after* required checks pass. Every other workflow
- *      stays read-only, and neither exemption widens to release, registry or
- *      governance automation.
+ *   4. Write tokens and merges live in exactly two reviewed workflows:
+ *      grok-review.yml may post one read-only review result, and auto-merge.yml
+ *      may ask GitHub to merge a PR after required checks pass. Every other
+ *      workflow stays read-only; neither exemption permits pushes, release,
+ *      registry, or governance automation.
  *
  * Exemptions are per file and per rule (see WORKFLOW_EXEMPTIONS): there is no
  * blanket allow pattern, and no way to opt a workflow out from inside itself.
@@ -46,8 +46,10 @@ const REQUIRED_ROOT_SCRIPTS = [
 	"upstream:check",
 ];
 
-/** Workflows the fork cannot lose: without them nothing runs the gates above. */
-const REQUIRED_WORKFLOWS = [".github/workflows/check.yml"];
+/** Workflows the fork cannot lose: without them the required gates do not run. */
+const REQUIRED_WORKFLOWS = [".github/workflows/check.yml", ".github/workflows/grok-review.yml"];
+
+const OBSOLETE_WORKFLOWS = [".github/workflows/cursor-review.yml"];
 
 /** Directories that never hold first-party manifests. */
 const SKIPPED_DIRECTORIES = new Set([
@@ -70,6 +72,16 @@ const FORBIDDEN_IN_WORKFLOWS = [
 	{ id: "npm-publish", pattern: /npm\s+publish/, label: "npm publish (K-pi is not published to a registry)" },
 	{ id: "npm-registry", pattern: /registry\.npmjs\.org/, label: "npm registry target" },
 	{ id: "registry-credential", pattern: /\b(NPM_TOKEN|NODE_AUTH_TOKEN)\b/, label: "registry credential" },
+	{
+		id: "cursor-credential",
+		pattern: /\bCURSOR_(?:API_KEY|PUSH_TOKEN)\b/,
+		label: "obsolete Cursor credential",
+	},
+	{
+		id: "one-password-runtime",
+		pattern: /\bop\s+(?:read|run|inject)\b|1password\/load-secrets-action/i,
+		label: "runtime 1Password dependency",
+	},
 	{ id: "pnpm", pattern: /\bpnpm\b/, label: "pnpm (this fork uses npm workspaces)" },
 	{ id: "pi-install", pattern: /\bpi\s+install\b/, label: "pi install (Pi is vendored, never installed)" },
 	{
@@ -120,25 +132,25 @@ const WRITE_PERMISSION =
 const GH_PR_MERGE_COMMAND = /gh\s+pr\s+merge[^\n]*/g;
 
 /**
- * The two reviewed escalations, spelled out file by file.
+ * The two reviewed write escalations, spelled out file by file.
  *
- * `rules` lists the forbidden-pattern ids the workflow is excused from;
- * `writePermissions` lists the permission keys it may raise to `write`. Anything
+ * rules lists the forbidden-pattern ids the workflow is excused from;
+ * writePermissions lists the permission keys it may raise to write. Anything
  * absent here stays forbidden in that file too.
  */
 const WORKFLOW_EXEMPTIONS = new Map([
 	[
-		".github/workflows/cursor-review.yml",
+		".github/workflows/grok-review.yml",
 		{
-			reason: "reviewed Cursor pipeline: pushes its own tagged autofix commit to the PR head branch",
-			rules: new Set(["git-push"]),
-			writePermissions: new Set(["contents", "pull-requests"]),
+			reason: "posts one read-only Grok review result to the pull request",
+			rules: new Set(),
+			writePermissions: new Set(["pull-requests"]),
 		},
 	],
 	[
 		".github/workflows/auto-merge.yml",
 		{
-			reason: "asks GitHub to merge only after required checks pass (`gh pr merge --auto`)",
+			reason: "asks GitHub to merge only after required checks pass",
 			rules: new Set(["gh-pr-merge"]),
 			writePermissions: new Set(["contents", "pull-requests"]),
 		},
@@ -282,6 +294,11 @@ function checkWritePermissions(context, relativePath, contents, allowed) {
 
 function checkGithub(context) {
 	const githubDirectory = join(context.root, ".github");
+	for (const obsolete of OBSOLETE_WORKFLOWS) {
+		if (exists(join(context.root, obsolete))) {
+			context.violation(obsolete, "obsolete Cursor review workflow must not exist");
+		}
+	}
 	for (const forbidden of FORBIDDEN_GITHUB_PATHS) {
 		if (exists(join(context.root, forbidden))) {
 			context.violation(forbidden, "upstream governance file must not be imported");

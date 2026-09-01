@@ -1,0 +1,251 @@
+# Required, read-only Grok review gate.
+#
+# The Copilot credential can request inference only. GitHub's ephemeral token is
+# introduced later, in the comment step, so Grok and PR-controlled content never
+# receive repository write credentials. The model gets the diff as inert prompt
+# data and no tools: no shell, file writes, MCP, push, or autofix.
+#
+# Trust boundary:
+#   - Copilot CLI is installed before any repository checkout, with an empty
+#     npmrc, so a PR .npmrc cannot redirect the install.
+#   - Base is checked out for trusted gate scripts; head is checked out only as
+#     a read-only diff source in a sibling worktree.
+#   - Gate scripts run from base when present. Head is used solely to introduce
+#     scripts on the landing PR that adds them.
+#   - Inference clears GITHUB_TOKEN/GH_TOKEN so the write-capable job token never
+#     reaches the model or the PR diff prompt.
+#
+# Latency bound (15m job, effort high only):
+#   - The PR diff is partitioned on file boundaries into deterministic
+#     size-capped chunks.
+#   - Each chunk is reviewed concurrently with a hard per-chunk timeout.
+#   - Every chunk must validate; findings are unioned/deduped deterministically.
+#   - Any chunk timeout, inference error, or invalid schema fails the gate.
+#
+# Hosted Ubuntu is deliberate. AI review does not need the Mac mini, must not
+# occupy the hard-gate queue, and must not leave model state on a persistent
+# self-hosted runner.
+
+name: grok-review
+
+on:
+  pull_request:
+    branches: [main, architecture/pi-fork-harness]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+concurrency:
+  group: grok-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    name: Grok review
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: github.event.pull_request.draft == false
+    env:
+      GIT_CONFIG_GLOBAL: /dev/null
+      GIT_CONFIG_SYSTEM: /dev/null
+      GIT_TERMINAL_PROMPT: "0"
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+      GROK_REVIEW_MODEL: ${{ vars.GROK_REVIEW_MODEL }}
+    steps:
+      - name: Refuse forks and missing reviewer configuration
+        env:
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          if [ "$HEAD_REPOSITORY" != "$REPOSITORY" ]; then
+            echo "::error::Grok review refuses fork code because pull_request secrets are unavailable."
+            exit 1
+          fi
+          if [ -z "$COPILOT_GITHUB_TOKEN" ]; then
+            echo "::error::COPILOT_GITHUB_TOKEN is not configured."
+            exit 1
+          fi
+          case "$GROK_REVIEW_MODEL" in
+            grok-[A-Za-z0-9._-]*) ;;
+            *)
+              echo "::error::GROK_REVIEW_MODEL must name a Grok model."
+              exit 1
+              ;;
+          esac
+
+      # Toolchain and Copilot install happen before any repository checkout so a
+      # PR-controlled .npmrc or package tree cannot influence the CLI install.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22.19.0
+          package-manager-cache: false
+
+      - name: Install pinned Copilot CLI
+        env:
+          HOME: ${{ runner.temp }}/npm-home
+          NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/empty-user-npmrc
+          NPM_CONFIG_GLOBALCONFIG: ${{ runner.temp }}/empty-global-npmrc
+          npm_config_cache: ${{ runner.temp }}/npm-cache
+        run: |
+          mkdir -p "$HOME" "$npm_config_cache"
+          : > "$NPM_CONFIG_USERCONFIG"
+          : > "$NPM_CONFIG_GLOBALCONFIG"
+          npm install --global @github/copilot@1.0.82 --ignore-scripts --no-audit --fund=false
+
+      - name: Checkout base for trusted gate scripts
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          fetch-depth: 0
+          path: trusted
+          persist-credentials: false
+
+      - name: Checkout head for diff source only
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          path: untrusted
+          persist-credentials: false
+
+      - name: Prepare bounded review input
+        run: |
+          # Bring BASE_SHA into the head clone without network credentials. The
+          # base tip is not always an ancestor of HEAD once the base branch moves,
+          # so the three-dot diff must see both commits explicitly.
+          if ! git -C untrusted cat-file -e "$BASE_SHA^{commit}" 2>/dev/null; then
+            git -C untrusted fetch --no-tags "$GITHUB_WORKSPACE/trusted" "$BASE_SHA"
+          fi
+          git -C untrusted cat-file -e "$BASE_SHA^{commit}"
+          git -C untrusted cat-file -e "$HEAD_SHA^{commit}"
+
+          git -C untrusted diff --find-renames --no-ext-diff --no-textconv "$BASE_SHA...$HEAD_SHA" -- . > "$RUNNER_TEMP/pr.diff"
+          git -C untrusted diff --name-only -z "$BASE_SHA...$HEAD_SHA" -- . > "$RUNNER_TEMP/changed-paths"
+
+          bytes=$(wc -c < "$RUNNER_TEMP/pr.diff" | tr -d ' ')
+          if [ "$bytes" -gt 250000 ]; then
+            echo "::error::PR diff is $bytes bytes; Grok review fails closed above 250000 bytes."
+            exit 1
+          fi
+
+          # Prefer base copies of the gate scripts (trusted TCB). Head copies are
+          # only for the landing PR that introduces them onto the base.
+          mkdir -p "$RUNNER_TEMP/gate-scripts"
+          for script in validate-grok-review.mjs partition-pr-diff.mjs run-chunked-grok-review.mjs; do
+            if [ -f "trusted/scripts/$script" ]; then
+              cp "trusted/scripts/$script" "$RUNNER_TEMP/gate-scripts/$script"
+            elif [ -f "untrusted/scripts/$script" ]; then
+              cp "untrusted/scripts/$script" "$RUNNER_TEMP/gate-scripts/$script"
+            else
+              echo "::error::scripts/$script is missing on base and head."
+              exit 1
+            fi
+          done
+
+      - name: Run concurrent chunked Grok review
+        id: inference
+        continue-on-error: true
+        env:
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+          GITHUB_TOKEN: ""
+          GH_TOKEN: ""
+          HOME: ${{ runner.temp }}/copilot-home
+        run: |
+          mkdir -p "$HOME" "$RUNNER_TEMP/chunked-review"
+          set +e
+          node "$RUNNER_TEMP/gate-scripts/run-chunked-grok-review.mjs" \
+            --diff "$RUNNER_TEMP/pr.diff" \
+            --changed-paths "$RUNNER_TEMP/changed-paths" \
+            --model "$GROK_REVIEW_MODEL" \
+            --out-json "$RUNNER_TEMP/grok-review.json" \
+            --out-meta "$RUNNER_TEMP/grok-review-meta.json" \
+            --work-dir "$RUNNER_TEMP/chunked-review" \
+            --effort high \
+            --max-chunk-bytes 32000 \
+            --max-concurrency 4 \
+            --chunk-timeout-sec 600 \
+            --max-ai-credits 30
+          status=$?
+          set -e
+          # Always surface model/chunk meta for the sticky comment, including fail-closed runs.
+          if [ -f "$RUNNER_TEMP/grok-review-meta.json" ]; then
+            model=$(jq -r '.model // empty' "$RUNNER_TEMP/grok-review-meta.json")
+            chunks=$(jq -r '.chunkCount // empty' "$RUNNER_TEMP/grok-review-meta.json")
+            echo "model=$model" >> "$GITHUB_OUTPUT"
+            echo "chunks=$chunks" >> "$GITHUB_OUTPUT"
+            jq -c '.' "$RUNNER_TEMP/grok-review-meta.json"
+          fi
+          if [ -f "$RUNNER_TEMP/grok-review.json" ]; then
+            count=$(jq -r 'length' "$RUNNER_TEMP/grok-review.json")
+            echo "count=$count" >> "$GITHUB_OUTPUT"
+          fi
+          exit "$status"
+
+      - name: Publish sticky review result
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          INFERENCE_OUTCOME: ${{ steps.inference.outcome }}
+          FINDING_COUNT: ${{ steps.inference.outputs.count }}
+          REVIEW_MODEL: ${{ steps.inference.outputs.model }}
+          CHUNK_COUNT: ${{ steps.inference.outputs.chunks }}
+        run: |
+          report="$RUNNER_TEMP/grok-review-comment.md"
+          {
+            echo '<!-- kpi-grok-review -->'
+            echo '## Grok review'
+            echo
+            if [ -n "$REVIEW_MODEL" ] || [ -n "$CHUNK_COUNT" ]; then
+              echo "- Model: \`${REVIEW_MODEL:-unknown}\`"
+              echo "- Chunks: \`${CHUNK_COUNT:-unknown}\`"
+              echo
+            fi
+            if [ "$INFERENCE_OUTCOME" != "success" ]; then
+              echo '**Failed closed:** chunked Grok review did not complete (timeout, inference error, or invalid schema). Inspect the required workflow log.'
+              if [ -f "$RUNNER_TEMP/grok-review-meta.json" ]; then
+                echo
+                echo 'Chunk outcomes:'
+                echo
+                jq -r '.chunks[]? | "- chunk \(.index): \(.reason // "unknown") (\(.bytes // 0) bytes, \(.durationMs // 0) ms)"' \
+                  "$RUNNER_TEMP/grok-review-meta.json"
+              fi
+            elif [ -z "$FINDING_COUNT" ]; then
+              echo '**Failed closed:** Grok review produced no validated finding document.'
+            elif [ "$FINDING_COUNT" = "0" ]; then
+              echo 'No blocking P0–P2 defects found in this revision.'
+            else
+              jq -r '.[] | "### \(.severity): \(.title)\n\n- `\(.path)`" + (if .line == null then "" else ":\(.line)" end) + "\n- ID: `\(.id)`\n\n\(.body)\n"' "$RUNNER_TEMP/grok-review.json"
+            fi
+          } > "$report"
+
+          jq -n --rawfile body "$report" '{body: $body}' > "$RUNNER_TEMP/grok-review-comment.json"
+          comment_id=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" --paginate \
+            --jq '.[] | select(.user.login == "github-actions[bot]") | select(.body | contains("<!-- kpi-grok-review -->")) | .id' \
+            | head -1)
+          if [ -n "$comment_id" ]; then
+            gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$comment_id" \
+              --input "$RUNNER_TEMP/grok-review-comment.json" > /dev/null
+          else
+            gh api --method POST "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" \
+              --input "$RUNNER_TEMP/grok-review-comment.json" > /dev/null
+          fi
+
+      - name: Enforce review result
+        if: always()
+        env:
+          INFERENCE_OUTCOME: ${{ steps.inference.outcome }}
+          FINDING_COUNT: ${{ steps.inference.outputs.count }}
+        run: |
+          if [ "$INFERENCE_OUTCOME" != "success" ] || [ -z "$FINDING_COUNT" ]; then
+            echo "::error::Grok review failed closed."
+            exit 1
+          fi
+          if [ "$FINDING_COUNT" != "0" ]; then
+            echo "::error::Grok reported $FINDING_COUNT blocking finding(s)."
+            exit 1
+          fi
