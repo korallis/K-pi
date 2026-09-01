@@ -11,6 +11,7 @@ import {
 	DEFAULT_FALLBACK_CHAIN,
 } from "../packages/coding-agent/src/kpi/extensions/accounts/balancer.ts";
 import {
+	classifyProviderBodyFailure,
 	classifyProviderFailure,
 	DEFAULT_COOLDOWN_MS,
 } from "../packages/coding-agent/src/kpi/extensions/accounts/errors.ts";
@@ -55,17 +56,20 @@ const accounts: AccountsDocument = {
 
 test("429 usage limit classifies to the default cooldown", () => {
 	const now = 1_000;
-	assert.deepEqual(classifyProviderFailure({ status: 429, body: "usage limit" }, now), {
+	assert.deepEqual(classifyProviderFailure({ status: 429 }, now), {
 		kind: "cooldown",
 		until: now + DEFAULT_COOLDOWN_MS,
 		reason: "provider response 429",
 	});
-	assert.equal(classifyProviderFailure({ status: 403, body: "permission denied" }, now), undefined);
-	assert.equal(classifyProviderFailure({ status: 403, body: "quota exhausted" }, now)?.kind, "cooldown");
 	assert.equal(
 		classifyProviderFailure({ status: 403, headers: { "x-error": "quota exhausted" } }, now)?.kind,
 		"cooldown",
 	);
+
+	// Body tokens are only available to a fetch client that owns the body.
+	assert.equal(classifyProviderBodyFailure({ status: 403, body: "permission denied" }, now), undefined);
+	assert.equal(classifyProviderBodyFailure({ status: 403, body: "quota exhausted" }, now)?.kind, "cooldown");
+	assert.equal(classifyProviderBodyFailure({ status: 429, body: "usage limit" }, now)?.kind, "cooldown");
 });
 
 test("a cooling sibling is never selected while B is healthy", () => {

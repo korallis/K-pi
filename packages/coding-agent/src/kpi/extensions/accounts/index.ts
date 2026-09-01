@@ -20,6 +20,44 @@ You are responsible for the seats you attach.
 
 Continue?`;
 
+export const CODEX_BILLING_CONFIRM =
+	"OpenAI Codex in this harness bills your Codex plan for every token this seat sends. Continue?";
+
+export const CURSOR_BILLING_CONFIRM =
+	"Cursor in this harness bills your Cursor plan for every token this seat sends. Continue?";
+
+export const ZAI_PERSONAL_USE_NOTE =
+	"z.ai Coding Plan is personal-use and official-tool-only; K-\u03c0 routes it through Pi's supported zai provider.";
+
+/** A provider's one-time notice for a new slot. */
+interface ProviderNotice {
+	kind: "confirm" | "note";
+	title: string;
+	message: string;
+}
+
+/**
+ * The notice a pool owes an operator once per new slot. A `confirm` may be
+ * declined and then no slot is created; a `note` is stated and the login
+ * proceeds. Either way the acceptance is stamped on the slot, so a later
+ * session never repeats it.
+ */
+function providerNotice(poolId: PoolId): ProviderNotice | undefined {
+	if (poolId === "anthropic") {
+		return { kind: "confirm", title: "Anthropic extra-usage warning", message: ANTHROPIC_EXTRA_USAGE_WARNING };
+	}
+	if (poolId === "openai-codex") {
+		return { kind: "confirm", title: "Codex billing", message: CODEX_BILLING_CONFIRM };
+	}
+	if (poolId === "cursor") {
+		return { kind: "confirm", title: "Cursor billing", message: CURSOR_BILLING_CONFIRM };
+	}
+	if (poolId === "zai" || poolId === "zai-coding-cn") {
+		return { kind: "note", title: "z.ai Coding Plan", message: ZAI_PERSONAL_USE_NOTE };
+	}
+	return undefined;
+}
+
 export interface AccountsDependencies {
 	store?: AccountsStore;
 	now?: () => Date;
@@ -132,11 +170,14 @@ async function loginAccount(
 	const slotId = requestedSlotId ?? (await store.nextSlotId(providerName));
 	const existing = await store.getSlot(providerName, slotId);
 	let warningAcceptedAt = existing?.warningAcceptedAt;
-	if (providerName === "anthropic" && warningAcceptedAt === undefined) {
-		const accepted = await context.ui.confirm("Anthropic extra-usage warning", ANTHROPIC_EXTRA_USAGE_WARNING);
-		if (!accepted) {
-			context.ui.notify("Anthropic login cancelled", "info");
+	const notice = warningAcceptedAt === undefined ? providerNotice(providerName) : undefined;
+	if (notice !== undefined) {
+		if (notice.kind === "confirm" && !(await context.ui.confirm(notice.title, notice.message))) {
+			context.ui.notify(`${providerName} login cancelled`, "info");
 			return;
+		}
+		if (notice.kind === "note") {
+			context.ui.notify(notice.message, "info");
 		}
 		warningAcceptedAt = now().toISOString();
 	}
@@ -200,12 +241,19 @@ async function logoutAccount(
 	context.ui.notify(`Removed account ${slot.poolId}/${slot.slotId}`, "info");
 }
 
+/** The session routing a command may steer: the pin and the rotation. */
+interface RoutingControls {
+	advance: (poolId: PoolId) => void;
+	pin: (poolId: PoolId, slotId: string) => void;
+}
+
 /** Resolves true when the command changed the stored accounts. */
 async function handleAccountsCommand(
 	args: string,
 	context: ExtensionCommandContext,
 	dependencies: Required<AccountsDependencies>,
 	onSlotRemoved: (poolId: PoolId, slotId: string) => void,
+	routing: RoutingControls,
 ): Promise<boolean> {
 	const words = args.trim().length === 0 ? [] : args.trim().split(/\s+/u);
 	const [action, first, second, ...extra] = words;
@@ -227,7 +275,76 @@ async function handleAccountsCommand(
 		await logoutAccount(first, dependencies.store, context, onSlotRemoved);
 		return true;
 	}
+	if (action === "next") {
+		if (first === undefined) {
+			throw new Error("Usage: /accounts next <pool>");
+		}
+		if (!isPoolId(first) || second !== undefined) {
+			throw new Error(`Unknown pool id: ${first}`);
+		}
+		const document = await dependencies.store.read();
+		if (document.pools[first] === undefined) {
+			throw new Error(`No accounts configured for ${first}`);
+		}
+		routing.advance(first);
+		context.ui.notify(`Advanced past the pinned ${first} slot`, "info");
+		return false;
+	}
+	if (action === "pin") {
+		if (second !== undefined) {
+			throw new Error("Usage: /accounts pin <pool/slot>");
+		}
+		const reference = resolveSlotReference(first, await dependencies.store.read());
+		const slot = await dependencies.store.getSlot(reference.poolId, reference.slotId);
+		if (slot === undefined) {
+			throw new Error(`Unknown account slot: ${reference.poolId}/${reference.slotId}`);
+		}
+		routing.pin(reference.poolId, reference.slotId);
+		context.ui.notify(`Pinned ${reference.poolId}/${reference.slotId} for this session`, "info");
+		return false;
+	}
 	throw new Error(`Unknown /accounts command: ${action}`);
+}
+
+/**
+ * `/pool strategy <provider> <name>` and `/pool chain a,b,c`. Both persist
+ * through the store's validated writers, so an unknown pool, strategy or
+ * duplicate entry fails before anything reaches disk.
+ */
+async function handlePoolCommand(
+	args: string,
+	context: ExtensionCommandContext,
+	store: AccountsStore,
+): Promise<boolean> {
+	const words = args.trim().length === 0 ? [] : args.trim().split(/\s+/u);
+	const [action, first, second, ...extra] = words;
+	if (extra.length > 0) {
+		throw new Error("Too many /pool arguments");
+	}
+	if (action === "strategy") {
+		if (first === undefined || second === undefined) {
+			throw new Error("Usage: /pool strategy <provider> <quota-first|round-robin|sticky>");
+		}
+		if (!isPoolId(first)) {
+			throw new Error(`Unknown pool id: ${first}`);
+		}
+		await store.setStrategy(first, second);
+		context.ui.notify(`${first} strategy is ${second}`, "info");
+		return true;
+	}
+	if (action === "chain") {
+		if (first === undefined || second !== undefined) {
+			throw new Error("Usage: /pool chain a,b,c");
+		}
+		const chain = first
+			.split(",")
+			.map((entry) => entry.trim())
+			.filter((entry) => entry.length > 0);
+		await store.setChain(chain);
+		context.ui.notify(`Fallback chain is ${chain.join(", ")}`, "info");
+		return true;
+	}
+	throw new Error("Usage: /pool strategy <provider> <name> | /pool chain a,b,c");
 }
 
 export function registerAccounts(pi: ExtensionAPI, dependencies: AccountsDependencies = {}): void {
@@ -368,23 +485,51 @@ export function registerAccounts(pi: ExtensionAPI, dependencies: AccountsDepende
 			await publishWidget(context, accounts);
 		});
 		pi.on("session_start", async (_event, context) => {
+			// The official primary credential becomes slot `default` before any
+			// turn needs a slot. The secret moves between private agent files.
+			const imported = await resolved.store.importOfficialCredentials();
+			if (imported.length > 0) {
+				context.ui.notify(`Imported official credentials as ${imported.join(", ")}`, "info");
+			}
 			// Refresh off the request path, before any turn needs a decision.
 			await usage.refreshAll(configuredSlots(await resolved.store.read()), context.signal);
 			await publishWidget(context);
 		});
 	}
+	pi.registerCommand("pool", {
+		description: "Set a K-\u03c0 pool strategy or the fallback chain",
+		handler: async (args, context) => {
+			try {
+				if (await handlePoolCommand(args, context, resolved.store)) {
+					await publishWidget(context);
+				}
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				context.ui.notify(`K-\u03c0 pool: ${message}`, "error");
+			}
+		},
+	});
 	pi.registerCommand("accounts", {
 		description: "Manage K-π subscription accounts",
 		handler: async (args, context) => {
 			try {
-				const changed = await handleAccountsCommand(args, context, resolved, (poolId, slotId) => {
-					balancer.releaseSlot(poolId, slotId);
-					usage.forget(poolId, slotId);
-					if (active?.poolId === poolId && active.slot.id === slotId) {
-						active = undefined;
-						activeModel = undefined;
-					}
-				});
+				const changed = await handleAccountsCommand(
+					args,
+					context,
+					resolved,
+					(poolId, slotId) => {
+						balancer.releaseSlot(poolId, slotId);
+						usage.forget(poolId, slotId);
+						if (active?.poolId === poolId && active.slot.id === slotId) {
+							active = undefined;
+							activeModel = undefined;
+						}
+					},
+					{
+						advance: (poolId) => balancer.advance(poolId),
+						pin: (poolId, slotId) => balancer.pinSlot(poolId, slotId),
+					},
+				);
 				if (changed) {
 					await publishWidget(context);
 				}

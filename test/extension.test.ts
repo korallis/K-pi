@@ -27,7 +27,17 @@ test("extension factory registers commands, policy hook, and renderers", () => {
 	};
 
 	assert.doesNotThrow(() => kPi(pi as unknown as Parameters<typeof kPi>[0]));
-	assert.deepEqual(commandNames, ["accounts", "kpi", "loop", "kpi-ping", "k-mode", "setup-kstack", "statusbar"]);
+	// `/pool` is part of the spec's command table alongside `/accounts`.
+	assert.deepEqual(commandNames, [
+		"pool",
+		"accounts",
+		"kpi",
+		"loop",
+		"kpi-ping",
+		"k-mode",
+		"setup-kstack",
+		"statusbar",
+	]);
 	assert.equal(eventNames.filter((event) => event === "tool_call").length, 1);
 	assert.deepEqual(rendererNames, EVENT_TYPES);
 });

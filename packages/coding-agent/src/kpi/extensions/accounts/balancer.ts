@@ -84,6 +84,12 @@ export class AccountBalancer {
 		this.sticky.set(poolId, slotId);
 	}
 
+	/** Operator pin: hold this slot for the session, clearing any pending skip. */
+	pinSlot(poolId: PoolId, slotId: string): void {
+		this.advanced.delete(poolId);
+		this.pin(poolId, slotId);
+	}
+
 	/**
 	 * Operator advance: drop the pin and skip the slot it was on at the next
 	 * choice, so advancing moves the route whatever the pool's strategy is. A

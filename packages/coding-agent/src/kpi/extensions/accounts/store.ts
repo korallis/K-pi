@@ -60,6 +60,17 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+export const POOL_STRATEGIES = ["quota-first", "round-robin", "sticky"] as const;
+
+export function isPoolStrategy(value: string): value is PoolStrategy {
+	return (POOL_STRATEGIES as readonly string[]).includes(value);
+}
+
+/**
+ * Validates the persisted document field by field. A store that reloads is only
+ * trustworthy if every pool id, strategy, slot and chain entry is checked on the
+ * way in, not just the version number.
+ */
 function assertAccounts(value: unknown, path: string): asserts value is AccountsDocument {
 	if (
 		!isRecord(value) ||
@@ -69,6 +80,30 @@ function assertAccounts(value: unknown, path: string): asserts value is Accounts
 		value.stickiness !== "session-until-exhausted"
 	) {
 		throw new Error(`${path} is not a version 1 accounts store`);
+	}
+	for (const [poolName, pool] of Object.entries(value.pools)) {
+		if (!isPoolId(poolName)) {
+			throw new Error(`${path} has an unknown pool id: ${poolName}`);
+		}
+		if (!isRecord(pool) || typeof pool.strategy !== "string" || !isPoolStrategy(pool.strategy)) {
+			throw new Error(`${path} pool ${poolName} has an unknown strategy`);
+		}
+		if (!Array.isArray(pool.slots)) {
+			throw new Error(`${path} pool ${poolName} must define slots`);
+		}
+		for (const slot of pool.slots) {
+			if (!isRecord(slot) || typeof slot.id !== "string" || !SLOT_ID_PATTERN.test(slot.id)) {
+				throw new Error(`${path} pool ${poolName} has an invalid slot id`);
+			}
+			if (slot.kind !== "oauth" && slot.kind !== "api_key") {
+				throw new Error(`${path} pool ${poolName} slot ${slot.id} has an unknown kind`);
+			}
+		}
+	}
+	for (const entry of value.fallback) {
+		if (typeof entry !== "string" || !isPoolId(entry)) {
+			throw new Error(`${path} fallback has an unknown pool id: ${String(entry)}`);
+		}
 	}
 }
 
@@ -123,11 +158,13 @@ export function isPoolId(value: string): value is PoolId {
 export class AccountsStore {
 	readonly accountsPath: string;
 	readonly secretsPath: string;
+	readonly authPath: string;
 	private mutations: Promise<void> = Promise.resolve();
 
 	constructor(agentDirectory = getAgentDir()) {
 		this.accountsPath = join(agentDirectory, "accounts.json");
 		this.secretsPath = join(agentDirectory, "accounts.secrets.json");
+		this.authPath = join(agentDirectory, "auth.json");
 	}
 
 	private async readAccountsUnlocked(): Promise<AccountsDocument> {
@@ -204,6 +241,93 @@ export class AccountsStore {
 
 			await writePrivateJson(this.secretsPath, secrets);
 			await writePrivateJson(this.accountsPath, document);
+		});
+	}
+
+	/**
+	 * Sets a pool's selection strategy. Validated before anything is written, so
+	 * an unknown pool or strategy leaves the store exactly as it was.
+	 */
+	async setStrategy(poolId: PoolId, strategy: string): Promise<void> {
+		if (!isPoolStrategy(strategy)) {
+			throw new Error(`Unknown pool strategy: ${strategy}. Use ${POOL_STRATEGIES.join(" | ")}`);
+		}
+		await this.mutate(async () => {
+			const document = await this.readAccountsUnlocked();
+			const pool = document.pools[poolId];
+			if (pool === undefined) {
+				throw new Error(`No accounts configured for ${poolId}`);
+			}
+			pool.strategy = strategy;
+			await writePrivateJson(this.accountsPath, document);
+		});
+	}
+
+	/**
+	 * Replaces the cross-family fallback order. Research targets are not pools
+	 * and a repeated entry would make the order ambiguous, so both are refused
+	 * before the write.
+	 */
+	async setChain(chain: readonly string[]): Promise<void> {
+		if (chain.length === 0) {
+			throw new Error("A fallback chain needs at least one pool");
+		}
+		const seen = new Set<string>();
+		const validated: PoolId[] = [];
+		for (const entry of chain) {
+			if (!isPoolId(entry)) {
+				throw new Error(`Unknown pool id: ${entry}`);
+			}
+			if (seen.has(entry)) {
+				throw new Error(`Duplicate pool in the fallback chain: ${entry}`);
+			}
+			seen.add(entry);
+			validated.push(entry);
+		}
+		await this.mutate(async () => {
+			const document = await this.readAccountsUnlocked();
+			document.fallback = validated;
+			await writePrivateJson(this.accountsPath, document);
+		});
+	}
+
+	/**
+	 * Imports the official `auth.json` primary credential for each provider that
+	 * is a K-π pool and has no `default` slot yet. The secret moves from one
+	 * private agent-directory file to another and is never returned, logged, or
+	 * written anywhere near the repository.
+	 */
+	async importOfficialCredentials(): Promise<string[]> {
+		const value = await readJson(this.authPath);
+		if (!isRecord(value)) {
+			return [];
+		}
+		return this.mutate(async () => {
+			const [document, secrets] = await Promise.all([this.readAccountsUnlocked(), this.readSecretsUnlocked()]);
+			const imported: string[] = [];
+			for (const [providerId, credential] of Object.entries(value)) {
+				if (!isPoolId(providerId) || !isRecord(credential)) {
+					continue;
+				}
+				const kind = credential.type === "oauth" ? "oauth" : credential.type === "api_key" ? "api_key" : undefined;
+				if (kind === undefined) {
+					continue;
+				}
+				const pool = document.pools[providerId] ?? { strategy: "quota-first" as const, slots: [] };
+				if (pool.slots.some((slot) => slot.id === "default")) {
+					continue;
+				}
+				pool.slots.push({ id: "default", kind, label: "default" });
+				document.pools[providerId] = pool;
+				secrets[secretKey(providerId, "default")] = credential as unknown as Credential;
+				imported.push(`${providerId}/default`);
+			}
+			if (imported.length === 0) {
+				return imported;
+			}
+			await writePrivateJson(this.secretsPath, secrets);
+			await writePrivateJson(this.accountsPath, document);
+			return imported;
 		});
 	}
 

@@ -1,9 +1,17 @@
 const DEFAULT_COOLDOWN_MS = 5 * 60 * 60 * 1000;
 const QUOTA_TOKENS = /usage[ _-]?limit|rate[ _-]?limit|quota/iu;
 
+/** What the global response hook carries: a status and headers, never a body. */
 export interface ProviderFailure {
 	status: number;
 	headers?: Record<string, string | undefined>;
+}
+
+/**
+ * A failure observed inside a fetch client K-π owns, which may safely consume
+ * the response body it already read.
+ */
+export interface ProviderBodyFailure extends ProviderFailure {
 	body?: string;
 }
 
@@ -38,11 +46,11 @@ function parsedReset(failure: ProviderFailure, now: number): number | undefined 
 	return undefined;
 }
 
-export function classifyProviderFailure(
-	failure: ProviderFailure,
-	now = Date.now(),
+function classify(
+	failure: ProviderBodyFailure,
+	quotaText: string,
+	now: number,
 ): CooldownClassification | undefined {
-	const quotaText = [failure.body, ...Object.values(failure.headers ?? {})].filter(Boolean).join(" ");
 	const quotaShaped = failure.status === 403 && QUOTA_TOKENS.test(quotaText);
 	if (failure.status !== 429 && failure.status !== 402 && !quotaShaped) return undefined;
 	return {
@@ -50,6 +58,29 @@ export function classifyProviderFailure(
 		until: parsedReset(failure, now) ?? now + DEFAULT_COOLDOWN_MS,
 		reason: `provider response ${failure.status}`,
 	};
+}
+
+/**
+ * The global classification: status and headers only. The `after_provider_response`
+ * hook must never depend on a body it would have to consume, because consuming
+ * it would take the stream away from the agent that is about to read it.
+ */
+export function classifyProviderFailure(
+	failure: ProviderFailure,
+	now = Date.now(),
+): CooldownClassification | undefined {
+	return classify(failure, Object.values(failure.headers ?? {}).filter(Boolean).join(" "), now);
+}
+
+/**
+ * The same rules plus body tokens, for a fetch client K-π owns and whose body it
+ * has already safely read. Never reachable from the global hook.
+ */
+export function classifyProviderBodyFailure(
+	failure: ProviderBodyFailure,
+	now = Date.now(),
+): CooldownClassification | undefined {
+	return classify(failure, [failure.body, ...Object.values(failure.headers ?? {})].filter(Boolean).join(" "), now);
 }
 
 export { DEFAULT_COOLDOWN_MS };
