@@ -26,11 +26,14 @@ import {
 	type GraphDefinition,
 	type GraphEdge,
 	type GraphNode,
+	GRAPH_ROUTED_TERMINALS,
+	type GraphRoutedTerminal,
 	type GraphRunState,
 	type GraphTerminalState,
 	isJsonObject,
 	type JsonObject,
 	type JsonValue,
+	type TerminalGraphNode,
 } from "./schema.ts";
 import {
 	classifyTransientFailure,
@@ -64,7 +67,12 @@ export interface GraphEngineOptions {
 	/** Cap overrides from the validated task/job contract. */
 	limits?: GraphBudgetOverrides;
 	/**
-	 * Sink for the one product terminal event a cap produces. Defaults to
+	 * Facts only the caller can establish, merged into run state before routing.
+	 * Keys are state paths, so `{ "bounds.held": false }` is what an edge tests.
+	 */
+	resolveFacts?: () => Promise<JsonObject>;
+	/**
+	 * Sink for the one product terminal event a stopped run produces. Defaults to
 	 * appending `loop.terminal` to the run's event log.
 	 */
 	emitTerminal?: (terminal: GraphTerminalState) => Promise<void>;
@@ -161,6 +169,16 @@ function validateNode(value: unknown, index: number): asserts value is GraphNode
 		return;
 	}
 
+	if (value.type === "terminal") {
+		if (!GRAPH_ROUTED_TERMINALS.includes(value.status as GraphRoutedTerminal)) {
+			throw new Error(
+				`terminal node ${value.id}.status must be one of ${GRAPH_ROUTED_TERMINALS.join(" | ")}`,
+			);
+		}
+		assertString(value.reason, `terminal node ${value.id}.reason`);
+		return;
+	}
+
 	if (value.type === "human") {
 		assertString(value.title, `human node ${value.id}.title`);
 		assertString(value.question, `human node ${value.id}.question`);
@@ -247,6 +265,9 @@ function validatePolicy(value: unknown): void {
 	]) {
 		assertBoolean(value[key], `graph policy.${key}`);
 	}
+	if (value.onHumanDeny !== undefined && value.onHumanDeny !== "revise" && value.onHumanDeny !== "end") {
+		throw new Error("graph policy.onHumanDeny must be revise | end");
+	}
 }
 
 export function validateGraphDefinition(value: unknown): asserts value is GraphDefinition {
@@ -294,19 +315,46 @@ export function validateGraphDefinition(value: unknown): asserts value is GraphD
 			throw new Error(`edge target does not exist: ${edge.to}`);
 		}
 		if (edge.when !== undefined) {
-			if (!isJsonObject(edge.when)) {
-				throw new Error(`edges[${index}].when must be an object`);
+			const conditions = Array.isArray(edge.when) ? edge.when : [edge.when];
+			if (conditions.length === 0) {
+				throw new Error(`edges[${index}].when must not be empty`);
 			}
-			assertString(edge.when.path, `edges[${index}].when.path`);
-			assertStatePath(edge.when.path, `edges[${index}].when`);
-			if (!("equals" in edge.when)) {
-				throw new Error(`edges[${index}].when must define equals`);
+			for (const condition of conditions) {
+				if (!isJsonObject(condition)) {
+					throw new Error(`edges[${index}].when must be a condition or a list of conditions`);
+				}
+				assertString(condition.path, `edges[${index}].when.path`);
+				assertStatePath(condition.path, `edges[${index}].when`);
+				if (!("equals" in condition)) {
+					throw new Error(`edges[${index}].when must define equals`);
+				}
 			}
+		}
+	}
+
+	// A terminal is a sink: an edge leaving one would claim the run continues
+	// after it stopped.
+	for (const node of nodes) {
+		if (node.type !== "terminal") {
+			continue;
+		}
+		if (value.edges.some((edge) => isJsonObject(edge) && edge.from === node.id)) {
+			throw new Error(`terminal node ${node.id} cannot have outgoing edges`);
 		}
 	}
 
 	validateLimits(value.limits);
 	validatePolicy(value.policy);
+
+	// A non-interactive graph that contains a human node would either stall or
+	// have to be answered by the harness on the operator's behalf. Refused here,
+	// before a job starts, rather than discovered at the node.
+	if (isJsonObject(value.policy) && value.policy.allowNonInteractive === true) {
+		const humanNode = nodes.find((node) => node.type === "human");
+		if (humanNode !== undefined) {
+			throw new Error(`non-interactive graph ${value.id} cannot contain human node ${humanNode.id}`);
+		}
+	}
 }
 
 export async function loadGraph(path: string | URL): Promise<GraphDefinition> {
@@ -535,17 +583,43 @@ export class GraphEngine {
 		return this.graph.edges.filter((edge) => edge.from === nodeId);
 	}
 
-	private nextNodes(nodeIds: readonly string[], values: JsonObject): string[] {
+	/**
+	 * An edge fires when every one of its conditions holds. A list is a
+	 * conjunction so a branch like "review red and untestable" stays one edge in
+	 * graph data instead of a decision the driver makes.
+	 */
+	private edgeFires(edge: GraphEdge, values: JsonObject): boolean {
+		if (edge.when === undefined) {
+			return true;
+		}
+		const conditions = Array.isArray(edge.when) ? edge.when : [edge.when];
+		return conditions.every((condition) => isDeepStrictEqual(getStatePath(values, condition.path), condition.equals));
+	}
+
+	/**
+	 * Routes the nodes that just ran. A terminal sink wins over any sibling
+	 * target: the run stopped, so scheduling more work would be a contradiction.
+	 * Priority among terminals is graph edge order, which makes an ambiguous
+	 * topology resolve the same way every replay.
+	 */
+	private route(nodeIds: readonly string[], values: JsonObject): { targets: string[]; terminal?: TerminalGraphNode } {
 		const targets = new Set<string>();
+		let terminal: TerminalGraphNode | undefined;
 		for (const nodeId of nodeIds) {
 			for (const edge of this.outgoing(nodeId)) {
-				if (edge.when === undefined || isDeepStrictEqual(getStatePath(values, edge.when.path), edge.when.equals)) {
-					targets.add(edge.to);
+				if (!this.edgeFires(edge, values)) {
+					continue;
 				}
+				const target = this.nodes.get(edge.to);
+				if (target?.type === "terminal") {
+					terminal ??= target;
+					continue;
+				}
+				targets.add(edge.to);
 			}
 		}
 		targets.delete(END_NODE_ID);
-		return [...targets];
+		return { targets: [...targets], terminal };
 	}
 
 	private async createSessionForNode(
@@ -602,6 +676,11 @@ export class GraphEngine {
 		}
 		if (node.type === "human") {
 			throw new Error(`human node ${node.id} must interrupt before execution`);
+		}
+		if (node.type === "terminal") {
+			// Routing stops at a terminal, so reaching execution would mean the run
+			// was scheduled past its own end.
+			throw new Error(`terminal node ${node.id} must stop the run before execution`);
 		}
 
 		const { session, disposeAfter } = await this.createSessionForNode(node);
@@ -764,10 +843,39 @@ export class GraphEngine {
 		this.runState.terminal = terminal;
 		this.runState.superstep += 1;
 		await this.writeCheckpoint();
+		await this.emitTerminal(terminal);
+		return this.runState;
+	}
 
+	/**
+	 * Stops the run at a terminal the topology routed to. The shape matches cap
+	 * exhaustion on purpose: one durable checkpoint, one `loop.terminal` event,
+	 * and the nodes the run still owed left in `active` so the record shows what
+	 * was unfinished.
+	 */
+	private async terminate(node: TerminalGraphNode, pending: readonly string[]): Promise<Readonly<GraphRunState>> {
+		this.runState.status = "terminated";
+		this.runState.active = [...pending];
+		const terminal: GraphTerminalState = {
+			status: node.status,
+			reason: node.reason,
+			round: this.runState.budget.round,
+			superstep: this.runState.superstep,
+			nodes: [node.id],
+		};
+		this.runState.terminal = terminal;
+		this.runState.nodes[node.id].status = "completed";
+		this.runState.superstep += 1;
+		await this.writeCheckpoint();
+		await this.emitTerminal(terminal);
+		return this.runState;
+	}
+
+	/** The single terminal event a stopped run is allowed to emit. */
+	private async emitTerminal(terminal: GraphTerminalState): Promise<void> {
 		if (this.options.emitTerminal !== undefined) {
 			await this.options.emitTerminal(terminal);
-			return this.runState;
+			return;
 		}
 		await appendEvent(join(this.runDirectory(), "events.jsonl"), {
 			ts: new Date(this.now()).toISOString(),
@@ -778,7 +886,6 @@ export class GraphEngine {
 			status: terminal.status,
 			reason: terminal.reason,
 		});
-		return this.runState;
 	}
 
 	async runSuperstep(): Promise<Readonly<GraphRunState>> {
@@ -909,14 +1016,40 @@ export class GraphEngine {
 			return this.fail(conflict, this.runState.active);
 		}
 		this.readBudget();
-		this.runState.active = this.nextNodes(
+		// Environment facts are refreshed before routing, never after: an edge
+		// that tests bounds or evidence freshness must see the state the batch
+		// just produced, not the state it started from.
+		await this.refreshFacts();
+		const routed = this.route(
 			executed.map((node) => node.id),
 			this.runState.values,
 		);
+		if (routed.terminal !== undefined) {
+			return this.terminate(routed.terminal, routed.targets);
+		}
+		this.runState.active = routed.targets;
 		this.runState.status = this.runState.active.length === 0 ? "completed" : "running";
 		this.runState.superstep += 1;
 		await this.writeCheckpoint();
 		return this.runState;
+	}
+
+	/**
+	 * Merges the injected fact source into run state. Facts are things only the
+	 * caller can know - whether writes stayed inside the task's bounds, whether
+	 * evidence still matches HEAD, whether this job already shipped - and they
+	 * are data, so the topology can route on them instead of the driver.
+	 */
+	private async refreshFacts(): Promise<void> {
+		const facts = await this.options.resolveFacts?.();
+		if (facts === undefined) {
+			return;
+		}
+		const values = structuredClone(this.runState.values);
+		for (const [path, value] of Object.entries(facts)) {
+			setStatePath(values, path, value);
+		}
+		this.runState.values = values;
 	}
 
 	/**
@@ -972,9 +1105,14 @@ export class GraphEngine {
 		setStatePath(values, node.statePath, approved);
 		this.runState.values = values;
 		this.runState.nodes[node.id].status = "completed";
-		this.runState.active = this.nextNodes([node.id], values);
-		this.runState.status = this.runState.active.length === 0 ? "completed" : "running";
+		await this.refreshFacts();
+		const routed = this.route([node.id], this.runState.values);
 		delete this.runState.pendingHuman;
+		if (routed.terminal !== undefined) {
+			return this.terminate(routed.terminal, routed.targets);
+		}
+		this.runState.active = routed.targets;
+		this.runState.status = this.runState.active.length === 0 ? "completed" : "running";
 		this.runState.superstep += 1;
 		await this.writeCheckpoint();
 		return this.runState;

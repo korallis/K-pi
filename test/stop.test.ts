@@ -59,7 +59,9 @@ test("a repeated output stops even without new verifier evidence", () => {
 	});
 
 	assert.equal(repeated.status, "NO_PROGRESS");
-	assert.equal(repeated.round, 1);
+	// The verifier ran again, so the round moved: a round key that stood still
+	// would put the loop beyond the reach of `maxRounds`.
+	assert.equal(repeated.round, 2);
 });
 
 test("the third failed round stops with EXHAUSTED by default", () => {
@@ -338,4 +340,45 @@ test("transient classification retries only transport, 429, and timeout", () => 
 	assert.equal(classifyTransientFailure(new Error("failed response validation")), undefined);
 	assert.equal(classifyTransientFailure("a string"), undefined);
 	assert.equal(classifyTransientFailure(undefined), undefined);
+});
+
+test("repeated evidence with changing output still ends at maxRounds", () => {
+	// The verifier keeps rewriting its prose over the same receipts. Nothing is
+	// no-progress by fingerprint, but the loop is not learning anything either, so
+	// it must reach a terminal instead of running forever.
+	let state = createStopState(3);
+	const statuses: string[] = [];
+	for (let index = 0; index < 3; index += 1) {
+		state = transitionStopState(state, {
+			type: "verifier",
+			passed: false,
+			evidenceFingerprint: fingerprint("same-receipts"),
+			outputFingerprint: fingerprint(`prose-${index}`),
+			failingAcIds: [`AC-${index}`],
+		});
+		statuses.push(state.status);
+	}
+
+	assert.deepEqual(statuses, ["RUNNING", "RUNNING", "EXHAUSTED"], "each verifier event is a round");
+	assert.equal(state.round, 3);
+	assert.equal(state.evidenceFingerprints.length, 1, "one witness for one set of receipts");
+	assert.equal(state.outputFingerprints.length, 3);
+});
+
+test("a terminal state is final: further verifier events cannot revive it", () => {
+	let state = createStopState(1);
+	state = transitionStopState(state, {
+		type: "verifier",
+		passed: false,
+		evidenceFingerprint: fingerprint("e1"),
+		outputFingerprint: fingerprint("o1"),
+	});
+	assert.equal(state.status, "EXHAUSTED");
+	const after = transitionStopState(state, {
+		type: "verifier",
+		passed: true,
+		evidenceFingerprint: fingerprint("e2"),
+		outputFingerprint: fingerprint("o2"),
+	});
+	assert.strictEqual(after, state, "an exhausted run cannot be talked into DONE");
 });

@@ -8,7 +8,7 @@ export function isJsonObject(value: unknown): value is JsonObject {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-export type GraphNodeType = "agent" | "set" | "human";
+export type GraphNodeType = "agent" | "set" | "human" | "terminal";
 export type AgentContextMode = "isolated" | "thread";
 
 export interface AgentResponseContract {
@@ -45,7 +45,33 @@ export interface HumanGraphNode {
 	statePath: string;
 }
 
-export type GraphNode = AgentGraphNode | SetGraphNode | HumanGraphNode;
+/**
+ * A product terminal the topology itself routes to. `EXHAUSTED` is not one of
+ * these: a cap is crossed by the engine, never chosen by an edge, and `DONE`
+ * belongs to a completed release rather than a branch.
+ */
+export type GraphRoutedTerminal = "UNSAFE" | "NEEDS_HUMAN" | "BLOCKED" | "NO_PROGRESS";
+
+export const GRAPH_ROUTED_TERMINALS: readonly GraphRoutedTerminal[] = [
+	"UNSAFE",
+	"NEEDS_HUMAN",
+	"BLOCKED",
+	"NO_PROGRESS",
+];
+
+/**
+ * A sink that ends the run with a stated product terminal. Having it as a node
+ * keeps the branch in graph data: the reason a run stopped is readable in the
+ * topology instead of buried in the driver.
+ */
+export interface TerminalGraphNode {
+	id: string;
+	type: "terminal";
+	status: GraphRoutedTerminal;
+	reason: string;
+}
+
+export type GraphNode = AgentGraphNode | SetGraphNode | HumanGraphNode | TerminalGraphNode;
 
 export interface GraphCondition {
 	path: string;
@@ -55,7 +81,8 @@ export interface GraphCondition {
 export interface GraphEdge {
 	from: string;
 	to: string;
-	when?: GraphCondition;
+	/** A list is a conjunction: every condition must hold for the edge to fire. */
+	when?: GraphCondition | GraphCondition[];
 }
 
 export interface GraphLimits {
@@ -96,6 +123,12 @@ export interface GraphPolicy {
 	allowNonInteractiveMutations: boolean;
 	confirmProjectGraph: boolean;
 	confirmMutatingNodes: boolean;
+	/**
+	 * What a denied human release does. Seeded into run state as
+	 * `policy.onHumanDeny`, so the branch is an edge condition rather than a
+	 * decision the driver makes on the graph's behalf.
+	 */
+	onHumanDeny?: "revise" | "end";
 }
 
 export interface GraphDefinition {
@@ -108,7 +141,11 @@ export interface GraphDefinition {
 	policy: GraphPolicy;
 }
 
-export type GraphRunStatus = "running" | "interrupted" | "completed" | "failed" | "exhausted";
+/**
+ * `terminated` is a topology-chosen product terminal: the run stopped because an
+ * edge said so, not because it finished, crashed, or spent a cap.
+ */
+export type GraphRunStatus = "running" | "interrupted" | "completed" | "failed" | "exhausted" | "terminated";
 
 export type GraphNodeRunStatus = "pending" | "running" | "completed" | "interrupted" | "failed" | "exhausted";
 
@@ -156,14 +193,18 @@ export interface GraphBudgetState {
 	batches: number;
 }
 
-/** The one durable product terminal the engine itself can reach. */
+/**
+ * The durable product terminal a run reached: a cap the engine crossed, or a
+ * terminal node the topology routed to. Written exactly once either way.
+ */
 export interface GraphTerminalState {
-	status: "EXHAUSTED";
-	limit: BudgetLimitName;
+	status: "EXHAUSTED" | GraphRoutedTerminal;
+	/** Only a cap has one. */
+	limit?: BudgetLimitName;
 	reason: string;
 	round: number;
 	superstep: number;
-	/** The nodes the exhausted superstep was holding. */
+	/** The nodes the stopped superstep was holding. */
 	nodes: string[];
 }
 

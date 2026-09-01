@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { open, readFile } from "node:fs/promises";
+import { resolve } from "node:path";
 
 import type { TerminalStatus } from "./graph/stop.ts";
 
@@ -122,7 +123,8 @@ export type EventRecord = {
 	record_hash: string;
 } & Record<string, JsonValue>;
 
-const FIRST_HASH = "0".repeat(64);
+/** The predecessor of a log's first record. */
+export const FIRST_HASH = "0".repeat(64);
 const HASH_PATTERN = /^[0-9a-f]{64}$/;
 
 /** Raw header keys and containers. Rejected outright, at any value type. */
@@ -290,26 +292,57 @@ async function previousHash(path: string): Promise<string> {
 	return last.record_hash;
 }
 
+/**
+ * One append at a time per log. Reading the tail hash and writing the record
+ * that chains to it is check-then-act: two concurrent appends would both read
+ * the same tail and produce two records claiming the same predecessor, breaking
+ * the chain the log exists to provide. The lock is per resolved path, so
+ * unrelated logs never wait on each other.
+ */
+const appendLocks = new Map<string, Promise<unknown>>();
+
+function withAppendLock<T>(path: string, operation: () => Promise<T>): Promise<T> {
+	const key = resolve(path);
+	const previous = appendLocks.get(key) ?? Promise.resolve();
+	const result = previous.then(operation, operation);
+	// Keep the chain alive even when one append fails: the next writer still has
+	// to wait for this one to finish touching the file.
+	const settled = result.then(
+		() => undefined,
+		() => undefined,
+	);
+	appendLocks.set(key, settled);
+	void settled.then(() => {
+		if (appendLocks.get(key) === settled) {
+			appendLocks.delete(key);
+		}
+	});
+	return result;
+}
+
 export async function appendEvent(path: string, event: EventInput): Promise<EventRecord> {
-	// Sanitize first: a forbidden payload must fail before the log is opened.
+	// Sanitize first: a forbidden payload must fail before the log is opened, and
+	// before a concurrent writer is made to wait for it.
 	const payload = sanitizeEvent(event);
-	const prev_hash = await previousHash(path);
-	const recordWithoutHash = { ...payload, prev_hash };
-	const record_hash = hashRecord(recordWithoutHash);
-	const record = {
-		...recordWithoutHash,
-		record_hash,
-	} as EventRecord;
+	return withAppendLock(path, async () => {
+		const prev_hash = await previousHash(path);
+		const recordWithoutHash = { ...payload, prev_hash };
+		const record_hash = hashRecord(recordWithoutHash);
+		const record = {
+			...recordWithoutHash,
+			record_hash,
+		} as EventRecord;
 
-	const file = await open(path, "a", 0o600);
-	try {
-		await file.writeFile(`${canonicalize(record)}\n`);
-		await file.sync();
-	} finally {
-		await file.close();
-	}
+		const file = await open(path, "a", 0o600);
+		try {
+			await file.writeFile(`${canonicalize(record)}\n`);
+			await file.sync();
+		} finally {
+			await file.close();
+		}
 
-	return record;
+		return record;
+	});
 }
 
 export async function verifyChain(path: string): Promise<boolean> {

@@ -77,7 +77,7 @@ async function harness(confirm = true): Promise<Harness> {
 	const route = async (provider = "anthropic"): Promise<string> => {
 		const headers: Record<string, string> = {};
 		await hooks.get("before_provider_headers")!(
-			{ type: "before_provider_headers", headers },
+			{ type: "before_provider_headers", headers, requestId: "request-1" },
 			{ cwd: directory, model: { provider, id: `${provider}-model` }, ui, modelRegistry: { getAvailable: () => [] } },
 		);
 		return headers.authorization ?? "";
@@ -156,7 +156,7 @@ test("a pin holds until the slot is exhausted", async () => {
 		}
 
 		await subject.hooks.get("after_provider_response")!(
-			{ type: "after_provider_response", status: 429, headers: { "retry-after": "600" } },
+			{ type: "after_provider_response", requestId: "request-1", status: 429, headers: { "retry-after": "600" } },
 			{
 				cwd: subject.directory,
 				model: { provider: "anthropic", id: "anthropic-model" },

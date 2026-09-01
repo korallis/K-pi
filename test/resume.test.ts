@@ -6,13 +6,13 @@ import test from "node:test";
 
 import type { ExtensionCommandContext } from "../packages/coding-agent/src/core/extensions/types.ts";
 
-import { restoreStopState, resumeLoop } from "../packages/coding-agent/src/kpi/extensions/gated-loop.ts";
+import { restoreStopState, resumeLoop, writeState } from "../packages/coding-agent/src/kpi/extensions/gated-loop.ts";
 import {
 	type GraphAgentSessionFactory,
 	GraphEngine,
 } from "../packages/coding-agent/src/kpi/extensions/graph/engine.ts";
 import type { GraphDefinition } from "../packages/coding-agent/src/kpi/extensions/graph/schema.ts";
-import { transitionStopState } from "../packages/coding-agent/src/kpi/extensions/graph/stop.ts";
+import { createStopState, transitionStopState } from "../packages/coding-agent/src/kpi/extensions/graph/stop.ts";
 import type { Task } from "../packages/coding-agent/src/kpi/extensions/run-store.ts";
 
 async function latestCheckpoint(projectRoot: string, jobId: string) {
@@ -877,5 +877,89 @@ test("a wrapped operator cancellation is not retried, a wrapped timeout is", asy
 		} finally {
 			await rm(directory, { recursive: true, force: true });
 		}
+	}
+});
+
+test("every stop-safety field survives a state document round trip", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "kpi-stop-parity-"));
+	try {
+		// A state a long job would really reach: several rounds, two witnessed
+		// fingerprints, a recorded failing set, and a spent retry with its delays.
+		let stopState = createStopState(5);
+		stopState = transitionStopState(stopState, {
+			type: "verifier",
+			passed: false,
+			evidenceFingerprint: `sha256:${"1".repeat(64)}`,
+			outputFingerprint: `sha256:${"a".repeat(64)}`,
+			failingAcIds: ["AC-02", "AC-01"],
+		});
+		stopState = transitionStopState(stopState, { type: "retry", reason: "timeout" });
+		stopState = transitionStopState(stopState, {
+			type: "verifier",
+			passed: false,
+			evidenceFingerprint: `sha256:${"2".repeat(64)}`,
+			outputFingerprint: `sha256:${"b".repeat(64)}`,
+			failingAcIds: ["AC-03"],
+		});
+		stopState = transitionStopState(stopState, { type: "retry", reason: "transport" });
+		assert.equal(stopState.status, "RUNNING");
+		assert.equal(stopState.retries, 1);
+
+		const task: Task = {
+			job_id: "stop-parity",
+			mode: "gated",
+			goal: "Persist every stop field",
+			nongoals: [],
+			acceptance: [{ id: "AC-01", statement: "round trips", required: true }],
+			constraints: [],
+			quality_gates: ["pnpm test"],
+			ac: { quality: "executable" },
+		};
+		const engine = new GraphEngine(loopingGraph("parity", { maxSteps: 8 }), {
+			projectRoot: directory,
+			jobId: "stop-parity",
+			createAgentSession: async () => ({
+				session: {
+					sessionId: "parity",
+					async prompt() {},
+					getActiveToolNames: () => ["read"],
+					dispose() {},
+				},
+			}),
+		});
+		await engine.runSuperstep();
+		engine.dispose();
+
+		await writeState(directory, task, engine.state, stopState);
+		const document = JSON.parse(await readFile(join(directory, "state.json"), "utf8")) as Record<string, unknown>;
+		const restored = restoreStopState(document, stopState.maxRounds);
+
+		assert.equal(restored.round, stopState.round, "round");
+		assert.equal(restored.maxRounds, stopState.maxRounds, "maxRounds");
+		assert.deepEqual(restored.evidenceFingerprints, stopState.evidenceFingerprints, "evidence fingerprints");
+		assert.deepEqual(restored.outputFingerprints, stopState.outputFingerprints, "output fingerprints");
+		assert.deepEqual(restored.failingAcSets, stopState.failingAcSets, "failing acceptance sets");
+		assert.equal(restored.retries, stopState.retries, "spent retries");
+		assert.deepEqual(restored.retryDelaysMs, stopState.retryDelaysMs, "retry delays");
+
+		// The restored state must still refuse a repeat of what already failed.
+		const stuck = transitionStopState(restored, {
+			type: "verifier",
+			passed: false,
+			evidenceFingerprint: `sha256:${"3".repeat(64)}`,
+			outputFingerprint: `sha256:${"b".repeat(64)}`,
+		});
+		assert.equal(stuck.status, "NO_PROGRESS", "a repeated output after resume is still no progress");
+
+		const sameFailures = transitionStopState(restored, {
+			type: "verifier",
+			passed: false,
+			evidenceFingerprint: `sha256:${"4".repeat(64)}`,
+			outputFingerprint: `sha256:${"c".repeat(64)}`,
+			failingAcIds: ["AC-01", "AC-02"],
+		});
+		assert.equal(sameFailures.status, "NO_PROGRESS", "a repeated failing set after resume is still no progress");
+	} finally {
+		await rm(directory, { recursive: true, force: true });
 	}
 });

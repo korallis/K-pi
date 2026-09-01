@@ -289,12 +289,10 @@ export function transitionStopState(state: StopState, event: StopEvent): StopSta
 	const repeatedFailingSet = failingKey !== undefined && state.failingAcSets.includes(failingKey);
 	const repeatedOutput = state.outputFingerprints.includes(outputFingerprint);
 
-	if (state.evidenceFingerprints.includes(evidenceFingerprint)) {
-		// Nothing new was verified. Only a repeat of what already failed proves
-		// the loop is stuck.
-		return repeatedOutput || repeatedFailingSet ? { ...state, status: "NO_PROGRESS" } : state;
-	}
-
+	// A verifier event is a round whatever it carries. Returning the state
+	// untouched when only the evidence repeated would let a loop that keeps
+	// producing new prose over the same receipts run forever: the round key would
+	// never move, so `maxRounds` could never end it.
 	const round = state.round + 1;
 	// The same acceptance criteria failing twice is no progress even when the
 	// prose around them changed, so the fingerprint is not the only witness.
@@ -307,13 +305,18 @@ export function transitionStopState(state: StopState, event: StopEvent): StopSta
 					? "EXHAUSTED"
 					: "RUNNING";
 
+	// Witnesses are sets: a repeat is already recorded, and re-appending it would
+	// only grow the state a resume has to carry.
 	return {
 		...state,
 		status,
 		round,
-		evidenceFingerprints: [...state.evidenceFingerprints, evidenceFingerprint],
-		outputFingerprints: [...state.outputFingerprints, outputFingerprint],
-		failingAcSets: failingKey === undefined ? state.failingAcSets : [...state.failingAcSets, failingKey],
+		evidenceFingerprints: state.evidenceFingerprints.includes(evidenceFingerprint)
+			? state.evidenceFingerprints
+			: [...state.evidenceFingerprints, evidenceFingerprint],
+		outputFingerprints: repeatedOutput ? state.outputFingerprints : [...state.outputFingerprints, outputFingerprint],
+		failingAcSets:
+			failingKey === undefined || repeatedFailingSet ? state.failingAcSets : [...state.failingAcSets, failingKey],
 		// A new round starts with a fresh retry budget.
 		retries: 0,
 	};

@@ -6,6 +6,7 @@ import test from "node:test";
 import {
 	appendEvent,
 	type EventInput,
+	FIRST_HASH,
 	ForbiddenEventPayloadError,
 	verifyChain,
 } from "../packages/coding-agent/src/kpi/extensions/append-log.ts";
@@ -178,4 +179,84 @@ test("raw headers and vendor envelopes are rejected before any bytes land", asyn
 		assert.equal(await readFile(path, "utf8"), before);
 		assert.equal(await verifyChain(path), true);
 	});
+});
+
+test("concurrent appends to one log keep a single verifiable chain", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "kpi-append-race-"));
+	const path = join(directory, "events.jsonl");
+	try {
+		// Twenty writers race on the same log. Reading the tail hash and appending
+		// the record that chains to it is check-then-act, so without serialization
+		// several records would claim the same predecessor.
+		await Promise.all(
+			Array.from({ length: 20 }, (_, index) =>
+				appendEvent(path, {
+					ts: new Date(1_700_000_000_000 + index).toISOString(),
+					type: "tool.request",
+					job_id: "race-job",
+					round: 0,
+					node: `writer-${index}`,
+				}),
+			),
+		);
+
+		const lines = (await readFile(path, "utf8")).split("\n").filter((line) => line.length > 0);
+		assert.equal(lines.length, 20, "every append landed exactly once");
+		const records = lines.map((line) => JSON.parse(line) as { prev_hash: string; record_hash: string; node: string });
+		assert.equal(new Set(records.map((record) => record.record_hash)).size, 20, "no two records share a hash");
+		assert.equal(new Set(records.map((record) => record.prev_hash)).size, 20, "no two records claim one predecessor");
+		assert.equal(new Set(records.map((record) => record.node)).size, 20, "no writer was lost");
+		for (const [index, record] of records.entries()) {
+			assert.equal(
+				record.prev_hash,
+				index === 0 ? FIRST_HASH : records[index - 1].record_hash,
+				`record ${index} chains to the record written before it`,
+			);
+		}
+		assert.equal(await verifyChain(path), true, "the whole chain verifies");
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("a rejected payload never blocks a concurrent writer", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "kpi-append-reject-"));
+	const path = join(directory, "events.jsonl");
+	try {
+		const results = await Promise.allSettled([
+			appendEvent(path, {
+				ts: new Date(1_700_000_000_000).toISOString(),
+				type: "tool.request",
+				job_id: "reject-job",
+				round: 0,
+				node: "first",
+			}),
+			// A forbidden payload: it must fail without leaving the lock held.
+			appendEvent(path, {
+				ts: new Date(1_700_000_000_001).toISOString(),
+				type: "tool.request",
+				job_id: "reject-job",
+				round: 0,
+				node: "second",
+				authorization: "Bearer sk-ant-api03-example-secret",
+			} as unknown as EventInput),
+			appendEvent(path, {
+				ts: new Date(1_700_000_000_002).toISOString(),
+				type: "tool.request",
+				job_id: "reject-job",
+				round: 0,
+				node: "third",
+			}),
+		]);
+
+		assert.deepEqual(
+			results.map((result) => result.status),
+			["fulfilled", "rejected", "fulfilled"],
+		);
+		assert.equal(await verifyChain(path), true, "the chain is intact after a rejected append");
+		const lines = (await readFile(path, "utf8")).split("\n").filter((line) => line.length > 0);
+		assert.equal(lines.length, 2);
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
 });

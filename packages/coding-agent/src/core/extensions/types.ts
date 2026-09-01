@@ -704,6 +704,12 @@ export interface BeforeProviderRequestEvent {
 export interface BeforeProviderHeadersEvent {
 	type: "before_provider_headers";
 	headers: ProviderHeaders;
+	/**
+	 * Identifies the single provider request these headers belong to. The same id
+	 * arrives on that request's `after_provider_response`, so an extension can
+	 * attribute a response to the credential it attached without guessing.
+	 */
+	requestId: string;
 }
 
 /** Fired after a provider response is received and before the response stream is consumed. */
@@ -711,6 +717,8 @@ export interface AfterProviderResponseEvent {
 	type: "after_provider_response";
 	status: number;
 	headers: Record<string, string>;
+	/** The `before_provider_headers` request this response answers. */
+	requestId: string;
 }
 
 /** Fired after user submits prompt but before agent loop. */

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { Agent, type AgentMessage, setDefaultStreamFn, type ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { clampThinkingLevel, type Message, type Model, streamSimple } from "@earendil-works/pi-ai/compat";
@@ -321,6 +322,11 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			const websocketConnectTimeoutMs =
 				options?.websocketConnectTimeoutMs ?? settingsManager.getWebSocketConnectTimeoutMs();
 			const headerRunner = extensionRunnerRef.current;
+			// `streamFn` is entered once per provider request, so this closure is the
+			// request's own scope. The id it mints ties that request's headers to its
+			// own response: the two hooks fire from one place, and concurrent
+			// requests that finish out of order still each carry their own id.
+			const requestId = randomUUID();
 			return modelRuntime.streamSimple(model, context, {
 				...options,
 				timeoutMs,
@@ -335,8 +341,20 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 						requestHeaders,
 					);
 					return headerRunner?.hasHandlers("before_provider_headers")
-						? headerRunner.emitBeforeProviderHeaders(headers ?? {})
+						? headerRunner.emitBeforeProviderHeaders(headers ?? {}, requestId)
 						: (headers ?? {});
+				},
+				onResponse: async (response, responseModel) => {
+					const runner = extensionRunnerRef.current;
+					if (runner?.hasHandlers("after_provider_response")) {
+						await runner.emit({
+							type: "after_provider_response",
+							status: response.status,
+							headers: response.headers,
+							requestId,
+						});
+					}
+					await options?.onResponse?.(response, responseModel);
 				},
 			});
 		},
@@ -346,17 +364,6 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				return payload;
 			}
 			return runner.emitBeforeProviderRequest(payload);
-		},
-		onResponse: async (response, _model) => {
-			const runner = extensionRunnerRef.current;
-			if (!runner?.hasHandlers("after_provider_response")) {
-				return;
-			}
-			await runner.emit({
-				type: "after_provider_response",
-				status: response.status,
-				headers: response.headers,
-			});
 		},
 		sessionId: sessionManager.getSessionId(),
 		transformContext: async (messages) => {

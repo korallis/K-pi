@@ -50,6 +50,53 @@ interface ProviderNotice {
  * proceeds. Either way the acceptance is stamped on the slot, so a later
  * session never repeats it.
  */
+/**
+ * Where a credential travels for each API family.
+ *
+ * A key is only a credential if the provider reads it where it looks. Anthropic
+ * reads `x-api-key`, Google reads `x-goog-api-key`, Azure reads `api-key`; for
+ * those, an `Authorization: Bearer` header is an unauthenticated request with a
+ * valid key attached. Subscription tokens are bearer tokens everywhere,
+ * including Anthropic OAuth and Codex.
+ */
+export function authHeaderName(api: string | undefined, credentialType: "oauth" | "api_key" | undefined): string {
+	if (credentialType !== "api_key") {
+		return "authorization";
+	}
+	switch (api) {
+		case "anthropic-messages":
+			return "x-api-key";
+		case "google-generative-ai":
+		case "google-vertex":
+			return "x-goog-api-key";
+		case "azure-openai-responses":
+			return "api-key";
+		default:
+			return "authorization";
+	}
+}
+
+/**
+ * Attaches the credential using the family's own header and clears the ones it
+ * would otherwise be mistaken for: Anthropic and Google both skip their key
+ * header when an `Authorization` is already present, so a stale bearer would
+ * silently win over the key we mean to send.
+ */
+function setAuthHeader(
+	headers: Record<string, string | null>,
+	api: string | undefined,
+	credentialType: "oauth" | "api_key" | undefined,
+	token: string,
+): void {
+	const name = authHeaderName(api, credentialType);
+	for (const competing of ["authorization", "x-api-key", "x-goog-api-key", "api-key"]) {
+		if (competing !== name && headers[competing] !== undefined) {
+			headers[competing] = null;
+		}
+	}
+	headers[name] = name === "authorization" ? `Bearer ${token}` : token;
+}
+
 function providerNotice(poolId: PoolId): ProviderNotice | undefined {
 	if (poolId === "anthropic") {
 		return { kind: "confirm", title: "Anthropic extra-usage warning", message: ANTHROPIC_EXTRA_USAGE_WARNING };
@@ -390,8 +437,34 @@ export function registerAccounts(pi: ExtensionAPI, dependencies: AccountsDepende
 	const nowMs = () => resolved.now().getTime();
 	const balancer = new AccountBalancer(nowMs);
 	const usage = new UsageCache({ now: nowMs, readers: resolved.usageReaders });
+	// The route the widget shows: always the newest selection.
 	let active: SelectedSlot | undefined;
 	let activeModel: string | undefined;
+	/**
+	 * Accounting is per request, not per session. Each `before_provider_headers`
+	 * carries the id of the request it is building, and that request's
+	 * `after_provider_response` carries the same id, so a response is always
+	 * matched to the credential this extension actually attached - even when two
+	 * requests to one provider hold different slots and finish out of order.
+	 *
+	 * A request that never produces a response (transport failure, an adapter
+	 * that does not report responses, an abandoned turn) simply leaves its entry
+	 * unclaimed: nothing waits on it, and the oldest entries are evicted so an
+	 * unpaired request cannot grow the map without bound.
+	 */
+	const requestSlots = new Map<string, SelectedSlot>();
+	const REQUEST_SLOT_LIMIT = 64;
+
+	const recordRequestSlot = (requestId: string, selection: SelectedSlot): void => {
+		// Re-inserted so eviction order stays newest-last.
+		requestSlots.delete(requestId);
+		requestSlots.set(requestId, selection);
+		while (requestSlots.size > REQUEST_SLOT_LIMIT) {
+			const oldest = requestSlots.keys().next();
+			if (oldest.done === true) break;
+			requestSlots.delete(oldest.value);
+		}
+	};
 
 
 	const configuredSlots = (accounts: AccountsDocument): { poolId: PoolId; slotId: string }[] =>
@@ -489,20 +562,31 @@ export function registerAccounts(pi: ExtensionAPI, dependencies: AccountsDepende
 						? credential.key
 						: undefined;
 			if (token !== undefined) {
-				event.headers.authorization = `Bearer ${token}`;
+				// Provider-native semantics: Anthropic reads `x-api-key`, Google
+				// `x-goog-api-key`, Azure `api-key`. Forcing every key into a bearer
+				// header would send a valid credential where the provider never looks.
+				setAuthHeader(event.headers, context.model?.api, credential?.type, token);
+				// This request now carries this slot's credential, so its response is
+				// attributable to it by id.
+				recordRequestSlot(event.requestId, active);
 			} else if (active.slot.kind === "local") {
 				// A local server the operator gave no credential is sent none. The
 				// provider's `apiKey` exists only so the client can be constructed;
 				// nulling the header keeps it off the wire instead of inventing a
 				// bearer this server never asked for.
 				event.headers.authorization = null;
+				recordRequestSlot(event.requestId, active);
 			}
 		});
 		pi.on("after_provider_response", async (event, context) => {
-			if (active === undefined) return;
+			// Exactly the request this response answers. A response for a request
+			// this extension did not credential records nothing, rather than charging
+			// a slot that never served it.
+			const served = requestSlots.get(event.requestId);
+			if (served === undefined) return;
 			// Off the hot path: record what the response's own headers stated. Every
 			// response carries limits, not just the failures, so publish either way.
-			usage.recordHeaders(active.poolId, active.slot.id, event.headers ?? {});
+			usage.recordHeaders(served.poolId, served.slot.id, event.headers ?? {});
 			// The same clock the balancer checks health against: a cooldown parsed
 			// on a different time base would expire at the wrong moment.
 			const classification = classifyProviderFailure(
@@ -516,11 +600,11 @@ export function registerAccounts(pi: ExtensionAPI, dependencies: AccountsDepende
 				await publishWidget(context);
 				return;
 			}
-			balancer.markCooling(active.poolId, active.slot.id, classification.until);
+			balancer.markCooling(served.poolId, served.slot.id, classification.until);
 
 			const accounts = await resolved.store.read();
 			const plan = balancer.planFailover(
-				active,
+				served,
 				accounts,
 				context.modelRegistry.getAvailable(),
 				context.model,
@@ -539,12 +623,17 @@ export function registerAccounts(pi: ExtensionAPI, dependencies: AccountsDepende
 			// change, the route must stay where it is rather than name a slot whose
 			// credential this provider would never accept.
 			let moved = false;
+			// Only the request that is still the current route may move it: an older
+			// response must not re-point a route a newer request already chose.
+			const stillCurrent = active?.poolId === served.poolId && active.slot.id === served.slot.id;
 			if (plan.sameFamily) {
-				active = { poolId: plan.to.poolId, slot: plan.to.slot };
+				if (stillCurrent) active = { poolId: plan.to.poolId, slot: plan.to.slot };
 				moved = true;
 			} else if (plan.model !== undefined && (await pi.setModel(plan.model))) {
-				active = { poolId: plan.to.poolId, slot: plan.to.slot };
-				activeModel = plan.model.id;
+				if (stillCurrent) {
+					active = { poolId: plan.to.poolId, slot: plan.to.slot };
+					activeModel = plan.model.id;
+				}
 				moved = true;
 			}
 

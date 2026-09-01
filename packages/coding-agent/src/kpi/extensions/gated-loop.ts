@@ -286,7 +286,11 @@ function stateDocument(
 	};
 }
 
-async function writeState(
+/**
+ * Persists the run and its stop state. Exported so the stop-safety contract can
+ * be proven as a round trip against `restoreStopState`.
+ */
+export async function writeState(
 	runDirectory: string,
 	task: Task,
 	state: Readonly<GraphRunState>,

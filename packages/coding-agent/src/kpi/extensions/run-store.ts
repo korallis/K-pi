@@ -1,5 +1,6 @@
+import { randomUUID } from "node:crypto";
 import type { Dirent } from "node:fs";
-import { mkdir, open, readdir, readFile, rename, stat } from "node:fs/promises";
+import { mkdir, open, readdir, readFile, rename, rm, stat } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 
 import { CONFIG_DIR_NAME } from "../../config.ts";
@@ -113,23 +114,54 @@ function assertJobId(jobId: string): void {
 	}
 }
 
+/**
+ * A temp path no other writer can be holding. Two writers sharing one temp file
+ * would let a rename publish the other's half-written bytes, so the name
+ * carries the process and a random token, and the file is created exclusively.
+ */
 function tempPathFor(path: string): string {
-	return path.endsWith(".json") ? `${path.slice(0, -5)}.tmp` : `${path}.tmp`;
+	const base = path.endsWith(".json") ? path.slice(0, -5) : path;
+	return `${base}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
 }
 
-export async function atomicWrite(path: string, data: string | Uint8Array): Promise<void> {
+export interface AtomicWriteOptions {
+	/**
+	 * Injected opener. Tests use it to fail the write or the sync deliberately
+	 * and prove the destination is left exactly as it was.
+	 */
+	openFile?: typeof open;
+}
+
+/**
+ * Publishes `data` at `path` or leaves the previous contents untouched.
+ *
+ * The rename happens only after the bytes are written and fsynced, so a crash
+ * or a failing device can never make a partial document visible, and a failed
+ * attempt removes its own temp file rather than leaving litter behind for a
+ * later reader to trip over.
+ */
+export async function atomicWrite(
+	path: string,
+	data: string | Uint8Array,
+	options: AtomicWriteOptions = {},
+): Promise<void> {
 	await mkdir(dirname(path), { recursive: true });
 	const tempPath = tempPathFor(path);
-	const file = await open(tempPath, "w", 0o600);
+	const file = await (options.openFile ?? open)(tempPath, "wx", 0o600);
 
 	try {
-		await file.writeFile(data);
-		await file.sync();
-	} finally {
-		await file.close();
+		try {
+			await file.writeFile(data);
+			await file.sync();
+		} finally {
+			await file.close();
+		}
+		// Only now: the content is complete and durable.
+		await rename(tempPath, path);
+	} catch (error) {
+		await rm(tempPath, { force: true });
+		throw error;
 	}
-
-	await rename(tempPath, path);
 }
 
 export async function createJob(projectRoot: string, task: Task, context = ""): Promise<Job> {

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { createInMemoryModelRegistry, createModelRegistry, getModelRuntime } from "../model-runtime-test-utils.ts";
 /**
  * Local test harness for the new coding-agent test suite.
@@ -161,10 +162,15 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 			if (!runner?.hasHandlers("after_provider_response")) {
 				return;
 			}
+			// This harness streams straight through `streamSimple`, so it never emits
+			// the paired `before_provider_headers`. The id is still per response, so
+			// an extension that correlates by request finds no match and records
+			// nothing - which is the honest outcome here.
 			await runner.emit({
 				type: "after_provider_response",
 				status: response.status,
 				headers: response.headers,
+				requestId: randomUUID(),
 			});
 		},
 		transformContext: async (messages: AgentMessage[]) => {

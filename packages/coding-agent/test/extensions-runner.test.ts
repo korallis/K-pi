@@ -998,7 +998,7 @@ describe("ExtensionRunner", () => {
 
 			expect(runner.hasHandlers("before_provider_headers")).toBe(true);
 
-			const headers = await runner.emitBeforeProviderHeaders({ "User-Agent": "kimchi/1.0" });
+			const headers = await runner.emitBeforeProviderHeaders({ "User-Agent": "kimchi/1.0" }, "request-1");
 			expect(headers["X-Turn-Index"]).toBe("3");
 			expect(headers["User-Agent"]).toBe("kimchi/1.0");
 		});
@@ -1026,7 +1026,7 @@ describe("ExtensionRunner", () => {
 			const errors: Array<{ event: string; error: string }> = [];
 			runner.onError((err) => errors.push(err));
 
-			const headers = await runner.emitBeforeProviderHeaders({ "User-Agent": "x" });
+			const headers = await runner.emitBeforeProviderHeaders({ "User-Agent": "x" }, "request-2");
 
 			expect(headers["X-Good"]).toBe("yes");
 			expect(headers["User-Agent"]).toBe("x");

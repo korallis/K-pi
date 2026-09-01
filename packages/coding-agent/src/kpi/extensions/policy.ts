@@ -294,6 +294,83 @@ function protectedCommandTarget(cwd: string, command: string): { path: string; o
 	return undefined;
 }
 
+/** Sinks that are not files: writing to them cannot leave the bounds. */
+const DISCARD_TARGETS = new Set(["/dev/null", "/dev/stdout", "/dev/stderr", "/dev/tty"]);
+
+function unquote(word: string): string {
+	return word.replace(/^['"]|['"]$/gu, "");
+}
+
+/**
+ * A secret-shaped path named anywhere in a shell command, read or written.
+ * `cat .env` exfiltrates exactly what a denied `write` to `.env` protects, so
+ * the shell is held to the same rule rather than trusted with the same file.
+ */
+function sensitiveCommandTarget(command: string): string | undefined {
+	for (const word of command.split(SHELL_WORD_SEPARATOR)) {
+		const candidate = unquote(word);
+		if (candidate.length === 0) {
+			continue;
+		}
+		if (candidate.split(/[\\/]/u).some((segment) => SENSITIVE_FILE_PATTERN.test(segment))) {
+			return candidate;
+		}
+	}
+	return undefined;
+}
+
+const REDIRECT_TARGET_PATTERN = /(?:^|[\s;&|(])\d?>{1,2}\|?\s*(?!&)(['"]?)([^\s;&|)'"]+)\1/gu;
+const TEE_TARGET_PATTERN = /\btee\b((?:\s+-[^\s]+)*)\s+([^\s;&|)]+(?:\s+[^-\s;&|)][^\s;&|)]*)*)/gu;
+const DD_TARGET_PATTERN = /\bdd\b[^;&|\n]*?\bof=(['"]?)([^\s;&|)'"]+)\1/gu;
+const COPY_COMMAND_PATTERN = /\b(?:cp|mv|install|rsync)\b([^;&|\n]*)/gu;
+const NESTED_SHELL_PATTERN = /\b(?:ba|z|da)?sh\b[^;&|\n]*?-c\s+(['"])([\s\S]*?)\1/gu;
+
+/**
+ * Every path a shell command would create or overwrite: redirections, `tee`,
+ * `dd of=`, copy destinations, and the bodies of nested `sh -c` shells.
+ *
+ * The shell is the widest mutation path the agent has. Analysing only reserved
+ * artifact names would leave `echo x > ../outside.txt` a legal way to do exactly
+ * what a denied `write` cannot, so the targets are extracted and held to the
+ * same `write_allow` bounds.
+ */
+export function shellWriteTargets(command: string): string[] {
+	const targets: string[] = [];
+	const add = (value: string | undefined): void => {
+		const candidate = unquote(value ?? "").trim();
+		if (candidate.length === 0 || DISCARD_TARGETS.has(candidate) || /^\d$/u.test(candidate)) {
+			return;
+		}
+		targets.push(candidate);
+	};
+
+	for (const match of command.matchAll(REDIRECT_TARGET_PATTERN)) {
+		add(match[2]);
+	}
+	for (const match of command.matchAll(TEE_TARGET_PATTERN)) {
+		for (const word of match[2].split(/\s+/u)) {
+			add(word);
+		}
+	}
+	for (const match of command.matchAll(DD_TARGET_PATTERN)) {
+		add(match[2]);
+	}
+	for (const match of command.matchAll(COPY_COMMAND_PATTERN)) {
+		// The destination is the last operand; flags and sources are not written.
+		const operands = match[1]
+			.split(/\s+/u)
+			.map(unquote)
+			.filter((word) => word.length > 0 && !word.startsWith("-"));
+		if (operands.length >= 2) {
+			add(operands.at(-1));
+		}
+	}
+	for (const match of command.matchAll(NESTED_SHELL_PATTERN)) {
+		targets.push(...shellWriteTargets(match[2]));
+	}
+	return targets;
+}
+
 export function isWriteAllowed(cwd: string, path: string, writeAllow: readonly string[]): boolean {
 	const relativePath = relativeWritePath(cwd, path);
 	if (relativePath === undefined || relativePath.split("/").some((part) => SENSITIVE_FILE_PATTERN.test(part))) {
@@ -392,6 +469,23 @@ async function evaluateCommand(command: string, options: PolicyEvaluationOptions
 		return {
 			kind: "deny",
 			reason: `Policy reserved ${reserved.path} for ${reserved.owner}: ${command}`,
+		};
+	}
+
+	// A secret-shaped path is denied before anything else looks at the command:
+	// no confirm can make reading a private key a legal step.
+	const sensitive = sensitiveCommandTarget(command);
+	if (sensitive !== undefined) {
+		return { kind: "deny", reason: `Policy denied a secret-shaped path: ${sensitive}` };
+	}
+
+	const outsideBounds = shellWriteTargets(command).find(
+		(target) => !isWriteAllowed(options.cwd, target, active.writeAllow),
+	);
+	if (outsideBounds !== undefined) {
+		return {
+			kind: "deny",
+			reason: `Policy denied write outside write_allow: ${outsideBounds}`,
 		};
 	}
 

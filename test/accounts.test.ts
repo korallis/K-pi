@@ -332,7 +332,7 @@ test("the request-header hook reads cached usage and never refreshes on the hot 
 		const headers: Record<string, string> = {};
 
 		await subject.hooks.get("before_provider_headers")!(
-			{ type: "before_provider_headers", headers },
+			{ type: "before_provider_headers", headers, requestId: "request-1" },
 			subject.hookContext({ provider: "cursor", id: "cursor-fast" }),
 		);
 
@@ -363,7 +363,7 @@ test("the widget follows the route from unknown, to selected, to parsed usage, t
 
 		// 2. The header hook selects a slot: the route appears.
 		await subject.hooks.get("before_provider_headers")!(
-			{ type: "before_provider_headers", headers: {} },
+			{ type: "before_provider_headers", headers: {}, requestId: "request-2" },
 			subject.hookContext(),
 		);
 		const routed = subject.status.at(-1) ?? "";
@@ -373,7 +373,7 @@ test("the widget follows the route from unknown, to selected, to parsed usage, t
 		// 3. A successful response's own headers land in the cache and are shown.
 		await subject.hooks.get("after_provider_response")!(
 			{
-				type: "after_provider_response",
+				type: "after_provider_response", requestId: "request-2",
 				status: 200,
 				headers: {
 					"anthropic-ratelimit-unified-limit": "1000",
@@ -391,7 +391,7 @@ test("the widget follows the route from unknown, to selected, to parsed usage, t
 		// response states no remaining count, so usage stays unknown rather than
 		// being fabricated as zero.
 		await subject.hooks.get("after_provider_response")!(
-			{ type: "after_provider_response", status: 429, headers: { "retry-after": "3600" } },
+			{ type: "after_provider_response", requestId: "request-2", status: 429, headers: { "retry-after": "3600" } },
 			subject.hookContext(anthropicModel(), [anthropicModel()]),
 		);
 		const failedOver = subject.status.at(-1) ?? "";
@@ -399,10 +399,18 @@ test("the widget follows the route from unknown, to selected, to parsed usage, t
 		assert.match(failedOver, /ROUTE {3}anthropic\/claude-opus-4-6 {2}via work/u, "the route moved to the sibling");
 		assert.deepEqual(subject.setModelCalls, [], "a sibling failover keeps the exact model");
 
-		// 5. A 429 that does state its counts publishes the real zero.
+		// 5. The next request is built on the new route, and its own 429 states its
+		// counts, so the real zero is published against the slot that just ran.
+		// Attribution is per request: this response may not be charged to the slot
+		// the previous request used.
+		await subject.hooks.get("before_provider_headers")!(
+			{ type: "before_provider_headers", headers: {}, requestId: "request-2b" },
+			subject.hookContext(),
+		);
 		await subject.hooks.get("after_provider_response")!(
 			{
 				type: "after_provider_response",
+				requestId: "request-2b",
 				status: 429,
 				headers: {
 					"retry-after": "1800",
@@ -432,13 +440,13 @@ test("a cross-family failover republishes the widget with the mapped model and p
 
 		const available = [anthropicModel(), { provider: "xai", id: "grok-5", name: "grok-5" }];
 		await subject.hooks.get("before_provider_headers")!(
-			{ type: "before_provider_headers", headers: {} },
+			{ type: "before_provider_headers", headers: {}, requestId: "request-3" },
 			subject.hookContext(anthropicModel(), available),
 		);
 		assert.match(subject.status.at(-1) ?? "", /ROUTE {3}anthropic\/claude-opus-4-6 {2}via home/u);
 
 		await subject.hooks.get("after_provider_response")!(
-			{ type: "after_provider_response", status: 429, headers: {} },
+			{ type: "after_provider_response", requestId: "request-3", status: 429, headers: {} },
 			subject.hookContext(anthropicModel(), available),
 		);
 
@@ -463,7 +471,7 @@ test("login and logout republish the widget", async () => {
 		assert.match(subject.status.at(-1) ?? "", /home \?%/u, "login publishes the new slot");
 
 		await subject.hooks.get("before_provider_headers")!(
-			{ type: "before_provider_headers", headers: {} },
+			{ type: "before_provider_headers", headers: {}, requestId: "request-4" },
 			subject.hookContext(),
 		);
 		assert.match(subject.status.at(-1) ?? "", /ROUTE {3}anthropic\/claude-opus-4-6 {2}via home/u);
@@ -489,7 +497,7 @@ test("M-05 through the live hooks: an exhausted slot is never selected in 100 re
 		const afterResponse = subject.hooks.get("after_provider_response")!;
 		const route = async (): Promise<string> => {
 			const headers: Record<string, string> = {};
-			await beforeHeaders({ type: "before_provider_headers", headers }, subject.hookContext());
+			await beforeHeaders({ type: "before_provider_headers", headers, requestId: "request-5" }, subject.hookContext());
 			return headers.authorization ?? "";
 		};
 
@@ -498,7 +506,7 @@ test("M-05 through the live hooks: an exhausted slot is never selected in 100 re
 		const exhausted = first === "Bearer access-home" ? "home" : "work";
 		const survivor = exhausted === "home" ? "work" : "home";
 		await afterResponse(
-			{ type: "after_provider_response", status: 429, headers: { "retry-after": "3600" } },
+			{ type: "after_provider_response", requestId: "request-5", status: 429, headers: { "retry-after": "3600" } },
 			subject.hookContext(),
 		);
 
@@ -528,11 +536,11 @@ test("same-family failover through the hook keeps the model and thinking level u
 		const session = { model: anthropicModel(), thinkingLevel: "xhigh" as const };
 		const available = [anthropicModel(), { provider: "xai", id: "grok-5", name: "grok-5" }];
 		await subject.hooks.get("before_provider_headers")!(
-			{ type: "before_provider_headers", headers: {} },
+			{ type: "before_provider_headers", headers: {}, requestId: "request-6" },
 			subject.hookContext(session.model, available),
 		);
 		await subject.hooks.get("after_provider_response")!(
-			{ type: "after_provider_response", status: 429, headers: {} },
+			{ type: "after_provider_response", requestId: "request-6", status: 429, headers: {} },
 			subject.hookContext(session.model, available),
 		);
 
@@ -543,7 +551,7 @@ test("same-family failover through the hook keeps the model and thinking level u
 		// The next request routes to the sibling, still on the same model.
 		const headers: Record<string, string> = {};
 		await subject.hooks.get("before_provider_headers")!(
-			{ type: "before_provider_headers", headers },
+			{ type: "before_provider_headers", headers, requestId: "request-7" },
 			subject.hookContext(session.model, available),
 		);
 		assert.equal(headers.authorization, "Bearer access-work");
@@ -560,11 +568,11 @@ test("cross-family failover through the hook re-points the model only after the 
 
 		const available = [anthropicModel(), { provider: "xai", id: "grok-5", name: "grok-5" }];
 		await subject.hooks.get("before_provider_headers")!(
-			{ type: "before_provider_headers", headers: {} },
+			{ type: "before_provider_headers", headers: {}, requestId: "request-8" },
 			subject.hookContext(anthropicModel(), available),
 		);
 		await subject.hooks.get("after_provider_response")!(
-			{ type: "after_provider_response", status: 429, headers: {} },
+			{ type: "after_provider_response", requestId: "request-8", status: 429, headers: {} },
 			subject.hookContext(anthropicModel(), available),
 		);
 
@@ -583,7 +591,7 @@ test("logout of the pinned slot releases the session pin", async () => {
 		const route = async (): Promise<string> => {
 			const headers: Record<string, string> = {};
 			await subject.hooks.get("before_provider_headers")!(
-				{ type: "before_provider_headers", headers },
+				{ type: "before_provider_headers", headers, requestId: "request-9" },
 				subject.hookContext(),
 			);
 			return headers.authorization ?? "";
@@ -628,13 +636,13 @@ test("an unavailable fallback model never substitutes another provider's credent
 		const available = [anthropicModel()];
 		const headers: Record<string, string> = {};
 		await subject.hooks.get("before_provider_headers")!(
-			{ type: "before_provider_headers", headers },
+			{ type: "before_provider_headers", headers, requestId: "request-10" },
 			subject.hookContext(anthropicModel(), available),
 		);
 		assert.equal(headers.authorization, "Bearer access-home");
 
 		await subject.hooks.get("after_provider_response")!(
-			{ type: "after_provider_response", status: 429, headers: {} },
+			{ type: "after_provider_response", requestId: "request-10", status: 429, headers: {} },
 			subject.hookContext(anthropicModel(), available),
 		);
 
@@ -645,7 +653,7 @@ test("an unavailable fallback model never substitutes another provider's credent
 		// at all rather than the xai credential.
 		const retry: Record<string, string> = {};
 		await subject.hooks.get("before_provider_headers")!(
-			{ type: "before_provider_headers", headers: retry },
+			{ type: "before_provider_headers", headers: retry, requestId: "request-11" },
 			subject.hookContext(anthropicModel(), available),
 		);
 		assert.equal(retry.authorization, undefined, "a foreign credential must never reach an anthropic request");
@@ -662,11 +670,11 @@ test("a rejected setModel leaves no mismatched active route or token", async () 
 
 		const available = [anthropicModel(), { provider: "xai", id: "grok-5", name: "grok-5" }];
 		await subject.hooks.get("before_provider_headers")!(
-			{ type: "before_provider_headers", headers: {} },
+			{ type: "before_provider_headers", headers: {}, requestId: "request-12" },
 			subject.hookContext(anthropicModel(), available),
 		);
 		await subject.hooks.get("after_provider_response")!(
-			{ type: "after_provider_response", status: 429, headers: {} },
+			{ type: "after_provider_response", requestId: "request-12", status: 429, headers: {} },
 			subject.hookContext(anthropicModel(), available),
 		);
 
@@ -677,7 +685,7 @@ test("a rejected setModel leaves no mismatched active route or token", async () 
 
 		const retry: Record<string, string> = {};
 		await subject.hooks.get("before_provider_headers")!(
-			{ type: "before_provider_headers", headers: retry },
+			{ type: "before_provider_headers", headers: retry, requestId: "request-13" },
 			subject.hookContext(anthropicModel(), available),
 		);
 		assert.equal(retry.authorization, undefined, "no xai token may be attached to an anthropic request");
@@ -698,7 +706,7 @@ test("the header hook only ever attaches a slot from the request's own family", 
 		] as const) {
 			const headers: Record<string, string> = {};
 			await subject.hooks.get("before_provider_headers")!(
-				{ type: "before_provider_headers", headers },
+				{ type: "before_provider_headers", headers, requestId: "request-14" },
 				subject.hookContext({ provider, id: `${provider}-model` }),
 			);
 			assert.equal(headers.authorization, expected, provider);
@@ -707,10 +715,167 @@ test("the header hook only ever attaches a slot from the request's own family", 
 		// A provider with no configured pool gets nothing, never a chain neighbour.
 		const unconfigured: Record<string, string> = {};
 		await subject.hooks.get("before_provider_headers")!(
-			{ type: "before_provider_headers", headers: unconfigured },
+			{ type: "before_provider_headers", headers: unconfigured, requestId: "request-15" },
 			subject.hookContext({ provider: "zai", id: "glm" }),
 		);
 		assert.equal(unconfigured.authorization, undefined);
+	} finally {
+		await rm(subject.directory, { recursive: true, force: true });
+	}
+});
+
+test("two same-provider requests that finish in reverse order each cool only their own slot", async () => {
+	const subject = await routingHarness();
+	try {
+		// Three slots, so the slot a failover moves the route to is not the slot the
+		// in-flight request is holding. That is what makes mis-attribution visible.
+		await subject.command("login anthropic home", subject.context);
+		await subject.command("login anthropic work", subject.context);
+		await subject.command("login anthropic spare", subject.context);
+
+		const beforeHeaders = subject.hooks.get("before_provider_headers")!;
+		const afterResponse = subject.hooks.get("after_provider_response")!;
+
+		// Request A is built on `work`. The route then moves - an operator pin here,
+		// a failover in production - and request B is built on `spare` while A is
+		// still in flight.
+		await subject.command("pin anthropic/work", subject.context);
+		const firstHeaders: Record<string, string> = {};
+		await beforeHeaders(
+			{ type: "before_provider_headers", headers: firstHeaders, requestId: "A" },
+			subject.hookContext(),
+		);
+		await subject.command("pin anthropic/spare", subject.context);
+		const secondHeaders: Record<string, string> = {};
+		await beforeHeaders(
+			{ type: "before_provider_headers", headers: secondHeaders, requestId: "B" },
+			subject.hookContext(),
+		);
+		assert.equal(firstHeaders.authorization, "Bearer access-work");
+		assert.equal(secondHeaders.authorization, "Bearer access-spare");
+
+		// They complete in reverse order: B answers first, then A.
+		await afterResponse(
+			{ type: "after_provider_response", requestId: "B", status: 429, headers: { "retry-after": "600" } },
+			subject.hookContext(anthropicModel(), [anthropicModel()]),
+		);
+		const afterB = subject.status.at(-1) ?? "";
+		assert.match(afterB, /spare \?% cd 10m/u, "B's own slot cooled");
+		assert.doesNotMatch(afterB, /work \?% cd/u, "A's slot was never cooled by B's response");
+		// B's failover re-pointed the route at `home`, which is neither request's
+		// slot: a route-based attribution would now charge A's response to `home`.
+		assert.match(afterB, /via home/u);
+
+		await afterResponse(
+			{ type: "after_provider_response", requestId: "A", status: 429, headers: { "retry-after": "1800" } },
+			subject.hookContext(anthropicModel(), [anthropicModel()]),
+		);
+		const afterA = subject.status.at(-1) ?? "";
+		assert.match(afterA, /work \?% cd 30m/u, "A's own slot cooled with A's own retry-after");
+		assert.match(afterA, /spare \?% cd 10m/u, "and B's earlier cooldown is unchanged");
+		assert.doesNotMatch(afterA, /home \?% cd/u, "the current route was never charged for another request");
+	} finally {
+		await rm(subject.directory, { recursive: true, force: true });
+	}
+});
+
+test("a request that never answers leaks no attribution and blocks nothing", async () => {
+	const subject = await routingHarness();
+	try {
+		await subject.command("login anthropic home", subject.context);
+		const beforeHeaders = subject.hooks.get("before_provider_headers")!;
+		const afterResponse = subject.hooks.get("after_provider_response")!;
+
+		// A transport failure: the request is built, no response ever arrives.
+		await beforeHeaders(
+			{ type: "before_provider_headers", headers: {}, requestId: "abandoned" },
+			subject.hookContext(),
+		);
+
+		// An unrelated response - a compaction turn, or an adapter that never
+		// reports - must not be charged to the abandoned request's slot.
+		await afterResponse(
+			{ type: "after_provider_response", requestId: "unpaired", status: 429, headers: { "retry-after": "3600" } },
+			subject.hookContext(anthropicModel(), [anthropicModel()]),
+		);
+		assert.doesNotMatch(subject.status.at(-1) ?? "", /cd \d+m/u, "no slot was cooled by an unpaired response");
+
+		// The next real request still routes, and the pool is not stuck.
+		const headers: Record<string, string> = {};
+		await beforeHeaders({ type: "before_provider_headers", headers, requestId: "next" }, subject.hookContext());
+		assert.equal(headers.authorization, "Bearer access-home", "the pool still serves after an abandoned request");
+
+		// Many abandoned requests cannot grow attribution without bound.
+		for (let index = 0; index < 200; index += 1) {
+			await beforeHeaders(
+				{ type: "before_provider_headers", headers: {}, requestId: `leak-${index}` },
+				subject.hookContext(),
+			);
+		}
+		await afterResponse(
+			{ type: "after_provider_response", requestId: "leak-0", status: 429, headers: { "retry-after": "3600" } },
+			subject.hookContext(anthropicModel(), [anthropicModel()]),
+		);
+		assert.doesNotMatch(
+			subject.status.at(-1) ?? "",
+			/cd \d+m/u,
+			"an evicted request records nothing rather than charging a stale slot",
+		);
+	} finally {
+		await rm(subject.directory, { recursive: true, force: true });
+	}
+});
+
+test("a credential travels in the header its own provider reads", async () => {
+	const subject = await routingHarness();
+	try {
+		await subject.command("login anthropic home", subject.context);
+		const beforeHeaders = subject.hooks.get("before_provider_headers")!;
+
+		// An api_key slot for Anthropic must arrive as x-api-key, never as a bearer
+		// token the provider does not read.
+		await subject.store.putSlot(
+			"anthropic",
+			{ id: "keyed", kind: "api_key", label: "keyed" },
+			{ type: "api_key", key: "sk-ant-key" },
+		);
+		const cases: { api: string; provider: string; header: string; value: string }[] = [
+			{ api: "anthropic-messages", provider: "anthropic", header: "x-api-key", value: "sk-ant-key" },
+			{ api: "openai-completions", provider: "anthropic", header: "authorization", value: "Bearer sk-ant-key" },
+			{ api: "google-generative-ai", provider: "anthropic", header: "x-goog-api-key", value: "sk-ant-key" },
+			{ api: "azure-openai-responses", provider: "anthropic", header: "api-key", value: "sk-ant-key" },
+		];
+
+		for (const scenario of cases) {
+			await subject.command("pin anthropic/keyed", subject.context);
+			const headers: Record<string, string | null> = {};
+			await beforeHeaders(
+				{ type: "before_provider_headers", headers, requestId: `api-${scenario.api}` },
+				{
+					...subject.hookContext({ provider: scenario.provider, id: "model-1" }),
+					model: { provider: scenario.provider, id: "model-1", api: scenario.api },
+				},
+			);
+			const attached = Object.entries(headers).filter(([, value]) => typeof value === "string");
+			assert.deepEqual(
+				attached,
+				[[scenario.header, scenario.value]],
+				`${scenario.api} reads ${scenario.header} and nothing else is invented`,
+			);
+		}
+
+		// A subscription token is a bearer token everywhere, including Anthropic.
+		await subject.command("pin anthropic/home", subject.context);
+		const oauthHeaders: Record<string, string | null> = {};
+		await beforeHeaders(
+			{ type: "before_provider_headers", headers: oauthHeaders, requestId: "oauth-anthropic" },
+			{
+				...subject.hookContext(),
+				model: { provider: "anthropic", id: "claude-opus-4-6", api: "anthropic-messages" },
+			},
+		);
+		assert.equal(oauthHeaders.authorization, "Bearer access-home", "an OAuth token stays a bearer token");
+		assert.equal(oauthHeaders["x-api-key"], undefined);
 	} finally {
 		await rm(subject.directory, { recursive: true, force: true });
 	}

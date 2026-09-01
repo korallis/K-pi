@@ -300,7 +300,10 @@ test("a chained command is never safe, even when the chain is the declared gate"
 	const active: ActivePolicyState = { ...gated, qualityGates: ["npm test && npm run lint"] };
 	assert.equal((await decide(bash("npm test && npm run lint"), active)).kind, "confirm");
 	assert.equal((await decide(bash("npm test && npm run lint"), { ...active, mode: "autopilot" })).kind, "deny");
-	assert.equal((await decide(bash("git status && cat .env"))).kind, "confirm");
+	assert.equal((await decide(bash("git status && ls -la"))).kind, "confirm");
+	// A chain that touches a secret is denied outright: an operator cannot make
+	// reading a credential file legal by approving it.
+	assert.equal((await decide(bash("git status && cat .env"))).kind, "deny");
 	assert.equal((await decide(bash("ls | tee /tmp/out"), autopilot)).kind, "deny");
 });
 
@@ -620,4 +623,57 @@ test("an unreadable task contract resolves to the safe default instead of escapi
 		assert.equal(prompts.length, 1, "the safe default is gated, so the commit asks");
 		assert.match(prompts[0], /3 files changed, 12 insertions\(\+\), 4 deletions\(-\) against HEAD/u);
 	});
+});
+
+test("bash cannot write outside write_allow, whatever shape the write takes", async () => {
+	const active: ActivePolicyState = { ...gated, writeAllow: ["src/**", "test/**"] };
+	const cases: { command: string; allowed: boolean }[] = [
+		{ command: "echo x > src/generated.ts", allowed: true },
+		{ command: "npm test > /dev/null 2>&1", allowed: true },
+		{ command: "echo x > /tmp/outside.txt", allowed: false },
+		{ command: "echo x > ../outside.txt", allowed: false },
+		{ command: "echo x >> docs/notes.md", allowed: false },
+		{ command: "printf x | tee /etc/motd", allowed: false },
+		{ command: "cat src/a.ts | tee -a /tmp/copy.txt", allowed: false },
+		{ command: "dd if=/dev/zero of=/tmp/blob bs=1 count=1", allowed: false },
+		{ command: "cp src/a.ts /tmp/a.ts", allowed: false },
+		{ command: "cp src/a.ts test/a.ts", allowed: true },
+		{ command: "mv src/a.ts ../a.ts", allowed: false },
+		{ command: "install -m 0644 src/a.ts /usr/local/share/a.ts", allowed: false },
+		{ command: "sh -c 'echo x > /tmp/nested.txt'", allowed: false },
+		{ command: "bash -c \"cat <<EOF > /tmp/heredoc.txt\\nbody\\nEOF\"", allowed: false },
+		{ command: "( echo x > /tmp/subshell.txt )", allowed: false },
+	];
+
+	for (const scenario of cases) {
+		const decision = await decide(bash(scenario.command), active);
+		if (scenario.allowed) {
+			assert.notEqual(
+				decision.kind === "deny" && /outside write_allow/u.test(decision.reason),
+				true,
+				`${scenario.command} stays inside the bounds`,
+			);
+			continue;
+		}
+		assert.equal(decision.kind, "deny", scenario.command);
+		if (decision.kind !== "deny") continue;
+		assert.match(decision.reason, /outside write_allow/u, scenario.command);
+	}
+});
+
+test("bash cannot read or write a secret-shaped path", async () => {
+	for (const command of [
+		"cat .env",
+		"cat .env.production",
+		"cat ~/.ssh/id_rsa",
+		"cp ~/.ssh/id_rsa src/key.txt",
+		"cat ~/.kpi/agent/auth.json",
+		"grep -r token ~/.kpi/agent/accounts.secrets.json",
+		"echo pasted > src/.env",
+	]) {
+		const decision = await decide(bash(command), { ...gated, writeAllow: ["src/**"] });
+		assert.equal(decision.kind, "deny", command);
+		if (decision.kind !== "deny") continue;
+		assert.match(decision.reason, /secret-shaped path|outside write_allow/u, command);
+	}
 });

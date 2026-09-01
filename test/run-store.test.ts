@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, stat, utimes } from "node:fs/promises";
+import { mkdir, mkdtemp, open, readdir, readFile, rm, stat, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -81,22 +81,72 @@ test("createJob writes and readJob reads the run contract", async () => {
 	});
 });
 
+async function temporaryFiles(directory: string): Promise<string[]> {
+	return (await readdir(directory)).filter((name) => name.endsWith(".tmp"));
+}
+
 test("a crash before rename cannot expose a partial candidate.json", async () => {
 	await withTempDirectory("atomic-write", async (directory) => {
 		const candidatePath = join(directory, "candidate.json");
-		const tempPath = join(directory, "candidate.tmp");
 
 		await mkdir(candidatePath);
 		await assert.rejects(atomicWrite(candidatePath, '{"complete":true}\n'));
 		assert.equal((await stat(candidatePath)).isDirectory(), true);
-		assert.equal(await readFile(tempPath, "utf8"), '{"complete":true}\n');
+		assert.deepEqual(await temporaryFiles(directory), [], "a failed publish leaves no temp file behind");
 
 		await rm(candidatePath, { recursive: true });
 		await atomicWrite(candidatePath, '{"complete":true}\n');
 		assert.deepEqual(JSON.parse(await readFile(candidatePath, "utf8")), {
 			complete: true,
 		});
-		await assert.rejects(readFile(tempPath, "utf8"), { code: "ENOENT" });
+		assert.deepEqual(await temporaryFiles(directory), []);
+	});
+});
+
+test("a failing write or sync leaves the previous document exactly as it was", async () => {
+	await withTempDirectory("atomic-write-failure", async (directory) => {
+		const statePath = join(directory, "state.json");
+		await atomicWrite(statePath, '{"round":1}\n');
+
+		for (const failing of ["writeFile", "sync"] as const) {
+			await assert.rejects(
+				atomicWrite(statePath, '{"round":2}\n', {
+					openFile: async (path, flags, mode) => {
+						const handle = await open(path as string, flags as string, mode as number);
+						// The device fails exactly once, after the file exists.
+						const failure = async (): Promise<never> => {
+							throw new Error(`${failing} failed`);
+						};
+						return Object.assign(Object.create(handle), {
+							writeFile: failing === "writeFile" ? failure : handle.writeFile.bind(handle),
+							sync: failing === "sync" ? failure : handle.sync.bind(handle),
+							close: handle.close.bind(handle),
+						}) as typeof handle;
+					},
+				}),
+				new RegExp(`${failing} failed`, "u"),
+				`a ${failing} failure must reject`,
+			);
+			assert.equal(await readFile(statePath, "utf8"), '{"round":1}\n', `the old ${failing} document survived`);
+			assert.deepEqual(await temporaryFiles(directory), [], `no temp file survived a ${failing} failure`);
+		}
+
+		// And a successful write still publishes.
+		await atomicWrite(statePath, '{"round":2}\n');
+		assert.equal(await readFile(statePath, "utf8"), '{"round":2}\n');
+	});
+});
+
+test("concurrent atomic writes never publish a mixture", async () => {
+	await withTempDirectory("atomic-write-concurrent", async (directory) => {
+		const statePath = join(directory, "state.json");
+		const documents = Array.from({ length: 20 }, (_, index) => `${JSON.stringify({ writer: index })}\n`);
+
+		await Promise.all(documents.map((document) => atomicWrite(statePath, document)));
+
+		const published = await readFile(statePath, "utf8");
+		assert.ok(documents.includes(published), `one writer's whole document won, got ${JSON.stringify(published)}`);
+		assert.deepEqual(await temporaryFiles(directory), [], "every writer cleaned up after itself");
 	});
 });
 
