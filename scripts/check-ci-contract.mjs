@@ -120,9 +120,9 @@ const FORBIDDEN_IN_WORKFLOWS = [
 	// to state that this fork refuses the privileged variant.
 	{
 		id: "privileged-pr-trigger",
-		// Mapping key, scalar on:, flow list, or sequence item — with optional quotes.
+		// Mapping key, scalar on: (optional trailing comment), flow list, or sequence item.
 		pattern:
-			/(?:^[ \t]*['"]?pull_request_target['"]?[ \t]*:|(?:^|[\s\[,])['"]?pull_request_target['"]?(?=[ \t]*[,\]\n]|$)|^[ \t]*on:[ \t]*['"]?pull_request_target['"]?\s*$)/m,
+			/(?:^[ \t]*['"]?pull_request_target['"]?[ \t]*:|(?:^|[\s\[,])['"]?pull_request_target['"]?(?=[ \t]*[,\]\n #]|$)|^[ \t]*on:[ \t]*['"]?pull_request_target['"]?[ \t]*(?:#.*)?$)/m,
 		label: "pull_request_target trigger",
 	},
 	{
@@ -290,11 +290,29 @@ function scan(context, path, rules, exemptRules) {
  * invocation there must carry `--auto`, so GitHub — not this workflow — decides
  * when the required checks are satisfied.
  */
+/**
+ * Strip an unquoted `# ...` shell/YAML comment from a single command line.
+ * @param {string} line
+ */
+function stripUnquotedLineComment(line) {
+	let inSingle = false;
+	let inDouble = false;
+	for (let i = 0; i < line.length; i++) {
+		const c = line[i];
+		if (c === "'" && !inDouble) inSingle = !inSingle;
+		else if (c === '"' && !inSingle) inDouble = !inDouble;
+		else if (c === "#" && !inSingle && !inDouble) return line.slice(0, i);
+	}
+	return line;
+}
+
 function checkMergeWaitsForChecks(context, relativePath, contents) {
 	for (const command of contents.match(GH_PR_MERGE_COMMAND) ?? []) {
+		const effective = stripUnquotedLineComment(command);
 		// Tolerates prose markup around the flag (`--auto`) but not a different
-		// flag that merely starts with it (--auto-x, --autofix).
-		if (!/--auto(?![\w-])/.test(command)) {
+		// flag that merely starts with it (--auto-x, --autofix). A `# --auto`
+		// comment must not satisfy the gate.
+		if (!/--auto(?![\w-])/.test(effective)) {
 			context.violation(relativePath, "forbidden merge that does not wait for checks (`gh pr merge` without --auto)");
 		}
 	}

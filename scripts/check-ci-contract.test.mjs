@@ -540,3 +540,24 @@ test("wrapped gh pr merge --admin is rejected", (t) => {
 		inspectForkIntegrity(root).some((v) => v.includes("--admin")),
 	);
 });
+
+
+test("pull_request_target with trailing comment is rejected", (t) => {
+	const root = fixture(t, {
+		workflows: {
+			"nightly.yml": "name: n\non: pull_request_target # privileged\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n",
+		},
+	});
+	assert.ok(inspectForkIntegrity(root).some((v) => v.includes("pull_request_target")));
+});
+
+test("comment-only --auto does not satisfy merge wait-for-checks", (t) => {
+	const root = fixture(t, {
+		workflows: {
+			"auto-merge.yml": autoMergeWorkflow('gh pr merge --squash "$PR_URL" # --auto'),
+		},
+	});
+	assert.ok(
+		inspectForkIntegrity(root).some((v) => v.includes("without --auto")),
+	);
+});

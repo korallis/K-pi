@@ -110,15 +110,19 @@ jobs:
           fi
 
       - name: Model catalog data
+        id: model_data
         # `build:offline` compiles without a network but refuses to run against
         # missing or stale provider data. Use the vendored data when this fork
         # carries it, otherwise hydrate it with the in-repo generator. Either way
-        # the check inside build:offline is the real assertion.
+        # the check inside build:offline is the real assertion. Hydrate may write
+        # provider data; the final dirty-tree step restores those paths.
         run: |
           if [ -f packages/ai/src/providers/data/.manifest.json ]; then
             echo "vendored provider data present"
+            echo "hydrated=false" >> "$GITHUB_OUTPUT"
           else
             npm --prefix packages/ai run hydrate-model-data
+            echo "hydrated=true" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Build the harness from source
@@ -149,7 +153,13 @@ jobs:
       - name: Working tree clean after gates
         # Every gate is read-only, and the sync check must not regenerate
         # anything. A dirty tree here is a real failure — including untracked files.
+        # Exception: intentional model-data hydrate fallback is restored first so
+        # that path can go green when vendored data was missing.
         run: |
+          if [ "${{ steps.model_data.outputs.hydrated }}" = "true" ]; then
+            git checkout -- packages/ai/src/providers/data 2>/dev/null || true
+            git clean -fd -- packages/ai/src/providers/data
+          fi
           git diff --exit-code
           if [ -n "$(git status --porcelain)" ]; then
             echo "::error::Working tree is dirty after gates (includes untracked files)."

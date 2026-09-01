@@ -213,14 +213,18 @@ Content`,
 
 				mkdirSync(join(agentDir), { recursive: true });
 				mkdirSync(join(tempDir, CONFIG_DIR_NAME), { recursive: true });
-				symlinkSync(sharedExtensionsDir, join(agentDir, "extensions"), "dir");
-				symlinkSync(sharedSkillsDir, join(agentDir, "skills"), "dir");
-				symlinkSync(sharedPromptsDir, join(agentDir, "prompts"), "dir");
-				symlinkSync(sharedThemesDir, join(agentDir, "themes"), "dir");
-				symlinkSync(sharedExtensionsDir, join(tempDir, CONFIG_DIR_NAME, "extensions"), "dir");
-				symlinkSync(sharedSkillsDir, join(tempDir, CONFIG_DIR_NAME, "skills"), "dir");
-				symlinkSync(sharedPromptsDir, join(tempDir, CONFIG_DIR_NAME, "prompts"), "dir");
-				symlinkSync(sharedThemesDir, join(tempDir, CONFIG_DIR_NAME, "themes"), "dir");
+				// Bound skill discovery: without a git root, .agents/skills walks to /.
+				mkdirSync(join(tempDir, ".git"), { recursive: true });
+				// Junction on Windows avoids EPERM when symlink privilege is missing.
+				const directoryLinkType = process.platform === "win32" ? "junction" : "dir";
+				symlinkSync(sharedExtensionsDir, join(agentDir, "extensions"), directoryLinkType);
+				symlinkSync(sharedSkillsDir, join(agentDir, "skills"), directoryLinkType);
+				symlinkSync(sharedPromptsDir, join(agentDir, "prompts"), directoryLinkType);
+				symlinkSync(sharedThemesDir, join(agentDir, "themes"), directoryLinkType);
+				symlinkSync(sharedExtensionsDir, join(tempDir, CONFIG_DIR_NAME, "extensions"), directoryLinkType);
+				symlinkSync(sharedSkillsDir, join(tempDir, CONFIG_DIR_NAME, "skills"), directoryLinkType);
+				symlinkSync(sharedPromptsDir, join(tempDir, CONFIG_DIR_NAME, "prompts"), directoryLinkType);
+				symlinkSync(sharedThemesDir, join(tempDir, CONFIG_DIR_NAME, "themes"), directoryLinkType);
 
 				const result = await packageManager.resolve();
 
@@ -689,9 +693,11 @@ Content`,
 				runCommandSync(command: string, args: string[]): string;
 			};
 			const valueWithSpace = "C:\\Users\\A B\\.pi\\npm";
+			// Find the spawned arg by value — node -e places extras after the
+			// eval marker at a version-dependent index; spaces must survive intact.
 			const output = managerWithInternals.runCommandSync(process.execPath, [
 				"-e",
-				"console.log(process.argv[1])",
+				`const want = ${JSON.stringify(valueWithSpace)}; const hit = process.argv.find((a) => a === want); if (!hit) { console.error(JSON.stringify(process.argv)); process.exit(2); } process.stdout.write(hit);`,
 				valueWithSpace,
 			]);
 
