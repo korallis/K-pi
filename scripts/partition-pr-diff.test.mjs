@@ -11,6 +11,7 @@ import {
 	PROMPT_ARGV_TEST_CEILING_BYTES,
 	adaptiveMaxChunkBytes,
 	parseChunkLocationIndex,
+	formatHunkHeader,
 	partitionUnifiedDiff,
 	splitOversizedSection,
 	splitDiffFileSections,
@@ -59,13 +60,24 @@ test("packs files greedily under the byte cap", () => {
 });
 
 test("oversized single file splits under the byte cap", () => {
-	const big = fileDiff("big.ts", ["z".repeat(200)]);
-	const result = partitionUnifiedDiff(big, { maxChunkBytes: 50 });
-	assert.ok(result.length >= 1);
-	assert.ok(result.every((chunk) => chunk.paths.includes("big.ts")));
-	// After argv-safe split, every piece must fit the cap (unless a single line exceeds it).
-	assert.ok(result.every((chunk) => chunk.bytes <= 50 || chunk.text.split("\n").length <= 5));
+	const big = fileDiff("big.ts", ["z".repeat(200), "y".repeat(200)]);
+	const cap = 180;
+	const result = partitionUnifiedDiff(big, { maxChunkBytes: cap });
+	assert.ok(result.length >= 2);
+	for (const chunk of result) {
+		assert.ok(chunk.paths.includes("big.ts"));
+		assert.match(chunk.text, /^@@ /m);
+		const maxLineBytes = Math.max(
+			...chunk.text.split("\n").map((line) => Buffer.byteLength(`${line}\n`, "utf8")),
+		);
+		// Pieces fit the cap unless a single line (plus unavoidable headers) forces overflow.
+		assert.ok(
+			chunk.bytes <= cap || maxLineBytes + 64 > cap,
+			`unexpected overflow bytes=${chunk.bytes} maxLine=${maxLineBytes}`,
+		);
+	}
 });
+
 
 
 test("partition is deterministic for the same input", () => {
@@ -118,10 +130,78 @@ test("oversized file sections split under the argv-safe cap", () => {
 	for (const piece of pieces) {
 		assert.ok(piece.bytes <= 96_000, `piece ${piece.bytes} exceeds cap`);
 		assert.ok(piece.text.includes("diff --git"));
+		assert.match(piece.text, /^diff --git /m);
+		assert.match(piece.text, /^@@ /m);
 	}
 	const chunks = partitionUnifiedDiff(big, { maxChunkBytes: 96_000 });
 	assert.ok(chunks.length >= 2);
 	assert.ok(chunks.every((chunk) => chunk.bytes <= 96_000));
+});
+
+test("oversized split pieces are valid diffs and preserve new-side line union", () => {
+	// Multi-hunk + one huge hunk that must sub-split.
+	const rows = [];
+	for (let i = 0; i < 80; i++) rows.push(`+L${i}-` + "x".repeat(400));
+	const text = [
+		"diff --git a/big.ts b/big.ts",
+		"index 1111111..2222222 100644",
+		"--- a/big.ts",
+		"+++ b/big.ts",
+		"@@ -1,3 +1,4 @@ helper",
+		" keep-a",
+		"-old-a",
+		"+new-a",
+		"+add-a",
+		" trail-a",
+		"@@ -10,2 +12,2 @@ other",
+		" keep-b",
+		"-old-b",
+		"+new-b",
+		`@@ -20,0 +22,${rows.length} @@ bulk`,
+		...rows,
+		"",
+	].join("\n");
+	const section = { path: "big.ts", text, bytes: Buffer.byteLength(text, "utf8") };
+	const original = parseChunkLocationIndex(text);
+	const originalLines = new Set(original.newSideLines.get("big.ts") ?? []);
+	assert.ok(originalLines.size > 0);
+
+	const cap = 8_000;
+	assert.ok(section.bytes > cap);
+	const pieces = splitOversizedSection(section, cap);
+	assert.ok(pieces.length >= 2);
+
+	const union = new Set();
+	for (const piece of pieces) {
+		assert.ok(piece.bytes <= cap, `piece ${piece.bytes} > ${cap}`);
+		assert.match(piece.text, /^diff --git a\/big\.ts b\/big\.ts$/m);
+		assert.match(piece.text, /^--- a\/big\.ts$/m);
+		assert.match(piece.text, /^\+\+\+ b\/big\.ts$/m);
+		// Every piece must contain at least one synthesized or original hunk header
+		// before any body "+" lines (valid unified-diff fragment).
+		const lines = piece.text.split("\n");
+		const firstPlus = lines.findIndex((line) => line.startsWith("+") && !line.startsWith("+++"));
+		const firstAt = lines.findIndex((line) => line.startsWith("@@ "));
+		assert.ok(firstAt >= 0, "missing @@ hunk header");
+		if (firstPlus >= 0) assert.ok(firstAt < firstPlus, "body before hunk header");
+
+		const idx = parseChunkLocationIndex(piece.text);
+		assert.deepEqual(idx.paths, ["big.ts"]);
+		for (const line of idx.newSideLines.get("big.ts") ?? []) {
+			assert.ok(originalLines.has(line), `fabricated line ${line}`);
+			union.add(line);
+		}
+	}
+	assert.deepEqual(
+		[...union].sort((a, b) => a - b),
+		[...originalLines].sort((a, b) => a - b),
+		"union of piece new-side lines must equal the unsplit section",
+	);
+});
+
+test("formatHunkHeader emits git-compatible counts", () => {
+	assert.equal(formatHunkHeader(5, 1, 10, 3, "ctx"), "@@ -5 +10,3 @@ ctx");
+	assert.equal(formatHunkHeader(5, 0, 10, 2), "@@ -5,0 +10,2 @@");
 });
 
 test("parseChunkLocationIndex indexes new-side lines only", () => {

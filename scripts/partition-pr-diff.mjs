@@ -222,10 +222,205 @@ export function parseChunkLocationIndex(diffText) {
 
 
 /**
- * Split one oversized file section into argv-safe pieces on line boundaries.
- * Each piece repeats the leading `diff --git` / `---` / `+++` header so the
- * model still sees a valid unified-diff fragment. Never exceeds maxChunkBytes
- * unless a single line alone is larger (then that line is its own piece).
+ * Classify a unified-diff body line for old/new side movement.
+ * @param {string} line
+ * @returns {{ old: number, new: number, kind: "context" | "delete" | "add" | "meta" }}
+ */
+function hunkBodyLineDelta(line) {
+	if (line.startsWith("+") && !line.startsWith("+++")) return { old: 0, new: 1, kind: "add" };
+	if (line.startsWith("-") && !line.startsWith("---")) return { old: 1, new: 0, kind: "delete" };
+	if (line.startsWith(" ")) return { old: 1, new: 1, kind: "context" };
+	if (line.startsWith("\\")) return { old: 0, new: 0, kind: "meta" };
+	// Treat bare empty lines inside a hunk as context-less meta (rare).
+	return { old: 0, new: 0, kind: "meta" };
+}
+
+/**
+ * @param {number} start
+ * @param {number} count
+ */
+function formatSide(start, count) {
+	return count === 1 ? `${start}` : `${start},${count}`;
+}
+
+/**
+ * @param {number} oldStart
+ * @param {number} oldCount
+ * @param {number} newStart
+ * @param {number} newCount
+ * @param {string} [suffix]
+ */
+export function formatHunkHeader(oldStart, oldCount, newStart, newCount, suffix = "") {
+	const base = `@@ -${formatSide(oldStart, oldCount)} +${formatSide(newStart, newCount)} @@`;
+	return suffix ? `${base} ${suffix}` : base;
+}
+
+/**
+ * @param {string} headerLine
+ */
+function parseHunkHeaderLine(headerLine) {
+	const match = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(?: (.*))?$/u.exec(headerLine);
+	if (!match) return null;
+	return {
+		oldStart: Number.parseInt(match[1], 10),
+		oldCount: match[2] === undefined ? 1 : Number.parseInt(match[2], 10),
+		newStart: Number.parseInt(match[3], 10),
+		newCount: match[4] === undefined ? 1 : Number.parseInt(match[4], 10),
+		suffix: match[5] ?? "",
+	};
+}
+
+/**
+ * Split a file-level unified diff section into the file metadata header and
+ * ordered hunks (header + body lines).
+ * @param {string[]} lines
+ */
+function splitFileSectionIntoHunks(lines) {
+	/** @type {string[]} */
+	const fileHeader = [];
+	/** @type {{ oldStart: number, oldCount: number, newStart: number, newCount: number, suffix: string, body: string[] }[]} */
+	const hunks = [];
+	/** @type {null | { oldStart: number, oldCount: number, newStart: number, newCount: number, suffix: string, body: string[] }} */
+	let current = null;
+
+	const flush = () => {
+		if (!current) return;
+		hunks.push(current);
+		current = null;
+	};
+
+	for (const line of lines) {
+		if (line.startsWith("@@ ")) {
+			flush();
+			const parsed = parseHunkHeaderLine(line);
+			if (!parsed) {
+				// Unparseable hunk header — keep as opaque single-body chunk later.
+				current = {
+					oldStart: 1,
+					oldCount: 0,
+					newStart: 1,
+					newCount: 0,
+					suffix: "",
+					body: [],
+					rawHeader: line,
+				};
+			} else {
+				current = { ...parsed, body: [] };
+			}
+			continue;
+		}
+		if (!current) {
+			fileHeader.push(line);
+			continue;
+		}
+		current.body.push(line);
+	}
+	flush();
+	// Trailing blank lines after the last real hunk row are section separators, not body.
+	for (const hunk of hunks) {
+		while (hunk.body.length > 0 && hunk.body[hunk.body.length - 1] === "") {
+			hunk.body.pop();
+		}
+	}
+	return { fileHeader, hunks };
+}
+
+/**
+ * Emit one valid hunk text (header + body) for a slice of an original hunk.
+ * Counts are derived from body movement so split pieces stay honest.
+ * @param {{ oldStart: number, newStart: number, suffix: string }} base
+ * @param {string[]} body
+ */
+function materializeHunk(base, body) {
+	let oldCount = 0;
+	let newCount = 0;
+	for (const line of body) {
+		const delta = hunkBodyLineDelta(line);
+		oldCount += delta.old;
+		newCount += delta.new;
+	}
+	const header = formatHunkHeader(base.oldStart, oldCount, base.newStart, newCount, base.suffix);
+	return `${header}\n${body.length ? `${body.join("\n")}\n` : ""}`;
+}
+
+
+/**
+ * Split one hunk whose full text exceeds budget into valid sub-hunks with
+ * synthesized @@ headers that continue old/new line numbering.
+ * @param {{ oldStart: number, oldCount: number, newStart: number, newCount: number, suffix: string, body: string[], rawHeader?: string }} hunk
+ * @param {number} budgetBytes max bytes for "@@…\n" + body (file header billed separately)
+ * @returns {string[]}
+ */
+function splitHunkToBudget(hunk, budgetBytes) {
+	const whole = materializeHunk(hunk, hunk.body);
+	if (Buffer.byteLength(whole, "utf8") <= budgetBytes) return [whole];
+
+	/** @type {string[]} */
+	const out = [];
+	let oldPos = hunk.oldStart;
+	let newPos = hunk.newStart;
+	let index = 0;
+
+	while (index < hunk.body.length) {
+		/** @type {string[]} */
+		const body = [];
+		let oldCount = 0;
+		let newCount = 0;
+
+		while (index < hunk.body.length) {
+			const line = hunk.body[index];
+			const delta = hunkBodyLineDelta(line);
+			const trialBody = [...body, line];
+			const trial = materializeHunk(
+				{ oldStart: oldPos, newStart: newPos, suffix: hunk.suffix },
+				trialBody,
+			);
+			const trialBytes = Buffer.byteLength(trial, "utf8");
+			if (body.length > 0 && trialBytes > budgetBytes) break;
+			body.push(line);
+			oldCount += delta.old;
+			newCount += delta.new;
+			index += 1;
+			if (trialBytes > budgetBytes && body.length === 1) {
+				// Single line exceeds budget — emit alone (argv fail-closed upstream).
+				break;
+			}
+		}
+
+		if (body.length === 0) {
+			// Should not happen; advance one line to avoid infinite loop.
+			const line = hunk.body[index++];
+			const delta = hunkBodyLineDelta(line);
+			out.push(
+				materializeHunk({ oldStart: oldPos, newStart: newPos, suffix: hunk.suffix }, [line]),
+			);
+			oldPos += delta.old;
+			newPos += delta.new;
+			continue;
+		}
+
+		// Skip pure-meta slices (blank / "\ No newline") — they are not valid review fragments
+		// and would poison location indexes with empty new-side sets.
+		const hasContent = body.some((line) => {
+			const kind = hunkBodyLineDelta(line).kind;
+			return kind === "add" || kind === "delete" || kind === "context";
+		});
+		if (hasContent) {
+			out.push(materializeHunk({ oldStart: oldPos, newStart: newPos, suffix: hunk.suffix }, body));
+		}
+		oldPos += oldCount;
+		newPos += newCount;
+	}
+
+	return out;
+}
+
+/**
+ * Split one oversized file section into argv-safe **valid unified-diff** pieces.
+ * Prefer whole-hunk boundaries. When a single hunk must split, each piece gets a
+ * synthesized `@@ -oldStart,oldCount +newStart,newCount @@` header that continues
+ * old/new line numbering. File metadata (`diff --git` / `---` / `+++`) is repeated.
+ * Never exceeds maxChunkBytes unless a single line alone is larger.
  *
  * @param {DiffFileSection} section
  * @param {number} maxChunkBytes
@@ -236,71 +431,77 @@ export function splitOversizedSection(section, maxChunkBytes) {
 	const lines = section.text.endsWith("\n")
 		? section.text.slice(0, -1).split("\n")
 		: section.text.split("\n");
-	/** @type {string[]} */
-	const header = [];
-	let bodyStart = 0;
-	for (let i = 0; i < lines.length; i++) {
-		const line = lines[i];
-		header.push(line);
-		bodyStart = i + 1;
-		// Header ends after the first hunk start or after +++ line when no hunk yet.
-		if (line.startsWith("@@ ")) break;
-		if (line.startsWith("+++ ") && i + 1 < lines.length && !lines[i + 1].startsWith("@@ ")) {
-			// binary or empty body — keep collecting until body-ish content
-			continue;
-		}
-		if (line.startsWith("+++ ")) {
-			// include +++ in header; next lines are body unless @@ follows
-			if (i + 1 < lines.length && lines[i + 1].startsWith("@@ ")) continue;
-			break;
-		}
-	}
-	// Prefer: everything through first @@ line as header when present.
-	const firstHunk = lines.findIndex((line) => line.startsWith("@@ "));
-	if (firstHunk >= 0) {
-		header.length = 0;
-		header.push(...lines.slice(0, firstHunk)); // meta without first @@
-		bodyStart = firstHunk;
-	}
 
-	const headerText = header.length ? `${header.join("\n")}\n` : "";
+	const { fileHeader, hunks } = splitFileSectionIntoHunks(lines);
+	const headerText = fileHeader.length ? `${fileHeader.join("\n")}\n` : "";
 	const headerBytes = Buffer.byteLength(headerText, "utf8");
 	const bodyBudget = Math.max(1, maxChunkBytes - headerBytes);
 
+	// Expand into valid hunk fragments (whole hunks or synthesized sub-hunks).
+	/** @type {string[]} */
+	const fragments = [];
+	if (hunks.length === 0) {
+		// Binary / header-only / no hunks: fall back to raw line packing with header.
+		const bodyLines = lines.slice(fileHeader.length);
+		/** @type {string[]} */
+		let body = [];
+		let bodyBytes = 0;
+		const flush = () => {
+			if (body.length === 0 && fragments.length > 0) return;
+			fragments.push(body.length ? `${body.join("\n")}\n` : "");
+			body = [];
+			bodyBytes = 0;
+		};
+		for (const line of bodyLines) {
+			const lineBytes = Buffer.byteLength(`${line}\n`, "utf8");
+			if (body.length > 0 && bodyBytes + lineBytes > bodyBudget) flush();
+			body.push(line);
+			bodyBytes += lineBytes;
+			if (lineBytes > bodyBudget && body.length === 1) flush();
+		}
+		flush();
+	} else {
+		for (const hunk of hunks) {
+			fragments.push(...splitHunkToBudget(hunk, bodyBudget));
+		}
+	}
+
+	// Pack fragments greedily under the full piece budget (header + fragments).
 	/** @type {DiffFileSection[]} */
 	const pieces = [];
 	/** @type {string[]} */
-	let body = [];
-	let bodyBytes = 0;
+	let packed = [];
+	let packedBytes = 0;
 
-	const flushBody = () => {
-		if (body.length === 0 && pieces.length > 0) return;
-		const text = `${headerText}${body.join("\n")}${body.length ? "\n" : ""}`;
+	const flushPacked = () => {
+		if (packed.length === 0) return;
+		const text = `${headerText}${packed.join("")}`;
 		pieces.push({
 			path: section.path,
 			text,
 			bytes: Buffer.byteLength(text, "utf8"),
 		});
-		body = [];
-		bodyBytes = 0;
+		packed = [];
+		packedBytes = 0;
 	};
 
-	for (let i = bodyStart; i < lines.length; i++) {
-		const line = lines[i];
-		const lineBytes = Buffer.byteLength(`${line}\n`, "utf8");
-		if (body.length > 0 && bodyBytes + lineBytes > bodyBudget) {
-			flushBody();
+	for (const fragment of fragments) {
+		if (!fragment || !fragment.trim()) continue;
+		const fragBytes = Buffer.byteLength(fragment, "utf8");
+		if (packed.length > 0 && headerBytes + packedBytes + fragBytes > maxChunkBytes) {
+			flushPacked();
 		}
-		body.push(line);
-		bodyBytes += lineBytes;
-		if (lineBytes > bodyBudget && body.length === 1) {
-			// Single line exceeds budget — emit alone (caller still sees fail-closed if > hard max).
-			flushBody();
+		packed.push(fragment);
+		packedBytes += fragBytes;
+		if (headerBytes + fragBytes > maxChunkBytes && packed.length === 1) {
+			// Fragment alone exceeds cap (single-line blow-up).
+			flushPacked();
 		}
 	}
-	flushBody();
+	flushPacked();
 	return pieces.length > 0 ? pieces : [section];
 }
+
 
 /**
  * @param {string} diffText
