@@ -216,9 +216,16 @@ test("minimalist bounds rejects a missing ladder and undeclared dependency", asy
 		await writeFile(join(run, "candidate.json"), JSON.stringify({ summary: "x" }));
 		await writeFile(join(directory, "package.json"), JSON.stringify({ dependencies: { surprise: "1" } }));
 		const task = { dependency_baseline: [], runtime_dependencies: [], acceptance: [] } as unknown as Task;
-		await assert.rejects(assertMinimalistBounds(directory, run, task), /ladder/u);
-		await writeFile(join(run, "candidate.json"), JSON.stringify({ ladder: "one-liner" }));
-		await assert.rejects(assertMinimalistBounds(directory, run, task), /surprise/u);
+		await assert.rejects(assertMinimalistBounds(directory, run, task, []), /ladder/u);
+		await writeFile(
+			join(run, "candidate.json"),
+			JSON.stringify({
+				ladder: "one-liner",
+				used: "inline expression",
+				skipped: "helper module",
+			}),
+		);
+		await assert.rejects(assertMinimalistBounds(directory, run, task, []), /surprise/u);
 	} finally {
 		await rm(directory, { recursive: true, force: true });
 	}

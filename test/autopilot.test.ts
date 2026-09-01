@@ -29,6 +29,14 @@ export function createApp() {
   return createServer(handleRequest);
 }
 `;
+
+/** Ladder decision the implementer records before product files change. */
+const MINIMALIST_CANDIDATE = `{
+  "ladder": "minimum-code",
+  "used": "direct health handler in src/health/server.js",
+  "skipped": "framework wrapper, utility module, and extra abstraction"
+}`;
+
 const verdict = JSON.stringify({
 	status: "PASS",
 	approved: true,
@@ -137,6 +145,12 @@ function autoSessions(
 							await writePlannedStack(directory, behavior.jobId, behavior.stack);
 						}
 					} else if (currentNode === "implement") {
+						if (behavior.jobId !== undefined) {
+							await writeFile(
+								join(directory, ".kpi", "runs", behavior.jobId, "candidate.json"),
+								MINIMALIST_CANDIDATE,
+							);
+						}
 						await writeFile(join(directory, "src", "health", "server.js"), implementedServer);
 						if (behavior.violateBounds === true) {
 							await writeFile(join(directory, "outside.txt"), "not allowed\n");
@@ -415,6 +429,7 @@ test("autopilot cannot release from model prose alone", async () => {
 					if (currentNode === "plan" || currentNode === "plan-check") {
 						await writePlannedStack(directory, jobId);
 					} else if (currentNode === "implement") {
+						await writeFile(join(directory, ".kpi", "runs", jobId, "candidate.json"), MINIMALIST_CANDIDATE);
 						await writeFile(join(directory, "src", "health", "server.js"), implementedServer);
 					} else if (currentNode === "test") {
 						lastAssistantText = JSON.stringify({
@@ -483,6 +498,7 @@ test("an unrelated conventional commit never counts as this job shipping", async
 					if (currentNode === "plan" || currentNode === "plan-check") {
 						await writePlannedStack(directory, jobId);
 					} else if (currentNode === "implement") {
+						await writeFile(join(directory, ".kpi", "runs", jobId, "candidate.json"), MINIMALIST_CANDIDATE);
 						await writeFile(join(directory, "src", "health", "server.js"), implementedServer);
 						await writeFile(join(directory, "src", "unrelated.js"), "export const x = 1;\n");
 						await git(directory, "add", "src/unrelated.js");
@@ -591,6 +607,7 @@ test("two commits claiming one job fail closed", async () => {
 					if (currentNode === "plan" || currentNode === "plan-check") {
 						await writePlannedStack(directory, jobId);
 					} else if (currentNode === "implement") {
+						await writeFile(join(directory, ".kpi", "runs", jobId, "candidate.json"), MINIMALIST_CANDIDATE);
 						await writeFile(join(directory, "src", "health", "server.js"), implementedServer);
 					} else if (currentNode === "test") {
 						lastAssistantText = JSON.stringify({

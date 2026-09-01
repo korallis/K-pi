@@ -23,7 +23,7 @@ import {
 	type TerminalStatus,
 	transitionStopState,
 } from "./graph/stop.ts";
-import { assertMinimalistBounds } from "./minimalist.ts";
+import { assertMinimalistBounds, observedChangesFromSnapshots } from "./minimalist.ts";
 import { isWriteAllowed } from "./policy.ts";
 import { assertResearchFresh, conductResearch } from "./research/gate.ts";
 import { ResearchShortfallError, resolveResearchKeys } from "./research/session.ts";
@@ -757,7 +757,19 @@ function loopFacts(
 				boundsReason = `write outside write_allow: ${violations.join(", ")}`;
 			} else {
 				try {
-					await assertMinimalistBounds(projectRoot, jobDirectory, task);
+					const changes = await observedChangesFromSnapshots(projectRoot, baseline, current, async (path) => {
+						try {
+							const { stdout } = await execFile("git", ["show", `HEAD:${path}`], {
+								cwd: projectRoot,
+								encoding: "utf8",
+								maxBuffer: 2 * 1024 * 1024,
+							});
+							return stdout;
+						} catch {
+							return undefined;
+						}
+					});
+					await assertMinimalistBounds(projectRoot, jobDirectory, task, changes);
 				} catch (error) {
 					boundsReason = error instanceof Error ? error.message : String(error);
 				}

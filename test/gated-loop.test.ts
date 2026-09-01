@@ -37,6 +37,14 @@ const commandEnvironment: NodeJS.ProcessEnv = {
 	PATH: `${dirname(process.execPath)}:${process.env.PATH ?? ""}`,
 };
 delete commandEnvironment.NODE_TEST_CONTEXT;
+
+/** Ladder decision the implementer records before product files change. */
+const MINIMALIST_CANDIDATE = `{
+  "ladder": "minimum-code",
+  "used": "direct health handler in src/health/server.js",
+  "skipped": "framework wrapper, utility module, and extra abstraction"
+}`;
+
 const implementedServer = `import { createServer } from "node:http";
 
 export function handleRequest(request, response) {
@@ -167,6 +175,12 @@ function loopSessions(
 							);
 						}
 						implementationAttempt += 1;
+						if (options.jobId !== undefined) {
+							await writeFile(
+								join(directory, ".kpi", "runs", options.jobId, "candidate.json"),
+								MINIMALIST_CANDIDATE,
+							);
+						}
 						await writeFile(join(directory, "src", "health", "server.js"), implementedServer);
 					} else if (currentNode === "test") {
 						if (options.validateCommands === true) {
