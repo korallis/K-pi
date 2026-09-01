@@ -6,6 +6,8 @@ import { AccountBalancer, type SelectedSlot } from "./balancer.ts";
 import { classifyProviderFailure } from "./errors.ts";
 
 import { type AccountsDocument, AccountsStore, isPoolId, type PoolId } from "./store.ts";
+import { UsageCache } from "./usage/cache.ts";
+import type { UsageReader } from "./usage/types.ts";
 import { renderAccountsWidget } from "./widget.ts";
 
 export const ANTHROPIC_EXTRA_USAGE_WARNING = `Claude Pro/Max in this harness uses Anthropic’s subscription OAuth, same as Pi and Atomic.
@@ -22,6 +24,11 @@ export interface AccountsDependencies {
 	store?: AccountsStore;
 	now?: () => Date;
 	login?: (providerId: PoolId, slotId: string, context: ExtensionCommandContext) => Promise<Credential>;
+	/**
+	 * Readers for providers that document a usage endpoint. None by default: a
+	 * provider without a documented signal stays unknown rather than polled.
+	 */
+	usageReaders?: Partial<Record<PoolId, UsageReader>>;
 }
 
 class LoginCancelledError extends Error {
@@ -182,11 +189,14 @@ async function logoutAccount(
 	reference: string | undefined,
 	store: AccountsStore,
 	context: ExtensionCommandContext,
+	onRemoved: (poolId: PoolId, slotId: string) => void,
 ): Promise<void> {
 	const slot = resolveSlotReference(reference, await store.read());
 	if (!(await store.removeSlot(slot.poolId, slot.slotId))) {
 		throw new Error(`Unknown account slot: ${slot.poolId}/${slot.slotId}`);
 	}
+	// Logout is one of the three transitions that release a session pin.
+	onRemoved(slot.poolId, slot.slotId);
 	context.ui.notify(`Removed account ${slot.poolId}/${slot.slotId}`, "info");
 }
 
@@ -194,6 +204,7 @@ async function handleAccountsCommand(
 	args: string,
 	context: ExtensionCommandContext,
 	dependencies: Required<AccountsDependencies>,
+	onSlotRemoved: (poolId: PoolId, slotId: string) => void,
 ): Promise<void> {
 	const words = args.trim().length === 0 ? [] : args.trim().split(/\s+/u);
 	const [action, first, second, ...extra] = words;
@@ -212,7 +223,7 @@ async function handleAccountsCommand(
 		if (second !== undefined) {
 			throw new Error("Usage: /accounts logout <pool/slot>");
 		}
-		await logoutAccount(first, dependencies.store, context);
+		await logoutAccount(first, dependencies.store, context, onSlotRemoved);
 		return;
 	}
 	throw new Error(`Unknown /accounts command: ${action}`);
@@ -226,15 +237,43 @@ export function registerAccounts(pi: ExtensionAPI, dependencies: AccountsDepende
 			dependencies.login ??
 			((providerId, slotId, context) =>
 				loginWithOfficialProvider(providerId, slotId, context, (url) => openAuthUrl(pi, url))),
+		usageReaders: dependencies.usageReaders ?? {},
 	};
-	const balancer = new AccountBalancer(() => resolved.now().getTime());
+	const nowMs = () => resolved.now().getTime();
+	const balancer = new AccountBalancer(nowMs);
+	const usage = new UsageCache({ now: nowMs, readers: resolved.usageReaders });
 	let active: SelectedSlot | undefined;
+	let activeModel: string | undefined;
+
+	const configuredSlots = (accounts: AccountsDocument): { poolId: PoolId; slotId: string }[] =>
+		Object.entries(accounts.pools).flatMap(([poolId, pool]) =>
+			(pool?.slots ?? []).map((slot) => ({ poolId: poolId as PoolId, slotId: slot.id })),
+		);
+
+	const publishWidget = async (context: {
+		ui: { setStatus: (key: string, value?: string) => void };
+	}): Promise<void> => {
+		const widget = renderAccountsWidget(await resolved.store.read(), {
+			usage,
+			health: balancer,
+			route:
+				active === undefined || activeModel === undefined
+					? undefined
+					: { provider: active.poolId, model: activeModel, slot: active.slot.id },
+			now: nowMs(),
+		});
+		context.ui.setStatus("accounts", widget === "ACCOUNTS" ? undefined : widget);
+	};
+
 	if (typeof pi.on === "function") {
 		pi.on("before_provider_headers", async (event, context) => {
 			const provider = context.model?.provider;
 			if (provider === undefined || !isPoolId(provider)) return;
 			const accounts = await resolved.store.read();
-			active = balancer.select(provider, accounts);
+			// Hot path: the cache is read synchronously and never refreshed here,
+			// so no provider call stands between a turn and its headers.
+			active = balancer.select(provider, accounts, usage);
+			activeModel = context.model?.id;
 			if (active === undefined) return;
 			const credential = (await resolved.store.readSecrets())[`${active.poolId}/${active.slot.id}`];
 			const token =
@@ -247,45 +286,56 @@ export function registerAccounts(pi: ExtensionAPI, dependencies: AccountsDepende
 		});
 		pi.on("after_provider_response", async (event, context) => {
 			if (active === undefined) return;
+			// Off the hot path: record what the response's own headers stated.
+			usage.recordHeaders(active.poolId, active.slot.id, event.headers ?? {});
 			const classification = classifyProviderFailure({
 				status: event.status,
 				headers: event.headers,
 			});
 			if (classification === undefined) return;
 			balancer.markCooling(active.poolId, active.slot.id, classification.until);
-			const source = context.model;
-			if (source === undefined) return;
+
 			const accounts = await resolved.store.read();
-			const next = balancer.select(active.poolId, accounts);
-			if (next !== undefined && next.slot.id !== active.slot.id) {
-				const job = await readActiveJob(context.cwd);
-				if (job !== undefined) {
-					await appendEvent(job.eventsPath, {
-						ts: resolved.now().toISOString(),
-						type: "accounts.failover",
-						job_id: job.jobId,
-						round: typeof job.state.round === "number" ? job.state.round : 0,
-						node: typeof job.state.node === "string" ? job.state.node : "accounts",
-						from: `${active.poolId}/${active.slot.id}`,
-						to: `${next.poolId}/${next.slot.id}`,
-					});
-				}
+			const plan = balancer.planFailover(
+				active,
+				accounts,
+				context.modelRegistry.getAvailable(),
+				context.model,
+				usage,
+			);
+			if (plan === undefined) return;
+			const job = await readActiveJob(context.cwd);
+			if (job !== undefined) {
+				await appendEvent(job.eventsPath, {
+					ts: resolved.now().toISOString(),
+					type: "accounts.failover",
+					job_id: job.jobId,
+					round: typeof job.state.round === "number" ? job.state.round : 0,
+					node: typeof job.state.node === "string" ? job.state.node : "accounts",
+					from: `${plan.from.poolId}/${plan.from.slot.id}`,
+					to: `${plan.to.poolId}/${plan.to.slot.id}`,
+				});
 			}
-			if (next !== undefined && next.poolId !== source.provider) {
-				const model = balancer.findFallbackModel(source, next.poolId, context.modelRegistry.getAvailable());
-				if (model !== undefined) await pi.setModel(model);
+			// A same-family sibling keeps the request's exact model and thinking
+			// level, so no model change is proposed at all.
+			if (!plan.sameFamily && plan.model !== undefined) {
+				await pi.setModel(plan.model);
 			}
 		});
 		pi.on("session_start", async (_event, context) => {
-			const widget = renderAccountsWidget(await resolved.store.read());
-			context.ui.setStatus("accounts", widget === "ACCOUNTS" ? undefined : widget);
+			// Refresh off the request path, before any turn needs a decision.
+			await usage.refreshAll(configuredSlots(await resolved.store.read()), context.signal);
+			await publishWidget(context);
 		});
 	}
 	pi.registerCommand("accounts", {
 		description: "Manage K-π subscription accounts",
 		handler: async (args, context) => {
 			try {
-				await handleAccountsCommand(args, context, resolved);
+				await handleAccountsCommand(args, context, resolved, (poolId, slotId) => {
+					balancer.releaseSlot(poolId, slotId);
+					usage.forget(poolId, slotId);
+				});
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				context.ui.notify(`K-π accounts: ${message}`, "error");

@@ -15,6 +15,7 @@ import {
 	DEFAULT_COOLDOWN_MS,
 } from "../packages/coding-agent/src/kpi/extensions/accounts/errors.ts";
 import type { AccountsDocument } from "../packages/coding-agent/src/kpi/extensions/accounts/store.ts";
+import { UsageCache } from "../packages/coding-agent/src/kpi/extensions/accounts/usage/cache.ts";
 import { renderAccountsWidget } from "../packages/coding-agent/src/kpi/extensions/accounts/widget.ts";
 import { appendEvent } from "../packages/coding-agent/src/kpi/extensions/append-log.ts";
 import { BackgroundBus, type WorkerLauncher } from "../packages/coding-agent/src/kpi/extensions/bus/spawn.ts";
@@ -110,10 +111,12 @@ test("event verdict rendering remains concise", () => {
 });
 
 test("accounts widget labels each slot percentage", () => {
-	const widget = renderAccountsWidget(accounts, {
-		"anthropic/A": { remainingPercent: 40 },
-		"anthropic/B": { remainingPercent: 80 },
-	});
+	const usage = new UsageCache({ now: () => 0 });
+	usage.recordHeaders("anthropic", "A", { "x-ratelimit-limit": "100", "x-ratelimit-remaining": "40" });
+	usage.recordHeaders("anthropic", "B", { "x-ratelimit-limit": "100", "x-ratelimit-remaining": "80" });
+
+	const widget = renderAccountsWidget(accounts, { usage, now: 0 });
+
 	assert.match(widget, /personal 40%/u);
 	assert.match(widget, /work 80%/u);
 	assert.doesNotMatch(widget, /^\s*\d+%\s*$/mu);

@@ -1,33 +1,53 @@
 import type { AccountsDocument, PoolId } from "./store.ts";
+import type { UsageView } from "./usage/types.ts";
 
-export interface SlotUsage {
-	remainingPercent?: number;
-	cooldownUntil?: number;
-	window?: string;
+/** The cooldown side of a slot's health, owned by the balancer. */
+export interface HealthView {
+	cooldownUntil(poolId: PoolId, slotId: string): number | undefined;
 }
 
-export type UsageBySlot = Readonly<Record<string, SlotUsage | undefined>>;
+export interface AccountsRoute {
+	provider: PoolId;
+	model: string;
+	slot: string;
+}
 
-export function renderAccountsWidget(
-	document: AccountsDocument,
-	usage: UsageBySlot = {},
-	route?: { provider: PoolId; model: string; slot: string },
-	now = Date.now(),
-): string {
+export interface AccountsWidgetOptions {
+	/** Real cached percentages. Absent means every slot renders unknown. */
+	usage?: UsageView;
+	health?: HealthView;
+	/** The slot actually carrying the current turn. */
+	route?: AccountsRoute;
+	now?: number;
+}
+
+/**
+ * Renders the live account picture: the cached remaining percentage per slot,
+ * its window and cooldown when the provider stated one, and the active route.
+ * An unknown percentage prints `?%` rather than a fabricated number.
+ */
+export function renderAccountsWidget(document: AccountsDocument, options: AccountsWidgetOptions = {}): string {
+	const now = options.now ?? Date.now();
 	const lines = ["ACCOUNTS"];
 	for (const [poolId, pool] of Object.entries(document.pools)) {
-		if (pool === undefined || pool.slots.length === 0) continue;
+		if (pool === undefined || pool.slots.length === 0) {
+			continue;
+		}
 		const slots = pool.slots.map((slot) => {
-			const current = usage[`${poolId}/${slot.id}`];
-			const percent = current?.remainingPercent === undefined ? "?%" : `${current.remainingPercent}%`;
+			const snapshot = options.usage?.get(poolId as PoolId, slot.id);
+			const percent = snapshot?.remainingPercent === undefined ? "?%" : `${snapshot.remainingPercent}%`;
+			const window = snapshot?.window === undefined ? "" : ` ${snapshot.window}`;
+			const cooldownUntil = options.health?.cooldownUntil(poolId as PoolId, slot.id);
 			const cooldown =
-				current?.cooldownUntil !== undefined && current.cooldownUntil > now
-					? ` cd ${Math.ceil((current.cooldownUntil - now) / 60_000)}m`
-					: "";
-			return `${slot.label ?? slot.id} ${percent}${current?.window === undefined ? "" : ` ${current.window}`}${cooldown}`;
+				cooldownUntil === undefined || cooldownUntil <= now
+					? ""
+					: ` cd ${Math.ceil((cooldownUntil - now) / 60_000)}m`;
+			return `${slot.label ?? slot.id} ${percent}${window}${cooldown}`;
 		});
 		lines.push(`  ${poolId.toUpperCase()}  ${slots.join("   ")}`);
 	}
-	if (route !== undefined) lines.push(`ROUTE   ${route.provider}/${route.model}  via ${route.slot}`);
+	if (options.route !== undefined) {
+		lines.push(`ROUTE   ${options.route.provider}/${options.route.model}  via ${options.route.slot}`);
+	}
 	return lines.join("\n");
 }

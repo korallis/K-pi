@@ -236,3 +236,255 @@ test("accounts logout removes only the selected slot and secret", async () => {
 		await rm(subject.directory, { recursive: true, force: true });
 	}
 });
+
+type ProviderHook = (event: Record<string, unknown>, context: Record<string, unknown>) => Promise<void>;
+
+interface RoutingHarness {
+	command: CommandHandler;
+	context: ExtensionCommandContext;
+	directory: string;
+	hooks: Map<string, ProviderHook>;
+	readerCalls: string[];
+	setModelCalls: string[];
+	status: Array<string | undefined>;
+	store: AccountsStore;
+}
+
+/** Captures the registered provider hooks, exactly as the harness calls them. */
+async function routingHarness(): Promise<RoutingHarness> {
+	const directory = await mkdtemp(join(tmpdir(), "k-pi-routing-"));
+	const store = new AccountsStore(directory);
+	const commands = new Map<string, CommandHandler>();
+	const hooks = new Map<string, ProviderHook>();
+	const readerCalls: string[] = [];
+	const setModelCalls: string[] = [];
+	const status: Array<string | undefined> = [];
+	const pi = {
+		on(event: string, handler: ProviderHook) {
+			hooks.set(event, handler);
+		},
+		registerCommand(name: string, options: { handler: CommandHandler }) {
+			commands.set(name, options.handler);
+		},
+		async setModel(model: { provider: string; id: string }) {
+			setModelCalls.push(`${model.provider}/${model.id}`);
+			return true;
+		},
+	};
+	registerAccounts(pi as unknown as Parameters<typeof registerAccounts>[0], {
+		store,
+		now: () => FIXED_TIME,
+		async login(_providerId, slotId) {
+			return oauthCredential(slotId);
+		},
+		usageReaders: {
+			cursor: ({ poolId, slotId }) => {
+				readerCalls.push(`${poolId}/${slotId}`);
+				return { remainingPercent: 42 };
+			},
+		},
+	});
+	const context = {
+		cwd: directory,
+		hasUI: true,
+		mode: "tui",
+		ui: {
+			async confirm() {
+				return true;
+			},
+			notify() {},
+			setStatus(_key: string, value?: string) {
+				status.push(value);
+			},
+		},
+	} as unknown as ExtensionCommandContext;
+	return { command: commands.get("accounts")!, context, directory, hooks, readerCalls, setModelCalls, status, store };
+}
+
+function anthropicModel(id = "claude-opus-4-6") {
+	return { provider: "anthropic", id, name: id };
+}
+
+test("the request-header hook reads cached usage and never refreshes on the hot path", async () => {
+	const subject = await routingHarness();
+	try {
+		await subject.command("login cursor default", subject.context);
+		const headers: Record<string, string> = {};
+
+		await subject.hooks.get("before_provider_headers")!(
+			{ type: "before_provider_headers", headers },
+			{ model: { provider: "cursor", id: "cursor-fast" }, cwd: subject.directory },
+		);
+
+		assert.equal(headers.authorization, "Bearer access-default", "the hook still injects the slot credential");
+		assert.deepEqual(subject.readerCalls, [], "no usage reader may run while a request is being built");
+
+		// The refresh path is session start, off the request path.
+		await subject.hooks.get("session_start")!({ type: "session_start" }, subject.context as never);
+		assert.deepEqual(subject.readerCalls, ["cursor/default"]);
+		assert.match(subject.status.at(-1) ?? "", /default 42%/u, "the widget shows the real cached percentage");
+	} finally {
+		await rm(subject.directory, { recursive: true, force: true });
+	}
+});
+
+test("the response hook caches documented rate-limit headers for the active slot", async () => {
+	const subject = await routingHarness();
+	try {
+		await subject.command("login anthropic home", subject.context);
+		await subject.hooks.get("before_provider_headers")!(
+			{ type: "before_provider_headers", headers: {} },
+			{ model: anthropicModel(), cwd: subject.directory },
+		);
+		await subject.hooks.get("after_provider_response")!(
+			{
+				type: "after_provider_response",
+				status: 200,
+				headers: {
+					"anthropic-ratelimit-unified-limit": "1000",
+					"anthropic-ratelimit-unified-remaining": "250",
+				},
+			},
+			{
+				model: anthropicModel(),
+				cwd: subject.directory,
+				modelRegistry: { getAvailable: () => [] },
+			},
+		);
+
+		await subject.hooks.get("session_start")!({ type: "session_start" }, subject.context as never);
+		assert.match(subject.status.at(-1) ?? "", /home 25%/u);
+		assert.match(subject.status.at(-1) ?? "", /ROUTE {3}anthropic\/claude-opus-4-6 {2}via home/u);
+	} finally {
+		await rm(subject.directory, { recursive: true, force: true });
+	}
+});
+
+test("M-05 through the live hooks: an exhausted slot is never selected in 100 requests", async () => {
+	const subject = await routingHarness();
+	try {
+		await subject.command("login anthropic home", subject.context);
+		await subject.command("login anthropic work", subject.context);
+
+		const beforeHeaders = subject.hooks.get("before_provider_headers")!;
+		const afterResponse = subject.hooks.get("after_provider_response")!;
+		const route = async (): Promise<string> => {
+			const headers: Record<string, string> = {};
+			await beforeHeaders(
+				{ type: "before_provider_headers", headers },
+				{ model: anthropicModel(), cwd: subject.directory },
+			);
+			return headers.authorization ?? "";
+		};
+
+		// The first turn pins a slot; exhaust whichever one it is.
+		const first = await route();
+		const exhausted = first === "Bearer access-home" ? "home" : "work";
+		const survivor = exhausted === "home" ? "work" : "home";
+		await afterResponse(
+			{ type: "after_provider_response", status: 429, headers: { "retry-after": "3600" } },
+			{ model: anthropicModel(), cwd: subject.directory, modelRegistry: { getAvailable: () => [] } },
+		);
+
+		const used: string[] = [];
+		for (let attempt = 0; attempt < 100; attempt += 1) {
+			used.push(await route());
+		}
+
+		assert.equal(used.length, 100);
+		assert.equal(
+			used.filter((header) => header === `Bearer access-${exhausted}`).length,
+			0,
+			"the exhausted slot was selected through the live hook",
+		);
+		assert.deepEqual([...new Set(used)], [`Bearer access-${survivor}`]);
+	} finally {
+		await rm(subject.directory, { recursive: true, force: true });
+	}
+});
+
+test("same-family failover through the hook keeps the model and thinking level untouched", async () => {
+	const subject = await routingHarness();
+	try {
+		await subject.command("login anthropic home", subject.context);
+		await subject.command("login anthropic work", subject.context);
+
+		const session = { model: anthropicModel(), thinkingLevel: "xhigh" as const };
+		const available = [anthropicModel(), { provider: "xai", id: "grok-5", name: "grok-5" }];
+		await subject.hooks.get("before_provider_headers")!(
+			{ type: "before_provider_headers", headers: {} },
+			{ model: session.model, cwd: subject.directory },
+		);
+		await subject.hooks.get("after_provider_response")!(
+			{ type: "after_provider_response", status: 429, headers: {} },
+			{
+				model: session.model,
+				cwd: subject.directory,
+				modelRegistry: { getAvailable: () => available },
+			},
+		);
+
+		assert.deepEqual(subject.setModelCalls, [], "a sibling failover must not re-point the model");
+		assert.equal(session.model.id, "claude-opus-4-6");
+		assert.equal(session.thinkingLevel, "xhigh");
+
+		// The next request routes to the sibling, still on the same model.
+		const headers: Record<string, string> = {};
+		await subject.hooks.get("before_provider_headers")!(
+			{ type: "before_provider_headers", headers },
+			{ model: session.model, cwd: subject.directory },
+		);
+		assert.equal(headers.authorization, "Bearer access-work");
+	} finally {
+		await rm(subject.directory, { recursive: true, force: true });
+	}
+});
+
+test("cross-family failover through the hook re-points the model only after the family cools", async () => {
+	const subject = await routingHarness();
+	try {
+		await subject.command("login anthropic home", subject.context);
+		await subject.command("login xai grok", subject.context);
+
+		const source = anthropicModel();
+		const available = [source, { provider: "xai", id: "grok-5", name: "grok-5" }];
+		await subject.hooks.get("before_provider_headers")!(
+			{ type: "before_provider_headers", headers: {} },
+			{ model: source, cwd: subject.directory },
+		);
+		await subject.hooks.get("after_provider_response")!(
+			{ type: "after_provider_response", status: 429, headers: {} },
+			{ model: source, cwd: subject.directory, modelRegistry: { getAvailable: () => available } },
+		);
+
+		assert.deepEqual(subject.setModelCalls, ["xai/grok-5"], "the only healthy family is xai");
+	} finally {
+		await rm(subject.directory, { recursive: true, force: true });
+	}
+});
+
+test("logout of the pinned slot releases the session pin", async () => {
+	const subject = await routingHarness();
+	try {
+		await subject.command("login anthropic home", subject.context);
+		await subject.command("login anthropic work", subject.context);
+
+		const route = async (): Promise<string> => {
+			const headers: Record<string, string> = {};
+			await subject.hooks.get("before_provider_headers")!(
+				{ type: "before_provider_headers", headers },
+				{ model: anthropicModel(), cwd: subject.directory },
+			);
+			return headers.authorization ?? "";
+		};
+
+		const pinned = (await route()) === "Bearer access-home" ? "home" : "work";
+		assert.equal(await route(), `Bearer access-${pinned}`, "the pin holds across requests");
+
+		await subject.command(`logout anthropic/${pinned}`, subject.context);
+		const survivor = pinned === "home" ? "work" : "home";
+		assert.equal(await route(), `Bearer access-${survivor}`, "logout released the pin");
+	} finally {
+		await rm(subject.directory, { recursive: true, force: true });
+	}
+});
