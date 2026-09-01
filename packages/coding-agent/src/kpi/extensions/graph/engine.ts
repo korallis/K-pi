@@ -452,7 +452,9 @@ export class GraphEngine {
 				status: "running",
 				superstep: 0,
 				active: [graph.entry],
-				values: {},
+				// The graph's own configuration, readable by its edges: a denied human
+				// release routes by policy rather than by a decision baked into code.
+				values: { policy: { onHumanDeny: graph.policy.onHumanDeny ?? "revise" } },
 				nodes: Object.fromEntries(graph.nodes.map((node) => [node.id, { status: "pending" as const, runs: 0 }])),
 				budget: {
 					limits,
@@ -468,6 +470,10 @@ export class GraphEngine {
 				throw new Error("checkpoint is missing budget counters");
 			}
 			this.runState = initialState;
+			// A checkpoint written before this configuration existed still routes.
+			if (!isJsonObject(this.runState.values.policy)) {
+				this.runState.values.policy = { onHumanDeny: graph.policy.onHumanDeny ?? "revise" };
+			}
 			// A restored run keeps the caps it was started under unless the
 			// caller supplies a freshly validated contract.
 			this.runState.budget.limits = resolveGraphBudgetLimits(
@@ -602,14 +608,21 @@ export class GraphEngine {
 	 * Priority among terminals is graph edge order, which makes an ambiguous
 	 * topology resolve the same way every replay.
 	 */
-	private route(nodeIds: readonly string[], values: JsonObject): { targets: string[]; terminal?: TerminalGraphNode } {
+	private route(
+		nodeIds: readonly string[],
+		values: JsonObject,
+	): { targets: string[]; terminal?: TerminalGraphNode; gap?: string } {
 		const targets = new Set<string>();
 		let terminal: TerminalGraphNode | undefined;
+		let gap: string | undefined;
 		for (const nodeId of nodeIds) {
-			for (const edge of this.outgoing(nodeId)) {
+			const outgoing = this.outgoing(nodeId);
+			let fired = false;
+			for (const edge of outgoing) {
 				if (!this.edgeFires(edge, values)) {
 					continue;
 				}
+				fired = true;
 				const target = this.nodes.get(edge.to);
 				if (target?.type === "terminal") {
 					terminal ??= target;
@@ -617,9 +630,15 @@ export class GraphEngine {
 				}
 				targets.add(edge.to);
 			}
+			// A node whose branches all missed has not finished the run: treating
+			// that as completion would report success for a state the topology never
+			// accounted for.
+			if (!fired && outgoing.length > 0) {
+				gap ??= nodeId;
+			}
 		}
 		targets.delete(END_NODE_ID);
-		return { targets: [...targets], terminal };
+		return { targets: [...targets], terminal, gap };
 	}
 
 	private async createSessionForNode(
@@ -1027,6 +1046,9 @@ export class GraphEngine {
 		if (routed.terminal !== undefined) {
 			return this.terminate(routed.terminal, routed.targets);
 		}
+		if (routed.gap !== undefined) {
+			return this.fail(`no graph edge from ${routed.gap} matched the run state`, [routed.gap]);
+		}
 		this.runState.active = routed.targets;
 		this.runState.status = this.runState.active.length === 0 ? "completed" : "running";
 		this.runState.superstep += 1;
@@ -1110,6 +1132,9 @@ export class GraphEngine {
 		delete this.runState.pendingHuman;
 		if (routed.terminal !== undefined) {
 			return this.terminate(routed.terminal, routed.targets);
+		}
+		if (routed.gap !== undefined) {
+			return this.fail(`no graph edge from ${routed.gap} matched the run state`, [routed.gap]);
 		}
 		this.runState.active = routed.targets;
 		this.runState.status = this.runState.active.length === 0 ? "completed" : "running";

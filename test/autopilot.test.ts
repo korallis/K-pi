@@ -280,3 +280,121 @@ test("an untestable reviewer issue stops autopilot at NEEDS_HUMAN", async () => 
 		await rm(directory, { recursive: true, force: true });
 	}
 });
+
+test("shipping twice for one job leaves one marker and one commit", async () => {
+	const directory = await fixture("healthcheck-auto");
+	const jobId = "20260831-healthcheck-replay";
+	const initialHead = await git(directory, "rev-parse", "HEAD");
+	const executed: string[] = [];
+	const harness = commandHarness(directory, autoSessions(directory, executed), jobId);
+	try {
+		const task = await readFile(join(directory, "task.txt"), "utf8");
+		await harness.command(`--mode autopilot ${task}`, harness.context);
+		assert.equal((await state(directory, jobId)).status, "DONE");
+		const shipped = await git(directory, "rev-parse", "HEAD");
+		assert.equal(await git(directory, "rev-list", "--count", `${initialHead}..HEAD`), "1");
+
+		const markerPath = join(directory, ".kpi", "runs", jobId, "ship.json");
+		const marker = JSON.parse(await readFile(markerPath, "utf8")) as Record<string, unknown>;
+		assert.equal(marker.job_id, jobId);
+		assert.equal(marker.head, shipped);
+		assert.match(String(marker.subject), /^feat\(health\)/u);
+
+		// A crash after the commit loses the checkpoint's knowledge of it, but not
+		// the marker. Replaying the run must be a no-op: the graph routes past ship.
+		const resumeExecuted: string[] = [];
+		const replay = commandHarness(directory, autoSessions(directory, resumeExecuted), jobId);
+		await replay.command(`resume ${jobId}`, replay.context).catch(() => undefined);
+		assert.equal(await git(directory, "rev-parse", "HEAD"), shipped, "no second commit");
+		assert.equal(await git(directory, "rev-list", "--count", `${initialHead}..HEAD`), "1");
+		assert.equal(resumeExecuted.includes("ship"), false, "the ship node never ran again");
+		const afterReplay = JSON.parse(await readFile(markerPath, "utf8")) as Record<string, unknown>;
+		assert.deepEqual(afterReplay, marker, "the marker records one decision, not two");
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("a replay whose checkpoint predates the commit still refuses a second one", async () => {
+	const directory = await fixture("healthcheck-auto");
+	const jobId = "20260831-healthcheck-crash";
+	const initialHead = await git(directory, "rev-parse", "HEAD");
+	const executed: string[] = [];
+	const harness = commandHarness(directory, autoSessions(directory, executed), jobId);
+	try {
+		const task = await readFile(join(directory, "task.txt"), "utf8");
+		await harness.command(`--mode autopilot ${task}`, harness.context);
+		const shipped = await git(directory, "rev-parse", "HEAD");
+
+		// The window a crash can land in: the commit exists, the marker does not.
+		const runDirectory = join(directory, ".kpi", "runs", jobId);
+		await rm(join(runDirectory, "ship.json"));
+		const document = JSON.parse(await readFile(join(runDirectory, "state.json"), "utf8")) as Record<string, unknown>;
+		document.status = "RUNNING";
+		await writeFile(join(runDirectory, "state.json"), `${JSON.stringify(document, null, 2)}\n`);
+
+		const resumeExecuted: string[] = [];
+		const replay = commandHarness(directory, autoSessions(directory, resumeExecuted), jobId);
+		await replay.command(`resume ${jobId}`, replay.context).catch(() => undefined);
+
+		assert.equal(await git(directory, "rev-parse", "HEAD"), shipped, "HEAD is untouched");
+		assert.equal(await git(directory, "rev-list", "--count", `${initialHead}..HEAD`), "1", "still one commit");
+		assert.equal(resumeExecuted.includes("ship"), false, "the ship node never ran again");
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("autopilot cannot release from model prose alone", async () => {
+	const directory = await fixture("healthcheck-auto");
+	const jobId = "20260831-healthcheck-prose";
+	const initialHead = await git(directory, "rev-parse", "HEAD");
+	const executed: string[] = [];
+	// The reviewer approves in prose while the receipts say nothing passed. The
+	// release decision is data, so no edge to `release.set` can fire.
+	const factory: GraphAgentSessionFactory = async (sessionOptions) => {
+		let currentNode = "";
+		let lastAssistantText: string | undefined;
+		return {
+			session: {
+				sessionId: "prose-session",
+				async prompt(prompt) {
+					const detected = nodeId(prompt);
+					if (detected !== "retry") currentNode = detected;
+					executed.push(currentNode || detected);
+					if (currentNode === "implement") {
+						await writeFile(join(directory, "src", "server.js"), implementedServer);
+					} else if (currentNode === "test") {
+						lastAssistantText = JSON.stringify({
+							head: await git(directory, "rev-parse", "HEAD"),
+							commands: [{ cmd: "npm test", exit: 1 }],
+							ac_results: ["AC-01", "AC-02", "AC-03", "AC-04", "AC-05"].map((id) => ({ id, passed: false })),
+						});
+					} else if (currentNode === "review") {
+						lastAssistantText = verdict;
+					} else if (currentNode === "ship") {
+						await git(directory, "add", "-A");
+						await git(directory, "commit", "-m", "feat(health): should never happen");
+					}
+				},
+				getLastAssistantText: () => lastAssistantText,
+				getActiveToolNames: () => [...(sessionOptions.tools ?? [])],
+				dispose() {},
+			},
+		};
+	};
+	const harness = commandHarness(directory, factory, jobId);
+	try {
+		const task = await readFile(join(directory, "task.txt"), "utf8");
+		await harness.command(`--mode autopilot ${task}`, harness.context).catch(() => undefined);
+
+		assert.equal(executed.includes("ship"), false, "prose cannot reach the ship node");
+		assert.equal(await git(directory, "rev-parse", "HEAD"), initialHead, "no commit was created");
+		const document = await state(directory, jobId);
+		assert.notEqual(document.status, "DONE");
+		assert.equal(document.release, undefined, "release was never approved");
+		assert.deepEqual(harness.confirmations, [], "and autopilot never asked a human");
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});

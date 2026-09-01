@@ -41,6 +41,21 @@ test("bare goals wrap while commands and active-job follow-ups do not", async ()
 			action: "continue",
 		});
 
+		// A finished job does not own the next goal: the operator stays in K-mode.
+		for (const status of ["DONE", "UNSAFE", "NEEDS_HUMAN", "EXHAUSTED", "NO_PROGRESS", "BLOCKED"]) {
+			await writeFile(join(run, "state.json"), JSON.stringify({ job_id: "active", status }));
+			assert.deepEqual(
+				await input?.({ type: "input", text: "next goal", source: "interactive" }, context),
+				{ action: "transform", text: "/kpi --mode gated next goal", images: undefined },
+				`a ${status} job is finished, so a bare goal starts the next one`,
+			);
+		}
+		// A job still running keeps owning the follow-up.
+		await writeFile(join(run, "state.json"), JSON.stringify({ job_id: "active", status: "RUNNING" }));
+		assert.deepEqual(await input?.({ type: "input", text: "follow up again", source: "interactive" }, context), {
+			action: "continue",
+		});
+
 		autoWrapState.enabled = false;
 		assert.deepEqual(await input?.({ type: "input", text: "plain", source: "interactive" }, context), {
 			action: "continue",

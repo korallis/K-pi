@@ -7,76 +7,115 @@
       "id": "ac-compiler",
       "type": "agent",
       "prompt": "Check the frozen task contract and acceptance quality before execution. Do not change repository files.",
-      "context": { "mode": "isolated" },
-      "tools": ["read", "grep", "find", "ls"],
+      "context": {
+        "mode": "isolated"
+      },
+      "tools": [
+        "read",
+        "grep",
+        "find",
+        "ls"
+      ],
       "readOnly": true
     },
     {
       "id": "specify",
       "type": "agent",
       "prompt": "Apply the spec-first skill. Research the repository and specify requirements, design, tasks, constraints, and non-goals before implementation. Do not change production files.",
-      "context": { "mode": "isolated" },
-      "tools": ["read", "grep", "find", "ls"],
+      "context": {
+        "mode": "isolated"
+      },
+      "tools": [
+        "read",
+        "grep",
+        "find",
+        "ls"
+      ],
       "readOnly": true
     },
     {
       "id": "plan",
       "type": "agent",
       "prompt": "Produce an implementation plan and stack.json module boundaries from the frozen task, research, and specification. Do not change production files.",
-      "context": { "mode": "isolated" },
-      "tools": ["read", "grep", "find", "ls"],
+      "context": {
+        "mode": "isolated"
+      },
+      "tools": [
+        "read",
+        "grep",
+        "find",
+        "ls"
+      ],
       "readOnly": true
     },
     {
       "id": "plan-check",
       "type": "agent",
       "prompt": "Verify the frozen plan still matches the repository and has executable tasks and bounds. Do not respecify or change files.",
-      "context": { "mode": "isolated" },
-      "tools": ["read", "grep", "find", "ls"],
+      "context": {
+        "mode": "isolated"
+      },
+      "tools": [
+        "read",
+        "grep",
+        "find",
+        "ls"
+      ],
       "readOnly": true
     },
     {
       "id": "implement",
       "type": "agent",
       "prompt": "Apply the tdd-cycle skill. Apply the minimalist skill. Before production changes, write candidate.json.ladder, declare runtime dependencies, and capture failing test output. Implement only the current stack.json module and the smallest change satisfying the frozen acceptance criteria. Never write verdict.json or release.approved.",
-      "context": { "mode": "thread", "threadKey": "coder" },
-      "tools": ["read", "grep", "find", "ls", "bash", "edit", "write"],
+      "context": {
+        "mode": "thread",
+        "threadKey": "coder"
+      },
+      "tools": [
+        "read",
+        "grep",
+        "find",
+        "ls",
+        "bash",
+        "edit",
+        "write"
+      ],
       "readOnly": false
     },
     {
       "id": "test",
       "type": "agent",
       "prompt": "Apply the quality-gates skill. Run the exact task.json quality_gates and acceptance checks, then return HEAD-bound evidence. Do not claim green when any required command fails.",
-      "context": { "mode": "isolated" },
-      "tools": ["read", "bash"],
+      "context": {
+        "mode": "isolated"
+      },
+      "tools": [
+        "read",
+        "bash"
+      ],
       "readOnly": false,
       "response": {
         "path": "evidence.json",
         "schema": "evidence.schema.json",
         "retries": 1,
-        "state": {}
-      }
-    },
-    {
-      "id": "quality-green",
-      "type": "set",
-      "assignments": {
-        "test.passed": true
-      }
-    },
-    {
-      "id": "bounds",
-      "type": "set",
-      "assignments": {
-        "bounds.held": true
+        "state": {
+          "evidence.head": "head"
+        }
       }
     },
     {
       "id": "review",
       "type": "agent",
       "prompt": "Apply the isolated-review skill. Review the candidate and fresh evidence against every required acceptance criterion. Return a schema-valid verdict; do not change repository files.",
-      "context": { "mode": "isolated" },
-      "tools": ["read", "grep", "find", "ls"],
+      "context": {
+        "mode": "isolated"
+      },
+      "tools": [
+        "read",
+        "grep",
+        "find",
+        "ls"
+      ],
       "readOnly": true,
       "response": {
         "path": "verdict.json",
@@ -100,41 +139,259 @@
       "id": "ship",
       "type": "agent",
       "prompt": "Apply the conventional-commit skill. Create exactly one approved commit whose subject matches ^(feat|fix|docs|refactor|test|chore)(\\(.+\\))?: . Never push.",
-      "context": { "mode": "thread", "threadKey": "ship" },
-      "tools": ["bash"],
+      "context": {
+        "mode": "thread",
+        "threadKey": "ship"
+      },
+      "tools": [
+        "bash"
+      ],
       "readOnly": false
+    },
+    {
+      "id": "unsafe",
+      "type": "terminal",
+      "status": "UNSAFE",
+      "reason": "a write left the task's declared bounds"
+    },
+    {
+      "id": "needs-human",
+      "type": "terminal",
+      "status": "NEEDS_HUMAN",
+      "reason": "the review reported an untestable blocking issue, or the receipts are no longer fresh"
     }
   ],
   "edges": [
-    { "from": "ac-compiler", "to": "specify" },
-    { "from": "specify", "to": "plan" },
-    { "from": "plan", "to": "implement" },
-    { "from": "plan-check", "to": "implement" },
-    { "from": "implement", "to": "test" },
-    { "from": "test", "to": "quality-green" },
-    { "from": "quality-green", "to": "bounds" },
-    { "from": "bounds", "to": "review" },
+    {
+      "from": "ac-compiler",
+      "to": "specify",
+      "when": {
+        "path": "plan.provided",
+        "equals": false
+      }
+    },
+    {
+      "from": "ac-compiler",
+      "to": "plan-check",
+      "when": {
+        "path": "plan.provided",
+        "equals": true
+      }
+    },
+    {
+      "from": "specify",
+      "to": "plan"
+    },
+    {
+      "from": "plan",
+      "to": "implement"
+    },
+    {
+      "from": "plan-check",
+      "to": "implement"
+    },
+    {
+      "from": "implement",
+      "to": "test"
+    },
+    {
+      "from": "test",
+      "to": "unsafe",
+      "when": {
+        "path": "bounds.held",
+        "equals": false
+      }
+    },
+    {
+      "from": "test",
+      "to": "implement",
+      "when": [
+        {
+          "path": "bounds.held",
+          "equals": true
+        },
+        {
+          "path": "test.passed",
+          "equals": false
+        }
+      ]
+    },
+    {
+      "from": "test",
+      "to": "review",
+      "when": [
+        {
+          "path": "bounds.held",
+          "equals": true
+        },
+        {
+          "path": "test.passed",
+          "equals": true
+        }
+      ]
+    },
+    {
+      "from": "review",
+      "to": "unsafe",
+      "when": {
+        "path": "bounds.held",
+        "equals": false
+      }
+    },
     {
       "from": "review",
       "to": "human",
-      "when": { "path": "review.approved", "equals": true }
+      "when": [
+        {
+          "path": "bounds.held",
+          "equals": true
+        },
+        {
+          "path": "review.approved",
+          "equals": true
+        },
+        {
+          "path": "test.passed",
+          "equals": true
+        },
+        {
+          "path": "fingerprints.fresh",
+          "equals": true
+        }
+      ]
+    },
+    {
+      "from": "review",
+      "to": "needs-human",
+      "when": [
+        {
+          "path": "bounds.held",
+          "equals": true
+        },
+        {
+          "path": "review.approved",
+          "equals": true
+        },
+        {
+          "path": "test.passed",
+          "equals": false
+        }
+      ]
+    },
+    {
+      "from": "review",
+      "to": "needs-human",
+      "when": [
+        {
+          "path": "bounds.held",
+          "equals": true
+        },
+        {
+          "path": "review.approved",
+          "equals": true
+        },
+        {
+          "path": "fingerprints.fresh",
+          "equals": false
+        }
+      ]
     },
     {
       "from": "review",
       "to": "implement",
-      "when": { "path": "review.approved", "equals": false }
+      "when": [
+        {
+          "path": "bounds.held",
+          "equals": true
+        },
+        {
+          "path": "review.approved",
+          "equals": false
+        },
+        {
+          "path": "review.status",
+          "equals": "REVISE"
+        }
+      ]
+    },
+    {
+      "from": "review",
+      "to": "needs-human",
+      "when": [
+        {
+          "path": "bounds.held",
+          "equals": true
+        },
+        {
+          "path": "review.approved",
+          "equals": false
+        },
+        {
+          "path": "review.status",
+          "equals": "BLOCKED"
+        }
+      ]
     },
     {
       "from": "human",
       "to": "ship",
-      "when": { "path": "release.approved", "equals": true }
+      "when": [
+        {
+          "path": "release.approved",
+          "equals": true
+        },
+        {
+          "path": "ship.shipped",
+          "equals": false
+        }
+      ]
+    },
+    {
+      "from": "human",
+      "to": "__end__",
+      "when": [
+        {
+          "path": "release.approved",
+          "equals": true
+        },
+        {
+          "path": "ship.shipped",
+          "equals": true
+        }
+      ]
     },
     {
       "from": "human",
       "to": "implement",
-      "when": { "path": "release.approved", "equals": false }
+      "when": [
+        {
+          "path": "release.approved",
+          "equals": false
+        },
+        {
+          "path": "policy.onHumanDeny",
+          "equals": "revise"
+        }
+      ]
     },
-    { "from": "ship", "to": "__end__" }
+    {
+      "from": "human",
+      "to": "__end__",
+      "when": [
+        {
+          "path": "release.approved",
+          "equals": false
+        },
+        {
+          "path": "policy.onHumanDeny",
+          "equals": "end"
+        }
+      ]
+    },
+    {
+      "from": "ship",
+      "to": "__end__"
+    }
   ],
   "limits": {
     "maxSteps": 24,
@@ -147,6 +404,7 @@
     "allowNonInteractive": false,
     "allowNonInteractiveMutations": false,
     "confirmProjectGraph": true,
-    "confirmMutatingNodes": true
+    "confirmMutatingNodes": true,
+    "onHumanDeny": "revise"
   }
 }

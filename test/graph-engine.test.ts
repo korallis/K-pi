@@ -86,7 +86,7 @@ test("set nodes write nested state and checkpoint the superstep", async () => {
 
 		const state = await engine.runUntilPause();
 		assert.equal(state.status, "completed");
-		assert.deepEqual(state.values, { release: { approved: true } });
+		assert.deepEqual(state.values, { policy: { onHumanDeny: "revise" }, release: { approved: true } });
 		assert.deepEqual(await readdir(join(projectRoot, ".kpi", "runs", "set-job", "graph")), [
 			"checkpoint-000001.json",
 		]);
@@ -143,6 +143,8 @@ test("human nodes pause and a restored true response continues", async () => {
 		const completed = await restored.resume(true);
 		assert.equal(completed.status, "completed");
 		assert.deepEqual(completed.values, {
+			// The graph's own configuration is seeded so edges can read it as data.
+			policy: { onHumanDeny: "revise" },
 			release: { approved: true },
 			continued: true,
 		});
@@ -286,7 +288,11 @@ test("an injected cost source crosses maxCostUsd without sleeps", async () => {
 		assert.equal(state.terminal?.limit, "maxCostUsd");
 		assert.equal(state.budget.costUsd, 7.5);
 		assert.ok(reads > 0, "the engine never read the injected cost source");
-		assert.deepEqual(state.values, {}, "an exhausted superstep must not commit writes");
+		assert.deepEqual(
+			state.values,
+			{ policy: { onHumanDeny: "revise" } },
+			"an exhausted superstep must not commit writes",
+		);
 	} finally {
 		await rm(projectRoot, { recursive: true, force: true });
 	}

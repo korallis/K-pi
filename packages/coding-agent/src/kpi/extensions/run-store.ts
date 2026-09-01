@@ -242,6 +242,22 @@ async function readStateCandidate(directory: string): Promise<(ActiveJob & { mod
  * under `.kpi/runs`. A run directory without a progress document has not
  * started and is skipped.
  */
+/**
+ * The product terminals a run can end at. A job whose state document carries one
+ * of these is finished: it is still the newest run on disk, but it is no longer
+ * the run a follow-up belongs to.
+ */
+const TERMINAL_RUN_STATUSES = new Set(["DONE", "BLOCKED", "EXHAUSTED", "NO_PROGRESS", "UNSAFE", "NEEDS_HUMAN"]);
+
+export function isFinishedRunStatus(status: unknown): boolean {
+	return typeof status === "string" && TERMINAL_RUN_STATUSES.has(status);
+}
+
+/** Whether this job is still the one a bare follow-up should steer. */
+export function isLiveJob(job: ActiveJob | undefined): job is ActiveJob {
+	return job !== undefined && !isFinishedRunStatus(job.state.status);
+}
+
 export async function readActiveJob(cwd: string): Promise<ActiveJob | undefined> {
 	const runsDirectory = join(cwd, CONFIG_DIR_NAME, "runs");
 	let entries: Dirent[];

@@ -1,6 +1,6 @@
 import { execFile as execFileCallback } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { readFile, realpath, stat } from "node:fs/promises";
+import { readdir, readFile, realpath, stat } from "node:fs/promises";
 import { basename, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 
@@ -11,7 +11,7 @@ import type { ExtensionCommandContext } from "../../core/extensions/types.ts";
 import { appendEvent } from "./append-log.ts";
 import { compileAcceptanceCriteria } from "./graph/ac-compiler.ts";
 import { type GraphAgentSessionFactory, GraphEngine, loadNamedGraph } from "./graph/engine.ts";
-import { type GraphRunState, isJsonObject } from "./graph/schema.ts";
+import { type GraphRunState, isJsonObject, type JsonObject } from "./graph/schema.ts";
 import {
 	canonicalFingerprint,
 	createStopState,
@@ -347,10 +347,36 @@ async function createJobBranch(projectRoot: string, jobId: string): Promise<void
 	});
 }
 
+/**
+ * Trees the harness owns or that no product change can live in. Everything else
+ * ignored by git - `dist/`, `coverage/`, a local `.env` - is still a real file a
+ * node can write, so it stays inside the snapshot.
+ */
+const SNAPSHOT_EXCLUDED_TREES = ["node_modules", ".git", CONFIG_DIR_NAME] as const;
+
+/**
+ * Every path in the worktree a node could have touched, with a content hash.
+ *
+ * Ignored files are included on purpose: `git status` hides them by default, so
+ * a write to `dist/` or `.env.local` used to be invisible to the bounds check -
+ * exactly the paths a policy would refuse. The harness's own trees are excluded
+ * by pathspec instead, which also keeps `node_modules` out of the hashing.
+ */
 async function worktreeSnapshot(projectRoot: string): Promise<Map<string, string>> {
-	const { stdout } = await execFile("git", ["status", "--porcelain=v1", "-z", "--untracked-files=all"], {
-		cwd: projectRoot,
-	});
+	const { stdout } = await execFile(
+		"git",
+		[
+			"status",
+			"--porcelain=v1",
+			"-z",
+			"--untracked-files=all",
+			"--ignored=matching",
+			"--",
+			".",
+			...SNAPSHOT_EXCLUDED_TREES.map((tree) => `:(exclude)${tree}`),
+		],
+		{ cwd: projectRoot },
+	);
 	const records = stdout.split("\0");
 	const paths = new Set<string>();
 	for (let index = 0; index < records.length; index += 1) {
@@ -379,10 +405,18 @@ async function worktreeSnapshot(projectRoot: string): Promise<Map<string, string
 			const content = await readFile(join(projectRoot, path));
 			snapshot.set(path, createHash("sha256").update(content).digest("hex"));
 		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (code === "ENOENT") {
+				snapshot.set(path, "<absent>");
+				continue;
+			}
+			if (code !== "EISDIR") {
 				throw error;
 			}
-			snapshot.set(path, "<absent>");
+			// git reports a wholly ignored directory as one entry. Its listing is the
+			// witness: a file appearing inside it is still a change to the worktree.
+			const entries = (await readdir(join(projectRoot, path))).sort();
+			snapshot.set(path, `<dir>${createHash("sha256").update(entries.join("\u0000")).digest("hex")}`);
 		}
 	}
 	return snapshot;
@@ -471,34 +505,139 @@ function evidencePasses(task: Task, evidence: unknown): boolean {
 	return task.acceptance.filter((criterion) => criterion.required).every((criterion) => passedIds.has(criterion.id));
 }
 
-async function releaseReady(
-	state: Readonly<GraphRunState>,
-	projectRoot: string,
-	runDirectory: string,
-	task: Task,
-): Promise<boolean> {
-	const test = state.values.test;
-	const bounds = state.values.bounds;
-	const fingerprints = state.values.fingerprints;
-	let evidence: unknown;
+/**
+ * Whether this job was started from a frozen plan. The snapshot on disk is the
+ * record, so a resumed run routes past the specification step exactly as the
+ * original did.
+ */
+async function planWasProvided(jobDirectory: string): Promise<boolean> {
 	try {
-		evidence = JSON.parse(await readFile(join(runDirectory, "evidence.json"), "utf8"));
+		return (await readdir(join(jobDirectory, "plan"))).length > 0;
 	} catch {
 		return false;
 	}
-	return (
-		isJsonObject(test) &&
-		test.passed === true &&
-		isJsonObject(bounds) &&
-		bounds.held === true &&
-		isJsonObject(fingerprints) &&
-		fingerprints.fresh === true &&
-		isJsonObject(evidence) &&
-		evidencePasses(task, evidence) &&
-		reviewApproved(state) &&
-		typeof evidence.head === "string" &&
-		evidence.head === (await gitHead(projectRoot))
-	);
+}
+
+/** The durable record that this job's commit decision was already made. */
+interface ShipMarker {
+	job_id: string;
+	head: string;
+	subject: string;
+	at: string;
+}
+
+function shipMarkerPath(jobDirectory: string): string {
+	return join(jobDirectory, "ship.json");
+}
+
+async function readShipMarker(jobDirectory: string): Promise<ShipMarker | undefined> {
+	try {
+		const parsed: unknown = JSON.parse(await readFile(shipMarkerPath(jobDirectory), "utf8"));
+		return isJsonObject(parsed) && typeof parsed.head === "string" ? (parsed as unknown as ShipMarker) : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * Whether this job has already made its one commit decision.
+ *
+ * Checkpoints are at-least-once, so a replay must be able to tell that the
+ * commit already happened. The marker is the durable record, and HEAD itself is
+ * the fallback for the window between the commit and the marker: if HEAD has
+ * moved past the head the job started from, the commit exists and no second one
+ * may be created.
+ */
+async function alreadyShipped(projectRoot: string, jobDirectory: string): Promise<boolean> {
+	if ((await readShipMarker(jobDirectory)) !== undefined) {
+		return true;
+	}
+	let startingHead: string | undefined;
+	try {
+		startingHead = (await readFile(join(jobDirectory, "previous-head.txt"), "utf8")).trim() || undefined;
+	} catch {
+		return false;
+	}
+	const head = await gitHead(projectRoot);
+	return head !== undefined && head !== startingHead;
+}
+
+/**
+ * Records the commit decision durably. Called after the ship node has run and
+ * its commit has been verified, so a later replay sees the decision instead of
+ * repeating it.
+ */
+async function writeShipMarker(projectRoot: string, jobDirectory: string, jobId: string, subject: string): Promise<void> {
+	const head = await gitHead(projectRoot);
+	if (head === undefined) {
+		return;
+	}
+	const marker: ShipMarker = { job_id: jobId, head, subject, at: new Date().toISOString() };
+	await atomicWrite(shipMarkerPath(jobDirectory), `${JSON.stringify(marker, null, 2)}\n`);
+}
+
+/**
+ * The facts the topology routes on, and the detail behind them.
+ *
+ * These are the things only the driver can establish: whether a frozen plan was
+ * supplied, whether the receipts on disk actually pass the task's required
+ * acceptance criteria, whether every change stayed inside the declared bounds,
+ * whether the evidence still describes the current HEAD, and whether this job
+ * already committed. The graph reads them as data; nothing here decides where
+ * the run goes next.
+ */
+interface LoopFacts {
+	resolve: () => Promise<JsonObject>;
+	/** Why bounds were last judged broken, for the terminal record. */
+	boundsReason: () => string | undefined;
+}
+
+function loopFacts(
+	projectRoot: string,
+	jobDirectory: string,
+	task: Task,
+	baseline: ReadonlyMap<string, string>,
+	planProvided: boolean,
+): LoopFacts {
+	let boundsReason: string | undefined;
+	return {
+		boundsReason: () => boundsReason,
+		resolve: async (): Promise<JsonObject> => {
+			let evidence: unknown;
+			try {
+				evidence = JSON.parse(await readFile(join(jobDirectory, "evidence.json"), "utf8"));
+			} catch {
+				evidence = undefined;
+			}
+			const testPassed = evidence !== undefined && evidencePasses(task, evidence);
+			const evidenceHead =
+				isJsonObject(evidence) && typeof evidence.head === "string" ? evidence.head : undefined;
+			const fresh = evidenceHead !== undefined && evidenceHead === (await gitHead(projectRoot));
+
+			boundsReason = undefined;
+			const current = await worktreeSnapshot(projectRoot);
+			const violations = changedPaths(baseline, current).filter(
+				(path) => !isWriteAllowed(projectRoot, path, writeAllowForTask(task)),
+			);
+			if (violations.length > 0) {
+				boundsReason = `write outside write_allow: ${violations.join(", ")}`;
+			} else {
+				try {
+					await assertMinimalistBounds(projectRoot, jobDirectory, task);
+				} catch (error) {
+					boundsReason = error instanceof Error ? error.message : String(error);
+				}
+			}
+
+			return {
+				"plan.provided": planProvided,
+				"test.passed": testPassed,
+				"bounds.held": boundsReason === undefined,
+				"fingerprints.fresh": fresh,
+				"ship.shipped": await alreadyShipped(projectRoot, jobDirectory),
+			};
+		},
+	};
 }
 
 interface DriveResult {
@@ -515,7 +654,7 @@ async function driveUntilPause(
 	projectRoot: string,
 	jobDirectory: string,
 	task: Task,
-	baseline: ReadonlyMap<string, string>,
+	facts: LoopFacts,
 	stopState: StopState,
 	onStateChange?: () => Promise<void>,
 ): Promise<DriveResult> {
@@ -552,38 +691,6 @@ async function driveUntilPause(
 				};
 			}
 		}
-		if (state.active.includes("bounds")) {
-			const current = await worktreeSnapshot(projectRoot);
-			const violations = changedPaths(baseline, current).filter(
-				(path) => !isWriteAllowed(projectRoot, path, writeAllowForTask(task)),
-			);
-			if (violations.length > 0) {
-				return {
-					state,
-					stopState: currentStopState,
-					terminalStatus: "UNSAFE",
-					reason: `write outside write_allow: ${violations.join(", ")}`,
-				};
-			}
-			try {
-				await assertMinimalistBounds(projectRoot, jobDirectory, task);
-			} catch (error) {
-				return {
-					state,
-					stopState: currentStopState,
-					terminalStatus: "UNSAFE",
-					reason: error instanceof Error ? error.message : String(error),
-				};
-			}
-		}
-		if (state.active.includes("release.set") && !(await releaseReady(state, projectRoot, jobDirectory, task))) {
-			return {
-				state,
-				stopState: currentStopState,
-				terminalStatus: "NEEDS_HUMAN",
-				reason: "release evidence is incomplete or stale",
-			};
-		}
 
 		const completedNodes = [...state.active];
 		state = await engine.runSuperstep();
@@ -598,15 +705,23 @@ async function driveUntilPause(
 				terminalEmitted: true,
 			};
 		}
+		if (state.status === "terminated") {
+			// The topology routed to a terminal. The engine has written the durable
+			// checkpoint and the single terminal event; the driver only supplies the
+			// detail behind the fact that sent it there.
+			const terminal = state.terminal;
+			return {
+				state,
+				stopState: currentStopState,
+				terminalStatus: terminal?.status ?? "BLOCKED",
+				reason:
+					terminal?.status === "UNSAFE"
+						? (facts.boundsReason() ?? terminal.reason)
+						: (terminal?.reason ?? "the graph routed to a terminal"),
+				terminalEmitted: true,
+			};
+		}
 		if (completedNodes.includes("review")) {
-			if (reviewStatus(state) === "BLOCKED") {
-				return {
-					state,
-					stopState: currentStopState,
-					terminalStatus: "NEEDS_HUMAN",
-					reason: "review reported an untestable blocking issue",
-				};
-			}
 			const outputFingerprint = reviewFingerprint(state);
 			if (outputFingerprint === undefined) {
 				return {
@@ -705,6 +820,15 @@ export async function resumeLoop(
 		return { jobId, status: "DONE" };
 	}
 	const graph = await loadNamedGraph(ctx.cwd, task.mode === "autopilot" ? "coding-loop.auto" : "coding-loop.gated");
+	const baselineSource = JSON.parse(await readFile(join(jobDirectory, "baseline.json"), "utf8")) as Record<
+		string,
+		string
+	>;
+	const baseline = new Map(Object.entries(baselineSource));
+	// A resumed run re-derives its facts from the worktree it wakes up in: the
+	// plan it was started with is recorded in the checkpoint it restores.
+	const restoredPlanProvided = await planWasProvided(jobDirectory);
+	const facts = loopFacts(ctx.cwd, jobDirectory, task, baseline, restoredPlanProvided);
 	const engine = await GraphEngine.restore(graph, {
 		projectRoot: ctx.cwd,
 		jobId,
@@ -714,12 +838,8 @@ export async function resumeLoop(
 		limits: task.limits,
 		sleep: dependencies.sleep,
 		retryBaseDelayMs: dependencies.retryBaseDelayMs,
+		resolveFacts: facts.resolve,
 	});
-	const baselineSource = JSON.parse(await readFile(join(jobDirectory, "baseline.json"), "utf8")) as Record<
-		string,
-		string
-	>;
-	const baseline = new Map(Object.entries(baselineSource));
 	const eventsPath = join(jobDirectory, "events.jsonl");
 	const stopState = restoreStopState(stateDocument, engine.limits.maxRounds);
 	try {
@@ -728,7 +848,7 @@ export async function resumeLoop(
 			ctx.cwd,
 			jobDirectory,
 			task,
-			baseline,
+			facts,
 			stopState,
 			dependencies.onStateChange,
 		);
@@ -754,7 +874,7 @@ export async function resumeLoop(
 				ctx.cwd,
 				jobDirectory,
 				task,
-				baseline,
+				facts,
 				result.stopState,
 				dependencies.onStateChange,
 			);
@@ -766,8 +886,27 @@ export async function resumeLoop(
 		if (result.state.status !== "completed") {
 			throw new Error(`Cannot resume graph in ${result.state.status} state`);
 		}
-		const previousHead = (await readFile(join(jobDirectory, "previous-head.txt"), "utf8")).trim() || undefined;
-		await verifyShippedCommit(ctx.cwd, previousHead);
+		// The same release gate the first run applies: a graph that ended without an
+		// approved release is BLOCKED, not silently DONE.
+		const release = result.state.values.release;
+		if (!isJsonObject(release) || release.approved !== true) {
+			const blocked: DriveResult = {
+				state: result.state,
+				stopState: result.stopState,
+				terminalStatus: "BLOCKED",
+				reason: "graph completed without release approval",
+			};
+			await writeTerminalState(jobDirectory, eventsPath, task, blocked);
+			await dependencies.onStateChange?.();
+			return { jobId, status: "BLOCKED", graphState: result.state };
+		}
+		// Same one-decision rule on resume: the marker, not the graph state, says
+		// whether this job has already committed.
+		if ((await readShipMarker(jobDirectory)) === undefined) {
+			const previousHead = (await readFile(join(jobDirectory, "previous-head.txt"), "utf8")).trim() || undefined;
+			const subject = await verifyShippedCommit(ctx.cwd, previousHead);
+			await writeShipMarker(ctx.cwd, jobDirectory, jobId, subject);
+		}
 		await writeState(jobDirectory, task, result.state, result.stopState, "DONE");
 		await dependencies.onStateChange?.();
 		return { jobId, status: "DONE", graphState: result.state };
@@ -846,8 +985,10 @@ export async function runLoop(
 	});
 
 	const graphName = invocation.mode === "autopilot" ? "coding-loop.auto" : "coding-loop.gated";
-	const loadedGraph = await loadNamedGraph(ctx.cwd, graphName);
-	const graph = plan === undefined ? loadedGraph : { ...loadedGraph, entry: "plan-check" };
+	// The entry is the graph's own. Whether a frozen plan replaces the
+	// specification step is a fact the topology routes on, not a rewrite the
+	// driver performs on the graph it loaded.
+	const graph = await loadNamedGraph(ctx.cwd, graphName);
 	const previousHead = await gitHead(ctx.cwd);
 	if (invocation.mode === "autopilot") {
 		await createJobBranch(ctx.cwd, job.jobId);
@@ -858,6 +999,7 @@ export async function runLoop(
 		`${JSON.stringify(Object.fromEntries(baseline), null, 2)}\n`,
 	);
 	await atomicWrite(join(job.directory, "previous-head.txt"), `${previousHead ?? ""}\n`);
+	const facts = loopFacts(ctx.cwd, job.directory, task, baseline, plan !== undefined);
 	const engine = new GraphEngine(graph, {
 		projectRoot: ctx.cwd,
 		jobId: job.jobId,
@@ -867,6 +1009,7 @@ export async function runLoop(
 		limits: task.limits,
 		sleep: dependencies.sleep,
 		retryBaseDelayMs: dependencies.retryBaseDelayMs,
+		resolveFacts: facts.resolve,
 	});
 
 	try {
@@ -878,7 +1021,7 @@ export async function runLoop(
 			ctx.cwd,
 			job.directory,
 			task,
-			baseline,
+			facts,
 			stopState,
 			dependencies.onStateChange,
 		);
@@ -913,7 +1056,7 @@ export async function runLoop(
 				ctx.cwd,
 				job.directory,
 				task,
-				baseline,
+				facts,
 				stopState,
 				dependencies.onStateChange,
 			);
@@ -945,7 +1088,14 @@ export async function runLoop(
 		}
 
 		try {
-			await verifyShippedCommit(ctx.cwd, previousHead);
+			// One job, one commit decision. The marker is that decision: if it is
+			// already there the run is a replay and nothing is verified or committed
+			// again. Otherwise this run shipped, so its commit is verified and the
+			// decision is recorded durably.
+			if ((await readShipMarker(job.directory)) === undefined) {
+				const subject = await verifyShippedCommit(ctx.cwd, previousHead);
+				await writeShipMarker(ctx.cwd, job.directory, job.jobId, subject);
+			}
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			const blocked: DriveResult = {
