@@ -32,7 +32,7 @@ Starts `pi --mode rpc` (or in-process `createAgentSession` when tests need it) w
 
 - session file `.pi/runs/<job>/agents/<role>-<id>.jsonl`
 - same cwd as the job
-- tool allowlist for that role (reviewer: read + grep + bash tests only)
+- tool allowlist for that role (reviewer and tester: read + grep + test bash, plus the pinned `write_contract` below — never `write` / `edit`)
 - model from K-stack role map, failed over through accounts
 
 Returns `{ agent_id, session_path, pid }`. Writes `agent.spawned` to `events.jsonl`. Cap: `maxConcurrency = 2` live workers per job.
@@ -41,13 +41,28 @@ Returns `{ agent_id, session_path, pid }`. Writes `agent.spawned` to `events.jso
 
 Two workers share the project checkout. They must not edit the same files.
 
-- At most **one** live worker may have `write` / `edit`. That is the writer. Reviewer and tester get read + grep + test bash only.
+- At most **one** live worker may have `write` / `edit`. That is the writer. Reviewer and tester never get either tool; they publish through `write_contract`, which does not make them the writer.
 - Before a writer edits path `P`, it calls `claim_path(P)`. Exclusive. Held in `.pi/runs/<job>/leases.json`.
 - Another claim on `P` is denied until release or the holder exits.
 - Bounds still apply. A claim outside `task.json.allowed_paths` is `UNSAFE`.
 - Parent implementer in the operator session counts as the writer if no worker writer is live.
 
 `claim_path` / `release_path` are tools. Crash/reap of a pid releases its claims.
+
+### `write_contract`
+
+Reviewer and tester must publish a run-contract file without holding a general file-mutation tool. `write_contract` is that single, narrow surface. It is the only way those roles reach disk.
+
+```
+path: string      # must equal the role's declared contract path
+content: object   # the parsed contract payload, not a diff and not prose
+```
+
+- **Pinned at spawn.** The capability is minted for one `agent_id`, one job, one role, and one declared contract path, and that tuple is fixed when the worker starts. Reviewer → `.pi/runs/<job>/verdict.json`. Tester → `.pi/runs/<job>/evidence.json`. A worker cannot widen its own pin at call time.
+- **One path, everything else denied.** Any other `path` fails: product files, `task.json`, `release.approved`, another role's contract file, another job's run directory, and any `..` or symlink that resolves outside the pinned path. Denial is a returned error, never a silent no-op.
+- **Schema before disk.** The payload validates against `verdict.schema.json` or `evidence.schema.json` first. An invalid payload writes nothing — no partial file, no placeholder — and the error goes back to the worker. A reviewer that cannot produce a valid verdict has failed review; it has not approved anything.
+- **Atomic write.** A validated payload lands by temp file → fsync → same-directory rename, so the parent never reads a half-written contract.
+- **Not a writer.** `write_contract` takes no `claim_path` lease, does not consume the one-writer slot, and does not relax the same-tree rule. Caps are unchanged.
 
 ### `communicate`
 
@@ -70,7 +85,7 @@ Lists live workers, last event, pid liveness. Dead pids are reaped.
 
 ### `agents_stop`
 
-Sends a follow-up “stop, write your current file, exit”, then SIGTERM if needed.
+Sends a follow-up “stop, publish your contract file, exit”, then SIGTERM if needed.
 
 ## Who talks to whom
 
@@ -78,7 +93,7 @@ Sends a follow-up “stop, write your current file, exit”, then SIGTERM if nee
 operator session (TUI, board, /kpi)
     spawn_background reviewer
     communicate to=reviewer "grade candidate.json"
-    reviewer writes verdict.json
+    reviewer publishes verdict.json through write_contract
     parent reads verdict.json  — not the reviewer's chat
 ```
 
@@ -105,3 +120,5 @@ File lamp row may include `BUS` when `bus.jsonl` exists. Header can show `AGENTS
 - dumping a worker transcript into the parent model
 - spawning Cursor Cloud
 - more than 2 live workers
+- granting `write` / `edit` to a reviewer or tester
+- publishing `verdict.json` or `evidence.json` by any path other than that role's pinned `write_contract`

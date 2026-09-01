@@ -62,6 +62,7 @@ kstack/
 | Source | https://github.com/cursor/plugins.git |
 | Path   | pstack/ |
 | Commit | <sha> |
+| pstack tree | <tree id the pinned commit resolves to> |
 | Upstream version | <plugin version if tagged> |
 | K-stack overlay | <our overlay version> |
 ```
@@ -88,9 +89,18 @@ kstack/
 8. Update `UPSTREAM.md` sha + date.
 9. If generated files changed, the command exits 2 so CI can open a PR. It does not push.
 
-`pnpm kstack:sync --check` is dry-run: fail if `generated/` would change or if upstream HEAD ≠ pinned sha (used on main CI).
+`pnpm kstack:sync --check` is dry-run: fail if `generated/` would change, or if the pinned `pstack/` tree is not the tree `generated/` was produced from (used on main CI).
 
 `pnpm kstack:sync --pin <sha>` is the only way to move the pin.
+
+### Drift is a tree, not a HEAD
+
+The pin is content, not activity. `cursor/plugins` carries many plugins, so most of its commits never touch `pstack/`.
+
+- `UPSTREAM.md` records the pinned commit **and the `pstack/` tree id that commit resolves to**. Drift compares the tree.
+- Upstream repository HEAD moving while that tree id is unchanged is not drift. Report it as informational state: no PR, no CI failure, no pin change.
+- A different `pstack/` tree id is a real update. Report it as available and still change nothing until a human moves the pin.
+- Hand edits inside `generated/`, or transforms and patches that no longer reproduce those bytes, are local drift and fail `--check` whatever upstream is doing.
 
 ### What is automatic vs human
 
@@ -105,7 +115,16 @@ New upstream files land in `generated/` via the copy step. If they contain forbi
 
 ### Runtime
 
-Pi loads **only** `kstack/generated/`. Operators never see `upstream/`. The published package vendors `generated/` + `overlay/` + `UPSTREAM.md`. Fetch happens in maintainer/CI, not when a user runs `/k-mode`.
+`kstack/generated/` is the **sole runtime truth**. Pi loads that tree and nothing else — not `upstream/`, not `overlay/`, not a hand-written skill parked elsewhere in the repo. Where two versions of a rule exist, the generated one is the rule.
+
+Everything we add reaches the runtime by being generated:
+
+- First-party principles, playbooks, and agent guidance are overlay-owned inputs. They are not a second runtime tree standing beside `generated/`.
+- A behaviour that lives only in a hand-maintained file or a hard-coded table in k-pi source is not part of K-stack. Move it into the overlay so sync emits it, or delete it.
+- Overlay additions must be Pi-loadable once generated: valid frontmatter, unique names, support files carried with them.
+- Editing `generated/` by hand is not a change. The next sync overwrites it and `--check` fails on it first.
+
+Operators never see `upstream/`. The published package vendors `generated/` + `overlay/` + `UPSTREAM.md`. Fetch happens in maintainer/CI, not when a user runs `/k-mode`.
 
 Do not use a git submodule of `cursor/plugins` inside the installable package. Fetch is a sync-time network call.
 
@@ -215,12 +234,15 @@ Rewrite hard (cloud stripped):
 | orchestrate | Coordinator is the k-pi graph engine, not a Cursor cloud root. |
 | worktree-cleanup | Optional later. v1 works in-tree on a feature branch. |
 
-Drop as runtime:
+Drop as runtime. This list is normative: a dropped pack must not appear in `generated/`, and renaming or token-replacing it does not count as handling it.
 
 - cursor-team-kit `/deslop`, control-cli, control-ui
 - Bugbot triage as a required step (replace with `/interrogate` + our reviewer)
-- `/make-bot-ui` Grok Bot webhook page (out of scope for k-pi v1)
+- `make-bot-ui` — a Cursor Routines / Grok Bot webhook skill with no Pi equivalent. Out of scope for k-pi v1 and excluded whole: not rebranded, not stubbed, not half-translated.
 - Benny Slack pack
+- Cursor Cloud agents, Graphite `gt`, and the `/loop` sleeper as runtime content
+
+An upstream skill that matches no keep, rewrite, or drop rule is the `NEEDS_HUMAN` row in §2, not a silent passenger in `generated/`.
 
 ---
 
@@ -295,6 +317,6 @@ See PRD. Tests that must exist:
 - feature playbook cannot mark ship complete while `verdict.json.approved != true`
 - grep of `kstack/` for `cloud agent`, `cursor cloud`, `subagent_type`, `graphite`, `gt submit` returns no runtime hits (comments in NOTICE allowed)
 - package.json still has no pstack / open-pstack / pi-pstack dependency
-- `pnpm kstack:sync --check` is green on main against the pinned sha
+- `pnpm kstack:sync --check` is green on main against the pinned `pstack/` tree, and unrelated `cursor/plugins` HEAD movement does not fail it
 - moving the pin with `pnpm kstack:sync --pin <new>` reapplies overlay; generated diff is the PR
 - a deliberately broken patch fixture makes sync exit non-zero and leaves `generated/` untouched

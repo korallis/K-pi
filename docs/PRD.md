@@ -4,7 +4,9 @@
 **Product:** k-pi — first-party Pi coding-agent package  
 **Brand cell:** `K-π` (never bare `π`)  
 **Audience:** Coding agents and the humans who review them  
-**Companion docs:** `START-HERE.md`, `BUILD-PROMPT.md`, `spec.md`, `kstack.md`, `model-ladder.md`, `research.md`, `dune-architecture.md`, `minimalist.md`, `agents-bus.md`, `visual-targets.md`, historical `roadmap.md` and `implementation-plan.md`, active `remediation-research.md` and `remediation-plan.md`
+**Companion docs:** `START-HERE.md`, `BUILD-PROMPT.md`, `spec.md`, `kstack.md`, `model-ladder.md`, `research.md`, `dune-architecture.md`, `minimalist.md`, `agents-bus.md`, `visual-targets.md`  
+**Active queue:** [`docs/remediation-plan.md`](remediation-plan.md) is the only active implementation queue; start at the lowest incomplete `RP-##`. Research and gap register: [`remediation-research.md`](remediation-research.md).  
+**Historical, non-authoritative:** `roadmap.md` and `implementation-plan.md` are historical build records. Their checked boxes are not completion evidence.  
 **Visual sources:** https://x.com/av1dlive/status/2092622516544270781 · `visual/omp-statusbar-codemod.jpg` · `visual/omp-statusbar-collab.jpg`  
 **ID prefix:** `PRD-1`
 
@@ -103,7 +105,7 @@ Each AC is written so a later agent can turn it into a check. IDs are stable.
 - **AC-02.1** A directory `.pi/runs/<job_id>/` is created containing `task.json`, `context.md`, `events.jsonl`.
 - **AC-02.2** `task.json` has `goal`, `acceptance[]`, `nongoals`, `constraints`, `quality_gates`.
 - **AC-02.3** If `ac.quality != executable`, mode stays `gated` even if autopilot was requested without `--mode autopilot` force.
-- **AC-02.4** Implementer tools include write/edit/bash; planner and reviewer tools are read-only (`read`,`grep`,`find`,`ls`).
+- **AC-02.4** Implementer tools include write/edit/bash. Planner, reviewer, and tester hold no general `write` or `edit`; their product tools are read-only (`read`,`grep`,`find`,`ls`). A read-only node publishes its run contract only through `write_contract` (`spec.md` §5 REQ-RS-06).
 - **AC-02.5** After isolated review `approved: true`, a human confirm dialog is shown before `git commit`.
 - **AC-02.6** `git push` is never run by the ship node in v1.
 - **AC-02.7** Board widget shows `MODE gated`, current `STAGE`, `ROUND n/max`, and which run files exist.
@@ -123,7 +125,7 @@ Each AC is written so a later agent can turn it into a check. IDs are stable.
 
 - **AC-04.1** Autopilot is refused if any required AC lacks `check` and `bounds`. Refusal writes `ac.quality` of `partial` or `narrative` and does not load `coding-loop.auto.json`.
 - **AC-04.2** Happy path has no `human` node. `release.approved` is written by a deterministic set node only when `test.passed && review.approved && bounds.held && fingerprints.fresh`.
-- **AC-04.3** Implementer does not write `verdict.json` or `release.approved`.
+- **AC-04.3** Implementer does not write `verdict.json` or `release.approved`. `write_contract` is pinned to the calling agent, job, role, and declared contract path, so no other node can publish either file.
 - **AC-04.4** Tester binds `evidence.json` to `git rev-parse HEAD`.
 - **AC-04.5** On success, status is `DONE` and a conventional commit is created on the job feature branch.
 - **AC-04.6** Push/deploy/delete/new-dependency attempts set `NEEDS_HUMAN` or `UNSAFE` and do not execute.
@@ -146,7 +148,7 @@ Each AC is written so a later agent can turn it into a check. IDs are stable.
 - **AC-06.1** Theme `loop-amber` uses accent `#ff6a1a` on a dark board.
 - **AC-06.2** While a human node is paused, theme switches to `protocol-blue` accent `#3da9fc`.
 - **AC-06.3** Widget above the editor shows LOOP name, MODE, ROUND, STAGE, NODE, GATE, STOP, FILES.
-- **AC-06.4** Accounts widget shows per-slot remaining %, not one unlabeled aggregate.
+- **AC-06.4** Accounts widget shows per-slot remaining %, not one unlabeled aggregate. A `local` slot has no quota and shows no percentage.
 - **AC-06.5** Protocol events render as custom entries (`handoff.created`, `checkpoint`, `verdict`, `accounts.failover`), not as assistant markdown tables.
 - **AC-06.6** `/kpi status` draws the board from `state.json` + `events.jsonl`, not from a model call.
 
@@ -165,7 +167,7 @@ Each AC is written so a later agent can turn it into a check. IDs are stable.
 - **AC-08.1** Non-trivial tasks (not a one-line fix) write `specs/<id>/requirements.md`, `design.md`, `tasks.md` before implement.
 - **AC-08.2** Implementer on non-trivial work writes or updates a failing test and stores the red output in `evidence.json` before production code.
 - **AC-08.3** Quality gates are exact commands from project `AGENTS.md` (or `task.json.quality_gates`).
-- **AC-08.4** Reviewer runs in `context.mode: isolated` with `readOnly: true`.
+- **AC-08.4** Reviewer runs in `context.mode: isolated`, read-only against product files. Its only mutation path is `write_contract` to the declared `verdict.json`.
 - **AC-08.5** Ship commit message matches Conventional Commits.
 
 ### US-09 — Knowledge graph
@@ -223,7 +225,7 @@ Each AC is written so a later agent can turn it into a check. IDs are stable.
 - **AC-14.1** `events.jsonl` is append-only and hash-chained (`prev_hash`, `record_hash`).
 - **AC-14.2** State files are written `*.tmp` → fsync → rename.
 - **AC-14.3** No tokens, cookies, or raw secrets in events.
-- **AC-14.4** Kill mid-implementer leaves a checkpoint that `/kpi status` can read. Resume is in scope for M4.
+- **AC-14.4** Kill mid-implementer leaves a checkpoint that `/kpi status` can read. Resume is in scope for M7.
 
 ### US-15 — Oh My Pi status bar with K-π brand
 
@@ -240,6 +242,7 @@ Reference files: `visual/omp-statusbar-codemod.jpg`, `visual/omp-statusbar-colla
 - **AC-15.7** Last user request can appear right-aligned, truncated.
 - **AC-15.8** No runtime dependency on oh-my-pi or community footer packages.
 - **AC-15.9** `/statusbar` toggles the custom footer. Off restores Pi’s default footer.
+- **AC-15.10** A `local` active slot renders one cost cell `(local) $0`. Never `(sub)`, never an estimated dollar figure, and no quota percentage.
 
 ### US-16 — Graph-engineering TUI (Avid boards)
 
@@ -325,6 +328,7 @@ Source: https://github.com/alirezarezvani/claude-skills/blob/main/engineering/mi
 - **AC-23.6** Board can show `AGENTS n`. Worker chat is not printed as assistant markdown.
 - **AC-23.7** At most one live worker has `write`/`edit`. A second writer spawn is denied.
 - **AC-23.8** `claim_path` is exclusive. A second claim on the same path is denied until release or the holder pid dies.
+- **AC-23.9** `write_contract` is not `write`/`edit`. A reviewer or tester holding only `write_contract` is not a writer, does not consume the single-writer slot, and can publish nothing but its own declared run-contract file.
 
 ### US-24 — Bare message starts gated K-mode
 
@@ -363,33 +367,36 @@ Source: https://github.com/alirezarezvani/claude-skills/blob/main/engineering/mi
 
 - **AC-27.1** Official llama.cpp path: `LLAMA_BASE_URL` (default `http://127.0.0.1:8080`), optional `LLAMA_API_KEY`. Pool id `llama`. Load via Pi’s `/llama`. Only loaded models appear in `/model`.
 - **AC-27.2** First-party `ollama`, `lmstudio`, `local-openai` use `registerProvider` + `refreshModels` against `/v1/models` (Ollama falls back to `/api/tags`). No frozen models array.
-- **AC-27.3** `/accounts login ollama` stores base URL (default `http://127.0.0.1:11434/v1`). LM Studio default `http://127.0.0.1:1234/v1`. `local-openai` asks for the URL.
+- **AC-27.3** `/accounts login ollama` stores base URL (default `http://127.0.0.1:11434/v1`). LM Studio default `http://127.0.0.1:1234/v1`. `local-openai` asks for the URL. Each writes a `kind: "local"` slot that persists that base URL and requires no credential; an optional credential may be referenced, never a dummy secret.
 - **AC-27.4** Unreachable server cools that slot. Failover stays in the local family first.
-- **AC-27.5** Default cloud chain does not include local. Add with `/pool chain …,llama` or pin a local slot.
-- **AC-27.6** Footer shows `(local)` and `$0`.
+- **AC-27.5** Default cloud chain does not include `local` slots. Add with `/pool chain …,llama` or pin a local slot.
+- **AC-27.6** Footer renders one cost cell `(local) $0` for an active `local` slot, and the accounts widget shows no quota percentage for it.
 - **AC-27.7** No runtime dep on `pi-ollama`, `@jamesjfoong/pi-ollama`, `pi-ollama-keyring`, or `pi-ollama-cloud-provider`.
 - **AC-27.8** Local traffic stays on the configured base URL. No silent cloud proxy.
 
 ### US-28 — Optional Exa and Perplexity research
 
-**Story.** As an operator, I can give k-pi an Exa key, a Perplexity key, or both at setup. Planning then searches the live web by default.
+**Story.** As an operator, I can give k-pi an Exa key, a Perplexity key, or both at setup. Planning then searches the live web by default through the first-party research tools.
 
 - **AC-28.1** `/setup-kstack` offers Exa and Perplexity keys with save or skip. Saving either, both, or neither is valid.
 - **AC-28.2** Keys live in `accounts.secrets.json` at `exa/default` and `perplexity/default`, mode 0600. `EXA_API_KEY` and `PERPLEXITY_API_KEY` are fallbacks.
 - **AC-28.3** First-party REST tools cover Exa search and contents plus Perplexity Search. No provider SDK is a runtime dependency.
 - **AC-28.4** package.json has no `exa-js` or `@perplexity-ai/perplexity_ai` runtime dependency.
-- **AC-28.5** A 402/429 cools that research service, tries the other configured service, then falls back to local research. The graph does not hang.
+- **AC-28.5** A 429, timeout, or unavailable service cools that research service and tries the other configured service. k-pi treats a 402 the same way, as defensive handling on our side rather than a documented Perplexity Search response. Attempts per service are bounded and recorded; the graph does not hang.
 - **AC-28.6** Footer / board can show `EXA`, `PPLX`, or both when keys are present.
+- **AC-28.7** `exa` and `perplexity` are research credential targets, not pool ids. Neither appears in `accounts.json.pools`, `/pool strategy`, `/pool chain`, or the fallback chain, and neither registers a provider or grants a model provider-native web search.
 
 ### US-29 — Research before implement
 
 **Story.** As an operator, the agent does not write product code until it has researched the stack and current practice.
 
 - **AC-29.1** Specify and plan cannot leave their nodes without `.pi/runs/<job>/research.md` and `research.json`.
-- **AC-29.2** With an Exa or Perplexity key, research.json includes ≥2 sources from `exa_search`, `exa_contents`, or `pplx_search` unless the job is flagged `no-network`.
-- **AC-29.3** Without a key, mode is `local` and sources are repo files. The lamp still lights.
+- **AC-29.2** With an Exa or Perplexity key and `network.state: "online"`, `research.json` records at least two **distinct** external sources — different origins, deduplicated — from `exa_search`, `exa_contents`, or `pplx_search`.
+- **AC-29.3** Without a usable key, or under `no-network` from either origin, mode is `local` and sources are repository and frozen-plan files cited by repo-relative path. The lamp still lights. No external URL is recorded that this job did not fetch.
 - **AC-29.4** Implement is `UNSAFE` if research files are missing or older than the current `task.json` hash.
 - **AC-29.5** Assistant prose does not dump raw crawl pages. Citations live in research.md.
+- **AC-29.6** A healthy configured service that answers but supplies fewer than two distinct external sources ends the node `NEEDS_HUMAN`. Online shortfall is never downgraded to local research.
+- **AC-29.7** The engine may set effective `no-network` only after every configured service has failed its bounded attempts, writing `network.origin: "engine"`, a `network.reason` naming those services, and one recorded failure per attempt. An operator-flagged job uses `network.origin: "operator"`. `no-network` is a research state, never a stop state.
 
 ### US-30 — Dune modular stack
 
@@ -528,8 +535,8 @@ operator /k-mode <goal>
 | US-19 | kstack.md §Playbooks | M8 |
 | US-20 | kstack.md §Cloud strip | M8 |
 | US-21 | kstack.md §Upstream | M8 |
-| US-22 | minimalist.md | M3, M8 |
-| US-23 | agents-bus.md | M4, M8, M9 |
+| US-22 | minimalist.md | M9 |
+| US-23 | agents-bus.md | M9 |
 | US-24 | spec §Entry points | M3 |
 | US-25 | visual-targets.md §honesty | M2 |
 | US-26 | spec §Accounts | M5 |

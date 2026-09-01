@@ -38,7 +38,7 @@ Layout rules copied from OMP default preset (`leftSegments` then `rightSegments`
 3. **Path** (repo / cwd, abbreviated)
 4. **Git** (branch + dirty marks when present)
 5. **Context** `pct%/window` + auto-compact mark
-6. **Cost or (sub)**
+6. **Cost** — `$x.xx`, `(sub)`, or `(local) $0`
 7. Right side: last user request or session name, truncated
 
 Separator: powerline chevron `>` between segments. Thin variant is the default.
@@ -93,10 +93,18 @@ That second line is ours (`ctx.ui.setStatus("kpi", …)` if the footer is a full
 | `path` | abbreviated cwd |
 | `git` | branch + `+staged *unstaged ?untracked` |
 | `context_pct` | `n%/window` |
-| `cost` | `$x.xx` or `(sub)` for subscription slots |
-| `usage` | per-pool remaining if known, else omit |
+| `cost` | `$x.xx` for api-key slots, `(sub)` for subscription slots, exactly `(local) $0` for a `local` slot |
+| `usage` | per-pool remaining if known, else omit. A local slot has no quota: omit it, never draw `100%` |
 | `kpi_job` | mode / round / stage / gate |
 | `request` | last user text, 80 chars, right-aligned |
+
+Exact local cost cell:
+
+```
+(local) $0
+```
+
+One cell, one space, that literal. A `local` slot is credential-free and its traffic costs nothing, so it renders neither a computed burn nor `$0.00`, and no quota percentage sits beside it.
 
 Commands: `/statusbar` toggle, `/statusbar preset default|compact|full`.
 
@@ -162,6 +170,23 @@ Required regions, top to bottom:
 7. **Stop / status box**  
    One of `RUNNING | DONE | BLOCKED | EXHAUSTED | NO_PROGRESS | UNSAFE | NEEDS_HUMAN`.
 
+### Research state (drawn into region 2)
+
+The context layer carries one research cell, so an operator can see **how** the current plan was researched without opening a file. It reads `research.json`. It is never model prose.
+
+| `research.json` | Cell |
+|---|---|
+| `network.state: online` | `RESEARCH exa 4 src` — the service actually used and the external source count |
+| `network.state: no-network`, `network.origin: operator` | `RESEARCH local · no-network operator` |
+| `network.state: no-network`, `network.origin: engine` | `RESEARCH local · no-network engine · <network.reason>` |
+
+The third row is the one that must not blend in. When the engine sets effective no-network after bounded, recorded provider failures and the planning model researches repository sources instead:
+
+- The cell names `engine` as the origin and prints the recorded reason. A degraded round never renders like a healthy online round.
+- The services that failed stay visible as struck marks from `network.failures[]` — `EXA ✕  PPLX ✕` — not as missing lamps.
+- Citations for that round are `sources[].kind: local`, so the board shows repo paths. An external URL on a no-network round is a defect, not a display choice.
+- This is a display state, **not a stop state**. The stop box keeps exactly `RUNNING | DONE | BLOCKED | EXHAUSTED | NO_PROGRESS | UNSAFE | NEEDS_HUMAN`; `no-network` is never written into a persisted stop-state field and never drawn inside that box.
+
 ### Board B — protocol-blue pause board (theme `protocol-blue`)
 
 Same geometry as Board A. Accent flips to `#3da9fc` while a `human` node is paused.
@@ -192,9 +217,11 @@ Switch back to amber when the human node resumes.
 
 - Idle footer leftmost cell is exactly `K-π` (unicode preset) or documented nerd/ascii equivalent.
 - Footer includes model, thinking, path, context_pct. Git when in a repo.
-- Subscription slots show `(sub)` not a fake dollar burn.
+- Subscription slots show `(sub)` not a fake dollar burn. Local slots show exactly `(local) $0`, with no quota percentage beside them.
 - `/kpi status` overlay contains MODE, ROUND, STAGE, GATE, the six file lamps, and a stop state.
 - Human pause changes accent to protocol-blue.
+- The board tells online research, operator-set no-network, and engine-set no-network apart, and prints the recorded engine reason.
+- `no-network` never appears in a persisted stop-state field or inside the stop box.
 - No `π` without the `K-` prefix in our chrome.
 - README links the X post and this file.
 
