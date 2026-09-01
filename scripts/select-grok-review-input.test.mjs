@@ -430,3 +430,22 @@ test("buildReviewInventory monorepo-scale path list stays complete under default
 	assert.ok(parsed.rows.some((r) => r.path === "package-lock.json" && r.status === "A"));
 	assert.ok(parsed.rows.some((r) => r.path === "pnpm-lock.yaml" && r.status === "D"));
 });
+
+
+test("missing HEAD kpi is not relocation-identical via base fallback", () => {
+	const legacy = "extensions/gated-loop.ts";
+	const kpi = "packages/coding-agent/src/kpi/extensions/gated-loop.ts";
+	const blobs = new Map([
+		[`${BASE}:${legacy}`, "blob-same"],
+		[`${BASE}:${kpi}`, "blob-same"],
+		// HEAD kpi intentionally absent
+	]);
+	const result = classifyRelocationProvenance({
+		paths: [legacy, kpi],
+		baseSha: BASE,
+		headSha: HEAD,
+		resolveBlob: (rev, path) => blobs.get(`${rev}:${path}`) ?? null,
+	});
+	assert.equal(result.decisions.get(legacy).decision, "include");
+	assert.equal(result.decisions.get(kpi).decision, "include");
+});

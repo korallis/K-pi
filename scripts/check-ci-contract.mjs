@@ -106,7 +106,8 @@ const FORBIDDEN_IN_WORKFLOWS = [
 	{ id: "gh-pr-merge", pattern: /gh\s+pr\s+merge/, label: "PR merge automation" },
 	{
 		id: "merge-bypass",
-		pattern: /gh\s+pr\s+merge[^\n]*--admin\b/,
+		// Allow --admin on a continuation line under `run: |` / folded blocks.
+		pattern: /gh\s+pr\s+merge(?:[^\n]*\n[ \t]+){0,8}[^\n]*--admin\b/,
 		label: "merge that bypasses required checks (--admin)",
 	},
 	{ id: "git-push", pattern: /git\s+push\b/, label: "workflow that pushes" },
@@ -117,7 +118,13 @@ const FORBIDDEN_IN_WORKFLOWS = [
 	},
 	// The hazard is the trigger, not the word: workflow comments have to be able
 	// to state that this fork refuses the privileged variant.
-	{ id: "privileged-pr-trigger", pattern: /^[ \t]*pull_request_target[ \t]*:/m, label: "pull_request_target trigger" },
+	{
+		id: "privileged-pr-trigger",
+		// Mapping key, scalar on:, flow list, or sequence item — with optional quotes.
+		pattern:
+			/(?:^[ \t]*['"]?pull_request_target['"]?[ \t]*:|(?:^|[\s\[,])['"]?pull_request_target['"]?(?=[ \t]*[,\]\n]|$)|^[ \t]*on:[ \t]*['"]?pull_request_target['"]?\s*$)/m,
+		label: "pull_request_target trigger",
+	},
 	{
 		id: "governance-automation",
 		pattern: /actions\/stale|dessant\/|actions\/labeler/,
@@ -127,7 +134,7 @@ const FORBIDDEN_IN_WORKFLOWS = [
 
 /** Every GitHub permission scope; `write` on any of them is an escalation. */
 const WRITE_PERMISSION =
-	/^[ \t]*(actions|attestations|checks|contents|deployments|discussions|id-token|issues|models|packages|pages|pull-requests|repository-projects|security-events|statuses)[ \t]*:[ \t]*write\b/gm;
+	/^[ \t]*(actions|attestations|checks|contents|deployments|discussions|id-token|issues|models|packages|pages|pull-requests|repository-projects|security-events|statuses)[ \t]*:[ \t]*["']?write["']?\b/gm;
 
 const GH_PR_MERGE_COMMAND = /gh\s+pr\s+merge[^\n]*/g;
 
@@ -294,24 +301,24 @@ function checkMergeWaitsForChecks(context, relativePath, contents) {
 }
 
 function checkWritePermissions(context, relativePath, contents, allowed) {
-	// Top-level grant: permissions: write-all
-	if (/^[ \t]*permissions:[ \t]*write-all\b/m.test(contents)) {
+	// Top-level grant: permissions: write-all (optional quotes)
+	if (/^[ \t]*permissions:[ \t]*["']?write-all["']?\b/m.test(contents)) {
 		context.violation(relativePath, 'forbidden write permission "write-all"');
 	}
-	// Flow-style maps: permissions: { contents: write, ... }
+	// Flow-style maps: permissions: { contents: write, ... } with optional quotes
 	for (const match of contents.matchAll(
 		/^[ \t]*permissions:[ \t]*\{([^}]*)\}/gm,
 	)) {
 		const body = match[1];
 		for (const entry of body.matchAll(
-			/\b(actions|attestations|checks|contents|deployments|discussions|id-token|issues|models|packages|pages|pull-requests|repository-projects|security-events|statuses)[ \t]*:[ \t]*write\b/g,
+			/\b(actions|attestations|checks|contents|deployments|discussions|id-token|issues|models|packages|pages|pull-requests|repository-projects|security-events|statuses)[ \t]*:[ \t]*["']?write["']?\b/g,
 		)) {
 			const key = entry[1];
 			if (allowed?.has(key)) continue;
 			context.violation(relativePath, `forbidden write permission "${key}: write"`);
 		}
 	}
-	// Block-style scope lines already covered by WRITE_PERMISSION.
+	// Block-style scope lines (optional quotes around write).
 	for (const match of contents.matchAll(WRITE_PERMISSION)) {
 		const key = match[1];
 		if (allowed?.has(key)) continue;

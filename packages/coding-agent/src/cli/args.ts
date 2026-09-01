@@ -96,7 +96,14 @@ export function parseArgs(args: string[]): Args {
 			const mode = args[++i];
 			if (mode === "text" || mode === "json" || mode === "rpc") {
 				result.mode = mode;
+			} else {
+				result.diagnostics.push({
+					type: "error",
+					message: `invalid --mode ${JSON.stringify(mode)}; expected text, json, or rpc`,
+				});
 			}
+		} else if (arg === "--mode") {
+			result.diagnostics.push({ type: "error", message: "--mode requires a value" });
 		} else if (arg === "--continue" || arg === "-c") {
 			result.continue = true;
 		} else if (arg === "--resume" || arg === "-r") {

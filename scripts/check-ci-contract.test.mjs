@@ -504,3 +504,39 @@ test("inline permissions maps with write are rejected", (t) => {
 		'.github/workflows/nightly.yml: forbidden write permission "contents: write"',
 	]);
 });
+
+
+test("quoted write-all and quoted scope writes are rejected", (t) => {
+	const root = fixture(t, {
+		workflows: {
+			"nightly.yml": readOnlyWorkflow(
+				'    permissions: "write-all"\n    steps:\n      - run: echo hi\n',
+			),
+		},
+	});
+	assert.deepEqual(inspectForkIntegrity(root), [
+		'.github/workflows/nightly.yml: forbidden write permission "write-all"',
+	]);
+});
+
+test("scalar and list pull_request_target forms are rejected", (t) => {
+	const root = fixture(t, {
+		workflows: {
+			"nightly.yml": "name: n\non: pull_request_target\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n",
+		},
+	});
+	assert.ok(
+		inspectForkIntegrity(root).some((v) => v.includes("pull_request_target")),
+	);
+});
+
+test("wrapped gh pr merge --admin is rejected", (t) => {
+	const root = fixture(t, {
+		workflows: {
+			"auto-merge.yml": autoMergeWorkflow("gh pr merge --auto \\\n        --admin --merge \"$PR_URL\""),
+		},
+	});
+	assert.ok(
+		inspectForkIntegrity(root).some((v) => v.includes("--admin")),
+	);
+});

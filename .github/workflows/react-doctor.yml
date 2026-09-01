@@ -20,13 +20,13 @@ concurrency:
 
 jobs:
   react-doctor:
-    # Same-repository only on pull_request: fork heads never schedule on the
-    # persistent self-hosted Mac. push keeps running.
+    # Same-repository only on pull_request: forks never get a checkout of untrusted
+    # head on any runner for this advisory slot. Hosted Ubuntu (not the Mac mini).
     if: >-
       github.event_name != 'pull_request'
       || (github.event.pull_request.draft == false
           && github.event.pull_request.head.repo.full_name == github.repository)
-    runs-on: [self-hosted, macOS]
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
       GIT_CONFIG_GLOBAL: /dev/null

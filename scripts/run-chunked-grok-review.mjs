@@ -11,6 +11,7 @@
  * Effort stays `high`. Model stays the configured Grok id. No alternate vendors.
  */
 
+import { randomBytes } from "node:crypto";
 import { spawn } from "node:child_process";
 import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -72,13 +73,20 @@ Location rules (mandatory):
 - line may be null for file-level issues or when no reliable new-side line exists. The gate keeps the finding either way; off-hunk positive lines are normalized to file-level rather than discarded.
 
 title and body must be non-empty strings describing the defect and concrete fix.
-
-BEGIN UNTRUSTED DIFF
 `;
 
-const PROMPT_EPILOGUE = `
-END UNTRUSTED DIFF
-`;
+/**
+ * @param {string} [nonce]
+ */
+export function untrustedDiffDelimiters(nonce = randomBytes(8).toString("hex")) {
+	const token = String(nonce).replace(/[^A-Za-z0-9_-]/g, "");
+	if (!token) throw new Error("untrusted diff delimiter nonce must be non-empty");
+	return {
+		nonce: token,
+		begin: `BEGIN UNTRUSTED DIFF ${token}`,
+		end: `END UNTRUSTED DIFF ${token}`,
+	};
+}
 
 
 function parseArgs(argv) {
@@ -300,13 +308,16 @@ export function defaultRunCommand(spec) {
 /**
  * @param {string} chunkText
  * @param {string} [inventoryText]
+ * @param {{ begin: string, end: string } | null} [delimiters]
  */
-export function buildPrompt(chunkText, inventoryText = "") {
+export function buildPrompt(chunkText, inventoryText = "", delimiters = null) {
+	const delim = delimiters ?? untrustedDiffDelimiters();
 	const inventoryBlock =
 		typeof inventoryText === "string" && inventoryText.trim()
 			? `${inventoryText.trim()}\n\n`
 			: "";
-	return `${PROMPT_PREAMBLE}${inventoryBlock}${chunkText}${PROMPT_EPILOGUE}`;
+	// Inventory is trusted CI context and MUST sit outside the untrusted envelope.
+	return `${PROMPT_PREAMBLE}\n${inventoryBlock}${delim.begin}\n${chunkText}\n${delim.end}\n`;
 }
 
 /** Hard ceiling for complete inventory inside each prompt (argv remainder). */
@@ -346,7 +357,6 @@ export async function runChunkedGrokReview(options, hooks = {}) {
 	const selectedBytes = Buffer.byteLength(diffText, "utf8");
 	const framingBytes =
 		Buffer.byteLength(PROMPT_PREAMBLE, "utf8") +
-		Buffer.byteLength(PROMPT_EPILOGUE, "utf8") +
 		PROMPT_FRAMING_RESERVE_BYTES +
 		(inventoryBytes > 0 ? inventoryBytes + 2 : 0);
 	const argvRoomForChunk = PROMPT_ARGV_TEST_CEILING_BYTES - framingBytes;
@@ -393,7 +403,8 @@ export async function runChunkedGrokReview(options, hooks = {}) {
 	const startedAll = Date.now();
 	const chunkResults = await mapPool(chunks, options.maxConcurrency, async (chunk) => {
 		const started = Date.now();
-		const prompt = buildPrompt(chunk.text, inventoryText);
+		const delim = untrustedDiffDelimiters();
+		const prompt = buildPrompt(chunk.text, inventoryText, delim);
 		const promptPath = join(options.workDir, `chunk-${String(chunk.index).padStart(3, "0")}.prompt.txt`);
 		const rawPath = join(options.workDir, `chunk-${String(chunk.index).padStart(3, "0")}.raw`);
 		writeFileSync(promptPath, prompt);

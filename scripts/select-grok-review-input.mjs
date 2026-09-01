@@ -92,7 +92,6 @@ export const COVERED_ARTIFACT_RULES = Object.freeze([
 			return (
 				path === "package-lock.json" ||
 				path === "pnpm-lock.yaml" ||
-				path === "pnpm-workspace.yaml" ||
 				path === "yarn.lock" ||
 				path === shrinkwrap
 			);
@@ -335,7 +334,9 @@ export function classifyRelocationProvenance(input) {
 		// Identical relocation exclude requires a real base-side legacy blob.
 		// New files added under both roots on head only must stay in review.
 		const sourceBlob = baseLegacy;
-		const destBlob = headKpi ?? baseKpi;
+		// Identical exclude requires a real HEAD kpi blob. Never fall back to
+		// baseKpi: a deleted or missing HEAD destination must stay in review.
+		const destBlob = headKpi;
 
 		if (!sourceBlob || !destBlob) {
 			for (const path of [legacy, kpi]) {

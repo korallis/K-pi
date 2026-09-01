@@ -440,3 +440,30 @@ test("inventory makes lockfile replacement visible in every chunk prompt without
 		rmSync(dir, { recursive: true, force: true });
 	}
 });
+
+
+test("inventory sits outside the untrusted envelope with nonce delimiters", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "kpi-inv-delim-"));
+	try {
+		const { buildReviewInventory } = await import("./select-grok-review-input.mjs");
+		const { buildPrompt, untrustedDiffDelimiters } = await import("./run-chunked-grok-review.mjs");
+		const inv = buildReviewInventory({
+			rows: [{ path: "a.ts", decision: "include", reason: "first-party" }],
+			statusByPath: new Map([["a.ts", "M"]]),
+		});
+		const delim = untrustedDiffDelimiters("abc123");
+		const prompt = buildPrompt("diff --git a/a.ts b/a.ts\n+hi\n", inv.text, delim);
+		const invAt = prompt.indexOf("TRUSTED_PR_INVENTORY");
+		const beginAt = prompt.indexOf(delim.begin);
+		const endAt = prompt.indexOf(delim.end);
+		const diffAt = prompt.indexOf("diff --git");
+		assert.ok(invAt >= 0 && beginAt > invAt, "inventory before BEGIN");
+		assert.ok(diffAt > beginAt && endAt > diffAt, "diff inside envelope");
+		assert.match(prompt, /BEGIN UNTRUSTED DIFF abc123/);
+		assert.match(prompt, /END UNTRUSTED DIFF abc123/);
+		// Fixed delimiter without nonce must not be the only closer
+		assert.equal(prompt.includes("\nEND UNTRUSTED DIFF\n"), false);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
