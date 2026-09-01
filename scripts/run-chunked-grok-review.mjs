@@ -26,8 +26,9 @@ import { normalizeGrokReview, unionGrokFindings } from "./validate-grok-review.m
 
 /** One concurrent wave covers provenance-reduced selection with pack headroom. */
 export const DEFAULT_MAX_CONCURRENCY = 20;
-/** Per-chunk wall timeout so a hung call fails closed inside the 15m job. */
-export const DEFAULT_CHUNK_TIMEOUT_SEC = 480;
+/** Per-chunk wall timeout; one high-effort wave must finish inside the 15m job. */
+export const DEFAULT_CHUNK_TIMEOUT_SEC = 720;
+
 export const DEFAULT_MAX_AI_CREDITS = 50;
 export const REQUIRED_EFFORT = "high";
 

@@ -219,7 +219,7 @@ jobs:
             --effort high \
             --max-chunk-bytes 96000 \
             --max-concurrency 20 \
-            --chunk-timeout-sec 480 \
+            --chunk-timeout-sec 720 \
             --max-ai-credits 50
           status=$?
           set -e

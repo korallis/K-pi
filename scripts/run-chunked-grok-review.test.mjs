@@ -278,7 +278,7 @@ test("invalid chunk schema fails closed", async () => {
 test("budget defaults stay latency-bound under argv ceiling", () => {
 	assert.equal(REQUIRED_EFFORT, "high");
 	assert.equal(DEFAULT_MAX_CONCURRENCY, 20);
-	assert.equal(DEFAULT_CHUNK_TIMEOUT_SEC, 480);
+	assert.equal(DEFAULT_CHUNK_TIMEOUT_SEC, 720);
 	assert.equal(DEFAULT_MAX_CHUNK_BYTES, 96_000);
 	// Prompt argv element must stay under the conservative 100 KiB ceiling
 	// (Linux MAX_ARG_STRLEN is ~128 KiB; preamble is a few KiB on top of the chunk).
