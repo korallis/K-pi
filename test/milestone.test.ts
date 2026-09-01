@@ -2,10 +2,10 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PassThrough } from "node:stream";
 import test from "node:test";
 import type { RefreshModelsContext } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionCommandContext } from "../packages/coding-agent/src/core/extensions/types.ts";
-
 import {
 	AccountBalancer,
 	DEFAULT_FALLBACK_CHAIN,
@@ -19,6 +19,7 @@ import type { AccountsDocument } from "../packages/coding-agent/src/kpi/extensio
 import { UsageCache } from "../packages/coding-agent/src/kpi/extensions/accounts/usage/cache.ts";
 import { renderAccountsWidget } from "../packages/coding-agent/src/kpi/extensions/accounts/widget.ts";
 import { appendEvent } from "../packages/coding-agent/src/kpi/extensions/append-log.ts";
+import { WorkerProtocol } from "../packages/coding-agent/src/kpi/extensions/bus/protocol.ts";
 import { BackgroundBus, type WorkerLauncher } from "../packages/coding-agent/src/kpi/extensions/bus/spawn.ts";
 import {
 	refreshCursorModels,
@@ -182,27 +183,56 @@ test("K-stack setup never writes a slug outside the live registry", () => {
 
 test("background bus caps workers, writers, messages, and leases", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "kpi-bus-"));
+	const runDirectory = join(directory, ".kpi", "runs", "job");
 	const messages: string[] = [];
+	const alive = new Set<number>();
 	let pid = 1;
-	const launcher: WorkerLauncher = async () => ({
-		pid: pid++,
-		send: async (message) => {
-			messages.push(message);
-		},
-		stop: async () => undefined,
-	});
+	// A peer that accepts everything, so this scenario stays about caps and
+	// leases. The protocol itself is exercised in test/bus.test.ts.
+	const launcher: WorkerLauncher = async (request) => {
+		const workerPid = pid++;
+		alive.add(workerPid);
+		const toWorker = new PassThrough();
+		const toParent = new PassThrough();
+		toWorker.on("data", (chunk: Buffer) => {
+			for (const line of chunk
+				.toString("utf8")
+				.split("\n")
+				.filter((entry) => entry.length > 0)) {
+				const record = JSON.parse(line) as { id: string; type: string; message?: string };
+				if (record.message !== undefined) messages.push(record.message);
+				toParent.write(
+					`${JSON.stringify({ id: record.id, type: "response", command: record.type, success: true })}\n`,
+				);
+			}
+		});
+		const protocol = new WorkerProtocol({ stdin: toWorker, stdout: toParent });
+		return {
+			pid: workerPid,
+			argv: [request.sessionPath],
+			protocol,
+			isAlive: () => alive.has(workerPid),
+			stop: async () => {
+				alive.delete(workerPid);
+				protocol.close();
+			},
+		};
+	};
 	try {
-		const bus = new BackgroundBus(directory, join(directory, ".kpi", "runs", "job"), launcher);
+		const bus = new BackgroundBus(directory, runDirectory, "job", {
+			launcher,
+			isProcessAlive: (candidate) => alive.has(candidate),
+		});
 		const writer = await bus.spawn({ role: "implementer", prompt: "one", tools: ["read", "write"] });
 		await assert.rejects(bus.spawn({ role: "implementer", prompt: "two", tools: ["edit"] }), /writer/u);
 		const reviewer = await bus.spawn({ role: "reviewer", prompt: "review" });
 		await assert.rejects(bus.spawn({ role: "tester", prompt: "third" }), /limit/u);
-		await bus.communicate(reviewer.agentId, "follow", "followUp");
-		assert.deepEqual(messages, ["follow"]);
-		await bus.claim(writer.agentId, "src/a.ts");
-		await assert.rejects(bus.claim(reviewer.agentId, "src/a.ts"), /claimed/u);
+		await bus.communicate({ agentId: reviewer.agentId, message: "follow", deliverAs: "followUp", expect: "ack" });
+		assert.deepEqual(messages, ["one", "review", "follow"]);
+		await bus.claim(writer.agentId, writer.pid, "src/a.ts");
+		await assert.rejects(bus.claim(reviewer.agentId, reviewer.pid, "src/a.ts"), /claimed/u);
 		await bus.stop(writer.agentId);
-		await bus.claim(reviewer.agentId, "src/a.ts");
+		await bus.claim(reviewer.agentId, reviewer.pid, "src/a.ts");
 	} finally {
 		await rm(directory, { recursive: true, force: true });
 	}

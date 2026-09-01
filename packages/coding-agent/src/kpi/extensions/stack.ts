@@ -612,18 +612,21 @@ async function resolveClaimTarget(startAbsolute: string): Promise<ClaimResolutio
 }
 
 /**
- * Refuses a claim outside the current slice.
+ * The canonical repository-relative path a claim's bytes land on.
  *
- * The lexical path must belong to the module, and so must the path it resolves
- * to: a link inside the folder that points elsewhere - existing, dangling, or
- * nested behind another link - is an escape, because the boundary is about where
- * the bytes land. Only the final resolved path is compared, so a project root
- * reached through an alias is not mistaken for an escape.
+ * Independent of any module map, because path identity is not a Dune question:
+ * every job has one, including the playbooks that run without a stack. Two
+ * spellings of one file - `src/a/x`, `./src/a/x`, `src/a/../a/x`, an absolute
+ * path inside the root, or a symlink alias - collapse to one string, so a caller
+ * keying an exclusive lease by it cannot hand out two leases for the same bytes.
+ *
+ * A path that leaves the project, lexically or through a link, is refused rather
+ * than canonicalised: there is no repository-relative name for it.
  */
-export async function assertClaimInModule(projectRoot: string, path: string, module: StackModule): Promise<void> {
+export async function canonicalProjectPath(projectRoot: string, path: string): Promise<string> {
 	const normalized = normalizeProjectPath(projectRoot, path);
-	if (normalized === undefined || !moduleOwnsPath(projectRoot, module, normalized)) {
-		throw new DuneStackError(`UNSAFE claim outside module ${module.id}: ${path}`);
+	if (normalized === undefined) {
+		throw new DuneStackError(`UNSAFE claim outside the project: ${path}`);
 	}
 
 	// The root is resolved the same way, so both sides of the comparison are real
@@ -646,11 +649,34 @@ export async function assertClaimInModule(projectRoot: string, path: string, mod
 	if (insideRoot === ".." || insideRoot.startsWith(`..${sep}`) || isAbsolute(insideRoot)) {
 		throw new DuneStackError(`UNSAFE claim escapes the project through a link: ${path}`);
 	}
-	// The same predicate, asked again about where the write really goes.
 	const resolved = insideRoot.split(sep).join("/");
-	if (resolved.length > 0 && !moduleOwnsPath(projectRoot, module, resolved)) {
+	return resolved.length > 0 ? resolved : normalized;
+}
+
+/**
+ * Refuses a claim outside the current slice, and returns its canonical key.
+ *
+ * The lexical path must belong to the module, and so must the path it resolves
+ * to: a link inside the folder that points elsewhere - existing, dangling, or
+ * nested behind another link - is an escape, because the boundary is about where
+ * the bytes land. Only the final resolved path is compared, so a project root
+ * reached through an alias is not mistaken for an escape.
+ *
+ * This is the module boundary on top of `canonicalProjectPath`, never instead of
+ * it: the canonical key is the same string a stackless job would get.
+ */
+export async function assertClaimInModule(projectRoot: string, path: string, module: StackModule): Promise<string> {
+	const normalized = normalizeProjectPath(projectRoot, path);
+	if (normalized === undefined || !moduleOwnsPath(projectRoot, module, normalized)) {
+		throw new DuneStackError(`UNSAFE claim outside module ${module.id}: ${path}`);
+	}
+
+	const canonical = await canonicalProjectPath(projectRoot, path);
+	// The same predicate, asked again about where the write really goes.
+	if (!moduleOwnsPath(projectRoot, module, canonical)) {
 		throw new DuneStackError(`UNSAFE claim outside module ${module.id} after link resolution: ${path}`);
 	}
+	return canonical;
 }
 
 /**
