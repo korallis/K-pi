@@ -200,31 +200,32 @@ async function logoutAccount(
 	context.ui.notify(`Removed account ${slot.poolId}/${slot.slotId}`, "info");
 }
 
+/** Resolves true when the command changed the stored accounts. */
 async function handleAccountsCommand(
 	args: string,
 	context: ExtensionCommandContext,
 	dependencies: Required<AccountsDependencies>,
 	onSlotRemoved: (poolId: PoolId, slotId: string) => void,
-): Promise<void> {
+): Promise<boolean> {
 	const words = args.trim().length === 0 ? [] : args.trim().split(/\s+/u);
 	const [action, first, second, ...extra] = words;
 	if (action === undefined || action === "list") {
 		await showAccounts(dependencies.store, context);
-		return;
+		return false;
 	}
 	if (extra.length > 0) {
 		throw new Error("Too many /accounts arguments");
 	}
 	if (action === "login") {
 		await loginAccount(first, second, dependencies.store, dependencies.login, dependencies.now, context);
-		return;
+		return true;
 	}
 	if (action === "logout") {
 		if (second !== undefined) {
 			throw new Error("Usage: /accounts logout <pool/slot>");
 		}
 		await logoutAccount(first, dependencies.store, context, onSlotRemoved);
-		return;
+		return true;
 	}
 	throw new Error(`Unknown /accounts command: ${action}`);
 }
@@ -250,10 +251,17 @@ export function registerAccounts(pi: ExtensionAPI, dependencies: AccountsDepende
 			(pool?.slots ?? []).map((slot) => ({ poolId: poolId as PoolId, slotId: slot.id })),
 		);
 
-	const publishWidget = async (context: {
-		ui: { setStatus: (key: string, value?: string) => void };
-	}): Promise<void> => {
-		const widget = renderAccountsWidget(await resolved.store.read(), {
+	/**
+	 * Renders the current account picture. `accounts` is passed in wherever the
+	 * caller already read it, so republishing on the request path costs a render
+	 * rather than another store read; the usage cache and the balancer are both
+	 * read from memory.
+	 */
+	const publishWidget = async (
+		context: { ui: { setStatus: (key: string, value?: string) => void } },
+		accounts?: AccountsDocument,
+	): Promise<void> => {
+		const widget = renderAccountsWidget(accounts ?? (await resolved.store.read()), {
 			usage,
 			health: balancer,
 			route:
@@ -274,6 +282,8 @@ export function registerAccounts(pi: ExtensionAPI, dependencies: AccountsDepende
 			// so no provider call stands between a turn and its headers.
 			active = balancer.select(provider, accounts, usage);
 			activeModel = context.model?.id;
+			// The route is only real once a slot is chosen, so publish here.
+			await publishWidget(context, accounts);
 			if (active === undefined) return;
 			const credential = (await resolved.store.readSecrets())[`${active.poolId}/${active.slot.id}`];
 			const token =
@@ -286,13 +296,22 @@ export function registerAccounts(pi: ExtensionAPI, dependencies: AccountsDepende
 		});
 		pi.on("after_provider_response", async (event, context) => {
 			if (active === undefined) return;
-			// Off the hot path: record what the response's own headers stated.
+			// Off the hot path: record what the response's own headers stated. Every
+			// response carries limits, not just the failures, so publish either way.
 			usage.recordHeaders(active.poolId, active.slot.id, event.headers ?? {});
-			const classification = classifyProviderFailure({
-				status: event.status,
-				headers: event.headers,
-			});
-			if (classification === undefined) return;
+			// The same clock the balancer checks health against: a cooldown parsed
+			// on a different time base would expire at the wrong moment.
+			const classification = classifyProviderFailure(
+				{
+					status: event.status,
+					headers: event.headers,
+				},
+				nowMs(),
+			);
+			if (classification === undefined) {
+				await publishWidget(context);
+				return;
+			}
 			balancer.markCooling(active.poolId, active.slot.id, classification.until);
 
 			const accounts = await resolved.store.read();
@@ -303,7 +322,11 @@ export function registerAccounts(pi: ExtensionAPI, dependencies: AccountsDepende
 				context.model,
 				usage,
 			);
-			if (plan === undefined) return;
+			if (plan === undefined) {
+				// Still a state change: this slot is now cooling.
+				await publishWidget(context, accounts);
+				return;
+			}
 			const job = await readActiveJob(context.cwd);
 			if (job !== undefined) {
 				await appendEvent(job.eventsPath, {
@@ -318,9 +341,12 @@ export function registerAccounts(pi: ExtensionAPI, dependencies: AccountsDepende
 			}
 			// A same-family sibling keeps the request's exact model and thinking
 			// level, so no model change is proposed at all.
+			active = { poolId: plan.to.poolId, slot: plan.to.slot };
 			if (!plan.sameFamily && plan.model !== undefined) {
+				activeModel = plan.model.id;
 				await pi.setModel(plan.model);
 			}
+			await publishWidget(context, accounts);
 		});
 		pi.on("session_start", async (_event, context) => {
 			// Refresh off the request path, before any turn needs a decision.
@@ -332,10 +358,17 @@ export function registerAccounts(pi: ExtensionAPI, dependencies: AccountsDepende
 		description: "Manage K-π subscription accounts",
 		handler: async (args, context) => {
 			try {
-				await handleAccountsCommand(args, context, resolved, (poolId, slotId) => {
+				const changed = await handleAccountsCommand(args, context, resolved, (poolId, slotId) => {
 					balancer.releaseSlot(poolId, slotId);
 					usage.forget(poolId, slotId);
+					if (active?.poolId === poolId && active.slot.id === slotId) {
+						active = undefined;
+						activeModel = undefined;
+					}
 				});
+				if (changed) {
+					await publishWidget(context);
+				}
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				context.ui.notify(`K-π accounts: ${message}`, "error");

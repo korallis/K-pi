@@ -1,6 +1,6 @@
 import type { PoolId } from "../store.ts";
 import { readUsageHeaders, type ResponseHeaders } from "./headers.ts";
-import type { UsageReader, UsageSnapshot, UsageSource, UsageView } from "./types.ts";
+import type { UsageReader, UsageReading, UsageSnapshot, UsageSource, UsageView } from "./types.ts";
 
 export interface UsageCacheOptions {
 	now?: () => number;
@@ -44,17 +44,25 @@ export class UsageCache implements UsageView {
 		return this.readers[poolId] !== undefined;
 	}
 
-	private write(poolId: PoolId, slotId: string, source: UsageSource, reading: {
-		remainingPercent?: number;
-		resetAt?: number;
-		window?: string;
-	}): UsageSnapshot {
+	/**
+	 * The one write path, so every reading is validated once. An injected reader
+	 * is third-party code: a NaN, an infinity, a negative, or a 900 must land as
+	 * unknown or as a clamped integer rather than corrupt a quota comparison or
+	 * print a nonsense percentage.
+	 */
+	private write(poolId: PoolId, slotId: string, source: UsageSource, reading: UsageReading): UsageSnapshot {
+		const percent = reading.remainingPercent;
+		const resetAt = reading.resetAt;
+		const window = reading.window;
 		const snapshot: UsageSnapshot = {
 			poolId,
 			slotId,
-			remainingPercent: reading.remainingPercent,
-			resetAt: reading.resetAt,
-			window: reading.window,
+			remainingPercent:
+				typeof percent === "number" && Number.isFinite(percent)
+					? Math.max(0, Math.min(100, Math.round(percent)))
+					: undefined,
+			resetAt: typeof resetAt === "number" && Number.isFinite(resetAt) ? resetAt : undefined,
+			window: typeof window === "string" && window.length > 0 ? window : undefined,
 			source,
 			observedAtMs: this.now(),
 		};

@@ -244,14 +244,20 @@ interface RoutingHarness {
 	context: ExtensionCommandContext;
 	directory: string;
 	hooks: Map<string, ProviderHook>;
+	/** A hook context carrying the same status sink as the command context. */
+	hookContext: (model?: { provider: string; id: string }, available?: unknown[]) => Record<string, unknown>;
 	readerCalls: string[];
 	setModelCalls: string[];
 	status: Array<string | undefined>;
 	store: AccountsStore;
 }
 
+function anthropicModel(id = "claude-opus-4-6") {
+	return { provider: "anthropic", id, name: id };
+}
+
 /** Captures the registered provider hooks, exactly as the harness calls them. */
-async function routingHarness(): Promise<RoutingHarness> {
+async function routingHarness(readerPercent: number | undefined = 42): Promise<RoutingHarness> {
 	const directory = await mkdtemp(join(tmpdir(), "k-pi-routing-"));
 	const store = new AccountsStore(directory);
 	const commands = new Map<string, CommandHandler>();
@@ -280,29 +286,40 @@ async function routingHarness(): Promise<RoutingHarness> {
 		usageReaders: {
 			cursor: ({ poolId, slotId }) => {
 				readerCalls.push(`${poolId}/${slotId}`);
-				return { remainingPercent: 42 };
+				return { remainingPercent: readerPercent };
 			},
 		},
 	});
-	const context = {
-		cwd: directory,
-		hasUI: true,
-		mode: "tui",
-		ui: {
-			async confirm() {
-				return true;
-			},
-			notify() {},
-			setStatus(_key: string, value?: string) {
-				status.push(value);
-			},
+	const ui = {
+		async confirm() {
+			return true;
 		},
-	} as unknown as ExtensionCommandContext;
-	return { command: commands.get("accounts")!, context, directory, hooks, readerCalls, setModelCalls, status, store };
-}
-
-function anthropicModel(id = "claude-opus-4-6") {
-	return { provider: "anthropic", id, name: id };
+		notify() {},
+		setStatus(_key: string, value?: string) {
+			status.push(value);
+		},
+	};
+	const context = { cwd: directory, hasUI: true, mode: "tui", ui } as unknown as ExtensionCommandContext;
+	const hookContext = (
+		model: { provider: string; id: string } | undefined = anthropicModel(),
+		available: unknown[] = [],
+	): Record<string, unknown> => ({
+		cwd: directory,
+		model,
+		ui,
+		modelRegistry: { getAvailable: () => available },
+	});
+	return {
+		command: commands.get("accounts")!,
+		context,
+		directory,
+		hooks,
+		hookContext,
+		readerCalls,
+		setModelCalls,
+		status,
+		store,
+	};
 }
 
 test("the request-header hook reads cached usage and never refreshes on the hot path", async () => {
@@ -313,7 +330,7 @@ test("the request-header hook reads cached usage and never refreshes on the hot 
 
 		await subject.hooks.get("before_provider_headers")!(
 			{ type: "before_provider_headers", headers },
-			{ model: { provider: "cursor", id: "cursor-fast" }, cwd: subject.directory },
+			subject.hookContext({ provider: "cursor", id: "cursor-fast" }),
 		);
 
 		assert.equal(headers.authorization, "Bearer access-default", "the hook still injects the slot credential");
@@ -328,14 +345,29 @@ test("the request-header hook reads cached usage and never refreshes on the hot 
 	}
 });
 
-test("the response hook caches documented rate-limit headers for the active slot", async () => {
+test("the widget follows the route from unknown, to selected, to parsed usage, to failover", async () => {
 	const subject = await routingHarness();
 	try {
 		await subject.command("login anthropic home", subject.context);
+		await subject.command("login anthropic work", subject.context);
+
+		// 1. Accounts exist but nothing has been routed: unknown, no route.
+		await subject.hooks.get("session_start")!({ type: "session_start" }, subject.context as never);
+		const initial = subject.status.at(-1) ?? "";
+		assert.match(initial, /home \?%/u);
+		assert.match(initial, /work \?%/u);
+		assert.doesNotMatch(initial, /ROUTE/u, "no route before a slot is selected");
+
+		// 2. The header hook selects a slot: the route appears.
 		await subject.hooks.get("before_provider_headers")!(
 			{ type: "before_provider_headers", headers: {} },
-			{ model: anthropicModel(), cwd: subject.directory },
+			subject.hookContext(),
 		);
+		const routed = subject.status.at(-1) ?? "";
+		assert.match(routed, /ROUTE {3}anthropic\/claude-opus-4-6 {2}via home/u);
+		assert.match(routed, /home \?%/u, "usage is still unknown until a response states it");
+
+		// 3. A successful response's own headers land in the cache and are shown.
 		await subject.hooks.get("after_provider_response")!(
 			{
 				type: "after_provider_response",
@@ -343,18 +375,102 @@ test("the response hook caches documented rate-limit headers for the active slot
 				headers: {
 					"anthropic-ratelimit-unified-limit": "1000",
 					"anthropic-ratelimit-unified-remaining": "250",
+					"anthropic-ratelimit-unified-window": "5h",
 				},
 			},
+			subject.hookContext(),
+		);
+		const measured = subject.status.at(-1) ?? "";
+		assert.match(measured, /home 25% 5h/u, "a non-failure response must still publish its limits");
+		assert.match(measured, /ROUTE {3}anthropic\/claude-opus-4-6 {2}via home/u);
+
+		// 4. A 429 cools the slot, fails over, and both facts reach the widget. The
+		// response states no remaining count, so usage stays unknown rather than
+		// being fabricated as zero.
+		await subject.hooks.get("after_provider_response")!(
+			{ type: "after_provider_response", status: 429, headers: { "retry-after": "3600" } },
+			subject.hookContext(anthropicModel(), [anthropicModel()]),
+		);
+		const failedOver = subject.status.at(-1) ?? "";
+		assert.match(failedOver, /home \?% cd 60m/u, "the cooled slot shows its cooldown on the injected clock");
+		assert.match(failedOver, /ROUTE {3}anthropic\/claude-opus-4-6 {2}via work/u, "the route moved to the sibling");
+		assert.deepEqual(subject.setModelCalls, [], "a sibling failover keeps the exact model");
+
+		// 5. A 429 that does state its counts publishes the real zero.
+		await subject.hooks.get("after_provider_response")!(
 			{
-				model: anthropicModel(),
-				cwd: subject.directory,
-				modelRegistry: { getAvailable: () => [] },
+				type: "after_provider_response",
+				status: 429,
+				headers: {
+					"retry-after": "1800",
+					"anthropic-ratelimit-unified-limit": "1000",
+					"anthropic-ratelimit-unified-remaining": "0",
+				},
 			},
+			subject.hookContext(anthropicModel(), [anthropicModel()]),
+		);
+		const exhausted = subject.status.at(-1) ?? "";
+		assert.match(exhausted, /work 0% cd 30m/u, "a stated zero is shown as zero");
+		assert.match(
+			exhausted,
+			/ROUTE {3}anthropic\/claude-opus-4-6 {2}via work/u,
+			"with no healthy successor the route still names the slot that ran, beside its cooldown",
+		);
+	} finally {
+		await rm(subject.directory, { recursive: true, force: true });
+	}
+});
+
+test("a cross-family failover republishes the widget with the mapped model and pool", async () => {
+	const subject = await routingHarness();
+	try {
+		await subject.command("login anthropic home", subject.context);
+		await subject.command("login xai grok", subject.context);
+
+		const available = [anthropicModel(), { provider: "xai", id: "grok-5", name: "grok-5" }];
+		await subject.hooks.get("before_provider_headers")!(
+			{ type: "before_provider_headers", headers: {} },
+			subject.hookContext(anthropicModel(), available),
+		);
+		assert.match(subject.status.at(-1) ?? "", /ROUTE {3}anthropic\/claude-opus-4-6 {2}via home/u);
+
+		await subject.hooks.get("after_provider_response")!(
+			{ type: "after_provider_response", status: 429, headers: {} },
+			subject.hookContext(anthropicModel(), available),
 		);
 
-		await subject.hooks.get("session_start")!({ type: "session_start" }, subject.context as never);
-		assert.match(subject.status.at(-1) ?? "", /home 25%/u);
+		assert.deepEqual(subject.setModelCalls, ["xai/grok-5"]);
+		assert.match(
+			subject.status.at(-1) ?? "",
+			/ROUTE {3}xai\/grok-5 {2}via grok/u,
+			"the widget must show the family and model the request moved to",
+		);
+	} finally {
+		await rm(subject.directory, { recursive: true, force: true });
+	}
+});
+
+test("login and logout republish the widget", async () => {
+	const subject = await routingHarness();
+	try {
+		await subject.command("list", subject.context);
+		assert.deepEqual(subject.status, [], "a read-only command changes nothing to publish");
+
+		await subject.command("login anthropic home", subject.context);
+		assert.match(subject.status.at(-1) ?? "", /home \?%/u, "login publishes the new slot");
+
+		await subject.hooks.get("before_provider_headers")!(
+			{ type: "before_provider_headers", headers: {} },
+			subject.hookContext(),
+		);
 		assert.match(subject.status.at(-1) ?? "", /ROUTE {3}anthropic\/claude-opus-4-6 {2}via home/u);
+
+		await subject.command("logout anthropic/home", subject.context);
+		assert.equal(
+			subject.status.at(-1),
+			undefined,
+			"removing the last slot clears the widget and its stale route",
+		);
 	} finally {
 		await rm(subject.directory, { recursive: true, force: true });
 	}
@@ -370,10 +486,7 @@ test("M-05 through the live hooks: an exhausted slot is never selected in 100 re
 		const afterResponse = subject.hooks.get("after_provider_response")!;
 		const route = async (): Promise<string> => {
 			const headers: Record<string, string> = {};
-			await beforeHeaders(
-				{ type: "before_provider_headers", headers },
-				{ model: anthropicModel(), cwd: subject.directory },
-			);
+			await beforeHeaders({ type: "before_provider_headers", headers }, subject.hookContext());
 			return headers.authorization ?? "";
 		};
 
@@ -383,7 +496,7 @@ test("M-05 through the live hooks: an exhausted slot is never selected in 100 re
 		const survivor = exhausted === "home" ? "work" : "home";
 		await afterResponse(
 			{ type: "after_provider_response", status: 429, headers: { "retry-after": "3600" } },
-			{ model: anthropicModel(), cwd: subject.directory, modelRegistry: { getAvailable: () => [] } },
+			subject.hookContext(),
 		);
 
 		const used: string[] = [];
@@ -413,15 +526,11 @@ test("same-family failover through the hook keeps the model and thinking level u
 		const available = [anthropicModel(), { provider: "xai", id: "grok-5", name: "grok-5" }];
 		await subject.hooks.get("before_provider_headers")!(
 			{ type: "before_provider_headers", headers: {} },
-			{ model: session.model, cwd: subject.directory },
+			subject.hookContext(session.model, available),
 		);
 		await subject.hooks.get("after_provider_response")!(
 			{ type: "after_provider_response", status: 429, headers: {} },
-			{
-				model: session.model,
-				cwd: subject.directory,
-				modelRegistry: { getAvailable: () => available },
-			},
+			subject.hookContext(session.model, available),
 		);
 
 		assert.deepEqual(subject.setModelCalls, [], "a sibling failover must not re-point the model");
@@ -432,7 +541,7 @@ test("same-family failover through the hook keeps the model and thinking level u
 		const headers: Record<string, string> = {};
 		await subject.hooks.get("before_provider_headers")!(
 			{ type: "before_provider_headers", headers },
-			{ model: session.model, cwd: subject.directory },
+			subject.hookContext(session.model, available),
 		);
 		assert.equal(headers.authorization, "Bearer access-work");
 	} finally {
@@ -446,15 +555,14 @@ test("cross-family failover through the hook re-points the model only after the 
 		await subject.command("login anthropic home", subject.context);
 		await subject.command("login xai grok", subject.context);
 
-		const source = anthropicModel();
-		const available = [source, { provider: "xai", id: "grok-5", name: "grok-5" }];
+		const available = [anthropicModel(), { provider: "xai", id: "grok-5", name: "grok-5" }];
 		await subject.hooks.get("before_provider_headers")!(
 			{ type: "before_provider_headers", headers: {} },
-			{ model: source, cwd: subject.directory },
+			subject.hookContext(anthropicModel(), available),
 		);
 		await subject.hooks.get("after_provider_response")!(
 			{ type: "after_provider_response", status: 429, headers: {} },
-			{ model: source, cwd: subject.directory, modelRegistry: { getAvailable: () => available } },
+			subject.hookContext(anthropicModel(), available),
 		);
 
 		assert.deepEqual(subject.setModelCalls, ["xai/grok-5"], "the only healthy family is xai");
@@ -473,7 +581,7 @@ test("logout of the pinned slot releases the session pin", async () => {
 			const headers: Record<string, string> = {};
 			await subject.hooks.get("before_provider_headers")!(
 				{ type: "before_provider_headers", headers },
-				{ model: anthropicModel(), cwd: subject.directory },
+				subject.hookContext(),
 			);
 			return headers.authorization ?? "";
 		};
@@ -486,5 +594,23 @@ test("logout of the pinned slot releases the session pin", async () => {
 		assert.equal(await route(), `Bearer access-${survivor}`, "logout released the pin");
 	} finally {
 		await rm(subject.directory, { recursive: true, force: true });
+	}
+});
+
+test("an injected reader cannot corrupt selection or rendering with unusable numbers", async () => {
+	for (const percent of [Number.NaN, Number.POSITIVE_INFINITY, -5, 900, 42.4]) {
+		const subject = await routingHarness(percent);
+		try {
+			await subject.command("login cursor default", subject.context);
+			await subject.hooks.get("session_start")!({ type: "session_start" }, subject.context as never);
+
+			const rendered = subject.status.at(-1) ?? "";
+			const expected =
+				percent === -5 ? "0%" : percent === 900 ? "100%" : percent === 42.4 ? "42%" : "?%";
+			assert.match(rendered, new RegExp(`default ${expected.replace("?", "\\?")}`, "u"), `percent ${percent}`);
+			assert.doesNotMatch(rendered, /NaN|Infinity|-\d/u, `percent ${percent} leaked into the widget`);
+		} finally {
+			await rm(subject.directory, { recursive: true, force: true });
+		}
 	}
 });
