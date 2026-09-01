@@ -1,29 +1,49 @@
-name: ci
+# Adapted from Ray Fernando's Actions templates (`workflows/check.yml`): the hard
+# verify gate on a persistent self-hosted macOS runner.
+#
+# What this gate proves for K-π, which is its own coding-agent harness built from
+# its own vendored source: install from the committed lockfile with no lifecycle
+# scripts, build the vendored packages offline, then run the fork-integrity
+# guard, the repository gates, the K-π suites, and the K-stack sync check. Pi is
+# never installed from a registry and is never a peer dependency, and nothing
+# here publishes, releases, or pushes.
+#
+# Deliberate deviations from the template:
+#   - No `paths-ignore` for `**/*.md` / `docs/**`. In this repo docs are
+#     executable product contracts: AGENTS.md and the K-stack docs are inputs to
+#     `npm run check`, `npm run kstack:sync:check`, and the K-π suites, so a
+#     docs-only commit can and does break the gate.
+#   - No Rust/cargo/ffmpeg steps and no cargo target cache: this fork is Node and
+#     TypeScript only, so the template's toolchain pinning and cache-wipe input
+#     have nothing to pin or wipe.
+#   - `timeout-minutes: 60` rather than 45 — build + four suites on one runner.
+#
+# See ../../UPSTREAM.md (fork patch register) and AGENTS.md.
 
-# K-pi is its own coding-agent harness. CI proves that from this repository's own
-# source: install from the committed lockfile with no lifecycle scripts, build the
-# vendored packages offline, then run the repository gates, the K-pi suites, and
-# the K-stack sync check. Pi is never installed from a registry and is never a
-# peer dependency, and nothing here publishes, releases, or pushes.
+name: check
 
 on:
   push:
     branches: [main]
   pull_request:
-    # ready_for_review is load-bearing: drafts are skipped, and without this type
-    # a PR opened as a draft would never re-trigger after being marked ready.
+    # ready_for_review is load-bearing: drafts are skipped below, and without
+    # this type a PR opened as a draft would never re-trigger once marked ready.
     types: [opened, synchronize, reopened, ready_for_review]
+  # Nightly backstop: catches drift that lands on main without a PR run and
+  # keeps a fresh-worktree signal even in a quiet week.
+  schedule:
+    - cron: "0 4 * * *"
   workflow_dispatch:
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: check-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
-  quality:
+  check:
     runs-on: [self-hosted, macOS]
     timeout-minutes: 60
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
@@ -37,8 +57,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          # No gate needs the token; keeping it out of .git/config keeps it out of
-          # every git invocation below.
+          # No gate needs the token; keeping it out of .git/config keeps it out
+          # of every git invocation below.
           persist-credentials: false
 
       - uses: actions/setup-node@v7
@@ -56,16 +76,6 @@ jobs:
           npm --version
           rg --version | head -1
           fd --version
-
-      - name: Fork integrity
-        # Required gates exist, no manifest points at a deleted script, and no
-        # publish/release/registry/governance automation has crept back in.
-        run: node scripts/check-ci-contract.mjs
-
-      - name: Upstream pin integrity
-        # Offline: shape and local provenance of upstream.json only. Networked
-        # drift reporting is the scheduled upstream-drift workflow.
-        run: node scripts/upstream-check.mjs --offline --summary "$GITHUB_STEP_SUMMARY"
 
       - name: Install from the committed lockfile
         run: npm ci --ignore-scripts --prefer-offline --no-audit --fund=false
@@ -88,13 +98,23 @@ jobs:
       - name: Build the harness from source
         run: npm run build:offline
 
+      - name: Fork integrity
+        # Required gates exist, no manifest points at a deleted script, and no
+        # publish/release/registry/governance automation has crept back in.
+        run: node scripts/check-ci-contract.mjs
+
+      - name: Upstream pin integrity
+        # Offline: shape and local provenance of upstream.json only. Networked
+        # drift reporting is the scheduled upstream-drift workflow.
+        run: npm run upstream:check -- --offline --summary "$GITHUB_STEP_SUMMARY"
+
       - name: Repository gates
         run: npm run check
 
       - name: Workspace tests
         run: npm test
 
-      - name: K-pi tests
+      - name: K-π tests
         run: npm run test:kpi
 
       - name: K-stack sync check

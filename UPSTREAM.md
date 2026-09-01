@@ -121,14 +121,14 @@ Verified against `git diff b79e4cc..worktree`, upstream-owned paths only. `src/k
 | `tsconfig.json` | Adds root `test/**/*.ts` to `include` (K-π's node tests live at the repo root and import `packages/coding-agent/src/kpi/...`). |
 | `biome.json` | Adds root `test/**` to the checked set; ignores `src/kpi/kstack/{generated,upstream}` (vendored/generated trees are not lint subjects). |
 | `.gitignore` | Ignores `.kpi/` (and pre-rebrand `.pi/`) project-local runtime state instead of upstream's maintainer-specific entries. |
-| `.github/workflows/{ci,queue-stall-alarm,upstream-drift}.yml` | K-π-owned CI: the adapted Ray Fernando hard gate and hosted queue alarm, plus a read-only upstream drift report. `scripts/check-ci-contract.mjs` blocks publish/release/governance automation. Never merge upstream CI content into these files. |
+| `.github/workflows/{auto-merge,check,cursor-review,queue-stall-alarm,react-doctor,upstream-drift}.yml` | K-π-owned CI: adapted Ray Fernando hard verification, green-only merge, Cursor review/autofix, advisory static-doctor, hosted queue alarm, and read-only upstream drift workflows. `scripts/check-ci-contract.mjs` keeps the two mutating workflows on exact-path allowlists and blocks publish/release/governance automation. Never merge upstream CI content into these files. |
 | `pi-test.sh` → `kpi-test.sh` (+ `.ps1`, `.bat`) | Source-runner rename; `.bat` also edited for the new name. Git tracks these as renames, so upstream changes to `pi-test.*` follow to the new names with `merge.renames` on. |
 | `packages/evals/package.json` | Workspace dependency range follows the fork version (`^0.1.0` instead of `^0.84.4`). |
 | `AGENTS.md`, `README.md`, `packages/coding-agent/README.md` | Root docs replaced by K-π's authority docs; the package README keeps upstream's reference body under a fork banner (low risk — regenerate the banner side, take upstream's body updates). |
 
 **Deleted upstream files (§5 policy; on merge, resolve as deleted — do not resurrect)**
 
-- Upstream `.github/**` except `workflows/ci.yml`: issue/PR templates, approved-contributors gate, issue-triage/analysis bots, npm-audit, build-binaries, publish-model-catalog, pr/issue gates.
+- Upstream `.github/**` in full: workflows, issue/PR templates, approved-contributors gate, issue-triage/analysis bots, npm-audit, build-binaries, publish-model-catalog, and pr/issue gates.
 - Publish and release tooling in `scripts/`: `publish*.mjs`, `release*.mjs`, `local-release.mjs`, `release-notes.mjs`, `release-packages.mjs`, `publish-release-announcement*`, `sync-versions*`, `generate-coding-agent-{shrinkwrap,install-lock}.mjs`, `package-workspaces.mjs`, `publish-model-catalog.mjs`, `diff-model-catalog.mjs`, `check-lockfile-commit.mjs`, `build-binaries.sh`, `create-source-archive.sh`.
 - Governance and maintainer files: `CONTRIBUTING.md`, `SECURITY.md`, `.husky/pre-commit`, `tui-plan.md`, upstream's `.pi/` maintainer extensions/prompts/skills.
 

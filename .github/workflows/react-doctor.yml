@@ -1,0 +1,44 @@
+# Adapted from Ray Fernando's React Doctor workflow.
+# K-pi has no React surface. Keep this advisory slot on the repository's static
+# doctor until React is introduced; then replace the final step with
+# millionco/react-doctor@v2 and scope it to the React workspace.
+
+name: React Doctor
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: ["main"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: react-doctor-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  react-doctor:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: [self-hosted, macOS]
+    timeout-minutes: 15
+    env:
+      GIT_CONFIG_GLOBAL: /dev/null
+      GIT_CONFIG_SYSTEM: /dev/null
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22.19.0
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts --prefer-offline --no-audit --fund=false
+
+      - name: Run advisory static doctor
+        continue-on-error: true
+        run: npm run check

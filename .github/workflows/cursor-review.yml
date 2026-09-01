@@ -1,0 +1,504 @@
+name: cursor-review
+
+# Cursor review -> autofix -> deterministic push -> verify -> fail-closed gate.
+#
+# Adapted from ray-fernando-actions-templates/workflows/cursor-review.yml. One
+# job, so every stage shares the worktree and /tmp state:
+#   1. Review agent  - triage findings, post ONE review, write findings.json
+#   2. Autofix agent - fix clear confirmed findings (file edits only)
+#   3. Deterministic - restore protected paths, format and re-check the edits,
+#                      then commit and push exactly one [cursor-autofix] commit
+#   4. Verify agent  - re-check, reply on threads, post the traceability comment
+#   5. Final gate    - green only when nothing confirmed/needs-human remains
+#
+# Fork integrity. The only repository mutation this workflow performs is
+# pushing its own [cursor-autofix] commit to the head branch of the PR that
+# triggered it; the only API writes are one review plus comments on that same
+# PR. It never publishes, releases, deploys, merges, creates branches or pull
+# requests, and never installs Pi from a registry. It also never approves a
+# review, so it cannot satisfy a human-approval requirement for auto-merge.
+#
+# Division of labour with `check`. The heavy gates - `npm run build:offline`,
+# `npm run check`, `npm test`, `npm run test:kpi`, `npm run kstack:sync:check`
+# - need a full build, the workspace suites and a network clone, i.e. most of
+# an hour on the single self-hosted Mac. The autofix commit is pushed with
+# CURSOR_PUSH_TOKEN, so `check` re-runs on it and stays the hard gate. This job
+# must NOT wait for that run: both want the same Mac, so waiting would deadlock
+# the runner. What runs here before pushing is the cheap subset of those gates
+# that catches an autofix which would turn `check` red - biome on the touched
+# TypeScript, the pinned-deps and TS-import checks, fork integrity and the
+# upstream pin. Failing that subset discards the edits instead of pushing them.
+#
+# Cost control: `synchronize` is gated behind the `ci-review` label; opened /
+# reopened / ready_for_review always run.
+#
+# Fork PRs are skipped: a `pull_request` from a fork exposes no secrets and
+# GITHUB_TOKEN cannot push to the fork. Deliberately NOT switched to the
+# trigger that would run fork code against base-repo secrets.
+#
+# Required secret: CURSOR_API_KEY
+# Recommended: CURSOR_PUSH_TOKEN (fine-grained PAT, contents:write, this repo)
+# Optional: CURSOR_REVIEW_MODEL / CURSOR_AUTOFIX_MODEL (secret or var)
+
+on:
+  pull_request:
+    # ready_for_review is load-bearing: drafts are skipped, and without this
+    # type a PR opened as a draft would never trigger after being marked ready.
+    types: [opened, synchronize, reopened, ready_for_review]
+
+# cancel-in-progress OFF so a follow-up push cannot cancel mid-autofix-push.
+concurrency:
+  group: cursor-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+env:
+  REVIEW_MODEL: ${{ secrets.CURSOR_REVIEW_MODEL || vars.CURSOR_REVIEW_MODEL || 'composer-2.5' }}
+  AUTOFIX_MODEL: ${{ secrets.CURSOR_AUTOFIX_MODEL || vars.CURSOR_AUTOFIX_MODEL || 'gpt-5.6-sol-max-fast' }}
+  # Headless/launchd macOS runners often cannot use the login keychain.
+  AGENT_CLI_CREDENTIAL_STORE: memory
+
+jobs:
+  fork-notice:
+    name: Fork notice
+    # Hosted, unlike the pipeline below: this job only echoes an annotation, so
+    # it must not sit in the self-hosted Mac queue behind the `check` gate.
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    # Nothing to read, nothing to write.
+    permissions: {}
+    if: >-
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo.full_name != github.repository
+    steps:
+      - name: Explain why the pipeline is skipped
+        run: |
+          echo "::notice::Skipping the Cursor pipeline: this PR is from a fork. Repo secrets (CURSOR_API_KEY) are not exposed to pull_request runs from forks, and GITHUB_TOKEN cannot push fixes to a fork. Push the branch to this repo to get the full review + autofix pipeline."
+
+  pipeline:
+    name: Cursor pipeline
+    runs-on: [self-hosted, macOS]
+    timeout-minutes: 45
+    env:
+      # A runner-user `url.*.insteadOf` rewrite would otherwise force SSH clones
+      # and ignore the checkout/push token.
+      GIT_CONFIG_GLOBAL: /dev/null
+      GIT_CONFIG_SYSTEM: /dev/null
+      # A push that cannot authenticate must fail, never hang on a prompt.
+      GIT_TERMINAL_PROMPT: "0"
+    if: >-
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      (github.event.action != 'synchronize' || contains(github.event.pull_request.labels.*.name, 'ci-review'))
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout PR head branch
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+          token: ${{ secrets.CURSOR_PUSH_TOKEN || github.token }}
+
+      - name: Detect autofix head commit (loop guard)
+        id: guard
+        run: |
+          if git log -1 --format=%B | grep -qF '[cursor-autofix]'; then
+            echo "autofix_head=true" >> "$GITHUB_OUTPUT"
+            echo "Head commit is a [cursor-autofix] commit; autofix stages will be skipped (review + gate still run)."
+          else
+            echo "autofix_head=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22.19.0
+          # Dependency caches already survive on a persistent runner.
+          package-manager-cache: false
+
+      - name: Install Cursor CLI
+        run: |
+          curl https://cursor.com/install -fsS | bash
+          echo "$HOME/.cursor/bin" >> "$GITHUB_PATH"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          # Persistent runners: clear stale pipeline state from prior runs.
+          rm -rf /tmp/cursor-pipeline
+          mkdir -p /tmp/cursor-pipeline
+
+      - name: "Stage 1: review and triage (agent)"
+        env:
+          CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          agent -p --force --model "$REVIEW_MODEL" --output-format text \
+          'You are the review stage of an automated PR pipeline in a GitHub
+          Actions runner. The gh CLI is authenticated via GH_TOKEN. You may
+          read the repo and post PR reviews, but you must NOT modify source
+          files, commit, push, or create branches. You MUST write the findings
+          file in step 6 — the rest of the pipeline and the CI gate depend on
+          it, so accuracy matters more than optimism.
+
+          Context:
+          - Repo: ${{ github.repository }}
+          - PR number: ${{ github.event.pull_request.number }}
+          - Head SHA: ${{ github.event.pull_request.head.sha }}
+          - Base SHA: ${{ github.event.pull_request.base.sha }}
+
+          This repository is K-pi: a standalone TypeScript coding-agent harness
+          maintained as a fork of Pi, on npm workspaces, Node 22.19, never
+          published to any registry. Everything under packages/ is first-party
+          forked source, so the following are NOT findings: workspace packages
+          keeping upstream @earendil-works/pi-* names, the absence of a
+          published package, the absence of release or publish automation, and
+          the use of npm workspaces rather than another package manager.
+          Proposing a trigger that runs fork code against base-repo secrets, or
+          publish, release, deploy or registry-install automation, is itself a
+          policy violation, not a fix.
+
+          The repository gates a diff must keep green are
+          npm run build:offline, npm run check, npm test, npm run test:kpi and
+          npm run kstack:sync:check. When a change in this diff would break one
+          of them, name the gate in the finding description.
+
+          Procedure:
+          1. Read ALL existing feedback from EVERY author — humans and other
+             bots:
+             gh pr view ${{ github.event.pull_request.number }} --json comments,reviews
+             and the inline review comments (note each numeric comment id):
+             gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/comments --paginate
+          2. Read the diff: gh pr diff ${{ github.event.pull_request.number }}
+             and the file patches:
+             gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files --paginate
+          3. Read AGENTS.md, UPSTREAM.md and docs/remediation-plan.md for the
+             conventions, the fork policy and the active work queue. Fixes
+             belong in packages/coding-agent/src/kpi/** rather than in patched
+             upstream files, and every upstream file that is patched must be
+             registered in the UPSTREAM.md patched-file register.
+          4. Identify NEW clear, high-severity issues in the diff: logic
+             errors, races, resource leaks, missing error handling on critical
+             paths, security problems, and documented policy violations.
+             Do not duplicate feedback that already exists on the same lines.
+          5. Triage every OPEN finding from other reviewers and from earlier
+             runs of this pipeline: verify each claim against the ACTUAL code
+             and assign a verdict: confirmed, not-an-issue (one-line reason),
+             or needs-human. Where an issue YOU previously flagged is now
+             fixed in the code, reply on that thread that it is resolved. Do
+             NOT mark or resolve other reviewers threads — verdicts go in
+             your review summary only.
+             A finding whose only correct fix touches .github/workflows/,
+             packages/coding-agent/src/kpi/kstack/, package-lock.json or
+             upstream.json gets verdict needs-human: those paths are
+             regenerated, vendored or pinned, and the autofix stage is blocked
+             from writing them.
+          6. Write /tmp/cursor-pipeline/findings.json: a JSON array of every
+             finding that is still OPEN after triage. Each entry:
+             {"id":"F1","source":"cursor-review or reviewer login",
+             "comment_id":<numeric inline comment id or null>,"path":"...",
+             "line":<number or null>,"description":"one line",
+             "verdict":"confirmed|not-an-issue|needs-human",
+             "reason":"required for not-an-issue and needs-human"}.
+             Findings you verified as already fixed are NOT included. Write
+             [] when nothing is open.
+          7. Post ONE review via the Reviews API with inline comments anchored
+             to changed lines (max 10, most critical first) plus a 2-3
+             sentence summary. Append a "Reviewer triage" section listing each
+             third-party finding with its verdict when any exist. Use
+             event=COMMENT. Never approve or request changes. If there is
+             nothing to flag, nothing to triage, and a prior "no issues"
+             comment already exists, post nothing; otherwise post a short
+             "No issues found" review.'
+
+      - name: Parse findings (deterministic)
+        id: parse
+        run: |
+          F=/tmp/cursor-pipeline/findings.json
+          if [ ! -f "$F" ] || ! jq empty "$F" 2>/dev/null; then
+            echo "::warning::findings.json missing or invalid JSON; the final gate will fail closed."
+            echo "open_count=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          OPEN=$(jq '[.[] | select(.verdict != "not-an-issue")] | length' "$F")
+          echo "open_count=$OPEN" >> "$GITHUB_OUTPUT"
+          echo "Open findings after triage: $OPEN"
+          jq -r '.[] | "\(.id) [\(.verdict)] \(.path // "-"): \(.description)"' "$F"
+
+      - name: Reset any review-stage worktree edits (deterministic)
+        run: |
+          git checkout -- .
+          git clean -fd
+
+      - name: Collect raw feedback for autofix (deterministic)
+        if: >-
+          steps.parse.outputs.open_count != '0' &&
+          steps.guard.outputs.autofix_head == 'false' &&
+          github.event.pull_request.head.ref != 'main'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/comments" \
+            --paginate --jq '[.[] | {id, path, line, body, user: .user.login}]' \
+            > /tmp/cursor-pipeline/review-comments.json
+          gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/reviews" \
+            --paginate --jq '[.[] | {body, state, user: .user.login}]' \
+            > /tmp/cursor-pipeline/reviews.json
+          gh pr view "$PR_NUMBER" \
+            --json title,body,comments > /tmp/cursor-pipeline/pr.json
+
+      - name: Install from the committed lockfile (deterministic)
+        # Same install as `check`: lockfile only, no lifecycle scripts. The autofix
+        # stage and the pre-push checks need the repo pinned biome and
+        # typescript. node_modules is gitignored, so it never reaches a commit.
+        if: >-
+          steps.parse.outputs.open_count != '0' &&
+          steps.guard.outputs.autofix_head == 'false' &&
+          github.event.pull_request.head.ref != 'main'
+        run: npm ci --ignore-scripts --prefer-offline --no-audit --fund=false
+
+      - name: "Stage 2: apply fixes (agent, file edits only)"
+        if: >-
+          steps.parse.outputs.open_count != '0' &&
+          steps.guard.outputs.autofix_head == 'false' &&
+          github.event.pull_request.head.ref != 'main'
+        env:
+          CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
+        run: |
+          agent -p --force --model "$AUTOFIX_MODEL" --output-format text \
+          'You are the autofix stage of an automated PR pipeline in a GitHub
+          Actions runner. IMPORTANT: Do NOT run git commit/push, do NOT use
+          gh, do NOT post comments, do NOT create branches. Only edit files in
+          the working directory plus the report files below. A deterministic
+          step commits and pushes; a verification stage follows.
+
+          1. Read /tmp/cursor-pipeline/findings.json and the raw context in
+             /tmp/cursor-pipeline/ (review-comments.json, reviews.json,
+             pr.json).
+          2. For EACH finding with verdict "confirmed": verify the claim
+             against the actual code first — reviewers can be wrong; never
+             apply a fix for a misdiagnosed issue. If the fix is clear and
+             uncontroversial, apply it. Skip anything subjective, ambiguous,
+             or architectural. Ignore "not-an-issue" findings; never fix
+             "needs-human" findings.
+          3. This repository is K-pi: TypeScript on npm workspaces only,
+             Node 22.19, never published to a registry. Follow AGENTS.md and
+             UPSTREAM.md. Keep every edit inside the scope of the finding; do
+             not rewrite unrelated files. Prefer
+             packages/coding-agent/src/kpi/** over patching an upstream Pi
+             file, and skip a fix that would patch an upstream file which is
+             not already in the UPSTREAM.md patched-file register. Never add a
+             dependency, never loosen an exact dependency version (npm run
+             check:pinned-deps requires exact versions), and never introduce
+             publish, release, deploy or registry-install automation.
+          4. Never edit these paths — a deterministic step restores them and
+             your change would be lost. Note any finding that needs them as
+             skipped:
+             - .github/workflows/ (this pipeline own gates)
+             - packages/coding-agent/src/kpi/kstack/ (vendored overlay;
+               regenerated only by npm run kstack:sync)
+             - package-lock.json (check asserts install leaves it untouched)
+             - upstream.json (the fork pin moves only via a reviewed merge)
+          5. Formatting and lint are biome, already installed from the
+             lockfile: run ./node_modules/.bin/biome check --write on the
+             TypeScript files you changed (tabs, line width 120). You may also
+             run the cheap read-only gates npm run check:pinned-deps and
+             npm run check:ts-imports. Do NOT run npm run build, npm run
+             build:offline, npm run check, npm test, npm run test:kpi or
+             npm run kstack:sync: those belong to the check workflow, which
+             re-runs on the commit this pipeline pushes.
+          6. Write /tmp/cursor-pipeline/applied.md: one line per applied fix,
+             format "<finding id> <path>: <one-line description>". Leave the
+             file empty when nothing was fixed.
+          7. Write /tmp/cursor-pipeline/summary.md with sections "Applied"
+             and "Skipped" (EVERY skipped finding with its reason).'
+
+      - name: Verify the autofix before pushing (deterministic)
+        id: autofix_verify
+        if: >-
+          steps.parse.outputs.open_count != '0' &&
+          steps.guard.outputs.autofix_head == 'false' &&
+          github.event.pull_request.head.ref != 'main'
+        run: |
+          # Paths no agent may rewrite: this pipeline own gates, the vendored
+          # K-stack overlay, the lockfile `check` asserts is untouched, and the
+          # fork pin that moves only through a reviewed merge.
+          for protected in \
+            .github/workflows \
+            packages/coding-agent/src/kpi/kstack \
+            package-lock.json \
+            upstream.json; do
+            git checkout -- "$protected" 2>/dev/null || true
+            git clean -fd "$protected" 2>/dev/null || true
+          done
+
+          # Stage everything so the file list also covers new untracked files.
+          git add -A
+          if git diff --cached --quiet; then
+            echo "The autofix stage produced no changes."
+            echo "verified=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          FAILURES=""
+          fail () { FAILURES="${FAILURES}  - $1"$'\n'; }
+
+          BIOME=./node_modules/.bin/biome
+          LIST=/tmp/cursor-pipeline/changed-ts.txt
+          git diff --cached --name-only -z --diff-filter=ACMR -- '*.ts' > "$LIST"
+          if [ -s "$LIST" ]; then
+            # `check` runs `biome check --error-on-warnings .` over the whole repo,
+            # so apply the safe fixes first, then hold the touched files to the
+            # same bar. Paths outside the biome include set are skipped.
+            xargs -0 "$BIOME" check --write --no-errors-on-unmatched --files-ignore-unknown=true < "$LIST" \
+              || fail "biome check --write (npm run check)"
+            xargs -0 "$BIOME" check --error-on-warnings --no-errors-on-unmatched --files-ignore-unknown=true < "$LIST" \
+              || fail "biome check --error-on-warnings (npm run check)"
+          fi
+
+          # The rest of the cheap subset. build:offline, the tsgo and browser
+          # smoke halves of `npm run check`, npm test, npm run test:kpi and
+          # npm run kstack:sync:check stay in `check`, which re-runs on the pushed
+          # commit; this job cannot wait for it without deadlocking the Mac.
+          npm run check:pinned-deps || fail "npm run check:pinned-deps"
+          npm run check:ts-imports || fail "npm run check:ts-imports"
+          node scripts/check-ci-contract.mjs || fail "node scripts/check-ci-contract.mjs (fork integrity)"
+          node scripts/upstream-check.mjs --offline || fail "node scripts/upstream-check.mjs --offline (fork pin)"
+
+          if [ -n "$FAILURES" ]; then
+            {
+              echo "The autofix edits were discarded: they failed these pre-push checks."
+              printf '%b' "$FAILURES"
+            } | tee /tmp/cursor-pipeline/autofix-rejected.md
+            echo "::error::Autofix edits failed the pre-push checks and were discarded; nothing was pushed. The findings stay open and the final gate stays red."
+            git reset --hard HEAD
+            git clean -fd
+            echo "verified=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "Pre-push checks passed on the autofix edits."
+          echo "verified=true" >> "$GITHUB_OUTPUT"
+
+      - name: Commit and push fixes (deterministic)
+        id: push
+        if: >-
+          steps.parse.outputs.open_count != '0' &&
+          steps.guard.outputs.autofix_head == 'false' &&
+          github.event.pull_request.head.ref != 'main' &&
+          steps.autofix_verify.outputs.verified == 'true'
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          if git diff --quiet && [ -z "$(git status --porcelain)" ]; then
+            echo "No fixable findings produced changes; nothing to push."
+            echo "pushed=false" >> "$GITHUB_OUTPUT"
+            echo "sha=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git config user.name "cursor-autofix"
+          git config user.email "cursoragent@cursor.com"
+          git add -A
+          if [ -s /tmp/cursor-pipeline/applied.md ]; then
+            git commit -m "fix: apply Cursor review fixes [cursor-autofix]" \
+                       -m "$(cat /tmp/cursor-pipeline/applied.md)"
+          else
+            git commit -m "fix: apply Cursor review fixes [cursor-autofix]"
+          fi
+          # The only ref this workflow may write: the head branch of the PR that
+          # triggered it. HEAD_REF arrives through env, never inlined here.
+          git push origin "HEAD:refs/heads/$HEAD_REF"
+          echo "pushed=true" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: "Stage 3: verify fixes and report (agent)"
+        if: >-
+          steps.parse.outputs.open_count != '0' &&
+          steps.guard.outputs.autofix_head == 'false' &&
+          github.event.pull_request.head.ref != 'main'
+        env:
+          CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FIX_SHA: ${{ steps.push.outputs.sha }}
+        run: |
+          agent -p --force --model "$REVIEW_MODEL" --output-format text \
+          'You are the verification stage of an automated PR pipeline in a
+          GitHub Actions runner. The gh CLI is authenticated via GH_TOKEN.
+          You must NOT modify files, commit, or push. The working tree is the
+          CURRENT PR head. The env var FIX_SHA holds the autofix commit sha
+          (empty when no fixes were pushed this run).
+
+          Context:
+          - Repo: ${{ github.repository }}
+          - PR number: ${{ github.event.pull_request.number }}
+
+          1. Read /tmp/cursor-pipeline/findings.json and
+             /tmp/cursor-pipeline/summary.md. Read
+             /tmp/cursor-pipeline/autofix-rejected.md when it exists: it means
+             the autofix edits failed the pre-push checks and were discarded,
+             so every finding it covers is still unresolved and the reason
+             belongs in your report.
+          2. For EACH finding, verify against the CURRENT code whether it is
+             genuinely resolved. Also check that applied fixes did not
+             introduce an obvious new defect; if one did, treat the related
+             finding as unresolved and explain in the note.
+             Judge the code only. The build and the test suites are the check
+             workflow, which re-runs on FIX_SHA; never claim that
+             npm run build:offline, npm run check, npm test,
+             npm run test:kpi or npm run kstack:sync:check passed. Point at
+             the check run on FIX_SHA instead.
+          3. Write /tmp/cursor-pipeline/resolution.json: a JSON array with one
+             entry per finding id from findings.json:
+             {"id":"F1","status":"resolved|unresolved|needs-human",
+             "commit":"<sha or null>","note":"one line"}.
+             Findings with verdict "not-an-issue" get status "resolved".
+          4. For every finding that was fixed by the autofix commit and has a
+             numeric comment_id, reply on that inline thread with
+             "fixed in <FIX_SHA>" using:
+             gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/comments/<comment_id>/replies -f body="..."
+          5. Post ONE PR comment as the traceability record: a list mapping
+             every finding to its outcome — "fixed in <sha>", "needs human:
+             <reason>", "not an issue: <reason>", or "unresolved: <reason>" —
+             followed by the Applied/Skipped report from summary.md. Post via:
+             gh pr comment ${{ github.event.pull_request.number }} --body-file <file you write>'
+
+      - name: "Final gate: green only when nothing unresolved remains"
+        env:
+          AUTOFIX_HEAD: ${{ steps.guard.outputs.autofix_head }}
+          AUTOFIX_VERIFIED: ${{ steps.autofix_verify.outputs.verified }}
+        run: |
+          F=/tmp/cursor-pipeline/findings.json
+          R=/tmp/cursor-pipeline/resolution.json
+
+          if [ ! -f "$F" ] || ! jq empty "$F" 2>/dev/null; then
+            echo "::error::Review stage did not produce a valid findings file — failing closed. Inspect the Stage 1 logs."
+            exit 1
+          fi
+
+          if [ -f "$R" ] && jq empty "$R" 2>/dev/null; then
+            UNRESOLVED=$(jq -r --slurpfile res "$R" '
+              [ .[] as $f
+                | (($res[0] // []) | map(select(.id == $f.id)) | first) as $r
+                | select(
+                    ((($r.status // "") == "resolved") or ($f.verdict == "not-an-issue")) | not
+                  )
+                | "\($f.id) [\($r.status // $f.verdict)] \($f.path // "-"): \($f.description) — \($r.note // $f.reason // "unresolved")"
+              ] | .[]' "$F")
+          else
+            UNRESOLVED=$(jq -r '
+              [ .[] | select(.verdict != "not-an-issue")
+                | "\(.id) [\(.verdict)] \(.path // "-"): \(.description) — \(.reason // "unresolved")"
+              ] | .[]' "$F")
+          fi
+
+          if [ -n "$UNRESOLVED" ]; then
+            echo "::error::Confirmed or needs-human findings remain unresolved — the check stays red until they are fixed or a human dismisses them:"
+            echo "$UNRESOLVED"
+            if [ "$AUTOFIX_HEAD" = "true" ]; then
+              echo "::notice::This run started from a [cursor-autofix] commit, so autofix was skipped by the loop guard; remaining items need a human or a new push."
+            fi
+            if [ "$AUTOFIX_VERIFIED" = "false" ]; then
+              echo "::notice::The autofix edits were discarded because they failed the pre-push checks, so no fix was pushed this run."
+            fi
+            exit 1
+          fi
+
+          echo "No confirmed, unresolved findings — pipeline green."
