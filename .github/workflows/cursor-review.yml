@@ -212,7 +212,7 @@ jobs:
         id: parse
         run: |
           F=/tmp/cursor-pipeline/findings.json
-          if [ ! -f "$F" ] || ! jq empty "$F" 2>/dev/null; then
+          if [ ! -f "$F" ] || ! jq -e 'type == "array"' "$F" >/dev/null 2>&1; then
             echo "::warning::findings.json missing or invalid JSON; the final gate will fail closed."
             echo "open_count=0" >> "$GITHUB_OUTPUT"
             exit 0
@@ -468,12 +468,12 @@ jobs:
           F=/tmp/cursor-pipeline/findings.json
           R=/tmp/cursor-pipeline/resolution.json
 
-          if [ ! -f "$F" ] || ! jq empty "$F" 2>/dev/null; then
+          if [ ! -f "$F" ] || ! jq -e 'type == "array"' "$F" >/dev/null 2>&1; then
             echo "::error::Review stage did not produce a valid findings file — failing closed. Inspect the Stage 1 logs."
             exit 1
           fi
 
-          if [ -f "$R" ] && jq empty "$R" 2>/dev/null; then
+          if [ -f "$R" ] && jq -e 'type == "array"' "$R" >/dev/null 2>&1; then
             UNRESOLVED=$(jq -r --slurpfile res "$R" '
               [ .[] as $f
                 | (($res[0] // []) | map(select(.id == $f.id)) | first) as $r
