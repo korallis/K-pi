@@ -16,11 +16,15 @@
 #     reaches the model or the PR diff prompt.
 #
 # Latency bound (15m job, effort high only):
-#   - The PR diff is partitioned on file boundaries into deterministic
-#     size-capped chunks.
-#   - Each chunk is reviewed concurrently with a hard per-chunk timeout.
+#   - At the fork-import boundary, select-grok-review-input proves and drops
+#     byte-identical pinned upstream blobs and check-covered generated/lock
+#     artifacts (upstream.json + UPSTREAM.md + kstack/lockfile/model-data gates).
+#   - Only first-party K-π delta and patched-upstream files reach Grok.
+#   - That reduced diff is partitioned on file boundaries into deterministic
+#     size-capped chunks and reviewed concurrently with hard per-chunk timeouts.
 #   - Every chunk must validate; findings are unioned/deduped deterministically.
-#   - Any chunk timeout, inference error, or invalid schema fails the gate.
+#   - Any provenance failure, chunk timeout, inference error, or invalid schema
+#     fails the gate.
 #
 # Hosted Ubuntu is deliberate. AI review does not need the Mac mini, must not
 # occupy the hard-gate queue, and must not leave model state on a persistent
@@ -123,19 +127,15 @@ jobs:
           git -C untrusted cat-file -e "$BASE_SHA^{commit}"
           git -C untrusted cat-file -e "$HEAD_SHA^{commit}"
 
-          git -C untrusted diff --find-renames --no-ext-diff --no-textconv "$BASE_SHA...$HEAD_SHA" -- . > "$RUNNER_TEMP/pr.diff"
-          git -C untrusted diff --name-only -z "$BASE_SHA...$HEAD_SHA" -- . > "$RUNNER_TEMP/changed-paths"
-
-          bytes=$(wc -c < "$RUNNER_TEMP/pr.diff" | tr -d ' ')
-          if [ "$bytes" -gt 250000 ]; then
-            echo "::error::PR diff is $bytes bytes; Grok review fails closed above 250000 bytes."
-            exit 1
-          fi
-
           # Prefer base copies of the gate scripts (trusted TCB). Head copies are
           # only for the landing PR that introduces them onto the base.
           mkdir -p "$RUNNER_TEMP/gate-scripts"
-          for script in validate-grok-review.mjs partition-pr-diff.mjs run-chunked-grok-review.mjs; do
+          for script in \
+            validate-grok-review.mjs \
+            partition-pr-diff.mjs \
+            run-chunked-grok-review.mjs \
+            select-grok-review-input.mjs
+          do
             if [ -f "trusted/scripts/$script" ]; then
               cp "trusted/scripts/$script" "$RUNNER_TEMP/gate-scripts/$script"
             elif [ -f "untrusted/scripts/$script" ]; then
@@ -145,6 +145,45 @@ jobs:
               exit 1
             fi
           done
+
+          # upstream.json pin must be readable; prefer head (PR tip) then base.
+          if [ -f untrusted/upstream.json ]; then
+            pin_path="$GITHUB_WORKSPACE/untrusted/upstream.json"
+          elif [ -f trusted/upstream.json ]; then
+            pin_path="$GITHUB_WORKSPACE/trusted/upstream.json"
+          else
+            echo "::error::upstream.json missing on base and head; cannot prove fork provenance."
+            exit 1
+          fi
+
+          pin_commit=$(node -e 'const p=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); if(!/^[0-9a-f]{40}$/i.test(p.commit||"")) process.exit(2); process.stdout.write(String(p.commit).toLowerCase())' "$pin_path") || {
+            echo "::error::upstream.json commit is missing or malformed."
+            exit 1
+          }
+
+          # Pin objects must be local before byte-identity proofs. Prefer objects
+          # already in the head clone; otherwise import from the base clone only
+          # (no credentials, no upstream network).
+          if ! git -C untrusted cat-file -e "${pin_commit}^{commit}" 2>/dev/null; then
+            if git -C trusted cat-file -e "${pin_commit}^{commit}" 2>/dev/null; then
+              git -C untrusted fetch --no-tags "$GITHUB_WORKSPACE/trusted" "$pin_commit"
+            else
+              echo "::error::pinned upstream commit ${pin_commit} is not in base or head object stores."
+              exit 1
+            fi
+          fi
+          git -C untrusted cat-file -e "${pin_commit}^{commit}"
+
+          node "$RUNNER_TEMP/gate-scripts/select-grok-review-input.mjs" \
+            --repo "$GITHUB_WORKSPACE/untrusted" \
+            --base "$BASE_SHA" \
+            --head "$HEAD_SHA" \
+            --pin "$pin_path" \
+            --out-diff "$RUNNER_TEMP/pr.diff" \
+            --out-paths "$RUNNER_TEMP/changed-paths" \
+            --out-meta "$RUNNER_TEMP/grok-input-meta.json"
+
+          jq -c '{selectedDiffBytes,fullDiffBytes,counts,pin}' "$RUNNER_TEMP/grok-input-meta.json"
 
       - name: Run concurrent chunked Grok review
         id: inference
@@ -165,9 +204,9 @@ jobs:
             --out-meta "$RUNNER_TEMP/grok-review-meta.json" \
             --work-dir "$RUNNER_TEMP/chunked-review" \
             --effort high \
-            --max-chunk-bytes 32000 \
-            --max-concurrency 4 \
-            --chunk-timeout-sec 600 \
+            --max-chunk-bytes 96000 \
+            --max-concurrency 6 \
+            --chunk-timeout-sec 420 \
             --max-ai-credits 30
           status=$?
           set -e
@@ -200,13 +239,24 @@ jobs:
             echo '<!-- kpi-grok-review -->'
             echo '## Grok review'
             echo
-            if [ -n "$REVIEW_MODEL" ] || [ -n "$CHUNK_COUNT" ]; then
+            if [ -n "$REVIEW_MODEL" ] || [ -n "$CHUNK_COUNT" ] || [ -f "$RUNNER_TEMP/grok-input-meta.json" ]; then
               echo "- Model: \`${REVIEW_MODEL:-unknown}\`"
               echo "- Chunks: \`${CHUNK_COUNT:-unknown}\`"
+              if [ -f "$RUNNER_TEMP/grok-input-meta.json" ]; then
+                selected=$(jq -r '.selectedDiffBytes // empty' "$RUNNER_TEMP/grok-input-meta.json")
+                total=$(jq -r '.fullDiffBytes // empty' "$RUNNER_TEMP/grok-input-meta.json")
+                included=$(jq -r '.counts.included // empty' "$RUNNER_TEMP/grok-input-meta.json")
+                changed=$(jq -r '.counts.changedPaths // empty' "$RUNNER_TEMP/grok-input-meta.json")
+                identical=$(jq -r '.counts.byteIdenticalToPin // empty' "$RUNNER_TEMP/grok-input-meta.json")
+                covered=$(jq -r '.counts.coveredArtifact // empty' "$RUNNER_TEMP/grok-input-meta.json")
+                pin=$(jq -r '.pin.tag // empty' "$RUNNER_TEMP/grok-input-meta.json")
+                echo "- Pin: \`${pin:-unknown}\`"
+                echo "- Provenance coverage: \`${selected:-?}\` / \`${total:-?}\` diff bytes; paths \`${included:-?}\` / \`${changed:-?}\` (excluded byte-identical-to-pin=\`${identical:-0}\`, check-covered=\`${covered:-0}\`)"
+              fi
               echo
             fi
             if [ "$INFERENCE_OUTCOME" != "success" ]; then
-              echo '**Failed closed:** chunked Grok review did not complete (timeout, inference error, or invalid schema). Inspect the required workflow log.'
+              echo '**Failed closed:** Grok review did not complete (provenance reduction, timeout, inference error, or invalid schema). Inspect the required workflow log.'
               if [ -f "$RUNNER_TEMP/grok-review-meta.json" ]; then
                 echo
                 echo 'Chunk outcomes:'

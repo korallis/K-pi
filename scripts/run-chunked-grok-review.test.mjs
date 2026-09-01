@@ -274,6 +274,6 @@ test("invalid chunk schema fails closed", async () => {
 
 test("budget defaults stay latency-bound", () => {
 	assert.equal(REQUIRED_EFFORT, "high");
-	assert.equal(DEFAULT_MAX_CONCURRENCY, 4);
-	assert.equal(DEFAULT_CHUNK_TIMEOUT_SEC, 600);
+	assert.equal(DEFAULT_MAX_CONCURRENCY, 6);
+	assert.equal(DEFAULT_CHUNK_TIMEOUT_SEC, 420);
 });

@@ -22,9 +22,9 @@ import {
 } from "./partition-pr-diff.mjs";
 import { normalizeGrokReview, unionGrokFindings } from "./validate-grok-review.mjs";
 
-export const DEFAULT_MAX_CONCURRENCY = 4;
+export const DEFAULT_MAX_CONCURRENCY = 6;
 /** Per-chunk wall timeout so a hung call fails closed inside the 15m job. */
-export const DEFAULT_CHUNK_TIMEOUT_SEC = 600;
+export const DEFAULT_CHUNK_TIMEOUT_SEC = 420;
 export const DEFAULT_MAX_AI_CREDITS = 30;
 export const REQUIRED_EFFORT = "high";
 

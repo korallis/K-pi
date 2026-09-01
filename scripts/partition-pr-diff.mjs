@@ -4,14 +4,18 @@
  * Split a unified git diff into deterministic, size-capped chunks on file
  * boundaries. Whole file sections stay intact; packing is greedy in the order
  * git emitted the sections. A single file larger than the cap becomes its own
- * chunk (still subject to the workflow's overall diff ceiling).
+ * chunk.
+ *
+ * Review-input *reduction* (byte-identical upstream, covered artifacts) lives in
+ * `select-grok-review-input.mjs`. This module only bounds concurrent prompt size.
  */
 
 import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-/** Default soft cap per concurrent Grok prompt (~two chunks for a ~63 KiB PR). */
-export const DEFAULT_MAX_CHUNK_BYTES = 32_000;
+/** Default soft cap per concurrent Grok prompt. */
+export const DEFAULT_MAX_CHUNK_BYTES = 96_000;
+
 
 /**
  * @typedef {{ path: string, text: string, bytes: number }} DiffFileSection
@@ -23,19 +27,19 @@ export const DEFAULT_MAX_CHUNK_BYTES = 32_000;
  * @returns {DiffFileSection[]}
  */
 export function splitDiffFileSections(diffText) {
-	if (typeof diffText !== "string") throw new Error("diff text must be a string");
-	if (diffText.length === 0) return [];
-
-	const lines = diffText.split("\n");
+	if (!diffText) return [];
+	const normalized = diffText.endsWith("\n") ? diffText : `${diffText}\n`;
+	const lines = normalized.split("\n");
 	/** @type {DiffFileSection[]} */
 	const sections = [];
+	/** @type {string[]} */
 	let currentLines = [];
+	/** @type {string | null} */
 	let currentPath = null;
 
 	const flush = () => {
 		if (currentLines.length === 0) return;
-		let text = currentLines.join("\n");
-		if (text.length > 0 && !text.endsWith("\n")) text += "\n";
+		const text = currentLines.join("\n") + "\n";
 		sections.push({
 			path: currentPath ?? "unknown",
 			text,
@@ -52,12 +56,10 @@ export function splitDiffFileSections(diffText) {
 			currentLines.push(line);
 			continue;
 		}
-		if (currentLines.length === 0) {
-			currentPath = "preamble";
-		}
-		if (line.startsWith("+++ ") && currentPath) {
-			const plusPath = pathFromPlusPlusLine(line);
-			if (plusPath) currentPath = plusPath;
+		if (currentLines.length === 0) continue;
+		if (line.startsWith("+++ ")) {
+			const fromPlus = pathFromPlusPlusLine(line);
+			if (fromPlus) currentPath = fromPlus;
 		}
 		currentLines.push(line);
 	}
@@ -66,13 +68,13 @@ export function splitDiffFileSections(diffText) {
 }
 
 function pathFromDiffGitLine(line) {
-	const match = /^diff --git (.+) (.+)$/u.exec(line);
-	if (!match) return "unknown";
-	return stripDiffPath(match[2]) || stripDiffPath(match[1]) || "unknown";
+	const match = /^diff --git a\/(.+) b\/(.+)$/u.exec(line);
+	if (!match) return null;
+	return stripDiffPath(match[2] || match[1]);
 }
 
 function stripDiffPath(raw) {
-	let value = raw.trim();
+	let value = raw;
 	if (
 		(value.startsWith('"') && value.endsWith('"')) ||
 		(value.startsWith("'") && value.endsWith("'"))
@@ -98,9 +100,8 @@ export function partitionUnifiedDiff(diffText, { maxChunkBytes = DEFAULT_MAX_CHU
 	if (!Number.isSafeInteger(maxChunkBytes) || maxChunkBytes < 1) {
 		throw new Error("maxChunkBytes must be a positive integer");
 	}
-	const sections = splitDiffFileSections(diffText);
-	if (sections.length === 0) return [];
 
+	const sections = splitDiffFileSections(diffText);
 	/** @type {DiffChunk[]} */
 	const chunks = [];
 	/** @type {{ paths: string[], parts: string[], bytes: number }} */
@@ -146,11 +147,11 @@ export function partitionUnifiedDiff(diffText, { maxChunkBytes = DEFAULT_MAX_CHU
  * @param {{ maxChunkBytes?: number }} [options]
  */
 export function writeDiffChunks(diffText, outDir, options = {}) {
-	const chunks = partitionUnifiedDiff(diffText, options);
+	const maxChunkBytes = options.maxChunkBytes ?? DEFAULT_MAX_CHUNK_BYTES;
+	const chunks = partitionUnifiedDiff(diffText, { maxChunkBytes });
 	const manifest = {
-		maxChunkBytes: options.maxChunkBytes ?? DEFAULT_MAX_CHUNK_BYTES,
+		maxChunkBytes,
 		chunkCount: chunks.length,
-		totalBytes: Buffer.byteLength(diffText, "utf8"),
 		chunks: chunks.map((chunk) => ({
 			index: chunk.index,
 			path: `chunk-${String(chunk.index).padStart(3, "0")}.diff`,
@@ -170,13 +171,13 @@ export function writeDiffChunks(diffText, outDir, options = {}) {
 function main() {
 	const [diffPath, outDir, maxRaw] = process.argv.slice(2);
 	if (!diffPath || !outDir) {
-		console.error("usage: partition-pr-diff.mjs <pr.diff> <out-dir> [max-chunk-bytes]");
+		console.error("usage: node scripts/partition-pr-diff.mjs <diff> <out-dir> [max-chunk-bytes]");
 		process.exit(2);
 	}
 	const maxChunkBytes = maxRaw ? Number.parseInt(maxRaw, 10) : DEFAULT_MAX_CHUNK_BYTES;
-	const diffText = readFileSync(diffPath, "utf8");
-	const manifest = writeDiffChunks(diffText, outDir, { maxChunkBytes });
-	console.log(`partitioned ${manifest.totalBytes} byte diff into ${manifest.chunkCount} chunk(s)`);
+	const text = readFileSync(diffPath, "utf8");
+	const manifest = writeDiffChunks(text, outDir, { maxChunkBytes });
+	console.log(JSON.stringify(manifest));
 }
 
 function invokedDirectly() {

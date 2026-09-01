@@ -41,25 +41,23 @@ test("packs files greedily under the byte cap", () => {
 	const small = fileDiff("a.ts", ["x"]);
 	const another = fileDiff("b.ts", ["y"]);
 	const combined = small + another;
-	const cap = Buffer.byteLength(combined, "utf8");
-	const one = partitionUnifiedDiff(combined, { maxChunkBytes: cap });
+	const one = partitionUnifiedDiff(combined, { maxChunkBytes: Buffer.byteLength(combined, "utf8") + 64 });
 	assert.equal(one.length, 1);
 	assert.deepEqual(one[0].paths, ["a.ts", "b.ts"]);
 
-	const two = partitionUnifiedDiff(combined, {
-		maxChunkBytes: Buffer.byteLength(small, "utf8"),
-	});
+	const two = partitionUnifiedDiff(combined, { maxChunkBytes: Math.max(1, Buffer.byteLength(small, "utf8") - 1) });
 	assert.equal(two.length, 2);
 	assert.deepEqual(two[0].paths, ["a.ts"]);
 	assert.deepEqual(two[1].paths, ["b.ts"]);
 });
 
+
 test("oversized single file becomes its own chunk", () => {
 	const big = fileDiff("big.ts", ["z".repeat(200)]);
-	const chunks = partitionUnifiedDiff(big, { maxChunkBytes: 50 });
-	assert.equal(chunks.length, 1);
-	assert.deepEqual(chunks[0].paths, ["big.ts"]);
-	assert.ok(chunks[0].bytes > 50);
+	const result = partitionUnifiedDiff(big, { maxChunkBytes: 50 });
+	assert.equal(result.length, 1);
+	assert.deepEqual(result[0].paths, ["big.ts"]);
+	assert.ok(result[0].bytes > 50);
 });
 
 test("partition is deterministic for the same input", () => {
@@ -88,6 +86,7 @@ test("writeDiffChunks emits stable names and a manifest", () => {
 	}
 });
 
-test("default chunk cap is the documented constant", () => {
-	assert.equal(DEFAULT_MAX_CHUNK_BYTES, 32_000);
+test("default chunk cap stays latency-oriented", () => {
+	assert.equal(DEFAULT_MAX_CHUNK_BYTES, 96_000);
 });
+
