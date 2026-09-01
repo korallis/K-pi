@@ -6,6 +6,7 @@ import {
 	ARCHITECTURE_PIN_COMMIT,
 	ARCHITECTURE_PIN_TAG,
 	CANONICAL_UPSTREAM_REPOSITORY,
+	buildReviewInventory,
 	classifyRelocationProvenance,
 	classifyReviewPaths,
 	coveredArtifactRule,
@@ -313,4 +314,61 @@ test("parseNameStatus captures rename pairs", () => {
 	assert.ok(parsed.paths.includes("extensions/a.ts"));
 	assert.ok(parsed.paths.includes("packages/coding-agent/src/kpi/extensions/a.ts"));
 	assert.ok(parsed.paths.includes("scripts/x.mjs"));
+});
+
+
+test("head-only dual add is not relocation-identical", () => {
+	const legacy = "extensions/new-both.ts";
+	const kpi = "packages/coding-agent/src/kpi/extensions/new-both.ts";
+	const blobs = new Map([
+		[`${HEAD}:${legacy}`, "blob-same"],
+		[`${HEAD}:${kpi}`, "blob-same"],
+	]);
+	const result = classifyRelocationProvenance({
+		paths: [legacy, kpi],
+		baseSha: BASE,
+		headSha: HEAD,
+		resolveBlob: (rev, path) => blobs.get(`${rev}:${path}`) ?? null,
+	});
+	assert.equal(result.decisions.get(legacy).decision, "include");
+	assert.equal(result.decisions.get(legacy).reason, "relocation-missing-counterpart");
+	assert.equal(result.decisions.get(kpi).decision, "include");
+});
+
+test("buildReviewInventory keeps lockfile replacements visible under budget", () => {
+	const rows = [
+		{ path: "pnpm-lock.yaml", decision: "exclude", reason: "covered-artifact", check: "check.yml: Lockfile unchanged by install + npm ci" },
+		{ path: "package-lock.json", decision: "exclude", reason: "covered-artifact", check: "check.yml: Lockfile unchanged by install + npm ci" },
+		{ path: "src/a.ts", decision: "include", reason: "first-party" },
+	];
+	const statusByPath = new Map([
+		["pnpm-lock.yaml", "D"],
+		["package-lock.json", "A"],
+		["src/a.ts", "M"],
+	]);
+	const inv = buildReviewInventory({ rows, statusByPath, maxBytes: 20_000 });
+	assert.match(inv.text, /A\tpackage-lock\.json\texclude\tcovered-artifact/);
+	assert.match(inv.text, /D\tpnpm-lock\.yaml\texclude\tcovered-artifact/);
+	assert.match(inv.text, /Do NOT assert that a path is absent/);
+	assert.ok(inv.bytes <= 20_000);
+	// No file contents injected
+	assert.equal(inv.text.includes("node_modules"), false);
+	assert.equal(/\n[AMDR?]\t[^\t]+\t(include|exclude)\t/.test(inv.text), true);
+});
+
+test("buildReviewInventory respects byte bound without dropping priority rows", () => {
+	const rows = [];
+	for (let i = 0; i < 500; i++) {
+		rows.push({ path: `pkg/file-${i}.ts`, decision: "include", reason: "first-party" });
+	}
+	rows.push({ path: "package-lock.json", decision: "exclude", reason: "covered-artifact", check: "ci" });
+	rows.push({ path: "pnpm-lock.yaml", decision: "exclude", reason: "covered-artifact", check: "ci" });
+	const statusByPath = new Map(rows.map((r) => [r.path, "M"]));
+	statusByPath.set("package-lock.json", "A");
+	statusByPath.set("pnpm-lock.yaml", "D");
+	const inv = buildReviewInventory({ rows, statusByPath, maxBytes: 4_000 });
+	assert.ok(inv.bytes <= 4_000);
+	assert.match(inv.text, /package-lock\.json/);
+	assert.match(inv.text, /pnpm-lock\.yaml/);
+	assert.ok(inv.omitted > 0);
 });

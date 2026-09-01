@@ -3,7 +3,7 @@ import type { Dirent } from "node:fs";
 import { mkdir, mkdtemp, readdir, readFile, rm, stat, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
-import test from "node:test";
+import test, { describe } from "node:test";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = new URL("../", import.meta.url);
@@ -392,6 +392,7 @@ function restoreEnv(name: string, value: string | undefined): void {
 	process.env[name] = value;
 }
 
+describe("architecture proof isolation", { concurrency: false }, () => {
 test("the built harness serves the K-π built-in and its resources to an untrusted project", async () => {
 	await requireBuiltHarness();
 
@@ -545,3 +546,5 @@ test("the built harness serves the K-π built-in and its resources to an untrust
 		await rm(sandbox, { recursive: true, force: true });
 	}
 });
+});
+

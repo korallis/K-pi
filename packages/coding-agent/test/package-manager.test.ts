@@ -691,7 +691,7 @@ Content`,
 			const valueWithSpace = "C:\\Users\\A B\\.pi\\npm";
 			const output = managerWithInternals.runCommandSync(process.execPath, [
 				"-e",
-				"console.log(process.argv[1])",
+				"console.log(process.argv[2])",
 				valueWithSpace,
 			]);
 

@@ -377,3 +377,61 @@ test("budget defaults stay latency-bound under argv ceiling", () => {
 	assert.equal(env.GH_TOKEN, "");
 	assert.equal(env.PATH, "/bin");
 });
+
+
+test("inventory makes lockfile replacement visible in every chunk prompt without file contents", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "kpi-inv-"));
+	try {
+		const diff = fileDiff("a.ts", ["change"]);
+		const diffPath = join(dir, "pr.diff");
+		const pathsPath = join(dir, "changed");
+		const invPath = join(dir, "inv.txt");
+		writeFileSync(diffPath, diff);
+		writeFileSync(pathsPath, "a.ts\0");
+		writeFileSync(
+			invPath,
+			[
+				"TRUSTED_PR_INVENTORY",
+				"BEGIN_INVENTORY",
+				"A\tpackage-lock.json\texclude\tcovered-artifact:check",
+				"D\tpnpm-lock.yaml\texclude\tcovered-artifact:check",
+				"M\ta.ts\tinclude\tfirst-party",
+				"omitted:0",
+				"END_INVENTORY",
+				"",
+			].join("\n"),
+		);
+		let sawInventory = false;
+		await runChunkedGrokReview(
+			{
+				diffPath,
+				changedPathsPath: pathsPath,
+				inventoryPath: invPath,
+				model: "grok-4.6",
+				effort: "high",
+				outJson: join(dir, "out.json"),
+				outMeta: join(dir, "meta.json"),
+				workDir: join(dir, "work"),
+				maxChunkBytes: 96_000,
+				maxConcurrency: 2,
+				chunkTimeoutSec: 30,
+				maxAiCredits: 5,
+				copilotBin: "copilot",
+			},
+			{
+				runCommand: async (spec) => {
+					assert.match(spec.prompt, /TRUSTED_PR_INVENTORY/);
+					assert.match(spec.prompt, /A\tpackage-lock\.json/);
+					assert.match(spec.prompt, /D\tpnpm-lock\.yaml/);
+					assert.equal(spec.prompt.includes("node_modules"), false);
+					assert.ok(Buffer.byteLength(spec.prompt, "utf8") <= PROMPT_ARGV_TEST_CEILING_BYTES);
+					sawInventory = true;
+					return { ok: true, reason: "success", stdout: "[]", stderr: "", code: 0 };
+				},
+			},
+		);
+		assert.equal(sawInventory, true);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});

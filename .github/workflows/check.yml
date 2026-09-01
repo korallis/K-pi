@@ -101,7 +101,13 @@ jobs:
         run: npm ci --ignore-scripts --prefer-offline --no-audit --fund=false
 
       - name: Lockfile unchanged by install
-        run: git diff --exit-code -- package-lock.json
+        run: |
+          git diff --exit-code -- package-lock.json
+          if [ -n "$(git status --porcelain -- package-lock.json)" ]; then
+            echo "::error::package-lock.json is dirty after install (tracked or untracked changes)."
+            git status --porcelain -- package-lock.json
+            exit 1
+          fi
 
       - name: Model catalog data
         # `build:offline` compiles without a network but refuses to run against
@@ -142,5 +148,11 @@ jobs:
 
       - name: Working tree clean after gates
         # Every gate is read-only, and the sync check must not regenerate
-        # anything. A dirty tree here is a real failure.
-        run: git diff --exit-code
+        # anything. A dirty tree here is a real failure — including untracked files.
+        run: |
+          git diff --exit-code
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "::error::Working tree is dirty after gates (includes untracked files)."
+            git status --porcelain
+            exit 1
+          fi

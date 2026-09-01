@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, readFile, rm, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -47,10 +47,8 @@ const task: Task = {
 	current_module_id: "run-store",
 };
 
-async function withTempDirectory(name: string, run: (directory: string) => Promise<void>): Promise<void> {
-	const directory = join(tmpdir(), "k-pi-run-store", name);
-	await rm(directory, { recursive: true, force: true });
-	await mkdir(directory, { recursive: true });
+async function withTempDirectory(_name: string, run: (directory: string) => Promise<void>): Promise<void> {
+	const directory = await mkdtemp(join(tmpdir(), "k-pi-run-store-"));
 	try {
 		await run(directory);
 	} finally {

@@ -2,7 +2,7 @@
 	"name": "k-pi-monorepo",
 	"private": true,
 	"version": "0.1.0",
-	"description": "K-π: a first-party graph-engineered coding agent harness, forked from Pi",
+	"description": "K-\u03c0: a first-party graph-engineered coding agent harness, forked from Pi",
 	"license": "MIT",
 	"repository": {
 		"type": "git",
@@ -26,10 +26,10 @@
 		"check:browser-smoke": "node scripts/check-browser-smoke.mjs",
 		"check:pinned-deps": "node scripts/check-pinned-deps.mjs",
 		"check:ts-imports": "node scripts/check-ts-relative-imports.mjs",
-		"kpi": "./kpi-test.sh",
+		"kpi": "node scripts/run-kpi-test.mjs",
 		"kstack:sync": "node --experimental-strip-types packages/coding-agent/src/kpi/kstack/scripts/sync-kstack.ts",
 		"kstack:sync:check": "node --experimental-strip-types packages/coding-agent/src/kpi/kstack/scripts/sync-kstack.ts --check",
-		"test": "npm run test:scripts && npm run test --workspaces --if-present",
+		"test": "npm run test:scripts && npm run test:kpi && npm run test --workspaces --if-present",
 		"test:scripts": "node --test scripts/*.test.mjs",
 		"test:kpi": "node --test --experimental-strip-types test/*.test.ts",
 		"upstream:check": "node scripts/upstream-check.mjs"

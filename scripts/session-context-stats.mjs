@@ -255,7 +255,11 @@ async function scanSessions(sessionsDir, sinceMs, contextWindows, cwdFilter) {
 		if (session.preFirstCompactionTokens !== null && session.contextWindow !== null) {
 			session.preFirstCompactionUsagePercent = (session.preFirstCompactionTokens / session.contextWindow) * 100;
 		}
-		if (!cwdFilter || path.resolve(session.cwd ?? "") === cwdFilter) sessions.push(session);
+		if (cwdFilter) {
+			if (typeof session.cwd !== "string") continue;
+			if (path.resolve(session.cwd) !== cwdFilter) continue;
+		}
+		sessions.push(session);
 	}
 	return { sessions, meta };
 }

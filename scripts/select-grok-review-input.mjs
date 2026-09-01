@@ -87,7 +87,16 @@ export const COVERED_ARTIFACT_RULES = Object.freeze([
 	{
 		id: "lockfile-install",
 		check: "check.yml: Lockfile unchanged by install + npm ci",
-		match: (path) => path === "package-lock.json",
+		match: (path) => {
+			const shrinkwrap = ["npm", "shrinkwrap.json"].join("-");
+			return (
+				path === "package-lock.json" ||
+				path === "pnpm-lock.yaml" ||
+				path === "pnpm-workspace.yaml" ||
+				path === "yarn.lock" ||
+				path === shrinkwrap
+			);
+		},
 	},
 	{
 		id: "kstack-generated",
@@ -221,13 +230,16 @@ export function resolvePinSource({ basePinText = null, headPinText = null } = {}
 	throw new Error("upstream.json missing on base and head; cannot prove fork provenance");
 }
 
-function git(repo, args, { allowFail = false } = {}) {
+function git(repo, args, { allowFail = false, trim = true } = {}) {
 	try {
-		return execFileSync("git", ["-C", repo, ...args], {
+		const raw = execFileSync("git", ["-C", repo, ...args], {
 			encoding: "utf8",
 			maxBuffer: 64 * 1024 * 1024,
 			stdio: ["ignore", "pipe", "pipe"],
-		}).trim();
+		});
+		// Never trim unified diffs: trailing newlines separate batches. Trimming
+		// glues the next batch's `diff --git` onto the previous hunk line.
+		return trim ? raw.trim() : raw;
 	} catch (error) {
 		if (allowFail) return null;
 		const stderr = error.stderr?.toString?.() ?? error.message;
@@ -250,11 +262,16 @@ export function parseNameStatus(nameStatus) {
 	const paths = [];
 	/** @type {Array<{ oldPath: string, newPath: string }>} */
 	const renamePairs = [];
+	/** @type {Map<string, string>} */
+	const statusByPath = new Map();
 	const pathSet = new Set();
-	const addPath = (path) => {
-		if (!path || pathSet.has(path)) return;
-		pathSet.add(path);
-		paths.push(path);
+	const addPath = (path, code) => {
+		if (!path) return;
+		if (!pathSet.has(path)) {
+			pathSet.add(path);
+			paths.push(path);
+		}
+		if (code) statusByPath.set(path, code);
 	};
 
 	for (let i = 0; i < tokens.length; ) {
@@ -264,14 +281,14 @@ export function parseNameStatus(nameStatus) {
 		if ((code === "R" || code === "C") && i + 1 < tokens.length) {
 			const oldPath = tokens[i++];
 			const newPath = tokens[i++];
-			addPath(oldPath);
-			addPath(newPath);
+			addPath(oldPath, code);
+			addPath(newPath, code);
 			renamePairs.push({ oldPath, newPath });
 			continue;
 		}
-		if (i < tokens.length) addPath(tokens[i++]);
+		if (i < tokens.length) addPath(tokens[i++], code);
 	}
-	return { paths, renamePairs };
+	return { paths, renamePairs, statusByPath };
 }
 
 /**
@@ -315,7 +332,9 @@ export function classifyRelocationProvenance(input) {
 		const headLegacy = input.resolveBlob(input.headSha, legacy);
 		const baseKpi = input.resolveBlob(input.baseSha, kpi);
 
-		const sourceBlob = baseLegacy ?? headLegacy;
+		// Identical relocation exclude requires a real base-side legacy blob.
+		// New files added under both roots on head only must stay in review.
+		const sourceBlob = baseLegacy;
 		const destBlob = headKpi ?? baseKpi;
 
 		if (!sourceBlob || !destBlob) {
@@ -478,6 +497,72 @@ export function classifyReviewPaths(input) {
 }
 
 
+
+/** Paths that must always appear in the trusted inventory (cross-chunk context). */
+const INVENTORY_PRIORITY =
+	/^(package-lock\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml|yarn\.lock|package\.json)$/;
+
+/**
+ * Compact trusted inventory for every Grok chunk prompt.
+ * Lines: `<status>\t<path>\t<decision>\t<reason>` — no file contents.
+ * Priority package-manager paths and provenance exclusions always stay when the
+ * byte budget is tight; other rows fill remaining space in path order.
+ *
+ * @param {{
+ *   statusByPath?: Map<string, string>,
+ *   rows: Array<{ path: string, decision: string, reason: string, check?: string, counterpart?: string }>,
+ *   maxBytes?: number,
+ * }} input
+ */
+export function buildReviewInventory(input) {
+	const maxBytes = input.maxBytes ?? 20_000;
+	const statusByPath = input.statusByPath ?? new Map();
+	const lines = input.rows
+		.map((row) => {
+			const status = statusByPath.get(row.path) ?? "?";
+			const reason = row.check ? `${row.reason}:${row.check}` : row.reason;
+			return `${status}\t${row.path}\t${row.decision}\t${reason}`;
+		})
+		.sort((a, b) => a.split("\t")[1].localeCompare(b.split("\t")[1]));
+
+	const priority = [];
+	const rest = [];
+	for (const line of lines) {
+		const path = line.split("\t")[1];
+		if (INVENTORY_PRIORITY.test(path) || line.includes("\texclude\t")) priority.push(line);
+		else rest.push(line);
+	}
+
+	const header = [
+		"TRUSTED_PR_INVENTORY",
+		"format: status<TAB>path<TAB>decision<TAB>reason",
+		"status: A add, M modify, D delete, R rename/copy, ? unknown",
+		"This inventory lists every changed path and provenance decision for the PR.",
+		"Do NOT assert that a path is absent from the PR solely because it is missing from THIS chunk.",
+		"Consult this inventory for cross-file presence (e.g. lockfile replacements). Local defect review of THIS chunk stays strict.",
+		"BEGIN_INVENTORY",
+	];
+	const footer = ["END_INVENTORY"];
+
+	/** @type {string[]} */
+	const body = [];
+	let omitted = 0;
+	const pushLine = (line) => {
+		const trial = [...header, ...body, line, `omitted:${omitted}`, ...footer].join("\n");
+		if (Buffer.byteLength(trial, "utf8") > maxBytes) {
+			omitted += 1;
+			return false;
+		}
+		body.push(line);
+		return true;
+	};
+	for (const line of priority) pushLine(line);
+	for (const line of rest) pushLine(line);
+
+	const text = [...header, ...body, `omitted:${omitted}`, ...footer, ""].join("\n");
+	return { text, lineCount: body.length, omitted, bytes: Buffer.byteLength(text, "utf8") };
+}
+
 export function selectGrokReviewInput({
 	repo,
 	baseSha,
@@ -488,6 +573,7 @@ export function selectGrokReviewInput({
 	outDiff,
 	outPaths,
 	outMeta,
+	outInventory = null,
 }) {
 	const readOptional = (path) => {
 		if (!path) return null;
@@ -527,7 +613,7 @@ export function selectGrokReviewInput({
 		"--",
 		".",
 	]);
-	const { paths, renamePairs } = parseNameStatus(nameStatus);
+	const { paths, renamePairs, statusByPath } = parseNameStatus(nameStatus);
 
 	const classified = classifyReviewPaths({
 		paths,
@@ -549,15 +635,19 @@ export function selectGrokReviewInput({
 		for (let i = 0; i < includePaths.length; i += batchSize) {
 			const batch = includePaths.slice(i, i + batchSize);
 			parts.push(
-				git(repo, [
-					"diff",
-					"--find-renames",
-					"--no-ext-diff",
-					"--no-textconv",
-					`${baseSha}...${headSha}`,
-					"--",
-					...batch,
-				]),
+				git(
+					repo,
+					[
+						"diff",
+						"--find-renames",
+						"--no-ext-diff",
+						"--no-textconv",
+						`${baseSha}...${headSha}`,
+						"--",
+						...batch,
+					],
+					{ trim: false },
+				),
 			);
 		}
 		diffText = parts.filter(Boolean).join("");
@@ -566,15 +656,19 @@ export function selectGrokReviewInput({
 
 
 
-	const fullDiff = git(repo, [
-		"diff",
-		"--find-renames",
-		"--no-ext-diff",
-		"--no-textconv",
-		`${baseSha}...${headSha}`,
-		"--",
-		".",
-	]);
+	const fullDiff = git(
+		repo,
+		[
+			"diff",
+			"--find-renames",
+			"--no-ext-diff",
+			"--no-textconv",
+			`${baseSha}...${headSha}`,
+			"--",
+			".",
+		],
+		{ trim: false },
+	);
 	const fullBytes = Buffer.byteLength(fullDiff, "utf8");
 	const selectedBytes = Buffer.byteLength(diffText, "utf8");
 
@@ -637,9 +731,23 @@ export function selectGrokReviewInput({
 		);
 	}
 
+	const inventory = buildReviewInventory({
+		statusByPath,
+		rows: classified.rows,
+		maxBytes: 20_000,
+	});
+	meta.inventory = {
+		bytes: inventory.bytes,
+		lineCount: inventory.lineCount,
+		omitted: inventory.omitted,
+	};
+
 	writeFileSync(outDiff, diffText);
 	writeFileSync(outPaths, includePaths.join("\0") + (includePaths.length ? "\0" : ""));
 	writeFileSync(outMeta, `${JSON.stringify(meta, null, 2)}\n`);
+	if (outInventory) {
+		writeFileSync(outInventory, inventory.text);
+	}
 	return meta;
 }
 
@@ -648,6 +756,7 @@ function parseArgs(argv) {
 		pinPath: null,
 		pinBasePath: null,
 		pinHeadPath: null,
+		outInventory: null,
 	};
 	for (let i = 0; i < argv.length; i++) {
 		const arg = argv[i];
@@ -684,6 +793,9 @@ function parseArgs(argv) {
 			case "--out-meta":
 				opts.outMeta = next();
 				break;
+			case "--out-inventory":
+				opts.outInventory = next();
+				break;
 			default:
 				throw new Error(`unknown argument: ${arg}`);
 		}
@@ -701,6 +813,7 @@ function parseArgs(argv) {
 	opts.outDiff = resolve(opts.outDiff);
 	opts.outPaths = resolve(opts.outPaths);
 	opts.outMeta = resolve(opts.outMeta);
+	if (opts.outInventory) opts.outInventory = resolve(opts.outInventory);
 	return opts;
 }
 

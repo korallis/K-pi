@@ -479,3 +479,28 @@ test("the CLI exits 1 and names the violation and the reviewed exemptions", (t) 
 	assert.match(result.stderr, /auto-merge\.yml: asks GitHub to merge only after required checks pass/);
 	assert.match(result.stderr, /grok-review\.yml: posts one read-only Grok review result/);
 });
+
+
+test("write-all is rejected even on an otherwise empty workflow", (t) => {
+	const root = fixture(t, {
+		workflows: {
+			"nightly.yml": readOnlyWorkflow("    permissions: write-all\n    steps:\n      - run: echo hi\n"),
+		},
+	});
+	assert.deepEqual(inspectForkIntegrity(root), [
+		'.github/workflows/nightly.yml: forbidden write permission "write-all"',
+	]);
+});
+
+test("inline permissions maps with write are rejected", (t) => {
+	const root = fixture(t, {
+		workflows: {
+			"nightly.yml": readOnlyWorkflow(
+				"    permissions: { contents: write, issues: read }\n    steps:\n      - run: echo hi\n",
+			),
+		},
+	});
+	assert.deepEqual(inspectForkIntegrity(root), [
+		'.github/workflows/nightly.yml: forbidden write permission "contents: write"',
+	]);
+});

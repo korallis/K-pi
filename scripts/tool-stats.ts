@@ -105,7 +105,7 @@ function bucketLabels(): string[] {
 }
 
 const { sessionsDir, output } = parseArgs();
-if (!existsSync(sessionsDir)) throw new Error(`Sessions directory not found: ${sessionsDir}`);
+if (!existsSync(sessionsDir)) throw new Error(`Sessions directory not found: ${String(sessionsDir).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;")}`);
 
 const tools = new Map<string, ToolStats>();
 const bashCommands = new Map<string, BashCommandStats>();
@@ -163,7 +163,7 @@ const html = `<!doctype html>
 <body class="bg-zinc-950 text-zinc-100 p-6">
 	<main class="max-w-7xl mx-auto space-y-6">
 		<h1 class="text-3xl font-bold">Pi Tool Stats</h1>
-		<p class="text-zinc-400">${data.files} session files from <code>${sessionsDir}</code>. Generated ${data.generatedAt}.</p>
+		<p class="text-zinc-400">${data.files} session files from <code>${String(sessionsDir).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;")}</code>. Generated ${data.generatedAt}.</p>
 		<section class="grid md:grid-cols-2 gap-6">
 			<div class="bg-zinc-900 rounded p-4"><h2 class="font-semibold mb-3">Estimated result tokens by tool</h2><canvas id="tokens"></canvas></div>
 			<div class="bg-zinc-900 rounded p-4"><h2 class="font-semibold mb-3">Tool calls</h2><canvas id="calls"></canvas></div>
@@ -193,7 +193,7 @@ const html = `<!doctype html>
 		</section>
 	</main>
 	<script>
-		const data=${JSON.stringify(data)};
+		const data=${JSON.stringify(data).replace(/</g, "\\u003c").replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029")};
 		function fmt(n){return Math.round(n).toLocaleString()}
 		function esc(s){return String(s).replace(/[&<>\"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
 		function table(rows,el){

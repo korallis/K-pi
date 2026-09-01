@@ -294,12 +294,31 @@ function checkMergeWaitsForChecks(context, relativePath, contents) {
 }
 
 function checkWritePermissions(context, relativePath, contents, allowed) {
+	// Top-level grant: permissions: write-all
+	if (/^[ \t]*permissions:[ \t]*write-all\b/m.test(contents)) {
+		context.violation(relativePath, 'forbidden write permission "write-all"');
+	}
+	// Flow-style maps: permissions: { contents: write, ... }
+	for (const match of contents.matchAll(
+		/^[ \t]*permissions:[ \t]*\{([^}]*)\}/gm,
+	)) {
+		const body = match[1];
+		for (const entry of body.matchAll(
+			/\b(actions|attestations|checks|contents|deployments|discussions|id-token|issues|models|packages|pages|pull-requests|repository-projects|security-events|statuses)[ \t]*:[ \t]*write\b/g,
+		)) {
+			const key = entry[1];
+			if (allowed?.has(key)) continue;
+			context.violation(relativePath, `forbidden write permission "${key}: write"`);
+		}
+	}
+	// Block-style scope lines already covered by WRITE_PERMISSION.
 	for (const match of contents.matchAll(WRITE_PERMISSION)) {
 		const key = match[1];
 		if (allowed?.has(key)) continue;
 		context.violation(relativePath, `forbidden write permission "${key}: write"`);
 	}
 }
+
 
 function checkThirdPartyActionPins(context, relativePath, contents) {
 	if (!relativePath.startsWith(".github/workflows/")) return;

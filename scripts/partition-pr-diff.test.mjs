@@ -237,3 +237,40 @@ test("parseChunkLocationIndex leaves deletion-only paths with empty new-side set
 	assert.equal(index.newSideLines.get("gone.ts")?.size ?? 0, 0);
 	assert.equal(index.deletionOnlyPaths, undefined);
 });
+
+
+test("quoted git paths with spaces are parsed", () => {
+	const diff = [
+		`diff --git "a/foo bar.ts" "b/foo bar.ts"`,
+		`--- "a/foo bar.ts"`,
+		`+++ "b/foo bar.ts"`,
+		"@@ -1,1 +1,1 @@",
+		"-old",
+		"+new",
+		"",
+	].join("\n");
+	const sections = splitDiffFileSections(diff);
+	assert.equal(sections[0].path, "foo bar.ts");
+	const index = parseChunkLocationIndex(diff);
+	assert.ok(index.paths.includes("foo bar.ts"));
+	assert.deepEqual([...index.newSideLines.get("foo bar.ts")], [1]);
+});
+
+test("hunk body lines starting with +++ or --- count as add/delete", () => {
+	const diff = [
+		"diff --git a/x.ts b/x.ts",
+		"--- a/x.ts",
+		"+++ b/x.ts",
+		"@@ -1,2 +1,3 @@",
+		" keep",
+		"-old",
+		"+new",
+		"+++added-plus-content",
+		"",
+	].join("\n");
+	// Note: unified diff body lines are "+content" so content starting with ++
+	// appears as "+++content" in the file.
+	const index = parseChunkLocationIndex(diff);
+	const lines = [...index.newSideLines.get("x.ts")].sort((a, b) => a - b);
+	assert.deepEqual(lines, [2, 3]);
+});

@@ -108,9 +108,13 @@ export function splitDiffFileSections(diffText) {
 }
 
 function pathFromDiffGitLine(line) {
-	const match = /^diff --git a\/(.+) b\/(.+)$/u.exec(line);
-	if (!match) return null;
-	return stripDiffPath(match[2] || match[1]);
+	// Unquoted: diff --git a/foo b/foo
+	// Quoted:   diff --git "a/foo bar" "b/foo bar"
+	const quoted = /^diff --git (?:"([^"]+)"|(\S+)) (?:"([^"]+)"|(\S+))$/u.exec(line);
+	if (!quoted) return null;
+	const right = quoted[3] ?? quoted[4];
+	const left = quoted[1] ?? quoted[2];
+	return stripDiffPath(right || left);
 }
 
 function stripDiffPath(raw) {
@@ -127,8 +131,11 @@ function stripDiffPath(raw) {
 
 function pathFromPlusPlusLine(line) {
 	if (line === "+++ /dev/null") return null;
-	const match = /^\+\+\+ [ab]\/(.+)$/u.exec(line);
-	return match ? match[1] : null;
+	// +++ b/foo  OR  +++ "b/foo bar"
+	const match = /^\+\+\+ (?:[ab]\/(.+)|"([ab]\/[^"]+)"|'([ab]\/[^']+)')$/u.exec(line);
+	if (!match) return null;
+	const raw = match[1] ?? match[2] ?? match[3];
+	return stripDiffPath(raw);
 }
 
 /**
@@ -169,13 +176,13 @@ export function parseChunkLocationIndex(diffText) {
 			newLine = 0;
 			continue;
 		}
-		if (line.startsWith("--- ")) {
-			// keep currentPath from diff --git / +++
+		// File headers only apply outside a hunk. Inside a hunk, lines may
+		// legitimately start with +++ / --- as added/deleted content.
+		if (!inHunk && line.startsWith("--- ")) {
 			continue;
 		}
-		if (line.startsWith("+++ ")) {
-			if (line === "+++ /dev/null") {
-			} else {
+		if (!inHunk && line.startsWith("+++ ")) {
+			if (line !== "+++ /dev/null") {
 				const fromPlus = pathFromPlusPlusLine(line);
 				if (fromPlus) {
 					currentPath = fromPlus;
@@ -193,13 +200,13 @@ export function parseChunkLocationIndex(diffText) {
 		}
 		if (!inHunk || !currentPath) continue;
 
-		if (line.startsWith("+") && !line.startsWith("+++")) {
+		if (line.startsWith("+")) {
 			ensurePath(currentPath);
 			newSideLines.get(currentPath).add(newLine);
 			newLine += 1;
 			continue;
 		}
-		if (line.startsWith("-") && !line.startsWith("---")) {
+		if (line.startsWith("-")) {
 			// old-side only — does not advance new-side line counter
 			continue;
 		}
@@ -227,8 +234,10 @@ export function parseChunkLocationIndex(diffText) {
  * @returns {{ old: number, new: number, kind: "context" | "delete" | "add" | "meta" }}
  */
 function hunkBodyLineDelta(line) {
-	if (line.startsWith("+") && !line.startsWith("+++")) return { old: 0, new: 1, kind: "add" };
-	if (line.startsWith("-") && !line.startsWith("---")) return { old: 1, new: 0, kind: "delete" };
+	// Inside a hunk every leading + is an addition and every leading - is a
+	// deletion — including content that itself starts with ++ or --.
+	if (line.startsWith("+")) return { old: 0, new: 1, kind: "add" };
+	if (line.startsWith("-")) return { old: 1, new: 0, kind: "delete" };
 	if (line.startsWith(" ")) return { old: 1, new: 1, kind: "context" };
 	if (line.startsWith("\\")) return { old: 0, new: 0, kind: "meta" };
 	// Treat bare empty lines inside a hunk as context-less meta (rare).

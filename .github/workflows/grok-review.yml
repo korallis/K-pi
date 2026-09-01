@@ -118,6 +118,7 @@ jobs:
 
 
       - name: Prepare bounded review input
+        id: prepare
         run: |
           # Bring BASE_SHA into the head clone without network credentials. The
           # base tip is not always an ancestor of HEAD once the base branch moves,
@@ -128,24 +129,43 @@ jobs:
           git -C untrusted cat-file -e "$BASE_SHA^{commit}"
           git -C untrusted cat-file -e "$HEAD_SHA^{commit}"
 
-          # Prefer base copies of the gate scripts (trusted TCB). Head copies are
-          # only for the landing PR that introduces them onto the base.
+          # Gate scripts are the review TCB. Prefer the complete base set.
+          # Head bootstrap is same-repository landing only (base has none yet);
+          # after this stack lands on main, base always wins and head is never used.
           mkdir -p "$RUNNER_TEMP/gate-scripts"
-          for script in \
-            validate-grok-review.mjs \
-            partition-pr-diff.mjs \
-            run-chunked-grok-review.mjs \
+          gate_scripts=(
+            validate-grok-review.mjs
+            partition-pr-diff.mjs
+            run-chunked-grok-review.mjs
             select-grok-review-input.mjs
-          do
-            if [ -f "trusted/scripts/$script" ]; then
-              cp "trusted/scripts/$script" "$RUNNER_TEMP/gate-scripts/$script"
-            elif [ -f "untrusted/scripts/$script" ]; then
-              cp "untrusted/scripts/$script" "$RUNNER_TEMP/gate-scripts/$script"
-            else
-              echo "::error::scripts/$script is missing on base and head."
-              exit 1
-            fi
+          )
+          base_complete=1
+          head_complete=1
+          for script in "${gate_scripts[@]}"; do
+            [ -f "trusted/scripts/$script" ] || base_complete=0
+            [ -f "untrusted/scripts/$script" ] || head_complete=0
           done
+          gate_script_source=""
+          if [ "$base_complete" -eq 1 ]; then
+            gate_script_source=base
+            for script in "${gate_scripts[@]}"; do
+              cp "trusted/scripts/$script" "$RUNNER_TEMP/gate-scripts/$script"
+            done
+          elif [ "$head_complete" -eq 1 ] && [ "${{ github.event.pull_request.head.repo.full_name }}" = "${{ github.repository }}" ]; then
+            # Landing bootstrap only. select runs with tokens scrubbed below.
+            # Inference still needs COPILOT for the copilot CLI child; residual
+            # head-JS risk exists only until base carries these scripts.
+            gate_script_source=head-bootstrap
+            for script in "${gate_scripts[@]}"; do
+              cp "untrusted/scripts/$script" "$RUNNER_TEMP/gate-scripts/$script"
+            done
+            echo "::warning::Using head gate scripts (landing bootstrap). After merge, base scripts only."
+          else
+            echo "::error::Gate scripts missing on base; head bootstrap forbidden (fork or incomplete set)."
+            exit 1
+          fi
+          echo "gate_script_source=$gate_script_source" >> "$GITHUB_OUTPUT"
+          chmod -R a-w "$RUNNER_TEMP/gate-scripts"
 
           # Pin trust: base/trusted upstream.json always wins when present. A PR
           # must not retarget the pin to a commit it carries in order to exclude
@@ -185,7 +205,10 @@ jobs:
           fi
           git -C untrusted cat-file -e "${pin_commit}^{commit}"
 
-          node "$RUNNER_TEMP/gate-scripts/select-grok-review-input.mjs" \
+          # Gate scripts may come from head on the landing PR. Never let them
+          # inherit the job's write-capable token — clear both env names first.
+          env -u GITHUB_TOKEN -u GH_TOKEN \
+            node "$RUNNER_TEMP/gate-scripts/select-grok-review-input.mjs" \
             --repo "$GITHUB_WORKSPACE/untrusted" \
             --base "$BASE_SHA" \
             --head "$HEAD_SHA" \
@@ -193,7 +216,8 @@ jobs:
             "${pin_head_args[@]}" \
             --out-diff "$RUNNER_TEMP/pr.diff" \
             --out-paths "$RUNNER_TEMP/changed-paths" \
-            --out-meta "$RUNNER_TEMP/grok-input-meta.json"
+            --out-meta "$RUNNER_TEMP/grok-input-meta.json" \
+            --out-inventory "$RUNNER_TEMP/pr-inventory.txt"
 
           jq -c '{selectedDiffBytes,fullDiffBytes,counts,pin}' "$RUNNER_TEMP/grok-input-meta.json"
 
@@ -212,6 +236,7 @@ jobs:
           node "$RUNNER_TEMP/gate-scripts/run-chunked-grok-review.mjs" \
             --diff "$RUNNER_TEMP/pr.diff" \
             --changed-paths "$RUNNER_TEMP/changed-paths" \
+            --inventory "$RUNNER_TEMP/pr-inventory.txt" \
             --model "$GROK_REVIEW_MODEL" \
             --out-json "$RUNNER_TEMP/grok-review.json" \
             --out-meta "$RUNNER_TEMP/grok-review-meta.json" \

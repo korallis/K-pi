@@ -23,6 +23,9 @@ name: auto-merge
 
 on:
   pull_request:
+    # Only queue auto-merge for PRs targeting main (the protected branch). Other
+    # refs must not merge the moment they become mergeable without required checks.
+    branches: [main]
     # No `synchronize`: auto-merge is enabled once per PR and survives pushes.
     # ready_for_review is load-bearing — a PR opened as a draft is skipped below
     # and would otherwise never be queued after being marked ready.
