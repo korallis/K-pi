@@ -1,0 +1,302 @@
+{
+	"dropPaths": [
+		{
+			"pattern": "docs/**",
+			"reason": "the upstream guide is Cursor-facing product documentation, not a product-owned K-π instruction; the loadable runtime is skills/**"
+		},
+		{
+			"pattern": "README.md",
+			"reason": "upstream product README; K-π's own documentation lives in docs/kstack.md"
+		},
+		{
+			"pattern": ".cursor-plugin/**",
+			"reason": "Cursor plugin packaging manifest; K-π loads skills through its own resource discovery"
+		},
+		{
+			"pattern": "agents/**",
+			"reason": "Cursor agent-routing files; the worker contract is the overlay-owned k-agent skill"
+		},
+		{
+			"pattern": "automations/**",
+			"reason": "chat-integration automations, including the Benny pack kstack.md §5 drops as runtime content"
+		},
+		{
+			"pattern": "skills/make-bot-ui/**",
+			"reason": "kstack.md §5 drops make-bot-ui whole: a Cursor Routines webhook skill with no K-π equivalent, not rebranded and not stubbed"
+		},
+		{
+			"pattern": "skills/automate-me/**",
+			"reason": "authors a personal per-operator mode skill from the user's own habits; generated skills carry product-owned instructions only"
+		},
+		{
+			"pattern": "skills/k-mode/playbooks/**",
+			"reason": "the playbook registry is overlay-owned under skills/playbook-*; the upstream copies carry cloud, worktree, and sleeper semantics K-π has no equivalent for"
+		},
+		{
+			"pattern": "skills/k-mode/references/bugbot-triage.md",
+			"reason": "kstack.md §5 replaces hosted bot triage with /interrogate and the K-π reviewer"
+		},
+		{
+			"pattern": "skills/k-mode/scripts/**",
+			"reason": "Graphite stack store, hosted pull-request watcher, worktree audit, and a vendored bun lockfile: maintainer tooling for the upstream product, none of it K-π runtime"
+		},
+		{
+			"pattern": ".gitignore",
+			"reason": "an upstream repository ignore file is not runtime content"
+		},
+		{
+			"pattern": "**/.gitignore",
+			"reason": "an upstream repository ignore file is not runtime content"
+		},
+		{
+			"pattern": "skills/worktree-cleanup/**",
+			"reason": "kstack.md §5 defers worktree cleanup; v1 works in-tree on a feature branch"
+		},
+		{
+			"pattern": "**/worktree-cleanup.md",
+			"reason": "kstack.md §5 defers worktree cleanup; v1 works in-tree on a feature branch"
+		}
+	],
+	"dropLines": [
+		{
+			"pattern": "poteto",
+			"scope": [
+				"README.md",
+				"docs/**"
+			],
+			"reason": "upstream author self-branding in prose; attribution lives in LICENSE and NOTICE"
+		}
+	],
+	"operators": [
+		{
+			"pattern": "(?<![\\w-])Task tool(?![\\w-])",
+			"replacement": "spawn_background tool",
+			"note": "Cursor Task tool becomes a background K-π session"
+		},
+		{
+			"pattern": "(?<![\\w-])Task subagent(s)?(?![\\w-])",
+			"replacement": "background K-π worker$1",
+			"note": "a subagent becomes a real K-π session"
+		},
+		{
+			"pattern": "(?<![\\w-])Task\\(",
+			"replacement": "spawn_background(",
+			"note": "call shape"
+		},
+		{
+			"pattern": "(?<![\\w-])`Task`(?![\\w-])",
+			"replacement": "`spawn_background`",
+			"note": "inline code reference"
+		},
+		{
+			"pattern": "(?<![\\w-])Task call(s)?(?![\\w-])",
+			"replacement": "spawn_background call$1",
+			"note": "call-site prose"
+		},
+		{
+			"pattern": "(?<![\\w-])Task prompt(s)?(?![\\w-])",
+			"replacement": "spawn_background prompt$1",
+			"note": "prompt prose"
+		},
+		{
+			"pattern": "(?<![\\w-])Task response(s)?(?![\\w-])",
+			"replacement": "worker contract file$1",
+			"note": "a worker's answer is its contract file, never its transcript"
+		},
+		{
+			"pattern": "(?<![\\w-])Task schema(?![\\w-])",
+			"replacement": "spawn_background schema",
+			"note": "schema prose"
+		},
+		{
+			"pattern": "run_in_background",
+			"replacement": "spawn_background",
+			"note": "background start"
+		},
+		{
+			"pattern": "spawn_background: true",
+			"replacement": "spawn_background",
+			"note": "flag becomes the call"
+		},
+		{
+			"pattern": "subagent_type",
+			"replacement": "role",
+			"note": "a worker has a role, not a subagent type"
+		},
+		{
+			"pattern": "(?<![\\w-])Subagent(s)?(?![\\w-])",
+			"replacement": "Background K-π worker$1",
+			"note": "a capitalised heading is the same operator"
+		},
+		{
+			"pattern": "(?<![\\w-])subagent(s)?(?![\\w-])",
+			"replacement": "background K-π worker$1",
+			"note": "no subagents exist in K-π"
+		},
+		{
+			"pattern": "(?<![\\w-])resume the (background K-π worker|worker)(?![\\w-])",
+			"replacement": "communicate with the $1",
+			"note": "resume is a communicate delivery"
+		},
+		{
+			"pattern": "\\(defaults? `(?:claude-fable-5|claude-opus-[45]|gpt-5\\.6-(?:sol|terra|luna)|grok-4\\.[56]|glm-5\\.[123]|kimi-k3|composer-)[a-z0-9.\\-]*`(?:(?:,| and) `(?:claude-fable-5|claude-opus-[45]|gpt-5\\.6-(?:sol|terra|luna)|grok-4\\.[56]|glm-5\\.[123]|kimi-k3|composer-)[a-z0-9.\\-]*`)*\\)",
+			"replacement": "(roles resolved from `~/.kpi/agent/kstack/models.json`, set by `/setup-kstack`)",
+			"note": "a hard slug is never a required default"
+		},
+		{
+			"pattern": "defaults? `(?:claude-fable-5|claude-opus-[45]|gpt-5\\.6-(?:sol|terra|luna)|grok-4\\.[56]|glm-5\\.[123]|kimi-k3|composer-)[a-z0-9.\\-]*`(?:(?:,| and) `(?:claude-fable-5|claude-opus-[45]|gpt-5\\.6-(?:sol|terra|luna)|grok-4\\.[56]|glm-5\\.[123]|kimi-k3|composer-)[a-z0-9.\\-]*`)* for ([a-z ]+?) and `(?:claude-fable-5|claude-opus-[45]|gpt-5\\.6-(?:sol|terra|luna)|grok-4\\.[56]|glm-5\\.[123]|kimi-k3|composer-)[a-z0-9.\\-]*`(?:(?:,| and) `(?:claude-fable-5|claude-opus-[45]|gpt-5\\.6-(?:sol|terra|luna)|grok-4\\.[56]|glm-5\\.[123]|kimi-k3|composer-)[a-z0-9.\\-]*`)* for ([a-z, ]+)",
+			"replacement": "roles resolved from `~/.kpi/agent/kstack/models.json` for $1 and for $2",
+			"note": "paired role defaults"
+		},
+		{
+			"pattern": "Otherwise default to one entry per [a-z ]*?`(?:claude-fable-5|claude-opus-[45]|gpt-5\\.6-(?:sol|terra|luna)|grok-4\\.[56]|glm-5\\.[123]|kimi-k3|composer-)[a-z0-9.\\-]*`(?:(?:,| and) `(?:claude-fable-5|claude-opus-[45]|gpt-5\\.6-(?:sol|terra|luna)|grok-4\\.[56]|glm-5\\.[123]|kimi-k3|composer-)[a-z0-9.\\-]*`)*",
+			"replacement": "Otherwise use the roles resolved from `~/.kpi/agent/kstack/models.json`",
+			"note": "panel default list"
+		},
+		{
+			"pattern": "`(?:claude-fable-5|claude-opus-[45]|gpt-5\\.6-(?:sol|terra|luna)|grok-4\\.[56]|glm-5\\.[123]|kimi-k3|composer-)[a-z0-9.\\-]*`",
+			"replacement": "`<role from ~/.kpi/agent/kstack/models.json>`",
+			"note": "a slug in prose or a table cell is a role reference"
+		},
+		{
+			"pattern": "its own worktree or branch",
+			"replacement": "its own branch",
+			"note": "in-tree"
+		},
+		{
+			"pattern": "a git worktree where possible, otherwise ",
+			"replacement": "",
+			"note": "in-tree"
+		},
+		{
+			"pattern": "(?<![\\w-])worktrees(?![\\w-])",
+			"replacement": "branches",
+			"note": "in-tree"
+		},
+		{
+			"pattern": "(?<![\\w-])worktree(?![\\w-])",
+			"replacement": "branch",
+			"note": "in-tree"
+		},
+		{
+			"pattern": "\\(so `/Users/you/proj` becomes `Users-you-proj`\\)",
+			"replacement": "(the project slug is the workspace path with separators replaced by hyphens)",
+			"note": "no workstation path in a loadable skill"
+		},
+		{
+			"pattern": "Cursor's built-in `create-skill`",
+			"replacement": "the skill contract K-π documents for K-stack",
+			"note": "no Cursor authoring tool in K-π"
+		},
+		{
+			"pattern": "new skill via create-skill:",
+			"replacement": "new skill:",
+			"note": "authoring is by hand against the contract"
+		},
+		{
+			"pattern": "a new skill via create-skill",
+			"replacement": "a new skill",
+			"note": "authoring is by hand"
+		},
+		{
+			"pattern": "(?<![\\w-])`create-skill`(?![\\w-])",
+			"replacement": "the skill contract",
+			"note": "authoring is by hand"
+		},
+		{
+			"pattern": "(?<![\\w-])create-skill(?![\\w-])",
+			"replacement": "the skill contract",
+			"note": "authoring is by hand"
+		},
+		{
+			"pattern": "(?i)(?<![\\w-])bugbot(?![\\w-])",
+			"replacement": "the isolated reviewer",
+			"note": "hosted bot triage becomes /interrogate plus the K-π reviewer"
+		}
+	],
+	"unknownOperatorSentinels": [
+		{
+			"pattern": "(?<![\\w-])Task(?![\\w-])",
+			"rule": "unknown-task-operator",
+			"message": "unmapped Cursor Task operator; add an operators rule or drop the path"
+		},
+		{
+			"pattern": "(?i)subagent",
+			"rule": "unknown-subagent-operator",
+			"message": "unmapped subagent contract; K-π workers are background sessions"
+		},
+		{
+			"pattern": "(?i)cursor cloud|cloud agent|background agent|hosted agent|cloud worker",
+			"rule": "cloud-worker",
+			"message": "cloud or hosted worker has no K-π equivalent; workers are local background sessions"
+		},
+		{
+			"pattern": "(?i)\\bbugbot\\b",
+			"rule": "hosted-bot",
+			"message": "hosted bot triage is replaced by /interrogate and the K-π reviewer"
+		},
+		{
+			"pattern": "(?i)graphite|(?<![\\w-])gt submit(?![\\w-])|(?<![\\w-])gt (?:create|stack|sync)(?![\\w-])",
+			"rule": "graphite",
+			"message": "Graphite is forbidden; K-π makes linear local commits"
+		},
+		{
+			"pattern": "(?i)cursor-team-kit|(?<![\\w-])/deslop(?![\\w-])|control-cli|control-ui",
+			"rule": "cursor-team-kit",
+			"message": "cursor-team-kit tooling is forbidden as a dependency"
+		},
+		{
+			"pattern": "(?i)cursor's built-in|Cursor's `create-skill`|(?<![\\w-])create-skill(?![\\w-])",
+			"rule": "cursor-builtin-tool",
+			"message": "Cursor built-in tooling is not available in K-π"
+		},
+		{
+			"pattern": "(?<![\\w-])/loop(?![\\w-])",
+			"rule": "loop-sleeper",
+			"message": "the /loop sleeper is forbidden; the graph owns rounds"
+		},
+		{
+			"pattern": "\\.cursor/rules",
+			"rule": "cursor-rules-consumer",
+			"message": "model configuration lives in ~/.kpi/agent/kstack/models.json"
+		},
+		{
+			"pattern": "(?<![\\w-])worktree(s)?(?![\\w-])",
+			"rule": "worktree-semantics",
+			"message": "K-π v1 works in-tree on a feature branch; worktree semantics are deferred"
+		},
+		{
+			"pattern": "(?i)(claude-fable-5|claude-opus-[45]|gpt-5\\.6-(?:sol|terra|luna)|grok-4\\.[56]|glm-5\\.[123]|kimi-k3|composer-)[a-z0-9.\\-]*",
+			"rule": "hard-model-slug",
+			"message": "a hard model slug is not a default; roles resolve through ~/.kpi/agent/kstack/models.json"
+		},
+		{
+			"pattern": "(?i)lee ?barry|ray ?fernando|(?<![\\w-])poteto(?![\\w-])|Lauren Tan",
+			"rule": "personal-name",
+			"message": "a personal name may appear only in required third-party attribution"
+		},
+		{
+			"pattern": "(?<![\\w.-])(?:/Users/|/home/[a-z]|~/Projects|[A-Z]:\\\\Users\\\\)",
+			"rule": "personal-path",
+			"message": "an absolute workstation path may not ship in a loadable skill"
+		}
+	],
+	"attributionPaths": [
+		"LICENSE",
+		"NOTICE",
+		"UPSTREAM.md"
+	],
+	"requiredSkills": [
+		"setup-kstack",
+		"k-mode",
+		"k-agent",
+		"k-stack-principles",
+		"playbook-feature",
+		"playbook-bug-fix",
+		"playbook-investigation",
+		"playbook-shipping",
+		"playbook-autonomous-run",
+		"playbook-arena",
+		"playbook-swarm"
+	]
+}

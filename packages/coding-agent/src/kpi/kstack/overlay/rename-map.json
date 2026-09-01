@@ -1,14 +1,78 @@
 {
-  "setup-pstack": "setup-kstack",
-  "poteto-mode": "k-mode",
-  "poteto-agent": "k-agent",
-  "name: Poteto Mode": "name: k-mode",
-  "name: Make Bot UI": "name: make-bot-ui",
-  "# Poteto subagent": "# K-agent",
-  "# Poteto mode": "# K-mode",
-  "Use for poteto,": "Use for K-π,",
-  "poteto's": "K-π's",
-  "\"bun-types\": \"latest\"": "\"bun-types\": \"1.3.14\"",
-  "\"typescript\": \"latest\"": "\"typescript\": \"7.0.2\"",
-  "pstack": "K-stack"
+	"pathRenames": [
+		{
+			"from": "setup-pstack",
+			"to": "setup-kstack"
+		},
+		{
+			"from": "poteto-mode",
+			"to": "k-mode"
+		},
+		{
+			"from": "poteto-agent",
+			"to": "k-agent"
+		},
+		{
+			"from": "pstack-models",
+			"to": "kstack-models"
+		}
+	],
+	"tokenRenames": [
+		{
+			"from": "setup-pstack",
+			"to": "setup-kstack"
+		},
+		{
+			"from": "poteto-mode",
+			"to": "k-mode"
+		},
+		{
+			"from": "poteto-agent",
+			"to": "k-agent"
+		},
+		{
+			"from": "pstack-models",
+			"to": "kstack-models"
+		},
+		{
+			"from": "pstack",
+			"to": "K-stack",
+			"boundary": "left"
+		},
+		{
+			"from": "~/.cursor/rules/kstack-models.mdc",
+			"to": "~/.kpi/agent/kstack/models.json",
+			"boundary": "none"
+		},
+		{
+			"from": "~/.cursor/rules/K-stack-models.mdc",
+			"to": "~/.kpi/agent/kstack/models.json",
+			"boundary": "none"
+		},
+		{
+			"from": "~/.cursor/rules",
+			"to": "~/.kpi/agent/kstack",
+			"boundary": "none"
+		},
+		{
+			"from": "~/.cursor/projects/<slug>/agent-transcripts/<uuid>/<uuid>.jsonl",
+			"to": "~/.kpi/agent/sessions/<project>/<session>.jsonl",
+			"boundary": "none"
+		},
+		{
+			"from": "~/.cursor/projects",
+			"to": "~/.kpi/agent/sessions",
+			"boundary": "none"
+		},
+		{
+			"from": "bun-types\": \"latest",
+			"to": "bun-types\": \"1.3.14",
+			"boundary": "none"
+		},
+		{
+			"from": "typescript\": \"latest",
+			"to": "typescript\": \"7.0.2",
+			"boundary": "none"
+		}
+	]
 }

@@ -41,8 +41,14 @@ import {
 	type DuneStack,
 	scaffoldModule,
 } from "../packages/coding-agent/src/kpi/extensions/stack.ts";
+import { parseModelLadder } from "../packages/coding-agent/src/kpi/kstack/ladder.ts";
 import { assertShipApproved, createKModePlan } from "../packages/coding-agent/src/kpi/kstack/mode.ts";
-import { assertKnownModels, createSuggestedModels } from "../packages/coding-agent/src/kpi/kstack/models.ts";
+import {
+	assertKnownModels,
+	INHERIT_PARENT,
+	planModels,
+	planToDocument,
+} from "../packages/coding-agent/src/kpi/kstack/models.ts";
 
 const accounts: AccountsDocument = {
 	version: 1,
@@ -165,10 +171,13 @@ test("Cursor registers its id and refreshes a mocked live array", async () => {
 	}
 });
 
-test("K-mode feature starts with principles and ship needs approval", async () => {
-	const plan = createKModePlan("add a healthcheck");
+test("K-mode feature comes from the generated runtime and ship needs approval", async () => {
+	// The registry is the generated tree, so this reads what the sync emitted
+	// rather than a table in k-pi source.
+	const plan = await createKModePlan("add a healthcheck");
 	assert.equal(plan.playbook, "feature");
-	assert.equal(plan.todos[0], "read Principles");
+	assert.equal(plan.steps[0].node, "specify");
+	assert.ok(plan.todos[0].startsWith("specify:"));
 	const directory = await mkdtemp(join(tmpdir(), "kpi-verdict-"));
 	try {
 		await writeFile(join(directory, "verdict.json"), JSON.stringify({ approved: false }));
@@ -178,11 +187,27 @@ test("K-mode feature starts with principles and ship needs approval", async () =
 	}
 });
 
-test("K-stack setup never writes a slug outside the live registry", () => {
-	const document = createSuggestedModels(["anthropic/a", "xai/b"]);
-	assert.doesNotThrow(() => assertKnownModels(document, ["anthropic/a", "xai/b"]));
+test("K-stack setup never writes a slug outside the live candidates", () => {
+	const ladder = parseModelLadder(`
+| Role | Prefer, in order | Why | Confidence |
+|---|---|---|---|
+| implementer | \`sol\` | workhorse | Medium |
+| frontend | \`k3\` | design | Medium-high |
+| judgment | \`opus\` | taste | Medium |
+| precise | \`sol\` | contracts | Medium |
+| fast | \`luna\` | cheap | Medium |
+| review_panel | \`opus\`, \`sol\` | cross-family | Medium |
+
+1. GPT-5.6 Sol — workhorse
+2. Claude Opus 5 — judgment
+`);
+	const candidates = ["anthropic/opus", "xai/sol"];
+	const document = planToDocument(planModels(ladder, candidates));
+	assert.doesNotThrow(() => assertKnownModels(document, candidates));
+	// A role the ladder cannot fill inherits the parent rather than inventing one.
+	assert.equal(document.roles.frontend, INHERIT_PARENT);
 	document.roles.fast = "unknown/model";
-	assert.throws(() => assertKnownModels(document, ["anthropic/a", "xai/b"]), /Unknown model slug/u);
+	assert.throws(() => assertKnownModels(document, candidates), /Unknown model slug/u);
 });
 
 test("background bus caps workers, writers, messages, and leases", async () => {

@@ -1,6 +1,6 @@
 # Reviewer Prompt Template
 
-Build each reviewer subagent's prompt from this template, filling in the placeholders.
+Build each reviewer background K-π worker's prompt from this template, filling in the placeholders.
 
 ---
 

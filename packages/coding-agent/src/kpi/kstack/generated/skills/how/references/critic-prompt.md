@@ -1,6 +1,6 @@
 # Critic Prompt Template
 
-Build each critic subagent's prompt from this template. Fill in the placeholders.
+Build each critic background K-π worker's prompt from this template. Fill in the placeholders.
 
 ---
 

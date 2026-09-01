@@ -7,7 +7,7 @@ import { promisify } from "node:util";
 import { CONFIG_DIR_NAME } from "../../config.ts";
 
 import type { ExtensionCommandContext } from "../../core/extensions/types.ts";
-
+import { kModeState } from "../kstack/mode.ts";
 import { appendEvent } from "./append-log.ts";
 import type { BusDependencies } from "./bus/spawn.ts";
 import { compileAcceptanceCriteria } from "./graph/ac-compiler.ts";
@@ -288,7 +288,28 @@ function stateDocument(
 		failing_ac_sets: [...stop.failingAcSets],
 		retries: stop.retries,
 		retry_delays_ms: [...stop.retryDelaysMs],
+		// The playbook the job froze, and every step it declared. A skipped step
+		// keeps its reason: a step missing from the list reads as work that was
+		// never required, which is a different claim.
+		playbook: task.playbook,
+		todos: playbookTodos(task),
 	};
+}
+
+/**
+ * The frozen playbook's steps, rendered once per step.
+ *
+ * Read from the K-mode plan when it matches the frozen name, so the rendering and
+ * the freeze cannot disagree. A job whose task names a playbook the current
+ * session did not match still reports the name; it just has no step detail to
+ * add, which is honest rather than invented.
+ */
+function playbookTodos(task: Task): string[] | undefined {
+	if (task.playbook === undefined) {
+		return undefined;
+	}
+	const plan = kModeState.plan;
+	return plan !== undefined && plan.playbook === task.playbook ? [...plan.todos] : undefined;
 }
 
 /**
@@ -1189,6 +1210,10 @@ export async function runLoop(
 		quality_gates: await qualityGates(ctx.cwd),
 		ac: { quality: compilation.quality },
 		dependency_baseline: await runtimeDependencies(ctx.cwd),
+		// K-mode's match is frozen here and nowhere else. The playbook shapes the
+		// steps of the whole job, so re-matching mid-run would change what the run
+		// was for; `contractHash` deliberately excludes it for the same reason.
+		...(kModeState.plan === undefined ? {} : { playbook: kModeState.plan.playbook }),
 	};
 	const job = await createJob(ctx.cwd, task, contextFor(invocation, plan));
 	if (plan !== undefined) {

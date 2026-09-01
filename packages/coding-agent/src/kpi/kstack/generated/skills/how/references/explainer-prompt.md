@@ -1,6 +1,6 @@
 # Explainer Prompt Template
 
-Build the explainer subagent's prompt from this template. Fill in the placeholders.
+Build the explainer background K-π worker's prompt from this template. Fill in the placeholders.
 
 ---
 
