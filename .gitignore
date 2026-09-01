@@ -1,4 +1,43 @@
 node_modules/
-.pi/
-*.tsbuildinfo
+dist/
+.artifacts/
+*.log
 .DS_Store
+*.tsbuildinfo
+packages/*/dist/
+packages/*/dist-chrome/
+packages/*/dist-firefox/
+packages/ai/src/providers/data/
+packages/ai/src/providers/.model-generation-*/
+*.cpuprofile
+
+# Environment
+.env
+
+# Editor files
+.vscode/
+.zed/
+.idea/
+.claude/
+*.swp
+*.swo
+*~
+
+# Package specific
+.npm/
+coverage/
+.nyc_output/
+tui-debug.log
+compaction-results/
+.opencode/
+syntax.jsonl
+out.jsonl
+out.html
+packages/coding-agent/binaries/
+todo.md
+plans/
+collect.sh
+
+# K-π project-local runtime state (.pi/ is pre-rebrand state left on existing clones)
+.kpi/
+.pi/

@@ -1,6 +1,8 @@
+> **STATUS: HISTORICAL DESIGN NARRATIVE — NOT NORMATIVE.** This file records the original thinking that produced K-π, written when the plan was to ship a Pi *package* installed into a separately installed Pi. **That packaging model is superseded.** K-π is now a standalone harness: a maintained fork of Pi `v0.84.4` (base commit `b79e4cc`), executable `kpi`, config `.kpi/`, with the control plane compiled in as a built-in extension. There is no `pi install`, no package manifest, and no peer dependency. The control-system *ideas* below — outer loop owner, bounded worker, knowledge graph, DAG, context pack, two policy layers, append log — remain the design K-π implements. Anything below describing packaging, installation, or Pi as the host process is history. Normative contracts live in [`../docs/spec.md`](../docs/spec.md), [`../docs/PRD.md`](../docs/PRD.md), and [`../UPSTREAM.md`](../UPSTREAM.md); the active queue is [`../docs/remediation-plan.md`](../docs/remediation-plan.md).
+
 # k-pi — Loop & Graph Engineering Control System
 
-**Product name:** k-pi. **Brand cell:** `K-π`. **Build contract:** `pi-loopgraph-docs/` (PRD, spec, visual-targets, roadmap, implementation-plan). This file is the design narrative.
+**Product name:** K-π. **Brand cell:** `K-π`. **Build contract:** `docs/` (PRD, spec, visual-targets, remediation-plan). This file is the design narrative.
 
 **Purpose.** Turn Pi (pi.dev) into a control system — not a swarm — that decides what work matters, what agents may do, and what they must leave behind. Give it a **task** or a **finished plan** and it runs a full engineering loop. Human approval is the default for irreversible effects; **autopilot is allowed only when acceptance criteria are machine-verifiable** and the evidence gates pass.
 
@@ -214,7 +216,7 @@ Three different “graphs,” never mixed:
 
 ## 5. Recommended package layout
 
-Ship this as one Pi package so it is installable with `pi install ./pi-loopgraph` or later `pi install npm:@you/pi-loopgraph`.
+*Historical.* The original plan shipped this as one Pi package installable with `pi install ./pi-loopgraph`. K-π instead forks the harness: the same tree now lives at `packages/coding-agent/src/kpi/` and is compiled into the `kpi` binary. Read the layout below for the module decomposition, not for the distribution model.
 
 ```
 pi-loopgraph/
@@ -307,11 +309,13 @@ pi-loopgraph/
 }
 ```
 
-Project install (trusted repo). First-party package only — no oh-my-pi, no pi-multi-account, no pi-multi-pass, no pi-graph as a runtime dependency. Those are references we steal ideas from, not code we load.
+*Historical.* The original distribution step was a project-local package install into a trusted repository:
 
 ```bash
-pi install -l ./pi-loopgraph
+pi install -l ./pi-loopgraph          # superseded — K-π is built, not installed
 ```
+
+K-π now builds the harness instead: `npm install && npm run build`, then `kpi`. The first-party rule survives unchanged — no oh-my-pi, no pi-multi-account, no pi-multi-pass, no pi-graph as a runtime dependency. Those are references we steal ideas from, not code we load.
 
 Then copy templates into the repo.
 
@@ -1235,19 +1239,19 @@ The custom Pi setup is done when:
 
 ## 20. First commands after you accept this plan
 
-```bash
-# 0. Pi
-curl -fsSL https://pi.dev/install.sh | sh
-cd <your-project>
-pi          # /login, /trust
+*Historical — the original "compose, do not fork" bootstrap. K-π chose the opposite: it forks the harness and compiles the control plane in. The current equivalent is `npm install && npm run build`, then `kpi`. Kept for the rehearsal sequence in steps 3 and 4, which is still how you prove the protocol.*
 
-# 1. Compose, do not fork
-pi install -l npm:@shying/pi-graph
-pi install -l ./pi-loopgraph     # once the package in §5 exists
+```bash
+# 0. Build K-π (superseded steps 0-1: no Pi install, no package install)
+git clone https://github.com/korallis/K-pi.git && cd K-pi
+npm install && npm run build
+npm link --workspace @earendil-works/pi-coding-agent
+cd <your-project>
+kpi          # /login
 
 # 2. Theme + rules
 # copy templates/AGENTS.md → ./AGENTS.md
-# copy templates/APPEND_SYSTEM.md → .pi/APPEND_SYSTEM.md
+# copy templates/APPEND_SYSTEM.md → .kpi/APPEND_SYSTEM.md
 # /settings → theme loop-amber
 
 # 3. Prove the protocol on a safe change (gated first)

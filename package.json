@@ -1,62 +1,57 @@
 {
-  "name": "k-pi",
-  "version": "0.1.0",
-  "description": "First-party graph-engineered coding loop for Pi",
-  "type": "module",
-  "engines": {
-    "node": ">=22.19"
-  },
-  "keywords": [
-    "pi-package"
-  ],
-  "files": [
-    "README.md",
-    "AGENTS.md",
-    "extensions/",
-    "graphs/",
-    "prompts/",
-    "schemas/",
-    "skills/",
-    "templates/",
-    "themes/",
-    "kstack/generated/",
-    "kstack/overlay/",
-    "kstack/mode.ts",
-    "kstack/models.ts",
-    "kstack/NOTICE",
-    "kstack/UPSTREAM.md"
-  ],
-  "scripts": {
-    "test": "node --test --experimental-strip-types test/*.test.ts",
-    "lint": "tsc --noEmit --noUnusedLocals --noUnusedParameters",
-    "typecheck": "tsc --noEmit",
-    "kstack:sync": "node --experimental-strip-types kstack/scripts/sync-kstack.ts",
-    "kstack:sync:check": "node --experimental-strip-types kstack/scripts/sync-kstack.ts --check"
-  },
-  "peerDependencies": {
-    "@earendil-works/pi-coding-agent": ">=0.84.0",
-    "@earendil-works/pi-tui": ">=0.84.0",
-    "@earendil-works/pi-agent-core": ">=0.84.0",
-    "@earendil-works/pi-ai": ">=0.84.0"
-  },
-  "devDependencies": {
-    "@earendil-works/pi-coding-agent": "0.84.4",
-    "@types/node": "^22.19.0",
-    "typescript": "^5.9.3"
-  },
-  "pi": {
-    "extensions": [
-      "./extensions"
-    ],
-    "skills": [
-      "./skills",
-      "./kstack/generated/skills"
-    ],
-    "prompts": [
-      "./prompts"
-    ],
-    "themes": [
-      "./themes"
-    ]
-  }
+	"name": "k-pi-monorepo",
+	"private": true,
+	"version": "0.1.0",
+	"description": "K-π: a first-party graph-engineered coding agent harness, forked from Pi",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/korallis/K-pi.git"
+	},
+	"type": "module",
+	"workspaces": [
+		"packages/*",
+		"packages/session-backends/*",
+		"packages/coding-agent/examples/extensions/with-deps",
+		"packages/coding-agent/examples/extensions/custom-provider-anthropic",
+		"packages/coding-agent/examples/extensions/custom-provider-gitlab-duo",
+		"packages/coding-agent/examples/extensions/sandbox",
+		"packages/coding-agent/examples/extensions/gondolin"
+	],
+	"scripts": {
+		"clean": "npm run clean --workspaces",
+		"build": "cd packages/tui && npm run build && cd ../telemetry && npm run build && cd ../ai && npm run build && cd ../agent && npm run build && cd ../session-backends/sqlite-node && npm run build && cd ../../protocol && npm run build && cd ../client && npm run build && cd ../server && npm run build && cd ../coding-agent && npm run build",
+		"build:offline": "cd packages/tui && npm run build && cd ../telemetry && npm run build && cd ../ai && npm run build:offline && cd ../agent && npm run build && cd ../session-backends/sqlite-node && npm run build && cd ../../protocol && npm run build && cd ../client && npm run build && cd ../server && npm run build && cd ../coding-agent && npm run build",
+		"check": "biome check --error-on-warnings . && npm run check:pinned-deps && npm run check:ts-imports && tsgo --noEmit && npm run check:browser-smoke",
+		"check:browser-smoke": "node scripts/check-browser-smoke.mjs",
+		"check:pinned-deps": "node scripts/check-pinned-deps.mjs",
+		"check:ts-imports": "node scripts/check-ts-relative-imports.mjs",
+		"kpi": "./kpi-test.sh",
+		"kstack:sync": "node --experimental-strip-types packages/coding-agent/src/kpi/kstack/scripts/sync-kstack.ts",
+		"kstack:sync:check": "node --experimental-strip-types packages/coding-agent/src/kpi/kstack/scripts/sync-kstack.ts --check",
+		"test": "npm run test:scripts && npm run test --workspaces --if-present",
+		"test:scripts": "node --test scripts/*.test.mjs",
+		"test:kpi": "node --test --experimental-strip-types test/*.test.ts",
+		"upstream:check": "node scripts/upstream-check.mjs"
+	},
+	"devDependencies": {
+		"@anthropic-ai/sandbox-runtime": "0.0.26",
+		"@biomejs/biome": "2.3.5",
+		"@types/node": "22.19.19",
+		"@typescript/native-preview": "7.0.0-dev.20260120.1",
+		"esbuild": "0.28.1",
+		"shx": "0.4.0",
+		"tsx": "4.22.1",
+		"typescript": "5.9.3"
+	},
+	"engines": {
+		"node": ">=22.19.0"
+	},
+	"overrides": {
+		"protobufjs": "7.6.5",
+		"rimraf": "6.1.2",
+		"gaxios": {
+			"rimraf": "6.1.2"
+		}
+	}
 }

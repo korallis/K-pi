@@ -1,6 +1,6 @@
-# Exa and Perplexity research in k-pi
+# Exa and Perplexity research in K-π
 
-**Normative.** Optional. Implement both integrations as first-party REST clients using the runtime `fetch`. Do not add `exa-js`, `@perplexity-ai/perplexity_ai`, a community Pi research package, or an MCP dependency at runtime.
+**Normative.** Optional. Implement both integrations as first-party REST clients using the runtime `fetch`. Do not add `exa-js`, `@perplexity-ai/perplexity_ai`, a community research package, or an MCP dependency at runtime.
 
 Exa and Perplexity are **research credential targets**, never model pools. Neither is a `PoolId`. They never appear in `accounts.json.pools`, `/pool strategy`, `/pool chain`, or the cross-family fallback chain, and they never call `registerProvider`. `/accounts login exa|perplexity` stores a research credential; it never creates a routing slot and never changes which model answers a turn. These keys also grant no provider-native web search: every external research call is one of the three first-party REST tools below.
 
@@ -9,7 +9,7 @@ Exa and Perplexity are **research credential targets**, never model pools. Neith
 | Exa | `https://api.exa.ai` | `Authorization: Bearer` | `exa/default`; env fallback `EXA_API_KEY` |
 | Perplexity | `https://api.perplexity.ai` | `Authorization: Bearer` | `perplexity/default`; env fallback `PERPLEXITY_API_KEY` |
 
-Secrets live in `~/.pi/agent/accounts.secrets.json`, mode 0600.
+Secrets live in `~/.kpi/agent/accounts.secrets.json`, mode 0600.
 
 Official references:
 
@@ -47,7 +47,7 @@ Use native `fetch`; no provider SDK.
 
 ## Planning default
 
-Specify and plan must write `.pi/runs/<job>/research.md` and `research.json` before completing. `research.json` carries the mode, network state, and sources defined in `spec.md` §5 `SCH-research`.
+Specify and plan must write `.kpi/runs/<job>/research.md` and `research.json` before completing. `research.json` carries the mode, network state, and sources defined in `spec.md` §5 `SCH-research`.
 
 1. Search official docs and current API shapes with the configured service.
 2. Search current engineering practice only when the task needs it.

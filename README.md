@@ -1,20 +1,66 @@
-# K-π (`k-pi`)
+# K-π (`kpi`)
 
-K-π is a first-party Pi package for a gated or autonomous engineering loop: specify, research, plan, implement, test, bounds, isolated review, and one local ship commit.
+**K-π is a standalone terminal coding agent — a maintained fork of [Pi](https://github.com/earendil-works/pi), not a plugin for it.**
 
-## Install
+This repository is the whole harness: TUI, agent loop, providers, sessions, tools, RPC. On top of that base, K-π compiles in its own gated or autonomous engineering loop — specify, research, plan, implement, test, bounds, isolated review, and one local ship commit.
 
-Requires Node 22.19 or newer and `@earendil-works/pi-coding-agent >=0.84.0`. CI and this repository test against `0.84.4`.
+You do not install Pi. There is no `pi install`, no peer dependency, and no package to trust. You build this repository and run `kpi`.
 
-```sh
-pnpm install
-pi install -l ./
+| | |
+|---|---|
+| Executable | `kpi` (alias `k-pi`) |
+| Project config | `.kpi/` |
+| User config and secrets | `~/.kpi/agent/` |
+| Environment overrides | `KPI_CODING_AGENT_DIR`, `KPI_CODING_AGENT_SESSION_DIR` |
+| Upstream base | Pi `v0.84.4`, commit `b79e4cc834970cca69daebffab7df1da7d1e52c4` |
+| Upstream remote | `upstream` → `https://github.com/earendil-works/pi.git` |
+| Licence | MIT — see [`LICENSE`](LICENSE), [`NOTICE`](NOTICE), [`UPSTREAM.md`](UPSTREAM.md) |
+
+## Architecture
+
+```
+kpi (this repository, one process)
+├── packages/**                    forked Pi harness — K-π source, not a dependency
+│   └── coding-agent/
+│       ├── src/**                 upstream harness: TUI, agent loop, providers, sessions, RPC
+│       └── src/kpi/**             K-π: control plane, graph engine, accounts, K-stack, resources
+└── test/**                        K-π's node tests
 ```
 
-After trusting the package, `/login` includes the first-party Cursor provider. Cursor begins with the documented bootstrap fallback `cursor-small`; `refreshModels` replaces that list from the live service. Official provider catalogs are never frozen. Refresh them with:
+K-π's commands, prompts, skills, themes, and graphs are **built in**. The control plane is registered as a visible built-in extension and its resources are discovered by that built-in and copied into `dist`, so `/kpi`, `/accounts`, `/k-mode`, and `/setup-kstack` exist the moment the binary starts — no install step, no manifest, no trust gate. Project trust still governs a *user's* repo-local resources, exactly as in the base harness; it never gates K-π itself.
+
+Workspace packages keep their upstream `@earendil-works/pi-*` names. That is merge hygiene so upstream releases apply cleanly — it is not a dependency on Pi. Nothing under those names is fetched at build or run time.
+
+## Build and run
+
+Requires Node 22.19 or newer. The repository uses npm workspaces.
 
 ```sh
-pi update --models
+git clone https://github.com/korallis/K-pi.git
+cd K-pi
+npm install
+npm run build
+```
+
+Run the built harness:
+
+```sh
+node packages/coding-agent/dist/bundle/cli.js
+```
+
+Or put `kpi` and `k-pi` on your `PATH`:
+
+```sh
+npm link --workspace @earendil-works/pi-coding-agent
+kpi
+```
+
+To run from source without building, use `./kpi-test.sh` (`kpi-test.ps1` / `kpi-test.bat` on Windows).
+
+`/login` includes the first-party Cursor provider. Cursor begins with the documented bootstrap fallback `cursor-small`; `refreshModels` replaces that list from the live service. Official provider catalogs are never frozen. Refresh them with:
+
+```sh
+kpi update --models
 ```
 
 ## Workflows
@@ -39,7 +85,7 @@ pi update --models
 /accounts
 ```
 
-A bare non-command goal starts gated `/kpi` with sticky K-mode when automatic wrapping is enabled. `/kpi off` restores plain Pi input. `/k-mode off` disables K-mode.
+A bare non-command goal starts gated `/kpi` with sticky K-mode when automatic wrapping is enabled. `/kpi off` restores plain harness input. `/k-mode off` disables K-mode.
 
 ## Accounts and billing
 
@@ -57,19 +103,19 @@ Anthropic login shows this warning before OAuth:
 >
 > Continue?
 
-Secrets stay in `~/.pi/agent/accounts.secrets.json` with mode `0600`; never commit it.
+Secrets stay in `~/.kpi/agent/accounts.secrets.json` with mode `0600`; never commit it.
 
 ## K-stack and research
 
-Run `/setup-kstack` to map only models in Pi's live configured registry, then optionally save Exa and Perplexity keys. `/k-mode <task>` selects a local K-stack playbook. Research artifacts are mandatory before implementation; without keys, K-π performs local repository research.
+Run `/setup-kstack` to map only models in K-π's live configured registry, then optionally save Exa and Perplexity keys. `/k-mode <task>` selects a local K-stack playbook. Research artifacts are mandatory before implementation; without keys, K-π performs local repository research.
 
 ## Read-only print profile
 
-The package treats Pi's one-shot print mode as a read-only profile. It keeps only `read`, `grep`, `find`, and `ls`; `write` and `edit` are always excluded in v1.
+K-π treats one-shot print mode as a read-only profile. It keeps only `read`, `grep`, `find`, and `ls`; `write` and `edit` are always excluded in v1.
 
 ```sh
-pi -p "Summarize this repository"
-cat README.md | pi -p "Review these instructions"
+kpi -p "Summarize this repository"
+cat README.md | kpi -p "Review these instructions"
 ```
 
 ## Unattended and containers
@@ -80,8 +126,12 @@ Autopilot is unattended only for machine-executable acceptance criteria. It may 
 
 The status board guarantees information, not pixel identity: K-π, MODE, JOB, ROUND, stages 01–08, PASS/FAIL, six file lamps, GATE, and STOP. Narrow terminals may wrap. Human approval switches to the protocol-blue theme and shows the pending question.
 
+## Tracking upstream
+
+K-π tracks Pi through the `upstream` git remote. Releases are fetched, reviewed, and merged deliberately; fork identity and the built-in registration always win. Full policy, patched-file register, and sync procedure: [`UPSTREAM.md`](UPSTREAM.md).
+
 ## Non-goals
 
-K-π does not fork Pi, install community account/provider packs, replace official model catalogs, run remote hosted workers, merge origin branches, or claim in-process hooks are an OS sandbox.
+K-π does not install community account/provider packs, replace official model catalogs, run remote hosted workers, merge origin branches, publish itself to npm, or claim in-process hooks are an OS sandbox. It is a fork, so it also does not pretend to be the official Pi distribution: bugs found here go to this repository, not upstream.
 
 Visual reference: https://x.com/av1dlive/status/2092622516544270781

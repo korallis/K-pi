@@ -1,9 +1,9 @@
-# k-pi — agent document set
+# K-π — agent document set
 
-Product: **k-pi**. Brand: **K-π**. Package id: `k-pi`.
+Product: **K-π**, a standalone coding-agent harness maintained as a fork of Pi. Brand: **K-π**. Executable: `kpi` (alias `k-pi`). Not a Pi package; see [`../UPSTREAM.md`](../UPSTREAM.md) for the fork base and sync policy.
 
-**Humans start at `START-HERE.md`.**  
-**Agents get `BUILD-PROMPT.md` pasted as the first message.**
+**Humans start at [`START-HERE.md`](START-HERE.md).**  
+**Agents get [`BUILD-PROMPT.md`](BUILD-PROMPT.md) pasted as the first message.**
 
 | File | Role |
 |---|---|
@@ -22,6 +22,8 @@ Product: **k-pi**. Brand: **K-π**. Package id: `k-pi`.
 | `roadmap.md` | Historical M0–M9 milestone record |
 | `implementation-plan.md` | Historical WP-00–WP-23 build record |
 | `remediation-research.md` | Cited completion audit and gap register |
-| `remediation-plan.md` | Active RP-00–RP-19 implementation queue |
+| `remediation-plan.md` | Active implementation queue: RP-01A architecture reset, then RP-02–RP-19 |
+| `../UPSTREAM.md` | Fork base, upstream remote, sync procedure, patched-file register |
+| `../NOTICE` | MIT attribution for the upstream base and the vendored pstack overlay |
 
 Visual source: https://x.com/av1dlive/status/2092622516544270781

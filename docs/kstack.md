@@ -8,13 +8,13 @@
 | `/setup-pstack` | `/setup-kstack` |
 | `/poteto-mode` | `/k-mode` (sticky). Alias `/poteto-mode` may print “use /k-mode” once, then stop. |
 | `poteto-agent` | `k-agent` |
-| `~/.cursor/rules/pstack-models.mdc` | `~/.pi/agent/kstack/models.json` |
+| `~/.cursor/rules/pstack-models.mdc` | `~/.kpi/agent/kstack/models.json` |
 | Cursor Cloud agents, Graphite `gt`, `/loop` sleeper | **forbidden** |
 | cursor-team-kit `/deslop`, Bugbot | **forbidden** as deps |
 | [ericlitman/open-pstack](https://github.com/ericlitman/open-pstack) | reference only |
 | [kkgogogo17/pi-pstack](https://github.com/kkgogogo17/pi-pstack) | reference only |
 
-Upstream says “fork it, make it yours.” We do. We do not `pi install` those repos.
+Upstream says “fork it, make it yours.” We do. We never install those repos as packages; K-stack is vendored source inside K-π.
 
 ---
 
@@ -37,7 +37,7 @@ A `/kpi` job without K-stack still runs the graph. A `/k-mode` task without a gr
 
 ## 2. Upstream stays source of truth
 
-Cursor pstack remains **upstream**. Our edits are an overlay that is **replayed** onto every new pstack tree. We do not hand-merge forever. We do not `pi install` pstack at runtime.
+Cursor pstack remains **upstream**. Our edits are an overlay that is **replayed** onto every new pstack tree. We do not hand-merge forever. We never load pstack as a runtime package.
 
 This is closer to [pstack-grok’s apply script](https://github.com/praveen221/pstack-grok/blob/main/UPSTREAM.md) than to [open-pstack’s manual commit review](https://github.com/ericlitman/open-pstack/blob/main/UPSTREAM.md), with invariants so a failed replay cannot ship.
 
@@ -67,7 +67,7 @@ kstack/
 | K-stack overlay | <our overlay version> |
 ```
 
-### Sync pipeline (`pnpm kstack:sync`)
+### Sync pipeline (`npm run kstack:sync`)
 
 1. Sparse-fetch `cursor/plugins` `pstack/` at `--pin <sha>` or `origin/main`.
 2. Replace `kstack/upstream/` with that tree (delete + copy). Never edit files in `upstream/` by hand.
@@ -78,7 +78,7 @@ kstack/
    - rewrite model defaults to role names resolved from `kstack/models.json`
    - strip Cursor Cloud owners, `gt submit`, Bugbot, cursor-team-kit requires, `/loop` sleeper
    - inject the four graph principles and the `never-block-on-the-human` override
-   - retarget setup output to `~/.pi/agent/kstack/models.json`
+   - retarget setup output to `~/.kpi/agent/kstack/models.json`
 5. Apply `overlay/patches/*.patch` in sort order. **Stop the sync** if any patch fails. Do not ship a partial tree.
 6. Write `kstack/generated/`.
 7. Run invariants:
@@ -89,9 +89,9 @@ kstack/
 8. Update `UPSTREAM.md` sha + date.
 9. If generated files changed, the command exits 2 so CI can open a PR. It does not push.
 
-`pnpm kstack:sync --check` is dry-run: fail if `generated/` would change, or if the pinned `pstack/` tree is not the tree `generated/` was produced from (used on main CI).
+`npm run kstack:sync:check` is dry-run: fail if `generated/` would change, or if the pinned `pstack/` tree is not the tree `generated/` was produced from (used on main CI).
 
-`pnpm kstack:sync --pin <sha>` is the only way to move the pin.
+`npm run kstack:sync -- --pin <sha>` is the only way to move the pin.
 
 ### Drift is a tree, not a HEAD
 
@@ -145,8 +145,8 @@ Do not use a git submodule of `cursor/plugins` inside the installable package. F
 | `/tdd` | Same contract as k-pi `tdd-cycle` skill. |
 | `/no-comments` | Comment-strip pass. |
 | `/unslop` | Strip AI tells from user-facing prose. |
-| `/figure-it-out` | Author a one-off playbook when none match; store under `.pi/kstack/playbooks/`. |
-| `/show-me-your-work` | Append decisions to `.pi/runs/<job>/decisions.tsv`. |
+| `/figure-it-out` | Author a one-off playbook when none match; store under `.kpi/kstack/playbooks/`. |
+| `/show-me-your-work` | Append decisions to `.kpi/runs/<job>/decisions.tsv`. |
 | `/create-verification-skill` | Project-local verify skill whose commands become `task.json.quality_gates`. |
 | `/reflect` | After DONE, propose skill/playbook edits. Does not auto-merge them. |
 
@@ -165,7 +165,7 @@ It must not:
 - hard-code `claude-fable-5-*`, `gpt-5.6-sol-*`, `grok-4.6-fast-*` as required defaults
 - call Cursor Cloud wake chains or `run_in_background` cloud tasks
 
-### `~/.pi/agent/kstack/models.json`
+### `~/.kpi/agent/kstack/models.json`
 
 ```json
 {
@@ -220,7 +220,7 @@ Keep and rewrite for local Pi + graph gates:
 | babysit | drive gates to green; **does not merge** |
 | shipping | our ship node (gated confirm or release.set) |
 | autonomous-run | our autopilot graph only if AC executable |
-| session-pickup | resume from `.pi/runs/<id>/` |
+| session-pickup | resume from `.kpi/runs/<id>/` |
 | pause-safely | `/kpi stop` + checkpoint |
 | multi-phase-plan | frozen plan entry `/kpi --plan` |
 | figure-it-out | custom playbook |
@@ -285,14 +285,14 @@ When only `/k-mode` is used (no `/kpi` job):
 
 ---
 
-## 8. Swarm / arena — background Pi, not subagents
+## 8. Swarm / arena — background K-π sessions, not subagents
 
 See `agents-bus.md`. `/swarm` and `/arena` call `spawn_background` + `communicate`. No `subagent_type`.
 
 - `maxConcurrency = 2`
 - arena panel length ≤ 2 in v1
-- every worker is a background `pi --mode rpc` session
-- models from k-pi pools only
+- every worker is a background `kpi --mode rpc` session
+- models from K-π pools only
 - parent reads contract files, not worker transcripts
 
 ---
@@ -316,7 +316,7 @@ See PRD. Tests that must exist:
 - `/k-mode add healthcheck` matches feature playbook and first todo is principles
 - feature playbook cannot mark ship complete while `verdict.json.approved != true`
 - grep of `kstack/` for `cloud agent`, `cursor cloud`, `subagent_type`, `graphite`, `gt submit` returns no runtime hits (comments in NOTICE allowed)
-- package.json still has no pstack / open-pstack / pi-pstack dependency
-- `pnpm kstack:sync --check` is green on main against the pinned `pstack/` tree, and unrelated `cursor/plugins` HEAD movement does not fail it
-- moving the pin with `pnpm kstack:sync --pin <new>` reapplies overlay; generated diff is the PR
+- no manifest declares a pstack / open-pstack / pi-pstack dependency
+- `npm run kstack:sync:check` is green on main against the pinned `pstack/` tree, and unrelated `cursor/plugins` HEAD movement does not fail it
+- moving the pin with `npm run kstack:sync -- --pin <new>` reapplies overlay; generated diff is the PR
 - a deliberately broken patch fixture makes sync exit non-zero and leaves `generated/` untouched

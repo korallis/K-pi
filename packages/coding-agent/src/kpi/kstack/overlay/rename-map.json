@@ -1,0 +1,14 @@
+{
+  "setup-pstack": "setup-kstack",
+  "poteto-mode": "k-mode",
+  "poteto-agent": "k-agent",
+  "name: Poteto Mode": "name: k-mode",
+  "name: Make Bot UI": "name: make-bot-ui",
+  "# Poteto subagent": "# K-agent",
+  "# Poteto mode": "# K-mode",
+  "Use for poteto,": "Use for K-π,",
+  "poteto's": "K-π's",
+  "\"bun-types\": \"latest\"": "\"bun-types\": \"1.3.14\"",
+  "\"typescript\": \"latest\"": "\"typescript\": \"7.0.2\"",
+  "pstack": "K-stack"
+}

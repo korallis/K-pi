@@ -1,8 +1,10 @@
 # k-pi remediation research
 
 **Observed:** 2026-09-01  
-**Tested Pi baseline:** `@earendil-works/pi-coding-agent@0.84.4`  
+**Baseline:** Pi `0.84.4` (commit `b79e4cc834970cca69daebffab7df1da7d1e52c4`), now K-π's own forked source under `packages/`  
 **Purpose:** Evidence, non-choice corrections, and the recorded human decision gates for [`docs/remediation-plan.md`](remediation-plan.md). This document does not authorize implementation order; the plan does.
+
+> **Architecture note (supersedes the packaging basis of this audit).** This audit was executed while K-π was still built as a package installed into a separately installed Pi. K-π is now a fork: the harness is this repository, the executable is `kpi`, and the control plane is a compiled-in built-in. Every finding about schemas, events, redaction, providers, catalogs, research, K-stack, bus, and UI still holds — those contracts did not change. Findings expressed as *package installation, package trust, peer dependency, publish payload, or `pi install`* are superseded by RP-01A in the plan and are not authority. Where a source below is cited under `node_modules/@earendil-works/pi-coding-agent/…`, the same file now lives in this repository under `packages/coding-agent/…`.
 
 ## Method
 
@@ -24,7 +26,7 @@ Before this remediation plan was written:
 - `pnpm lint`: passed.
 - `pnpm typecheck`: passed.
 - `pnpm kstack:sync:check`: passed.
-- Scratch `pi install -l --approve` succeeded.
+- Scratch install of the then-current package artifact succeeded (superseded: there is no install step now).
 - Pi `0.84.4` loaded the extension, prompts, themes, footer, and `/kpi-ping`.
 - The live Pi startup emitted invalid-skill diagnostics for generated `Poteto Mode` and `Make Bot UI` skill names.
 
@@ -36,8 +38,8 @@ These constraints are compatible scope choices or corrections forced by primary 
 
 | ID | Decision | Evidence |
 |---|---|---|
-| S-01 | Pi `0.84.4` is the baseline. k-pi enhances Pi; it does not rebuild Pi package loading, model catalogs, sessions, or RPC. | `AGENTS.md`; installed Pi package docs and declarations |
-| S-02 | Manifest-listed prompts, skills, and themes need no custom loader. | Installed `docs/packages.md`; `dist/core/pi-manifest.js`; `dist/core/resource-loader.js` |
+| S-01 | Pi `0.84.4` is the baseline, now forked into this repository. K-π extends that base through its own extension surface; it does not rebuild resource loading, model catalogs, sessions, or RPC. | `AGENTS.md`; `UPSTREAM.md`; the forked harness source and docs under `packages/coding-agent/` |
+| S-02 | Declared prompts, skills, and themes need no custom loader; the harness's resource loader handles them. Under the fork they are declared by K-π's built-in extension through resource discovery instead of a package manifest. | `packages/coding-agent/docs/packages.md`; `src/core/pi-manifest.ts`; `src/core/resource-loader.ts` |
 | S-03 | Cursor login does not require an authorization-code or loopback callback flow. Paste/manual/device flows satisfy Pi's OAuth callback surface. | Installed `dist/compat/extension-oauth-types.d.ts`; `docs/custom-provider.md` |
 | S-04 | The v1 worker cap is in-process only. Do not add a cross-process cap. | `PRD.md` Q-04 |
 | S-05 | Pi's built-in provider `llama.cpp` and `/llama` own llama.cpp discovery. k-pi maps pool `llama` to it and must not re-register it. | Installed `dist/extensions/llama/`; `docs/llama-cpp.md`; AC-27.1 |
@@ -75,7 +77,7 @@ Three document strategies were compared.
 
 ### Packages and resources
 
-Pi reads only `extensions`, `skills`, `prompts`, and `themes` from the `package.json` `pi` manifest. It also supports conventional directories when a manifest is absent. Manifest resources flow through Pi's default resource loader; k-pi needs no custom parsing or discovery layer.
+The harness reads only `extensions`, `skills`, `prompts`, and `themes` from a `package.json` `pi` manifest, and also supports conventional directories when a manifest is absent. Either way the resources flow through the default resource loader, so K-π needs no custom parsing or discovery layer. **Under the fork, K-π uses neither path:** it has no `pi` manifest, and its resources are declared by the compiled-in K-π extension through resource discovery. The finding that survives is the negative one — do not build a custom loader.
 
 Skill rules in Pi `0.84.4`:
 
@@ -86,13 +88,13 @@ Skill rules in Pi `0.84.4`:
 
 An extension factory may be async and is awaited during startup. It must not start long-lived processes, watchers, sockets, or timers. Those resources belong in `session_start`, a command/tool call, or another consuming event, with idempotent cleanup on `session_shutdown`.
 
-Primary installed sources:
+Primary sources, now in-repo under the fork:
 
-- `node_modules/@earendil-works/pi-coding-agent/docs/packages.md`
-- `node_modules/@earendil-works/pi-coding-agent/docs/skills.md`
-- `node_modules/@earendil-works/pi-coding-agent/docs/extensions.md`
-- `node_modules/@earendil-works/pi-coding-agent/dist/core/pi-manifest.js`
-- `node_modules/@earendil-works/pi-coding-agent/dist/core/skills.js`
+- `packages/coding-agent/docs/packages.md`
+- `packages/coding-agent/docs/skills.md`
+- `packages/coding-agent/docs/extensions.md`
+- `packages/coding-agent/src/core/pi-manifest.ts`
+- `packages/coding-agent/src/core/skills.ts`
 
 ### Providers and catalogs
 
@@ -243,7 +245,10 @@ The `Owner` column is authoritative and must remain one-to-one with the plan.
 |---|---|---|
 | DOC-01 | Checked roadmap and implementation plan still claim active completion. | RP-00 |
 | DOC-02 | NH-01 through NH-03 captured the behavioral contract conflicts. All three are `CLOSED` by the decisions `korallis` recorded on `2026-09-01`, and each selected decision must land in that gate's aligned normative files. RP-00 also owns compatible namespace clarifications plus primary-API and historical-trace corrections for research targets, Exa limits, response hooks, Dune execution state, and K-stack runtime source. | RP-00 |
-| PKG-01 | No installed, packed, diagnostic-free resource proof; generated skill warnings ship. | RP-19 |
+| ARCH-01 | K-π is built as a Pi package installed into a separately installed Pi: `pi install -l ./`, `keywords: ["pi-package"]`, a `package.json#pi` manifest, and `peerDependencies` on `@earendil-works/pi-*`. The product is meant to be its own harness. | RP-01A |
+| ARCH-02 | The executable, config dir, and env prefix are still Pi's (`pi`, `.pi/`, `~/.pi/agent/`, `PI_CODING_AGENT_DIR`) instead of K-π's (`kpi`/`k-pi`, `.kpi/`, `~/.kpi/agent/`, `KPI_CODING_AGENT_DIR`), and K-π's runtime is not located inside the harness source tree. | RP-01A |
+| ARCH-03 | K-π's commands and resources depend on package discovery and a project-trust decision rather than a compiled-in built-in extension, and the fork has no recorded provenance (`upstream` remote, `upstream.json`, `UPSTREAM.md`, `NOTICE`). | RP-01A |
+| PKG-01 | No diagnostic-free resource proof for the shipped product; generated skill warnings ship. Reframed by RP-01A: the proof is a distribution inventory of the built `dist` plus a clean start of the built `kpi` binary, not a packed-artifact install. | RP-01A |
 | STORE-01 | Task/evidence/verdict/event schemas drift from live payloads. | RP-01 |
 | STORE-02 | Research/bus event types and redaction/normalized-payload boundaries are incomplete. | RP-01 |
 | POL-01 | Gated commit confirmation lacks diff-stat and decline proof. | RP-02 |
@@ -291,7 +296,7 @@ The `Owner` column is authoritative and must remain one-to-one with the plan.
 | UI-04 | Research, BUS, AGENTS, route, usage, and K-stack state feeds are absent. | RP-18 |
 | UI-05 | M-06 lacks a real under-800-character assistant reply fixture. | RP-18 |
 | REL-01 | Requirement, metric, gap, and named-test ownership are not machine-auditable. | RP-19 |
-| REL-02 | No single installed-artifact proof covers gates, sync, payload, scratch Pi, fixtures, and M-01–M-07. | RP-19 |
+| REL-02 | No single whole-product proof covers the repository gates, K-stack sync, upstream pin, distribution inventory, a clean start of the built `kpi` binary, fixtures, and M-01–M-07. | RP-19 |
 
 ## Explicit non-gaps
 

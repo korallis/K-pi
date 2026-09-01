@@ -1,0 +1,126 @@
+# TEMPLATE: fail when a job is stuck queued waiting for a self-hosted runner.
+#
+# Why: timeout-minutes does NOT bound queue time — it starts when a job starts.
+# A job waiting for a self-hosted runner can sit in `queued` for hours with no
+# red check.
+#
+# MUST run on a hosted runner (ubuntu-latest). Do NOT move this to
+# [self-hosted, macOS]: it would queue behind the backlog it is meant to detect.
+#
+# If hosted minutes are unavailable, keep workflow_dispatch only and disable
+# schedule — a permanently red cron trains people to ignore red.
+#
+# Re-enable polling when hosted runners work:
+#   schedule:
+#     - cron: "*/15 * * * *"
+#
+# See ../AGENTS.md and ../docs/self-hosted-macos-runner.md
+
+name: queue stall alarm
+
+on:
+  workflow_dispatch:
+    inputs:
+      threshold_minutes:
+        description: "Fail if an eligible job has been queued longer than this"
+        required: false
+        default: "20"
+  # schedule:
+  #   - cron: "*/15 * * * *"
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: queue-stall-alarm
+  cancel-in-progress: true
+
+jobs:
+  detect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Find jobs stuck waiting for a runner
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          # Tune above your normal single-runner backlog (N PRs × job duration).
+          # The RUNNER_BUSY check separates "serial queue" from "wedge".
+          THRESHOLD_MINUTES: ${{ inputs.threshold_minutes || '20' }}
+        run: |
+          set -euo pipefail
+          threshold=$(( THRESHOLD_MINUTES * 60 ))
+
+          probe () {
+            RUNNER_BUSY=0
+            STALLED_REPORT=""
+            local now status name created labels queued_at age run_id
+            now=$(date -u +%s)
+            for run_id in $(
+              for state in queued in_progress; do
+                gh api "repos/$REPO/actions/runs?status=$state&per_page=50" \
+                  --jq '.workflow_runs[].id'
+              done | sort -u
+            ); do
+              while IFS=$'\t' read -r status name created labels; do
+                [ -n "${name:-}" ] || continue
+                case "$labels" in *self-hosted*) ;; *) continue ;; esac
+                if [ "$status" = "in_progress" ]; then
+                  RUNNER_BUSY=1
+                  continue
+                fi
+                case "${created:-}" in "" | null) continue ;; esac
+                queued_at=$(date -u -d "$created" +%s)
+                age=$(( now - queued_at ))
+                if [ "$age" -ge "$threshold" ]; then
+                  STALLED_REPORT="${STALLED_REPORT}$(printf '%s\t%s\t%s\t%s' "$name" "$age" "$labels" "$run_id")"$'\n'
+                else
+                  echo "ok: $name queued $(( age / 60 ))m (under ${THRESHOLD_MINUTES}m)"
+                fi
+              done < <(gh api "repos/$REPO/actions/runs/$run_id/jobs" \
+                         --jq '.jobs[] | select(.status=="queued" or .status=="in_progress") | [.status, .name, .created_at, (.labels|join(","))] | @tsv')
+            done
+          }
+
+          probe
+          if [ "$RUNNER_BUSY" = "1" ]; then
+            echo "A self-hosted job is executing, so the runner listener is alive."
+            echo "Anything queued behind it is serial-runner backlog, not a stall."
+            exit 0
+          fi
+          if [ -z "$STALLED_REPORT" ]; then
+            echo "No jobs stuck in queue."
+            exit 0
+          fi
+
+          echo "Possible stall. Re-probing in 60s to rule out a runner handoff."
+          sleep 60
+          probe
+          if [ "$RUNNER_BUSY" = "1" ] || [ -z "$STALLED_REPORT" ]; then
+            echo "Cleared on re-probe: the runner picked up work. Not a stall."
+            exit 0
+          fi
+
+          stalled=0
+          while IFS=$'\t' read -r name age labels run_id; do
+            [ -n "${name:-}" ] || continue
+            echo "::error title=Job stuck in queue::$name has been queued for $(( age / 60 ))m waiting for a runner with labels [$labels] (run $run_id)"
+            echo "- **$name** — queued $(( age / 60 ))m — labels \`$labels\` — [run](https://github.com/$REPO/actions/runs/$run_id)" >> "$GITHUB_STEP_SUMMARY"
+            stalled=$(( stalled + 1 ))
+          done <<< "$STALLED_REPORT"
+
+          {
+            echo
+            echo "No self-hosted job was executing during either probe, 60s apart —"
+            echo "this is a wedged or absent runner, not a backlog."
+            echo
+            echo "### What to check"
+            echo "1. Is the self-hosted runner online? Settings → Actions → Runners."
+            echo "2. On the runner host: your local watchdog / runner service status"
+            echo "   (paths are host-specific — see your private ops runbook)."
+            echo "3. Runner diagnostic logs under the actions-runner install dir."
+            echo "   A wedged listener shows no \`Acknowledging runner request\` after its last job."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "$stalled job(s) stuck in queue past ${THRESHOLD_MINUTES}m with an idle runner"
+          exit 1

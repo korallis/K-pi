@@ -1,0 +1,68 @@
+name: upstream-drift
+
+# Scheduled, read-only upstream maintenance.
+#
+# K-pi vendors Pi as its own source; `upstream.json` pins the repository, the
+# v0.84.4 release tag, and commit b79e4cc834970cca69daebffab7df1da7d1e52c4. This
+# workflow only reports: it may say a newer upstream release exists, and it fails
+# only when the pin itself is dishonest (malformed, or a tag that no longer
+# resolves to the pinned commit).
+#
+# It never fetches into the repository, merges, pushes, tags, opens a pull
+# request, publishes, releases, or mutates any source file. Adopting a newer
+# upstream is a human `git fetch upstream`, a reviewed merge, and an edit of
+# `upstream.json` in the same commit. An unreachable upstream is reported, not
+# failed: scheduled maintenance is fail-safe.
+
+on:
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: upstream-drift
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  drift:
+    # Hosted on purpose: a weekly read-only report must not queue behind the
+    # quality gate on the self-hosted Mac.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GIT_CONFIG_GLOBAL: /dev/null
+      GIT_CONFIG_SYSTEM: /dev/null
+      # Anonymous HTTPS only. No credential, no prompt, no secret in this job.
+      GIT_TERMINAL_PROMPT: "0"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          # Full history and tags let the checker verify the pinned commit
+          # locally when this fork carries it; a shallow clone only downgrades
+          # the report to a note.
+          fetch-depth: 0
+          fetch-tags: true
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22.19.0
+          package-manager-cache: false
+
+      - name: Check the upstream pin
+        # No dependency install: the checker is dependency-free by design.
+        run: |
+          node scripts/upstream-check.mjs \
+            --json "${RUNNER_TEMP}/upstream-drift.json" \
+            --summary "$GITHUB_STEP_SUMMARY"
+          cat "${RUNNER_TEMP}/upstream-drift.json"
+
+      - name: Confirm the working tree was not modified
+        # The drift report lives in RUNNER_TEMP, never in the checkout. Any change
+        # here would mean the checker mutated source, which it must never do.
+        run: |
+          git diff --exit-code
+          test -z "$(git status --porcelain)"

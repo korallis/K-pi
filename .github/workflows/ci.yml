@@ -1,50 +1,106 @@
 name: ci
 
+# K-pi is its own coding-agent harness. CI proves that from this repository's own
+# source: install from the committed lockfile with no lifecycle scripts, build the
+# vendored packages offline, then run the repository gates, the K-pi suites, and
+# the K-stack sync check. Pi is never installed from a registry and is never a
+# peer dependency, and nothing here publishes, releases, or pushes.
+
 on:
   push:
+    branches: [main]
   pull_request:
-  schedule:
-    - cron: "17 4 * * 1"
+    # ready_for_review is load-bearing: drafts are skipped, and without this type
+    # a PR opened as a draft would never re-trigger after being marked ready.
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
 
 jobs:
   quality:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, macOS]
+    timeout-minutes: 60
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    env:
+      CI: "1"
+      # A runner-user `url.*.insteadOf` rewrite would otherwise force SSH clones
+      # and ignore the checkout token.
+      GIT_CONFIG_GLOBAL: /dev/null
+      GIT_CONFIG_SYSTEM: /dev/null
+      GIT_TERMINAL_PROMPT: "0"
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@v7
         with:
-          version: 10
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22.19.0
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm add --save-dev --save-exact @earendil-works/pi-coding-agent@0.84.4
-      - run: pnpm test
-      - run: pnpm lint
-      - run: pnpm typecheck
-      - run: pnpm kstack:sync:check
+          # No gate needs the token; keeping it out of .git/config keeps it out of
+          # every git invocation below.
+          persist-credentials: false
 
-  upstream:
-    if: github.event_name == 'schedule'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 10
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22.19.0
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm kstack:sync
-      - uses: peter-evans/create-pull-request@v7
-        with:
-          branch: automation/kstack-upstream
-          commit-message: "chore(kstack): sync upstream overlay"
-          title: "chore(kstack): sync upstream overlay"
-          body: "Automated K-stack upstream refresh. Review generated changes; this workflow never merges."
+          # Dependency caches already survive on a persistent runner.
+          package-manager-cache: false
+
+      - name: Verify runner toolchain
+        # The agent's find/grep tools shell out to these. Fail loudly here so a
+        # soft skip inside a test harness cannot greenwash the run.
+        timeout-minutes: 2
+        run: |
+          node --version
+          npm --version
+          rg --version | head -1
+          fd --version
+
+      - name: Fork integrity
+        # Required gates exist, no manifest points at a deleted script, and no
+        # publish/release/registry/governance automation has crept back in.
+        run: node scripts/check-ci-contract.mjs
+
+      - name: Upstream pin integrity
+        # Offline: shape and local provenance of upstream.json only. Networked
+        # drift reporting is the scheduled upstream-drift workflow.
+        run: node scripts/upstream-check.mjs --offline --summary "$GITHUB_STEP_SUMMARY"
+
+      - name: Install from the committed lockfile
+        run: npm ci --ignore-scripts --prefer-offline --no-audit --fund=false
+
+      - name: Lockfile unchanged by install
+        run: git diff --exit-code -- package-lock.json
+
+      - name: Model catalog data
+        # `build:offline` compiles without a network but refuses to run against
+        # missing or stale provider data. Use the vendored data when this fork
+        # carries it, otherwise hydrate it with the in-repo generator. Either way
+        # the check inside build:offline is the real assertion.
+        run: |
+          if [ -f packages/ai/src/providers/data/.manifest.json ]; then
+            echo "vendored provider data present"
+          else
+            npm --prefix packages/ai run hydrate-model-data
+          fi
+
+      - name: Build the harness from source
+        run: npm run build:offline
+
+      - name: Repository gates
+        run: npm run check
+
+      - name: Workspace tests
+        run: npm test
+
+      - name: K-pi tests
+        run: npm run test:kpi
+
+      - name: K-stack sync check
+        run: npm run kstack:sync:check
+
+      - name: Working tree clean after gates
+        # Every gate is read-only, and the sync check must not regenerate
+        # anything. A dirty tree here is a real failure.
+        run: git diff --exit-code
