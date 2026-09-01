@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -15,6 +15,7 @@ import {
 	copilotSpawnEnv,
 	mapPool,
 	runChunkedGrokReview,
+	runGroupGrokReview,
 } from "./run-chunked-grok-review.mjs";
 
 function fileDiff(path, bodyLines) {
@@ -356,7 +357,7 @@ test("union overflow writes full validated findings then fails closed", async ()
 
 test("budget defaults stay latency-bound under argv ceiling", () => {
 	assert.equal(REQUIRED_EFFORT, "high");
-	assert.equal(DEFAULT_MAX_CONCURRENCY, 20);
+	assert.equal(DEFAULT_MAX_CONCURRENCY, 16);
 	assert.equal(DEFAULT_CHUNK_TIMEOUT_SEC, 720);
 	assert.equal(DEFAULT_MAX_CHUNK_BYTES, 96_000);
 	// Prompt argv element must stay under the conservative 100 KiB ceiling
@@ -463,6 +464,139 @@ test("inventory sits outside the untrusted envelope with nonce delimiters", asyn
 		assert.match(prompt, /END UNTRUSTED DIFF abc123/);
 		// Fixed delimiter without nonce must not be the only closer
 		assert.equal(prompt.includes("\nEND UNTRUSTED DIFF\n"), false);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+
+test("runGroupGrokReview reviews each assigned chunk once and never duplicates", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "grok-group-run-"));
+	try {
+		const groupDir = join(dir, "group");
+		mkdirSync(groupDir, { recursive: true });
+		const c0 = "diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -1 +1 @@\n-old\n+new\n";
+		const c1 = "diff --git a/b.ts b/b.ts\n--- a/b.ts\n+++ b/b.ts\n@@ -1 +1 @@\n-old\n+new\n";
+		writeFileSync(join(groupDir, "chunk-000.diff"), c0);
+		writeFileSync(join(groupDir, "chunk-001.diff"), c1);
+		const manifest = {
+			group: 3,
+			chunkCount: 2,
+			chunks: [
+				{ index: 0, paths: ["a.ts"], bytes: c0.length, file: "chunk-000.diff" },
+				{ index: 1, paths: ["b.ts"], bytes: c1.length, file: "chunk-001.diff" },
+			],
+		};
+		const manifestPath = join(groupDir, "manifest.json");
+		writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+		const inv = [
+			"TRUSTED_PR_INVENTORY",
+			"v:1",
+			"complete:1",
+			"scope:selected-plus-priority",
+			"rows:2",
+			"BEGIN",
+			"M0|a.ts\ti0",
+			"M0|b.ts\ti0",
+			"END",
+			"",
+		].join("\n");
+		const invPath = join(dir, "inv.txt");
+		writeFileSync(invPath, inv);
+		const seen = [];
+		const result = await runGroupGrokReview(
+			{
+				groupManifestPath: manifestPath,
+				groupDir,
+				inventoryPath: invPath,
+				model: "grok-4.6",
+				effort: "high",
+				maxConcurrency: 2,
+				chunkTimeoutSec: 30,
+				maxAiCredits: 5,
+				copilotBin: "copilot",
+				outJson: join(dir, "out.json"),
+				outMeta: join(dir, "meta.json"),
+				workDir: join(dir, "work"),
+			},
+			{
+				runCommand: async ({ prompt }) => {
+					seen.push(prompt);
+					return { ok: true, stdout: "[]", stderr: "", reason: "success" };
+				},
+			},
+		);
+		assert.equal(result.ok, true);
+		assert.equal(result.group, 3);
+		assert.equal(result.chunkCount, 2);
+		assert.equal(seen.length, 2);
+		assert.equal(new Set(seen).size, 2);
+		assert.match(seen[0], /TRUSTED_PR_INVENTORY/);
+		assert.match(seen[0], /BEGIN UNTRUSTED DIFF/);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+
+test("runGroupGrokReview rejects chunkCount mismatch and path escape", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "grok-group-bad-"));
+	try {
+		const groupDir = join(dir, "group");
+		mkdirSync(groupDir, { recursive: true });
+		const c0 = "diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -1 +1 @@\n-old\n+new\n";
+		writeFileSync(join(groupDir, "chunk-000.diff"), c0);
+		writeFileSync(
+			join(groupDir, "manifest.json"),
+			JSON.stringify({
+				group: 0,
+				chunkCount: 2,
+				chunks: [{ index: 0, paths: ["a.ts"], bytes: c0.length, file: "chunk-000.diff" }],
+			}),
+		);
+		await assert.rejects(
+			() =>
+				runGroupGrokReview({
+					groupManifestPath: join(groupDir, "manifest.json"),
+					groupDir,
+					model: "grok-4.6",
+					effort: "high",
+					maxConcurrency: 2,
+					chunkTimeoutSec: 30,
+					maxAiCredits: 5,
+					copilotBin: "copilot",
+					outJson: join(dir, "out.json"),
+					outMeta: join(dir, "meta.json"),
+					workDir: join(dir, "work"),
+				}),
+			/chunkCount/,
+		);
+
+		writeFileSync(
+			join(groupDir, "manifest.json"),
+			JSON.stringify({
+				group: 0,
+				chunkCount: 1,
+				chunks: [{ index: 0, paths: ["a.ts"], bytes: c0.length, file: "../chunk-000.diff" }],
+			}),
+		);
+		await assert.rejects(
+			() =>
+				runGroupGrokReview({
+					groupManifestPath: join(groupDir, "manifest.json"),
+					groupDir,
+					model: "grok-4.6",
+					effort: "high",
+					maxConcurrency: 2,
+					chunkTimeoutSec: 30,
+					maxAiCredits: 5,
+					copilotBin: "copilot",
+					outJson: join(dir, "out.json"),
+					outMeta: join(dir, "meta.json"),
+					workDir: join(dir, "work"),
+				}),
+			/confinement/,
+		);
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}

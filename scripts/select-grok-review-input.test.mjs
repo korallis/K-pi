@@ -7,7 +7,9 @@ import {
 	ARCHITECTURE_PIN_TAG,
 	CANONICAL_UPSTREAM_REPOSITORY,
 	buildReviewInventory,
+	buildExclusionSummary,
 	DEFAULT_INVENTORY_MAX_BYTES,
+	MAX_SELECTED_DIFF_BYTES,
 	inventoryCode,
 	parseReviewInventory,
 	classifyRelocationProvenance,
@@ -468,4 +470,48 @@ test("retained legacy on HEAD stays in review after identical kpi relocate", () 
 	assert.equal(result.decisions.get(kpi).decision, "exclude");
 	assert.equal(result.decisions.get(legacy).decision, "include");
 	assert.equal(result.decisions.get(legacy).reason, "relocation-legacy-retained");
+});
+
+test("prompt-scope inventory keeps selected + lock/manifest priority only", () => {
+	const rows = [
+		{ path: "packages/a/src/x.ts", decision: "include", reason: "first-party" },
+		{ path: "packages/pi-tui/src/y.ts", decision: "exclude", reason: "byte-identical-to-pin" },
+		{ path: "package-lock.json", decision: "exclude", reason: "covered-artifact", check: "check.yml: lock" },
+		{ path: "pnpm-lock.yaml", decision: "exclude", reason: "covered-artifact", check: "check.yml: lock" },
+		{ path: "docs/noise.md", decision: "exclude", reason: "byte-identical-to-pin" },
+	];
+	const inv = buildReviewInventory({
+		rows,
+		statusByPath: new Map(rows.map((r) => [r.path, "M"])),
+		scope: "selected-plus-priority",
+		maxBytes: DEFAULT_INVENTORY_MAX_BYTES,
+	});
+	assert.equal(inv.scope, "selected-plus-priority");
+	assert.match(inv.text, /scope:selected-plus-priority/);
+	assert.match(inv.text, /NOT every changed PR path is listed inline/);
+	const parsed = parseReviewInventory(inv.text);
+	const paths = parsed.rows.map((r) => r.path).sort();
+	assert.deepEqual(paths, ["package-lock.json", "packages/a/src/x.ts", "pnpm-lock.yaml"].sort());
+	assert.ok(!paths.includes("docs/noise.md"));
+	assert.ok(!paths.includes("packages/pi-tui/src/y.ts"));
+});
+
+test("exclusion summary is count+digest without path rows", () => {
+	const rows = [
+		{ path: "a/one.ts", decision: "exclude", reason: "byte-identical-to-pin" },
+		{ path: "a/two.ts", decision: "exclude", reason: "byte-identical-to-pin" },
+		{ path: "package-lock.json", decision: "exclude", reason: "covered-artifact", check: "lock" },
+		{ path: "src/keep.ts", decision: "include", reason: "first-party" },
+	];
+	const summary = buildExclusionSummary(rows);
+	assert.equal(summary.totalExcluded, 3);
+	assert.match(summary.text, /TRUSTED_EXCLUSION_SUMMARY/);
+	assert.match(summary.text, /totalExcluded:3/);
+	assert.match(summary.text, /byte-identical-to-pin\tcount=2\tdigest=/);
+	assert.doesNotMatch(summary.text, /a\/one\.ts/);
+	assert.ok(summary.pathListDigest.length === 64);
+});
+
+test("MAX_SELECTED_DIFF_BYTES is the finished-bootstrap 8 MiB bound", () => {
+	assert.equal(MAX_SELECTED_DIFF_BYTES, 8 * 1024 * 1024);
 });

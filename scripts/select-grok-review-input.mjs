@@ -26,6 +26,7 @@
  *     --out-diff <path> --out-paths <path> --out-meta <path>
  */
 
+import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -535,6 +536,31 @@ export function classifyReviewPaths(input) {
 export const DEFAULT_INVENTORY_MAX_BYTES = 64_000;
 
 /**
+ * Finished bootstrap PRs (architecture + product packages vs empty main) can exceed 2 MiB
+ * of first-party selected delta after provenance reduction. 8 MiB is a finite hard bound
+ * for that landing surface: multi-job matrix review covers the bytes; sampling is forbidden.
+ * Raise only with partition/group capacity proofs — never "unlimited".
+ */
+export const MAX_SELECTED_DIFF_BYTES = 8 * 1024 * 1024;
+/** Basename patterns that need cross-file presence even when provenance-excluded. */
+const PRIORITY_CROSS_FILE_BASENAMES = new Set([
+	"package-lock.json",
+	"pnpm-lock.yaml",
+	"yarn.lock",
+	"package.json",
+	"pnpm-workspace.yaml",
+]);
+
+/**
+ * @param {string} path
+ */
+export function isPriorityCrossFilePath(path) {
+	if (typeof path !== "string" || !path) return false;
+	const base = path.includes("/") ? path.slice(path.lastIndexOf("/") + 1) : path;
+	return PRIORITY_CROSS_FILE_BASENAMES.has(base);
+}
+
+/**
  * Encode a dense stable code for dictionary index n (0-based):
  * 0..35 → one base36 char; 36+ → two base36 chars.
  * @param {number} n
@@ -573,34 +599,40 @@ function sharedPrefixLen(a, b) {
 }
 
 /**
- * Compact, complete trusted inventory for every Grok chunk prompt.
+ * Compact trusted inventory for Grok prompts and full prepare artifacts.
  *
  * Format (no file contents):
  *   TRUSTED_PR_INVENTORY
  *   v:1
  *   complete:1
+ *   scope:full|selected-plus-priority
  *   rows:<N>
- *   status:A=add,M=modify,D=delete,R=rename,C=copy,?=unknown
- *   d:<code>=include|exclude   (decision dictionary)
- *   r:<code>=<reason>          (reason dictionary; may include check suffix)
- *   BEGIN
- *   <status> <prefixLen> <suffix>\t<d-code><r-code>
- *   END
+ *   ...
+ *
+ * `scope:full` — every classified PR path (artifact only; may be large).
+ * `scope:selected-plus-priority` — every *selected/include* path plus priority
+ * cross-file manifests/lockfiles even when excluded. Never claims every changed
+ * path is listed inline; bulk exclusions live in TRUSTED_EXCLUSION_SUMMARY.
  *
  * Paths are front-coded against the previous full path (sorted). Every input
  * path appears exactly once. Decision/reason strings are dictionary-coded.
- * Never omits paths; throws if the complete inventory exceeds maxBytes.
+ * Never omits paths from the chosen scope; throws if the inventory exceeds maxBytes.
  *
  * @param {{
  *   statusByPath?: Map<string, string>,
  *   rows: Array<{ path: string, decision: string, reason: string, check?: string, counterpart?: string }>,
  *   maxBytes?: number,
+ *   scope?: "full" | "selected-plus-priority",
  * }} input
  */
 export function buildReviewInventory(input) {
 	const maxBytes = input.maxBytes ?? DEFAULT_INVENTORY_MAX_BYTES;
 	if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) {
 		throw new Error("maxBytes must be a positive integer");
+	}
+	const scope = input.scope ?? "full";
+	if (scope !== "full" && scope !== "selected-plus-priority") {
+		throw new Error(`unsupported inventory scope ${JSON.stringify(scope)}`);
 	}
 	const statusByPath = input.statusByPath ?? new Map();
 	const rowsIn = Array.isArray(input.rows) ? input.rows : [];
@@ -615,6 +647,11 @@ export function buildReviewInventory(input) {
 			throw new Error(`duplicate inventory path ${row.path}`);
 		}
 		const decision = row.decision === "exclude" ? "exclude" : "include";
+		if (scope === "selected-plus-priority") {
+			const keep =
+				decision === "include" || isPriorityCrossFilePath(row.path);
+			if (!keep) continue;
+		}
 		const reasonKey = row.check ? `${row.reason}:${row.check}` : String(row.reason ?? "");
 		const status = statusByPath.get(row.path) ?? "?";
 		byPath.set(row.path, { path: row.path, decision, reasonKey, status });
@@ -647,21 +684,26 @@ export function buildReviewInventory(input) {
 		const rCode = codeFor(reasonKeys, reasonCode, row.reasonKey);
 		const plen = sharedPrefixLen(prevPath, row.path);
 		const suffix = row.path.slice(plen);
-		// Compact body: status + base36(prefixLen) + "|" + suffix + TAB + dCode + rCode
-		// path = prev[0:prefixLen] + suffix; paths sorted. No decision/reason text in body.
 		bodyLines.push(`${row.status}${plen.toString(36)}|${suffix}\t${dCode}${rCode}`);
 		prevPath = row.path;
 	}
+
+	const scopeNote =
+		scope === "selected-plus-priority"
+			? "scope:selected-plus-priority — complete for selected/include paths plus priority cross-file manifests/lockfiles. NOT every changed PR path is listed inline; bulk exclusions are in TRUSTED_EXCLUSION_SUMMARY (count+digest+reason)."
+			: "scope:full — complete for every classified PR path (artifact).";
 
 	const header = [
 		"TRUSTED_PR_INVENTORY",
 		"v:1",
 		"complete:1",
+		`scope:${scope}`,
 		`rows:${sorted.length}`,
 		"status:A=add,M=modify,D=delete,R=rename,C=copy,?=unknown",
 		"row:status + base36(prefixLen) + | + suffix + TAB + dCode + rCode; path=prev[0:prefixLen]+suffix (sorted)",
-		"Complete PR path inventory with dictionary-coded provenance. No file contents.",
-		"Do NOT assert a path is absent from the PR solely because it is missing from THIS chunk.",
+		scopeNote,
+		"Dictionary-coded provenance. No file contents.",
+		"Do NOT assert a path is absent from the PR solely because it is missing from THIS chunk or this inventory scope.",
 		"Use for cross-file presence (e.g. lockfile replacements). Chunk-local defect review stays strict.",
 	];
 	for (const key of decisionKeys) {
@@ -687,10 +729,57 @@ export function buildReviewInventory(input) {
 		omitted: 0,
 		bytes,
 		complete: true,
+		scope,
 		dictionary: {
 			decision: Object.fromEntries(decisionKeys.map((k) => [decisionCode.get(k), k])),
 			reason: Object.fromEntries(reasonKeys.map((k) => [reasonCode.get(k), k])),
 		},
+	};
+}
+
+/**
+ * Compact exclusion summary for prompts: counts + digests + reasons.
+ * Full excluded path lists belong in prepare artifacts, not repeated prompt rows.
+ *
+ * @param {Array<{ path: string, decision: string, reason: string, check?: string }>} rows
+ */
+export function buildExclusionSummary(rows) {
+	const excluded = (Array.isArray(rows) ? rows : []).filter((r) => r && r.decision === "exclude");
+	/** @type {Map<string, string[]>} */
+	const byReason = new Map();
+	for (const row of excluded) {
+		const key = row.check ? `${row.reason}:${row.check}` : String(row.reason ?? "unknown");
+		const list = byReason.get(key) ?? [];
+		list.push(row.path);
+		byReason.set(key, list);
+	}
+	const reasonLines = [...byReason.entries()]
+		.sort((a, b) => a[0].localeCompare(b[0]))
+		.map(([reason, paths]) => {
+			const sorted = [...paths].sort((a, b) => a.localeCompare(b));
+			const digest = createHash("sha256").update(sorted.join("\0")).digest("hex").slice(0, 16);
+			return `${reason}\tcount=${sorted.length}\tdigest=${digest}`;
+		});
+	const allPaths = excluded.map((r) => r.path).sort((a, b) => a.localeCompare(b));
+	const totalDigest = createHash("sha256").update(allPaths.join("\0")).digest("hex");
+	const lines = [
+		"TRUSTED_EXCLUSION_SUMMARY",
+		"v:1",
+		`totalExcluded:${excluded.length}`,
+		`pathListDigest:sha256:${totalDigest}`,
+		"Full excluded path lists are in the prepare artifact only — not repeated here.",
+		"BEGIN",
+		...reasonLines,
+		"END",
+		"",
+	];
+	const text = lines.join("\n");
+	return {
+		text,
+		bytes: Buffer.byteLength(text, "utf8"),
+		totalExcluded: excluded.length,
+		reasonCount: reasonLines.length,
+		pathListDigest: totalDigest,
 	};
 }
 
@@ -788,6 +877,9 @@ export function selectGrokReviewInput({
 	outPaths,
 	outMeta,
 	outInventory = null,
+	outInventoryFull = null,
+	outExclusionSummary = null,
+	maxSelectedBytes = MAX_SELECTED_DIFF_BYTES,
 }) {
 	const readOptional = (path) => {
 		if (!path) return null;
@@ -842,8 +934,6 @@ export function selectGrokReviewInput({
 	const includePaths = classified.include.map((row) => row.path);
 	let diffText = "";
 	if (includePaths.length > 0) {
-		// Batch pathspecs to stay under ARG_MAX. Modified relocations include only
-		// the kpi destination path (legacy source side already excluded).
 		const batchSize = 200;
 		const parts = [];
 		for (let i = 0; i < includePaths.length; i += batchSize) {
@@ -867,8 +957,6 @@ export function selectGrokReviewInput({
 		diffText = parts.filter(Boolean).join("");
 		if (diffText && !diffText.endsWith("\n")) diffText += "\n";
 	}
-
-
 
 	const fullDiff = git(
 		repo,
@@ -924,6 +1012,7 @@ export function selectGrokReviewInput({
 		headSha,
 		fullDiffBytes: fullBytes,
 		selectedDiffBytes: selectedBytes,
+		maxSelectedDiffBytes: maxSelectedBytes,
 		counts,
 		excludedSample: classified.exclude.slice(0, 32).map((r) => ({
 			path: r.path,
@@ -938,30 +1027,58 @@ export function selectGrokReviewInput({
 		})),
 	};
 
-	const MAX_SELECTED_BYTES = 2_000_000;
-	if (selectedBytes > MAX_SELECTED_BYTES) {
+	if (!Number.isSafeInteger(maxSelectedBytes) || maxSelectedBytes < 1) {
+		throw new Error("maxSelectedBytes must be a positive integer");
+	}
+	if (selectedBytes > maxSelectedBytes) {
 		throw new Error(
-			`selected Grok review diff is ${selectedBytes} bytes after provenance reduction; fails closed above ${MAX_SELECTED_BYTES}`,
+			`selected Grok review diff is ${selectedBytes} bytes after provenance reduction; fails closed above ${maxSelectedBytes}`,
 		);
 	}
 
-	const inventory = buildReviewInventory({
+	// Prompt inventory: selected paths + priority cross-file (lock/manifest) only.
+	const promptInventory = buildReviewInventory({
 		statusByPath,
 		rows: classified.rows,
 		maxBytes: DEFAULT_INVENTORY_MAX_BYTES,
+		scope: "selected-plus-priority",
 	});
+	// Full inventory for prepare artifact (may be large; not injected into every prompt).
+	const fullInventory = buildReviewInventory({
+		statusByPath,
+		rows: classified.rows,
+		maxBytes: Math.max(DEFAULT_INVENTORY_MAX_BYTES, 512_000),
+		scope: "full",
+	});
+	const exclusionSummary = buildExclusionSummary(classified.rows);
 	meta.inventory = {
-		bytes: inventory.bytes,
-		lineCount: inventory.lineCount,
+		promptBytes: promptInventory.bytes,
+		promptRows: promptInventory.lineCount,
+		promptScope: promptInventory.scope,
+		fullBytes: fullInventory.bytes,
+		fullRows: fullInventory.lineCount,
+		exclusionSummaryBytes: exclusionSummary.bytes,
+		exclusionTotal: exclusionSummary.totalExcluded,
+		exclusionPathListDigest: exclusionSummary.pathListDigest,
 		omitted: 0,
 		complete: true,
+		// Back-compat fields for older meta readers
+		bytes: promptInventory.bytes,
+		lineCount: promptInventory.lineCount,
 	};
 
 	writeFileSync(outDiff, diffText);
 	writeFileSync(outPaths, includePaths.join("\0") + (includePaths.length ? "\0" : ""));
 	writeFileSync(outMeta, `${JSON.stringify(meta, null, 2)}\n`);
 	if (outInventory) {
-		writeFileSync(outInventory, inventory.text);
+		// Prompt context = inventory + exclusion summary (honest about bulk excludes).
+		writeFileSync(outInventory, `${promptInventory.text}${exclusionSummary.text}`);
+	}
+	if (outInventoryFull) {
+		writeFileSync(outInventoryFull, fullInventory.text);
+	}
+	if (outExclusionSummary) {
+		writeFileSync(outExclusionSummary, exclusionSummary.text);
 	}
 	return meta;
 }
@@ -972,6 +1089,8 @@ function parseArgs(argv) {
 		pinBasePath: null,
 		pinHeadPath: null,
 		outInventory: null,
+		outInventoryFull: null,
+		outExclusionSummary: null,
 	};
 	for (let i = 0; i < argv.length; i++) {
 		const arg = argv[i];
@@ -1011,6 +1130,12 @@ function parseArgs(argv) {
 			case "--out-inventory":
 				opts.outInventory = next();
 				break;
+			case "--out-inventory-full":
+				opts.outInventoryFull = next();
+				break;
+			case "--out-exclusion-summary":
+				opts.outExclusionSummary = next();
+				break;
 			default:
 				throw new Error(`unknown argument: ${arg}`);
 		}
@@ -1029,6 +1154,8 @@ function parseArgs(argv) {
 	opts.outPaths = resolve(opts.outPaths);
 	opts.outMeta = resolve(opts.outMeta);
 	if (opts.outInventory) opts.outInventory = resolve(opts.outInventory);
+	if (opts.outInventoryFull) opts.outInventoryFull = resolve(opts.outInventoryFull);
+	if (opts.outExclusionSummary) opts.outExclusionSummary = resolve(opts.outExclusionSummary);
 	return opts;
 }
 

@@ -1,34 +1,22 @@
-# Required, read-only Grok review gate.
+# Required, multi-job Grok review gate.
 #
-# The Copilot credential can request inference only. GitHub's ephemeral token is
-# introduced later, in the comment step, so Grok and PR-controlled content never
-# receive repository write credentials. The model gets the diff as inert prompt
-# data and no tools: no shell, file writes, MCP, push, or autofix.
+# Layout:
+#   1. prepare — trusted select + partition + group; uploads immutable inputs; emits matrix
+#   2. infer   — hosted Ubuntu matrix; read-only; no write token; each chunk once
+#   3. Grok review (exact name) — download all groups; union; sticky comment; fail closed
+#
+# The Copilot credential can request inference only. GitHub's ephemeral write token is
+# introduced only in the final job's comment step. Inference clears GITHUB_TOKEN/GH_TOKEN.
 #
 # Trust boundary:
-#   - Copilot CLI is installed before any repository checkout, with an empty
-#     npmrc, so a PR .npmrc cannot redirect the install.
-#   - Base is checked out for trusted gate scripts; head is checked out only as
-#     a read-only diff source in a sibling worktree.
-#   - Gate scripts run from base when present. Head is used solely to introduce
-#     scripts on the landing PR that adds them.
-#   - Inference clears GITHUB_TOKEN/GH_TOKEN so the write-capable job token never
-#     reaches the model or the PR diff prompt.
+#   - Copilot CLI is installed before any repository checkout, with an empty npmrc.
+#   - Base is checked out for trusted gate scripts; head is read-only diff source.
+#   - Gate scripts run from base when present; head bootstrap is same-repo landing only.
+#   - Prepare hard-bounds selected diff (8 MiB). Matrix is bounded (≤8 groups × ≤16 chunks; capacity 128).
+#   - Prompt inventory is selected-plus-priority + exclusion summary (not 2k pin rows).
+#   - Every selected path/chunk is reviewed exactly once; missing/duplicate groups fail closed.
 #
-# Latency bound (15m job, effort high only):
-#   - At the fork-import boundary, select-grok-review-input proves and drops
-#     byte-identical pinned upstream blobs and check-covered generated/lock
-#     artifacts (upstream.json + UPSTREAM.md + kstack/lockfile/model-data gates).
-#   - Only first-party K-π delta and patched-upstream files reach Grok.
-#   - That reduced diff is partitioned on file boundaries into deterministic
-#     size-capped chunks and reviewed concurrently with hard per-chunk timeouts.
-#   - Every chunk must validate; findings are unioned/deduped deterministically.
-#   - Any provenance failure, chunk timeout, inference error, or invalid schema
-#     fails the gate.
-#
-# Hosted Ubuntu is deliberate. AI review does not need the Mac mini, must not
-# occupy the hard-gate queue, and must not leave model state on a persistent
-# self-hosted runner.
+# Hosted Ubuntu is deliberate. AI review must not occupy the Mac mini hard-gate queue.
 
 name: grok-review
 
@@ -41,16 +29,18 @@ concurrency:
   group: grok-review-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
+# Workflow default: read-only. Write permission is introduced only on the final job.
 permissions:
   contents: read
-  pull-requests: write
 
 jobs:
-  review:
-    name: Grok review
+  prepare:
+    name: Prepare Grok review
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
     if: github.event.pull_request.draft == false
+    permissions:
+      contents: read
     env:
       GIT_CONFIG_GLOBAL: /dev/null
       GIT_CONFIG_SYSTEM: /dev/null
@@ -59,6 +49,11 @@ jobs:
       HEAD_SHA: ${{ github.event.pull_request.head.sha }}
       HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
       GROK_REVIEW_MODEL: ${{ vars.GROK_REVIEW_MODEL }}
+    outputs:
+      matrix: ${{ steps.prepare.outputs.matrix }}
+      chunk-count: ${{ steps.prepare.outputs.chunk_count }}
+      group-count: ${{ steps.prepare.outputs.group_count }}
+      gate-script-source: ${{ steps.prepare.outputs.gate_script_source }}
     steps:
       - name: Refuse forks and missing reviewer configuration
         env:
@@ -81,24 +76,10 @@ jobs:
               ;;
           esac
 
-      # Toolchain and Copilot install happen before any repository checkout so a
-      # PR-controlled .npmrc or package tree cannot influence the CLI install.
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 22.19.0
           package-manager-cache: false
-
-      - name: Install pinned Copilot CLI
-        env:
-          HOME: ${{ runner.temp }}/npm-home
-          NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/empty-user-npmrc
-          NPM_CONFIG_GLOBALCONFIG: ${{ runner.temp }}/empty-global-npmrc
-          npm_config_cache: ${{ runner.temp }}/npm-cache
-        run: |
-          mkdir -p "$HOME" "$npm_config_cache"
-          : > "$NPM_CONFIG_USERCONFIG"
-          : > "$NPM_CONFIG_GLOBALCONFIG"
-          npm install --global @github/copilot@1.0.82 --ignore-scripts --no-audit --fund=false
 
       - name: Checkout base for trusted gate scripts
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -116,28 +97,24 @@ jobs:
           path: untrusted
           persist-credentials: false
 
-
-      - name: Prepare bounded review input
+      - name: Prepare bounded review input and matrix
         id: prepare
         run: |
-          # Bring BASE_SHA into the head clone without network credentials. The
-          # base tip is not always an ancestor of HEAD once the base branch moves,
-          # so the three-dot diff must see both commits explicitly.
           if ! git -C untrusted cat-file -e "$BASE_SHA^{commit}" 2>/dev/null; then
             git -C untrusted fetch --no-tags "$GITHUB_WORKSPACE/trusted" "$BASE_SHA"
           fi
           git -C untrusted cat-file -e "$BASE_SHA^{commit}"
           git -C untrusted cat-file -e "$HEAD_SHA^{commit}"
 
-          # Gate scripts are the review TCB. Prefer the complete base set.
-          # Head bootstrap is same-repository landing only (base has none yet);
-          # after this stack lands on main, base always wins and head is never used.
-          mkdir -p "$RUNNER_TEMP/gate-scripts"
+          mkdir -p "$RUNNER_TEMP/gate-scripts" "$RUNNER_TEMP/prepare"
           gate_scripts=(
             validate-grok-review.mjs
             partition-pr-diff.mjs
+            group-grok-chunks.mjs
+            prepare-grok-review.mjs
             run-chunked-grok-review.mjs
             select-grok-review-input.mjs
+            finalize-grok-review.mjs
           )
           base_complete=1
           head_complete=1
@@ -152,9 +129,6 @@ jobs:
               cp "trusted/scripts/$script" "$RUNNER_TEMP/gate-scripts/$script"
             done
           elif [ "$head_complete" -eq 1 ] && [ "${{ github.event.pull_request.head.repo.full_name }}" = "${{ github.repository }}" ]; then
-            # Landing bootstrap only. select runs with tokens scrubbed below.
-            # Inference still needs COPILOT for the copilot CLI child; residual
-            # head-JS risk exists only until base carries these scripts.
             gate_script_source=head-bootstrap
             for script in "${gate_scripts[@]}"; do
               cp "untrusted/scripts/$script" "$RUNNER_TEMP/gate-scripts/$script"
@@ -167,11 +141,6 @@ jobs:
           echo "gate_script_source=$gate_script_source" >> "$GITHUB_OUTPUT"
           chmod -R a-w "$RUNNER_TEMP/gate-scripts"
 
-          # Pin trust: base/trusted upstream.json always wins when present. A PR
-          # must not retarget the pin to a commit it carries in order to exclude
-          # packages/** as "byte-identical-to-pin". Head pin is bootstrap-only
-          # (base has no pin) and is validated to the architecture pin inside
-          # select-grok-review-input.mjs.
           pin_base_args=()
           pin_head_args=()
           if [ -f trusted/upstream.json ]; then
@@ -191,10 +160,6 @@ jobs:
             exit 1
           fi
 
-          # Pin objects must be local before byte-identity proofs. Prefer objects
-          # already in the head clone; otherwise import from the base clone only
-          # (no credentials, no upstream network). Never take pin *identity*
-          # from head when base has a pin — only the object bytes for that SHA.
           if ! git -C untrusted cat-file -e "${pin_commit}^{commit}" 2>/dev/null; then
             if git -C trusted cat-file -e "${pin_commit}^{commit}" 2>/dev/null; then
               git -C untrusted fetch --no-tags "$GITHUB_WORKSPACE/trusted" "$pin_commit"
@@ -205,8 +170,7 @@ jobs:
           fi
           git -C untrusted cat-file -e "${pin_commit}^{commit}"
 
-          # Gate scripts may come from head on the landing PR. Never let them
-          # inherit the job's write-capable token — clear both env names first.
+          # Select first-party/provenance-qualified diff (8 MiB hard bound).
           env -u GITHUB_TOKEN -u GH_TOKEN \
             node "$RUNNER_TEMP/gate-scripts/select-grok-review-input.mjs" \
             --repo "$GITHUB_WORKSPACE/untrusted" \
@@ -214,15 +178,92 @@ jobs:
             --head "$HEAD_SHA" \
             "${pin_base_args[@]}" \
             "${pin_head_args[@]}" \
-            --out-diff "$RUNNER_TEMP/pr.diff" \
-            --out-paths "$RUNNER_TEMP/changed-paths" \
-            --out-meta "$RUNNER_TEMP/grok-input-meta.json" \
-            --out-inventory "$RUNNER_TEMP/pr-inventory.txt"
+            --out-diff "$RUNNER_TEMP/prepare/pr.diff" \
+            --out-paths "$RUNNER_TEMP/prepare/changed-paths" \
+            --out-meta "$RUNNER_TEMP/prepare/grok-input-meta.json" \
+            --out-inventory "$RUNNER_TEMP/prepare/pr-inventory-prompt.txt" \
+            --out-inventory-full "$RUNNER_TEMP/prepare/pr-inventory-full.txt" \
+            --out-exclusion-summary "$RUNNER_TEMP/prepare/exclusion-summary.txt"
 
-          jq -c '{selectedDiffBytes,fullDiffBytes,counts,pin}' "$RUNNER_TEMP/grok-input-meta.json"
+          # Partition + group into one-wave matrix (≤8×16; capacity 128).
+          env -u GITHUB_TOKEN -u GH_TOKEN \
+            node "$RUNNER_TEMP/gate-scripts/prepare-grok-review.mjs" \
+            --diff "$RUNNER_TEMP/prepare/pr.diff" \
+            --inventory "$RUNNER_TEMP/prepare/pr-inventory-prompt.txt" \
+            --out-dir "$RUNNER_TEMP/prepare" \
+            --max-chunk-bytes 32000 \
+            --max-groups 8 \
+            --max-chunks-per-group 16 \
+            --max-concurrency 16
 
+          # Bundle gate scripts for infer/finalize (immutable copy).
+          cp -a "$RUNNER_TEMP/gate-scripts" "$RUNNER_TEMP/prepare/gate-scripts"
 
-      - name: Run concurrent chunked Grok review
+          chunk_count=$(jq -r '.chunkCount // 0' "$RUNNER_TEMP/prepare/prepare-meta.json")
+          group_count=$(jq -r '.groupCount // 0' "$RUNNER_TEMP/prepare/prepare-meta.json")
+          echo "chunk_count=$chunk_count" >> "$GITHUB_OUTPUT"
+          echo "group_count=$group_count" >> "$GITHUB_OUTPUT"
+
+          if [ "$group_count" = "0" ]; then
+            # Empty include breaks GHA matrix; emit a no-op marker consumed by infer skip.
+            echo 'matrix={"include":[]}' >> "$GITHUB_OUTPUT"
+          else
+            # Compact single-line matrix for fromJSON.
+            matrix=$(jq -c '.' "$RUNNER_TEMP/prepare/matrix.json")
+            echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          fi
+
+          jq -c '{selectedDiffBytes,fullDiffBytes,counts,pin,inventory}' "$RUNNER_TEMP/prepare/grok-input-meta.json"
+          jq -c '{chunkCount,groupCount,maxChunkBytes,maxGroups,maxChunksPerGroup}' "$RUNNER_TEMP/prepare/prepare-meta.json"
+
+      - name: Upload prepare artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: grok-prepare-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
+          path: ${{ runner.temp }}/prepare
+          if-no-files-found: error
+          retention-days: 14
+
+  infer:
+    name: Grok inference group ${{ matrix.group }}
+    needs: prepare
+    if: needs.prepare.outputs.group-count != '0' && needs.prepare.outputs.group-count != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    env:
+      GROK_REVIEW_MODEL: ${{ vars.GROK_REVIEW_MODEL }}
+      GROUP_ID: ${{ matrix.group }}
+    steps:
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 22.19.0
+          package-manager-cache: false
+
+      - name: Install pinned Copilot CLI
+        env:
+          HOME: ${{ runner.temp }}/npm-home
+          NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/empty-user-npmrc
+          NPM_CONFIG_GLOBALCONFIG: ${{ runner.temp }}/empty-global-npmrc
+          npm_config_cache: ${{ runner.temp }}/npm-cache
+        run: |
+          mkdir -p "$HOME" "$npm_config_cache"
+          : > "$NPM_CONFIG_USERCONFIG"
+          : > "$NPM_CONFIG_GLOBALCONFIG"
+          npm install --global @github/copilot@1.0.82 --ignore-scripts --no-audit --fund=false
+
+      - name: Download prepare artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: grok-prepare-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
+          path: ${{ runner.temp }}/prepare
+
+      - name: Run group inference (read-only tokens)
         id: inference
         continue-on-error: true
         env:
@@ -231,33 +272,130 @@ jobs:
           GH_TOKEN: ""
           HOME: ${{ runner.temp }}/copilot-home
         run: |
-          mkdir -p "$HOME" "$RUNNER_TEMP/chunked-review"
+          set -euo pipefail
+          group_pad=$(printf '%02d' "$GROUP_ID")
+          group_dir="$RUNNER_TEMP/prepare/groups/group-${group_pad}"
+          manifest="$group_dir/manifest.json"
+          if [ ! -f "$manifest" ]; then
+            echo "::error::missing group manifest for group $GROUP_ID"
+            exit 1
+          fi
+          mkdir -p "$HOME" "$RUNNER_TEMP/group-work" "$RUNNER_TEMP/group-out"
           set +e
-          node "$RUNNER_TEMP/gate-scripts/run-chunked-grok-review.mjs" \
-            --diff "$RUNNER_TEMP/pr.diff" \
-            --changed-paths "$RUNNER_TEMP/changed-paths" \
-            --inventory "$RUNNER_TEMP/pr-inventory.txt" \
+          node "$RUNNER_TEMP/prepare/gate-scripts/run-chunked-grok-review.mjs" \
+            --group-manifest "$manifest" \
+            --group-dir "$group_dir" \
+            --inventory "$RUNNER_TEMP/prepare/pr-inventory-prompt.txt" \
             --model "$GROK_REVIEW_MODEL" \
-            --out-json "$RUNNER_TEMP/grok-review.json" \
-            --out-meta "$RUNNER_TEMP/grok-review-meta.json" \
-            --work-dir "$RUNNER_TEMP/chunked-review" \
+            --out-json "$RUNNER_TEMP/group-out/result.json" \
+            --out-meta "$RUNNER_TEMP/group-out/meta.json" \
+            --work-dir "$RUNNER_TEMP/group-work" \
             --effort high \
-            --max-chunk-bytes 32000 \
-            --max-concurrency 20 \
+            --max-concurrency 16 \
             --chunk-timeout-sec 720 \
             --max-ai-credits 50
           status=$?
           set -e
-          # Always surface model/chunk meta for the sticky comment, including fail-closed runs.
-          if [ -f "$RUNNER_TEMP/grok-review-meta.json" ]; then
-            model=$(jq -r '.model // empty' "$RUNNER_TEMP/grok-review-meta.json")
-            chunks=$(jq -r '.chunkCount // empty' "$RUNNER_TEMP/grok-review-meta.json")
-            echo "model=$model" >> "$GITHUB_OUTPUT"
-            echo "chunks=$chunks" >> "$GITHUB_OUTPUT"
-            jq -c '.' "$RUNNER_TEMP/grok-review-meta.json"
+          # Always stage result for upload even on failure (partial findings).
+          mkdir -p "$RUNNER_TEMP/upload/group-${group_pad}"
+          if [ -f "$RUNNER_TEMP/group-out/result.json" ]; then
+            cp "$RUNNER_TEMP/group-out/result.json" "$RUNNER_TEMP/upload/group-${group_pad}/result.json"
+          else
+            printf '%s\n' "{\"ok\":false,\"group\":$GROUP_ID,\"reason\":\"no-result\",\"chunks\":[]}" \
+              > "$RUNNER_TEMP/upload/group-${group_pad}/result.json"
           fi
-          if [ -f "$RUNNER_TEMP/grok-review.json" ]; then
-            count=$(jq -r 'length' "$RUNNER_TEMP/grok-review.json")
+          if [ -f "$RUNNER_TEMP/group-out/meta.json" ]; then
+            cp "$RUNNER_TEMP/group-out/meta.json" "$RUNNER_TEMP/upload/group-${group_pad}/meta.json"
+          fi
+          cp -a "$RUNNER_TEMP/group-work/." "$RUNNER_TEMP/upload/group-${group_pad}/work/" 2>/dev/null || true
+          exit "$status"
+
+      - name: Upload group result
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: grok-group-${{ matrix.group }}-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
+          path: ${{ runner.temp }}/upload
+          if-no-files-found: error
+          retention-days: 14
+
+  review:
+    name: Grok review
+    needs: [prepare, infer]
+    if: always() && needs.prepare.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: write
+    env:
+      GROK_REVIEW_MODEL: ${{ vars.GROK_REVIEW_MODEL }}
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 22.19.0
+          package-manager-cache: false
+
+      - name: Download prepare artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: grok-prepare-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
+          path: ${{ runner.temp }}/prepare
+
+      - name: Download group results
+        if: needs.prepare.outputs.group-count != '0'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: grok-group-*-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
+          path: ${{ runner.temp }}/group-artifacts
+          merge-multiple: true
+
+      - name: Finalize union and enforce
+        id: finalize
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/results" "$RUNNER_TEMP/final"
+          # Normalize downloaded group dirs into results/group-NN/
+          if [ -d "$RUNNER_TEMP/group-artifacts" ]; then
+            find "$RUNNER_TEMP/group-artifacts" -type f -name 'result.json' | while read -r f; do
+              parent=$(basename "$(dirname "$f")")
+              case "$parent" in
+                group-*)
+                  mkdir -p "$RUNNER_TEMP/results/$parent"
+                  cp "$f" "$RUNNER_TEMP/results/$parent/result.json"
+                  ;;
+              esac
+            done
+          fi
+
+          plan="$RUNNER_TEMP/prepare/group-plan.json"
+          if [ ! -f "$plan" ]; then
+            echo "::error::missing group-plan.json from prepare"
+            exit 1
+          fi
+
+          set +e
+          node "$RUNNER_TEMP/prepare/gate-scripts/finalize-grok-review.mjs" \
+            --results-dir "$RUNNER_TEMP/results" \
+            --group-plan "$plan" \
+            --out-json "$RUNNER_TEMP/final/grok-review.json" \
+            --out-meta "$RUNNER_TEMP/final/grok-review-meta.json" \
+            --work-dir "$RUNNER_TEMP/final/work"
+          status=$?
+          set -e
+
+          if [ -f "$RUNNER_TEMP/final/grok-review-meta.json" ]; then
+            model=$(jq -r '.model // empty' "$RUNNER_TEMP/final/grok-review-meta.json")
+            chunks=$(jq -r '.chunkCount // empty' "$RUNNER_TEMP/final/grok-review-meta.json")
+            echo "model=${model:-$GROK_REVIEW_MODEL}" >> "$GITHUB_OUTPUT"
+            echo "chunks=$chunks" >> "$GITHUB_OUTPUT"
+            jq -c '.' "$RUNNER_TEMP/final/grok-review-meta.json"
+          fi
+          if [ -f "$RUNNER_TEMP/final/grok-review.json" ]; then
+            count=$(jq -r 'length' "$RUNNER_TEMP/final/grok-review.json")
             echo "count=$count" >> "$GITHUB_OUTPUT"
           fi
           exit "$status"
@@ -268,11 +406,16 @@ jobs:
         with:
           name: grok-review-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
           path: |
-            ${{ runner.temp }}/grok-review.json
-            ${{ runner.temp }}/grok-review-meta.json
-            ${{ runner.temp }}/grok-input-meta.json
-            ${{ runner.temp }}/changed-paths
-            ${{ runner.temp }}/chunked-review/**
+            ${{ runner.temp }}/final/grok-review.json
+            ${{ runner.temp }}/final/grok-review-meta.json
+            ${{ runner.temp }}/prepare/grok-input-meta.json
+            ${{ runner.temp }}/prepare/prepare-meta.json
+            ${{ runner.temp }}/prepare/group-plan.json
+            ${{ runner.temp }}/prepare/pr-inventory-full.txt
+            ${{ runner.temp }}/prepare/exclusion-summary.txt
+            ${{ runner.temp }}/prepare/changed-paths
+            ${{ runner.temp }}/results/**
+            ${{ runner.temp }}/final/work/**
           if-no-files-found: warn
           retention-days: 14
 
@@ -281,36 +424,39 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          INFERENCE_OUTCOME: ${{ steps.inference.outcome }}
-          FINDING_COUNT: ${{ steps.inference.outputs.count }}
-          REVIEW_MODEL: ${{ steps.inference.outputs.model }}
-          CHUNK_COUNT: ${{ steps.inference.outputs.chunks }}
+          FINALIZE_OUTCOME: ${{ steps.finalize.outcome }}
+          FINDING_COUNT: ${{ steps.finalize.outputs.count }}
+          REVIEW_MODEL: ${{ steps.finalize.outputs.model }}
+          CHUNK_COUNT: ${{ steps.finalize.outputs.chunks }}
         run: |
           report="$RUNNER_TEMP/grok-review-comment.md"
-          # GitHub issue comment body soft limit ~65536; keep headroom for JSON wrap.
           COMMENT_BODY_MAX=60000
           {
             echo '<!-- kpi-grok-review -->'
             echo '## Grok review'
             echo
-            if [ -n "$REVIEW_MODEL" ] || [ -n "$CHUNK_COUNT" ] || [ -f "$RUNNER_TEMP/grok-input-meta.json" ]; then
+            if [ -n "$REVIEW_MODEL" ] || [ -n "$CHUNK_COUNT" ] || [ -f "$RUNNER_TEMP/prepare/grok-input-meta.json" ]; then
               echo "- Model: \`${REVIEW_MODEL:-unknown}\`"
               echo "- Chunks: \`${CHUNK_COUNT:-unknown}\`"
-              if [ -f "$RUNNER_TEMP/grok-input-meta.json" ]; then
-                selected=$(jq -r '.selectedDiffBytes // empty' "$RUNNER_TEMP/grok-input-meta.json")
-                total=$(jq -r '.fullDiffBytes // empty' "$RUNNER_TEMP/grok-input-meta.json")
-                included=$(jq -r '.counts.included // empty' "$RUNNER_TEMP/grok-input-meta.json")
-                changed=$(jq -r '.counts.changedPaths // empty' "$RUNNER_TEMP/grok-input-meta.json")
-                identical=$(jq -r '.counts.byteIdenticalToPin // empty' "$RUNNER_TEMP/grok-input-meta.json")
-                covered=$(jq -r '.counts.coveredArtifact // empty' "$RUNNER_TEMP/grok-input-meta.json")
-                pin=$(jq -r '.pin.tag // empty' "$RUNNER_TEMP/grok-input-meta.json")
+              if [ -f "$RUNNER_TEMP/prepare/prepare-meta.json" ]; then
+                groups=$(jq -r '.groupCount // empty' "$RUNNER_TEMP/prepare/prepare-meta.json")
+                echo "- Groups: \`${groups:-unknown}\`"
+              fi
+              if [ -f "$RUNNER_TEMP/prepare/grok-input-meta.json" ]; then
+                selected=$(jq -r '.selectedDiffBytes // empty' "$RUNNER_TEMP/prepare/grok-input-meta.json")
+                total=$(jq -r '.fullDiffBytes // empty' "$RUNNER_TEMP/prepare/grok-input-meta.json")
+                included=$(jq -r '.counts.included // empty' "$RUNNER_TEMP/prepare/grok-input-meta.json")
+                changed=$(jq -r '.counts.changedPaths // empty' "$RUNNER_TEMP/prepare/grok-input-meta.json")
+                identical=$(jq -r '.counts.byteIdenticalToPin // empty' "$RUNNER_TEMP/prepare/grok-input-meta.json")
+                covered=$(jq -r '.counts.coveredArtifact // empty' "$RUNNER_TEMP/prepare/grok-input-meta.json")
+                pin=$(jq -r '.pin.tag // empty' "$RUNNER_TEMP/prepare/grok-input-meta.json")
                 echo "- Pin: \`${pin:-unknown}\`"
                 echo "- Provenance coverage: \`${selected:-?}\` / \`${total:-?}\` diff bytes; paths \`${included:-?}\` / \`${changed:-?}\` (excluded byte-identical-to-pin=\`${identical:-0}\`, check-covered=\`${covered:-0}\`)"
               fi
-              if [ -f "$RUNNER_TEMP/grok-review-meta.json" ]; then
-                cap=$(jq -r '.adaptiveUnionCap // empty' "$RUNNER_TEMP/grok-review-meta.json")
-                overflow=$(jq -r '.overflow // false' "$RUNNER_TEMP/grok-review-meta.json")
-                fcount=$(jq -r '.findingCount // .partialFindingCount // empty' "$RUNNER_TEMP/grok-review-meta.json")
+              if [ -f "$RUNNER_TEMP/final/grok-review-meta.json" ]; then
+                cap=$(jq -r '.adaptiveUnionCap // empty' "$RUNNER_TEMP/final/grok-review-meta.json")
+                overflow=$(jq -r '.overflow // false' "$RUNNER_TEMP/final/grok-review-meta.json")
+                fcount=$(jq -r '.findingCount // .partialFindingCount // empty' "$RUNNER_TEMP/final/grok-review-meta.json")
                 echo "- Adaptive union cap: \`${cap:-n/a}\`"
                 echo "- Findings (artifact): \`${fcount:-n/a}\`"
                 if [ "$overflow" = "true" ]; then
@@ -321,19 +467,19 @@ jobs:
               echo "Full raw + validated findings are uploaded as the \`grok-review-*\` artifact."
               echo
             fi
-            if [ "$INFERENCE_OUTCOME" != "success" ]; then
-              overflow=$(jq -r '.overflow // false' "$RUNNER_TEMP/grok-review-meta.json" 2>/dev/null || echo false)
+            if [ "$FINALIZE_OUTCOME" != "success" ]; then
+              overflow=$(jq -r '.overflow // false' "$RUNNER_TEMP/final/grok-review-meta.json" 2>/dev/null || echo false)
               if [ "$overflow" = "true" ]; then
                 echo '**Failed closed:** union exceeded the adaptive hard cap after dedupe. Full validated findings are in the artifact and summarized below when space allows.'
               else
-                echo '**Failed closed:** Grok review did not complete (provenance reduction, timeout, inference error, invalid schema, or overflow). Inspect the required workflow log and artifact.'
+                echo '**Failed closed:** Grok review did not complete (provenance reduction, missing group, timeout, inference error, invalid schema, or overflow). Inspect the required workflow log and artifact.'
               fi
-              if [ -f "$RUNNER_TEMP/grok-review-meta.json" ]; then
+              if [ -f "$RUNNER_TEMP/final/grok-review-meta.json" ]; then
                 echo
                 echo 'Chunk outcomes:'
                 echo
-                jq -r '.chunks[]? | "- chunk \(.index): \(.reason // "unknown") (\(.bytes // 0) bytes, \(.durationMs // 0) ms, findings=\(.findingCount // "n/a"))"' \
-                  "$RUNNER_TEMP/grok-review-meta.json"
+                jq -r '.chunks[]? | "- chunk \(.index) (group \(.group // "?")): \(.reason // "unknown") (\(.bytes // 0) bytes, \(.durationMs // 0) ms, findings=\(.findingCount // "n/a"))"' \
+                  "$RUNNER_TEMP/final/grok-review-meta.json"
               fi
             elif [ -z "$FINDING_COUNT" ]; then
               echo '**Failed closed:** Grok review produced no validated finding document.'
@@ -344,16 +490,14 @@ jobs:
               echo
             fi
 
-            # Append findings when present (success with findings OR overflow/partial
-            # artifacts). Cap total comment size; never truncate the artifact JSON.
-            if [ -f "$RUNNER_TEMP/grok-review.json" ]; then
-              count=$(jq -r 'length' "$RUNNER_TEMP/grok-review.json")
+            if [ -f "$RUNNER_TEMP/final/grok-review.json" ]; then
+              count=$(jq -r 'length' "$RUNNER_TEMP/final/grok-review.json")
               if [ "$count" != "0" ]; then
                 echo
                 echo '### Findings'
                 echo
                 jq -r '.[] | "### \(.severity): \(.title)\n\n- `\(.path)`" + (if .line == null then "" else ":\(.line)" end) + "\n- ID: `\(.id)`\n- Location: `\(.locationConfidence // "unknown")`\n\n\(.body)\n"' \
-                  "$RUNNER_TEMP/grok-review.json" >> "$RUNNER_TEMP/grok-findings-body.md" || true
+                  "$RUNNER_TEMP/final/grok-review.json" >> "$RUNNER_TEMP/grok-findings-body.md" || true
               fi
             fi
           } > "$report"
@@ -362,7 +506,6 @@ jobs:
             current=$(wc -c < "$report" | tr -d ' ')
             remain=$((COMMENT_BODY_MAX - current))
             if [ "$remain" -gt 500 ]; then
-              # Append complete finding sections only; never mid-truncate a section.
               node -e '
                 const fs = require("fs");
                 const remain = Number(process.argv[1]);
@@ -395,7 +538,6 @@ jobs:
             fi
           fi
 
-          # Hard cap the comment payload as a last resort (artifact remains full).
           node -e '
             const fs = require("fs");
             const limit = Number(process.argv[1]);
@@ -409,9 +551,7 @@ jobs:
             }
           ' "$COMMENT_BODY_MAX" "$report"
 
-
           jq -n --rawfile body "$report" '{body: $body}' > "$RUNNER_TEMP/grok-review-comment.json"
-          # jq `first` stops after a match; avoid `head` under pipefail (SIGPIPE/141).
           comment_id=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" --paginate \
             --jq 'first(.[] | select(.user.login == "github-actions[bot]") | select(.body | contains("<!-- kpi-grok-review -->")) | .id)' \
             || true)
@@ -426,18 +566,18 @@ jobs:
       - name: Enforce review result
         if: always()
         env:
-          INFERENCE_OUTCOME: ${{ steps.inference.outcome }}
-          FINDING_COUNT: ${{ steps.inference.outputs.count }}
+          FINALIZE_OUTCOME: ${{ steps.finalize.outcome }}
+          FINDING_COUNT: ${{ steps.finalize.outputs.count }}
         run: |
           overflow=false
-          if [ -f "$RUNNER_TEMP/grok-review-meta.json" ]; then
-            overflow=$(jq -r '.overflow // false' "$RUNNER_TEMP/grok-review-meta.json")
+          if [ -f "$RUNNER_TEMP/final/grok-review-meta.json" ]; then
+            overflow=$(jq -r '.overflow // false' "$RUNNER_TEMP/final/grok-review-meta.json")
           fi
           if [ "$overflow" = "true" ]; then
             echo "::error::Grok review failed closed: validated findings exceeded the adaptive hard union cap. Full findings are in the artifact."
             exit 1
           fi
-          if [ "$INFERENCE_OUTCOME" != "success" ] || [ -z "$FINDING_COUNT" ]; then
+          if [ "$FINALIZE_OUTCOME" != "success" ] || [ -z "$FINDING_COUNT" ]; then
             echo "::error::Grok review failed closed."
             exit 1
           fi
