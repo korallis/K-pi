@@ -38,7 +38,7 @@ jobs:
   review:
     name: Grok review
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     if: github.event.pull_request.draft == false
     env:
       GIT_CONFIG_GLOBAL: /dev/null
