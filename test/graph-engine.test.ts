@@ -747,7 +747,7 @@ test("a non-transient failure is never retried", async () => {
 			assert.equal(attempts(), 1, `${scenario.name}: no retry`);
 			assert.deepEqual(slept, [], `${scenario.name}: no backoff`);
 			assert.equal(engine.state.status, "failed", `${scenario.name}: a defect is a failure, not a budget outcome`);
-			assert.equal(engine.state.nodes.implement.transientRetries, undefined);
+			assert.equal(engine.state.nodes.implement.transientRetries, 0, "the run's allowance was never spent");
 			engine.dispose();
 		} finally {
 			await rm(projectRoot, { recursive: true, force: true });

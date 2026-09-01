@@ -303,9 +303,35 @@ test("transient classification retries only transport, 429, and timeout", () => 
 	assert.equal(classifyTransientFailure(Object.assign(new Error("aborted"), { name: "AbortError" })), undefined);
 	assert.equal(classifyTransientFailure(Object.assign(new Error("cancelled by operator"), {})), undefined);
 	assert.equal(
-		classifyTransientFailure(Object.assign(new Error("connection reset after timeout"), { name: "AbortError" })),
+		classifyTransientFailure(Object.assign(new Error("connection reset by peer"), { name: "AbortError" })),
 		undefined,
-		"an abort wins over a transport-shaped message",
+		"an abort with no timeout evidence wins over a transport-shaped message",
+	);
+
+	// Explicit timeout evidence is read before the abort check, because a fetch
+	// deadline normally arrives as an AbortError that says it was aborted.
+	assert.equal(
+		classifyTransientFailure(Object.assign(new Error("The operation was aborted due to timeout"), { name: "AbortError" })),
+		"timeout",
+	);
+	assert.equal(
+		classifyTransientFailure(Object.assign(new Error("aborted"), { name: "AbortError", code: "ETIMEDOUT" })),
+		"timeout",
+	);
+	assert.equal(
+		classifyTransientFailure(
+			Object.assign(new Error("This operation was aborted"), {
+				name: "AbortError",
+				cause: Object.assign(new Error("headers timeout"), { name: "TimeoutError" }),
+			}),
+		),
+		"timeout",
+		"a timeout delivered as an abort with a TimeoutError cause is still a timeout",
+	);
+	assert.equal(
+		classifyTransientFailure(Object.assign(new Error("The user aborted a request"), { name: "AbortError" })),
+		undefined,
+		"a plain operator abort stays non-transient",
 	);
 	assert.equal(classifyTransientFailure(Object.assign(new Error("bad request"), { status: 400 })), undefined);
 	assert.equal(classifyTransientFailure(Object.assign(new Error("server error"), { status: 500 })), undefined);

@@ -453,7 +453,33 @@ export class GraphEngine {
 		if (this.runState.status !== "exhausted" || this.runState.active.length === 0) {
 			return;
 		}
-		if (findExhaustedRunLimit(this.runState.budget.limits, this.readBudget()) !== undefined) {
+		const limits = this.runState.budget.limits;
+		const terminal = this.runState.terminal;
+
+		if (terminal?.limit === "maxTransientRetries") {
+			// A spent retry allowance re-arms only when the cap itself was raised.
+			// Resuming at the same cap would hand the node unlimited attempts.
+			const stillSpent = terminal.nodes.some(
+				(nodeId) => (this.runState.nodes[nodeId]?.transientRetries ?? 0) >= limits.maxTransientRetries,
+			);
+			if (stillSpent) {
+				return;
+			}
+			this.runState.status = "running";
+			delete this.runState.terminal;
+			for (const nodeId of this.runState.active) {
+				const nodeState = this.runState.nodes[nodeId];
+				if (nodeState.status !== "exhausted") {
+					continue;
+				}
+				// The stalled node continues its own run, so its spent retries still
+				// count against the raised cap. Nodes that never started are fresh.
+				nodeState.status = terminal.nodes.includes(nodeId) ? "running" : "pending";
+			}
+			return;
+		}
+
+		if (findExhaustedRunLimit(limits, this.readBudget()) !== undefined) {
 			return;
 		}
 		this.runState.status = "running";
@@ -655,6 +681,13 @@ export class GraphEngine {
 	 */
 	private async executeWithRetries(node: GraphNode): Promise<NodeResult> {
 		const nodeState = this.runState.nodes[node.id];
+		// Retries are same-run. A new legitimate run gets a fresh allowance; a run
+		// resumed after a kill keeps exactly what it had already spent.
+		if (nodeState.retryRun !== nodeState.runs) {
+			nodeState.retryRun = nodeState.runs;
+			nodeState.transientRetries = 0;
+			nodeState.retryDelaysMs = [];
+		}
 		for (;;) {
 			try {
 				return await this.executeNode(node);
@@ -822,7 +855,12 @@ export class GraphEngine {
 
 			for (const node of batch) {
 				const nodeState = this.runState.nodes[node.id];
-				nodeState.runs += 1;
+				// A node whose checkpoint already says `running` was killed mid-run;
+				// continuing it is the same run, so neither its run count nor the
+				// graph's round moves again.
+				if (nodeState.status !== "running") {
+					nodeState.runs += 1;
+				}
 				nodeState.status = "running";
 				delete nodeState.error;
 			}

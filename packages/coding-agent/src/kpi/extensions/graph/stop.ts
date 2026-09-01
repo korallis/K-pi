@@ -140,29 +140,81 @@ const TRANSPORT_CODES: Record<string, true> = {
  * contract failure is a defect that retrying would only repeat. Anything
  * unrecognized is treated as non-transient, so a retry is never the default.
  */
-export function classifyTransientFailure(error: unknown): TransientReason | undefined {
+interface FailureShape {
+	name: string;
+	code: string;
+	message: string;
+	status?: number;
+}
+
+function failureShape(error: unknown): FailureShape | undefined {
 	if (typeof error !== "object" || error === null) {
 		return undefined;
 	}
-	const candidate = error as { name?: unknown; code?: unknown; status?: unknown; statusCode?: unknown; message?: unknown };
-	const name = typeof candidate.name === "string" ? candidate.name : "";
-	const code = typeof candidate.code === "string" ? candidate.code : "";
-	const message = typeof candidate.message === "string" ? candidate.message : "";
+	const candidate = error as {
+		name?: unknown;
+		code?: unknown;
+		status?: unknown;
+		statusCode?: unknown;
+		message?: unknown;
+	};
+	const status = typeof candidate.status === "number" ? candidate.status : candidate.statusCode;
+	return {
+		name: typeof candidate.name === "string" ? candidate.name : "",
+		code: typeof candidate.code === "string" ? candidate.code : "",
+		message: typeof candidate.message === "string" ? candidate.message : "",
+		status: typeof status === "number" ? status : undefined,
+	};
+}
 
-	// An abort is the operator's, or the run's, own decision. Checked first: an
-	// aborted request often also looks like a socket failure.
-	if (name === "AbortError" || ABORT_CODES[code] === true || /\babort(?:ed)?\b|\bcancell?ed\b/iu.test(message)) {
+/** A deadline the transport itself reports, whatever else the error also says. */
+function statesTimeout(shape: FailureShape): boolean {
+	return (
+		shape.name === "TimeoutError" ||
+		TIMEOUT_CODES[shape.code] === true ||
+		/\btimed?\s?out\b|\btimeout\b/iu.test(shape.message)
+	);
+}
+
+/**
+ * Classifies a thrown provider failure. Only a transport fault, a 429, or a
+ * timeout may be retried; a validation or contract failure is a defect that
+ * retrying would only repeat, and anything unrecognized is treated as
+ * non-transient so a retry is never the default.
+ *
+ * Explicit timeout evidence is read before the abort check, and one level of
+ * `cause` is inspected, because a fetch deadline is normally delivered as an
+ * `AbortError` whose message says it was aborted. A plain operator abort — one
+ * with no timeout evidence anywhere — stays non-transient.
+ */
+export function classifyTransientFailure(error: unknown): TransientReason | undefined {
+	const shape = failureShape(error);
+	if (shape === undefined) {
+		return undefined;
+	}
+	const cause = failureShape((error as { cause?: unknown }).cause);
+	if (statesTimeout(shape) || (cause !== undefined && statesTimeout(cause))) {
+		return "timeout";
+	}
+
+	// Otherwise an abort is the operator's, or the run's, own decision. Checked
+	// before transport because an aborted request also looks like a socket fault.
+	if (
+		shape.name === "AbortError" ||
+		ABORT_CODES[shape.code] === true ||
+		/\babort(?:ed)?\b|\bcancell?ed\b/iu.test(shape.message)
+	) {
 		return undefined;
 	}
 
-	const status = typeof candidate.status === "number" ? candidate.status : candidate.statusCode;
-	if (status === 429) {
+	if (shape.status === 429 || cause?.status === 429) {
 		return "http";
 	}
-	if (name === "TimeoutError" || TIMEOUT_CODES[code] === true || /\btimed?\s?out\b/iu.test(message)) {
-		return "timeout";
-	}
-	if (TRANSPORT_CODES[code] === true || /socket hang up|fetch failed|network error|connection reset/iu.test(message)) {
+	if (
+		TRANSPORT_CODES[shape.code] === true ||
+		(cause !== undefined && TRANSPORT_CODES[cause.code] === true) ||
+		/socket hang up|fetch failed|network error|connection reset/iu.test(shape.message)
+	) {
 		return "transport";
 	}
 	return undefined;

@@ -415,7 +415,11 @@ test("a kill during a transient backoff resumes with the allowance already spent
 		restored.dispose();
 
 		assert.deepEqual(secondSlept, [200], "the resumed run continues the sequence and stops after one retry");
-		assert.equal(finished.nodes.implement.runs, 2, "a resume is a new run, though a retry never was");
+		assert.equal(
+			finished.nodes.implement.runs,
+			1,
+			"a run resumed mid-flight is the same run, so neither runs nor the round moved again",
+		);
 		assert.equal(finished.status, "exhausted");
 		assert.equal(finished.terminal?.limit, "maxTransientRetries");
 		assert.equal(finished.nodes.implement.transientRetries, 2);
@@ -423,5 +427,282 @@ test("a kill during a transient backoff resumes with the allowance already spent
 		assert.deepEqual(finished.active, ["implement"], "the unresolved node is preserved");
 	} finally {
 		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+/** A prompt that fails transiently for a fixed set of run attempts. */
+function transientForRuns(failuresPerRun: readonly number[]): {
+	factory: GraphAgentSessionFactory;
+	nextRun: () => void;
+} {
+	let run = 0;
+	let attemptsThisRun = 0;
+	const factory: GraphAgentSessionFactory = async () => ({
+		session: {
+			sessionId: "runs",
+			async prompt() {
+				attemptsThisRun += 1;
+				if (attemptsThisRun <= (failuresPerRun[run] ?? 0)) {
+					throw Object.assign(new Error("socket hang up"), { code: "ECONNRESET" });
+				}
+			},
+			getActiveToolNames: () => ["read"],
+			dispose() {},
+		},
+	});
+	return {
+		factory,
+		nextRun: () => {
+			run += 1;
+			attemptsThisRun = 0;
+		},
+	};
+}
+
+/** Fails the first `failures` prompt attempts across every engine that shares it. */
+function failsFirstAttempts(failures: number): GraphAgentSessionFactory {
+	let attempts = 0;
+	return async () => ({
+		session: {
+			sessionId: "shared",
+			async prompt() {
+				attempts += 1;
+				if (attempts <= failures) {
+					throw Object.assign(new Error("socket hang up"), { code: "ECONNRESET" });
+				}
+			},
+			getActiveToolNames: () => ["read"],
+			dispose() {},
+		},
+	});
+}
+
+function loopingGraph(id: string, limits?: Partial<GraphDefinition["limits"]>): GraphDefinition {
+	return {
+		schemaVersion: 2,
+		id,
+		entry: "implement",
+		nodes: [
+			{
+				id: "implement",
+				type: "agent" as const,
+				prompt: "implement",
+				context: { mode: "isolated" as const },
+				tools: ["read"],
+				readOnly: true,
+			},
+		],
+		edges: [{ from: "implement", to: "implement" }],
+		limits: { maxSteps: 20, maxNodeRuns: 9, maxConcurrency: 1, maxCostUsd: 10, timeoutMs: 600_000, ...limits },
+		policy: {
+			allowNonInteractive: true,
+			allowNonInteractiveMutations: false,
+			confirmProjectGraph: false,
+			confirmMutatingNodes: false,
+		},
+	};
+}
+
+test("a later run gets a fresh transient-retry allowance", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "kpi-retry-rounds-"));
+	try {
+		const slept: number[] = [];
+		// Two failures in the first run, two more in the second: four in total,
+		// which a lifetime allowance of two would have refused.
+		const flaky = transientForRuns([2, 2]);
+		const engine = new GraphEngine(loopingGraph("retry-rounds"), {
+			projectRoot: directory,
+			jobId: "retry-rounds-job",
+			createAgentSession: flaky.factory,
+			retryBaseDelayMs: 10,
+			limits: { maxRounds: 2 },
+			sleep: async (ms) => {
+				slept.push(ms);
+			},
+		});
+
+		const first = await engine.runSuperstep();
+		assert.equal(first.status, "running");
+		assert.equal(first.nodes.implement.runs, 1);
+		assert.equal(first.nodes.implement.transientRetries, 2, "the first run spent its whole allowance");
+		assert.equal(first.nodes.implement.retryRun, 1);
+
+		flaky.nextRun();
+		const second = await engine.runSuperstep();
+
+		assert.equal(second.nodes.implement.runs, 2, "a legitimate second run");
+		assert.equal(second.nodes.implement.retryRun, 2, "the allowance is keyed to the run it belongs to");
+		assert.equal(second.nodes.implement.transientRetries, 2, "and it was fresh, not carried over");
+		assert.deepEqual(slept, [10, 20, 10, 20], "each run backs off from the start");
+		assert.equal(second.status, "running", "two runs were affordable");
+
+		// The round cap, not the retry cap, is what finally ends it.
+		const third = await engine.runSuperstep();
+		assert.equal(third.status, "exhausted");
+		assert.equal(third.terminal?.limit, "maxRounds");
+		engine.dispose();
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("retry exhaustion resumed at the same cap stays exhausted", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "kpi-retry-same-cap-"));
+	const alwaysFails = transientForRuns([99]);
+	try {
+		const first: number[] = [];
+		const engine = new GraphEngine(loopingGraph("same-cap"), {
+			projectRoot: directory,
+			jobId: "same-cap-job",
+			createAgentSession: alwaysFails.factory,
+			retryBaseDelayMs: 10,
+			sleep: async (ms) => {
+				first.push(ms);
+			},
+		});
+		const stopped = await engine.runUntilPause();
+		engine.dispose();
+		assert.equal(stopped.terminal?.limit, "maxTransientRetries");
+		assert.deepEqual(first, [10, 20]);
+
+		// Restoring at the unchanged cap must not hand the node more attempts.
+		const second: number[] = [];
+		const restored = await GraphEngine.restore(loopingGraph("same-cap"), {
+			projectRoot: directory,
+			jobId: "same-cap-job",
+			createAgentSession: alwaysFails.factory,
+			retryBaseDelayMs: 10,
+			sleep: async (ms) => {
+				second.push(ms);
+			},
+		});
+
+		assert.equal(restored.state.status, "exhausted", "a resume at the same cap is not a fresh allowance");
+		const finished = await restored.runUntilPause();
+		restored.dispose();
+
+		assert.equal(finished.status, "exhausted");
+		assert.deepEqual(second, [], "no further backoff was spent");
+		assert.equal(finished.nodes.implement.runs, 1, "and no further run was counted");
+		assert.equal(finished.nodes.implement.transientRetries, 2);
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("a raised transient-retry cap re-arms the same run with the spent count intact", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "kpi-retry-raised-cap-"));
+	// Four failures across both engines: two retries spent before the kill, the
+	// third covered only by the raised cap, then the attempt that succeeds.
+	const factory = failsFirstAttempts(4);
+	try {
+		const engine = new GraphEngine(loopingGraph("raised-cap"), {
+			projectRoot: directory,
+			jobId: "raised-cap-job",
+			createAgentSession: factory,
+			retryBaseDelayMs: 10,
+			sleep: async () => {},
+		});
+		const stopped = await engine.runUntilPause();
+		engine.dispose();
+		assert.equal(stopped.terminal?.limit, "maxTransientRetries");
+		assert.equal(stopped.nodes.implement.transientRetries, 2);
+
+		const slept: number[] = [];
+		const restored = await GraphEngine.restore(loopingGraph("raised-cap"), {
+			projectRoot: directory,
+			jobId: "raised-cap-job",
+			createAgentSession: factory,
+			retryBaseDelayMs: 10,
+			limits: { maxTransientRetries: 3 },
+			sleep: async (ms) => {
+				slept.push(ms);
+			},
+		});
+
+		assert.equal(restored.state.status, "running", "a raised cap re-arms the run");
+		assert.equal(restored.state.nodes.implement.transientRetries, 2, "the spent count is intact");
+		assert.equal(restored.state.nodes.implement.runs, 1);
+
+		// One superstep: the self-loop would otherwise start a fresh run, and a
+		// fresh run is exactly what gets a fresh allowance.
+		const finished = await restored.runSuperstep();
+		restored.dispose();
+
+		assert.deepEqual(slept, [40], "the third retry continues the sequence rather than restarting it");
+		assert.equal(finished.nodes.implement.transientRetries, 3);
+		assert.equal(finished.nodes.implement.runs, 1, "the resumed run was still the same run");
+		assert.equal(finished.budget.round, 1);
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("a timeout delivered as an abort retries, a plain operator abort does not", async () => {
+	const cases = [
+		{
+			name: "fetch deadline as AbortError",
+			error: () => Object.assign(new Error("The operation was aborted due to timeout"), { name: "AbortError" }),
+			retried: true,
+		},
+		{
+			name: "abort with a TimeoutError cause",
+			error: () =>
+				Object.assign(new Error("This operation was aborted"), {
+					name: "AbortError",
+					cause: Object.assign(new Error("deadline"), { name: "TimeoutError" }),
+				}),
+			retried: true,
+		},
+		{
+			name: "operator abort",
+			error: () => Object.assign(new Error("The user aborted a request"), { name: "AbortError" }),
+			retried: false,
+		},
+	];
+
+	for (const scenario of cases) {
+		const directory = await mkdtemp(join(tmpdir(), "kpi-retry-abort-"));
+		try {
+			const slept: number[] = [];
+			let attempts = 0;
+			const factory: GraphAgentSessionFactory = async () => ({
+				session: {
+					sessionId: "abort",
+					async prompt() {
+						attempts += 1;
+						if (attempts === 1) {
+							throw scenario.error();
+						}
+					},
+					getActiveToolNames: () => ["read"],
+					dispose() {},
+				},
+			});
+			const engine = new GraphEngine(loopingGraph("abort-case", { maxSteps: 1 }), {
+				projectRoot: directory,
+				jobId: "abort-job",
+				createAgentSession: factory,
+				retryBaseDelayMs: 10,
+				sleep: async (ms) => {
+					slept.push(ms);
+				},
+			});
+
+			if (scenario.retried) {
+				await engine.runSuperstep();
+				assert.equal(attempts, 2, `${scenario.name}: the node was retried`);
+				assert.deepEqual(slept, [10], `${scenario.name}: one backoff`);
+				assert.equal(engine.state.nodes.implement.status, "completed");
+			} else {
+				await assert.rejects(engine.runSuperstep(), Error, scenario.name);
+				assert.equal(attempts, 1, `${scenario.name}: no retry`);
+				assert.deepEqual(slept, [], `${scenario.name}: no backoff`);
+				assert.equal(engine.state.status, "failed");
+			}
+			engine.dispose();
+		} finally {
+			await rm(directory, { recursive: true, force: true });
+		}
 	}
 });

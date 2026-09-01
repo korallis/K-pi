@@ -122,6 +122,12 @@ export interface GraphNodeRunState {
 	 * during a backoff must not hand the node a fresh allowance on resume.
 	 */
 	transientRetries?: number;
+	/**
+	 * The `runs` value those retries belong to. Retries are same-run, so a new
+	 * legitimate run gets a fresh allowance while a resumed run keeps what it
+	 * spent. Without this key the allowance would be lifetime-per-node.
+	 */
+	retryRun?: number;
 	/** The backoff actually waited on this node, in order. */
 	retryDelaysMs?: number[];
 }
