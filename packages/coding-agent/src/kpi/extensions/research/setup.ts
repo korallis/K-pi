@@ -5,6 +5,8 @@ import { dirname, join } from "node:path";
 import { getAgentDir } from "../../../config.ts";
 
 import type { ExtensionCommandContext } from "../../../core/extensions/types.ts";
+import { writeResearchMode } from "../settings.ts";
+import { type ResearchService, researchSecretName } from "./session.ts";
 
 async function readSecrets(path: string): Promise<Record<string, unknown>> {
 	try {
@@ -18,13 +20,8 @@ async function readSecrets(path: string): Promise<Record<string, unknown>> {
 	}
 }
 
-export async function saveResearchKeys(
-	values: { exa?: string; perplexity?: string },
-	path = join(getAgentDir(), "accounts.secrets.json"),
-): Promise<void> {
-	const secrets = await readSecrets(path);
-	if (values.exa !== undefined) secrets["exa/default"] = { type: "api_key", key: values.exa };
-	if (values.perplexity !== undefined) secrets["perplexity/default"] = { type: "api_key", key: values.perplexity };
+/** One writer for the secrets file: atomic, 0600, never a partial document. */
+async function writeSecrets(path: string, secrets: Record<string, unknown>): Promise<void> {
 	await mkdir(dirname(path), { recursive: true });
 	const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
 	const file = await open(temporary, "wx", 0o600);
@@ -41,6 +38,33 @@ export async function saveResearchKeys(
 	}
 }
 
+export async function saveResearchKeys(
+	values: { exa?: string; perplexity?: string },
+	path = join(getAgentDir(), "accounts.secrets.json"),
+): Promise<void> {
+	const secrets = await readSecrets(path);
+	if (values.exa !== undefined) secrets[researchSecretName("exa")] = { type: "api_key", key: values.exa };
+	if (values.perplexity !== undefined) {
+		secrets[researchSecretName("perplexity")] = { type: "api_key", key: values.perplexity };
+	}
+	await writeSecrets(path, secrets);
+}
+
+/** Removes a research credential. Local research is still research. */
+export async function removeResearchKey(
+	service: ResearchService,
+	path = join(getAgentDir(), "accounts.secrets.json"),
+): Promise<boolean> {
+	const secrets = await readSecrets(path);
+	const name = researchSecretName(service);
+	if (secrets[name] === undefined) {
+		return false;
+	}
+	delete secrets[name];
+	await writeSecrets(path, secrets);
+	return true;
+}
+
 export async function promptResearchSetup(context: ExtensionCommandContext): Promise<void> {
 	const exa = await context.ui.input("Exa API key for research", "Enter to save, s to skip");
 	const perplexity = await context.ui.input("Perplexity API key for research", "Enter to save, s to skip");
@@ -51,11 +75,10 @@ export async function promptResearchSetup(context: ExtensionCommandContext): Pro
 				? undefined
 				: perplexity.trim(),
 	};
-	if (values.exa !== undefined || values.perplexity !== undefined) await saveResearchKeys(values);
-	context.ui.notify(
-		values.exa !== undefined || values.perplexity !== undefined
-			? "External research configured"
-			: "Research mode: local",
-		"info",
-	);
+	const configured = values.exa !== undefined || values.perplexity !== undefined;
+	if (configured) await saveResearchKeys(values);
+	// Saving either key means research goes online by default; skipping both is a
+	// narrower mode, not a broken setup.
+	await writeResearchMode(context.cwd, configured ? "auto" : "local");
+	context.ui.notify(configured ? "External research configured" : "Research mode: local", "info");
 }

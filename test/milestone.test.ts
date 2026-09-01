@@ -250,14 +250,20 @@ test("research caps results and falls back after a preferred 429", async () => {
 	assert.deepEqual(capped, []);
 	const directory = await mkdtemp(join(tmpdir(), "kpi-research-"));
 	try {
-		const task = { goal: "current docs" } as Task;
+		const task = { job_id: "research-job", goal: "current docs" } as Task;
 		const document = await conductResearch(directory, directory, task, {
-			exaKey: "x",
-			perplexityKey: "p",
+			keys: { exa: "x", perplexity: "p" },
+			mode: "auto",
 			fetch: fetchMock,
 		});
-		assert.equal(document.mode, "perplexity");
+		assert.equal(document.mode, "perplexity", "the cooled preferred service handed over to the alternate");
 		assert.equal(document.sources.length, 2);
+		assert.deepEqual(
+			document.network.failures.map((failure) => `${failure.service}:${failure.class}`),
+			["exa:http_429"],
+			"the 429 is recorded once, against the service that returned it",
+		);
+		assert.equal(document.network.state, "online", "one service answering is not exhaustion");
 		assert.equal(calls, 2);
 	} finally {
 		await rm(directory, { recursive: true, force: true });

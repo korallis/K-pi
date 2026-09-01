@@ -26,7 +26,9 @@ import {
 import { assertMinimalistBounds } from "./minimalist.ts";
 import { isWriteAllowed } from "./policy.ts";
 import { assertResearchFresh, conductResearch } from "./research/gate.ts";
+import { ResearchShortfallError, resolveResearchKeys } from "./research/session.ts";
 import { atomicWrite, createJob, type Task, writeAllowForTask } from "./run-store.ts";
+import { readKpiSettings } from "./settings.ts";
 import { readDuneStack, scaffoldModule } from "./stack.ts";
 
 const execFile = promisify(execFileCallback);
@@ -804,10 +806,29 @@ async function driveUntilPause(
 			try {
 				await assertResearchFresh(jobDirectory, task);
 			} catch {
-				await conductResearch(projectRoot, jobDirectory, task, {
-					exaKey: process.env.EXA_API_KEY,
-					perplexityKey: process.env.PERPLEXITY_API_KEY,
-				});
+				try {
+					// The control plane owns keys, mode, budget, cooldown and events.
+					await conductResearch(projectRoot, jobDirectory, task, {
+						keys: await resolveResearchKeys(),
+						mode: (await readKpiSettings(projectRoot)).research,
+						eventsPath: join(jobDirectory, "events.jsonl"),
+						round: currentStopState.round,
+						node: state.active[0],
+					});
+				} catch (error) {
+					if (!(error instanceof ResearchShortfallError)) {
+						throw error;
+					}
+					// A healthy service that answered thinly is a human decision, per
+					// AC-29.6: never a downgrade to local research.
+					return {
+						state,
+						stopState: currentStopState,
+						shippedThisRun,
+						terminalStatus: "NEEDS_HUMAN",
+						reason: error.message,
+					};
+				}
 			}
 		}
 		if (state.active.includes("implement")) {

@@ -2,7 +2,10 @@ import type { AuthEvent, AuthPrompt, Credential, ProviderAuthInteraction } from 
 import type { ExtensionAPI, ExtensionCommandContext } from "../../../core/extensions/types.ts";
 import { appendEvent } from "../append-log.ts";
 import { DEFAULT_LOCAL_BASE_URLS, type LocalProviderId } from "../local/providers.ts";
+import type { ResearchService } from "../research/session.ts";
+import { removeResearchKey, saveResearchKeys } from "../research/setup.ts";
 import { readActiveJob } from "../run-store.ts";
+import { writeResearchMode } from "../settings.ts";
 import { AccountBalancer, type SelectedSlot } from "./balancer.ts";
 import { classifyProviderFailure } from "./errors.ts";
 import {
@@ -269,6 +272,27 @@ async function loginAccount(
 	context.ui.notify(`Added account ${providerName}/${slotId}`, "info");
 }
 
+function isResearchService(value: string | undefined): value is ResearchService {
+	return value === "exa" || value === "perplexity";
+}
+
+/**
+ * Stores a research credential. Nothing about routing changes: no slot is
+ * created, no pool gains a member, and no provider is registered.
+ */
+async function loginResearchService(service: ResearchService, context: ExtensionCommandContext): Promise<void> {
+	const key = await context.ui.input(`${service} API key for research`, "Paste the key, or Enter to cancel");
+	const trimmed = (key ?? "").trim();
+	if (trimmed.length === 0) {
+		context.ui.notify(`Cancelled ${service} research login`, "info");
+		return;
+	}
+	await saveResearchKeys(service === "exa" ? { exa: trimmed } : { perplexity: trimmed });
+	// Online research is now possible, so the default mode reflects that.
+	await writeResearchMode(context.cwd, "auto");
+	context.ui.notify(`Saved ${service} research credential`, "info");
+}
+
 function resolveSlotReference(
 	reference: string | undefined,
 	document: AccountsDocument,
@@ -340,10 +364,30 @@ async function handleAccountsCommand(
 		throw new Error("Too many /accounts arguments");
 	}
 	if (action === "login") {
+		// `exa` and `perplexity` are research credential targets, never pools: they
+		// create no slot, join no fallback chain, and change no routing.
+		if (isResearchService(first)) {
+			if (second !== undefined) {
+				throw new Error(`Usage: /accounts login ${first}`);
+			}
+			await loginResearchService(first, context);
+			return false;
+		}
 		await loginAccount(first, second, dependencies.store, dependencies.login, dependencies.now, context);
 		return true;
 	}
 	if (action === "logout") {
+		if (isResearchService(first)) {
+			if (second !== undefined) {
+				throw new Error(`Usage: /accounts logout ${first}`);
+			}
+			const removed = await removeResearchKey(first);
+			context.ui.notify(
+				removed ? `Removed ${first} research credential` : `No ${first} research credential to remove`,
+				"info",
+			);
+			return false;
+		}
 		if (second !== undefined) {
 			throw new Error("Usage: /accounts logout <pool/slot>");
 		}
