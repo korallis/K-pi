@@ -106,7 +106,7 @@
     {
       "id": "review",
       "type": "agent",
-      "prompt": "Apply the isolated-review skill. Review the candidate and fresh evidence against every required acceptance criterion. Return a schema-valid verdict; do not change repository files.",
+      "prompt": "Apply the isolated-review skill. Review the candidate and fresh evidence against every required acceptance criterion. Publish a schema-valid verdict.json through write_contract; do not change repository files and do not treat assistant transcript as the verdict.",
       "context": {
         "mode": "isolated"
       },
@@ -117,10 +117,11 @@
         "ls"
       ],
       "readOnly": true,
+      "workerRole": "reviewer",
       "response": {
         "path": "verdict.json",
         "schema": "verdict.schema.json",
-        "retries": 2,
+        "retries": 0,
         "state": {
           "review.approved": "approved",
           "review.status": "status",

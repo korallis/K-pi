@@ -9,6 +9,7 @@ import { CONFIG_DIR_NAME } from "../../config.ts";
 import type { ExtensionCommandContext } from "../../core/extensions/types.ts";
 
 import { appendEvent } from "./append-log.ts";
+import type { BusDependencies } from "./bus/spawn.ts";
 import { compileAcceptanceCriteria } from "./graph/ac-compiler.ts";
 import { type GraphAgentSessionFactory, GraphEngine, loadNamedGraph } from "./graph/engine.ts";
 import { type GraphRunState, isJsonObject, type JsonObject } from "./graph/schema.ts";
@@ -39,6 +40,8 @@ export const CONVENTIONAL_COMMIT_PATTERN = /^(feat|fix|docs|refactor|test|chore)
 
 export interface LoopDependencies {
 	createAgentSession?: GraphAgentSessionFactory;
+	/** RP-13 bus injections for graph nodes with workerRole (e.g. reviewer). */
+	busDependencies?: BusDependencies;
 	onStateChange?: () => Promise<void>;
 	jobId?: string;
 	/** Injected wall clock in epoch milliseconds. */
@@ -1068,6 +1071,7 @@ export async function resumeLoop(
 		projectRoot: ctx.cwd,
 		jobId,
 		createAgentSession: dependencies.createAgentSession,
+		busDependencies: dependencies.busDependencies,
 		now: dependencies.now,
 		accumulatedCostUsd: dependencies.accumulatedCostUsd,
 		limits: task.limits,
@@ -1254,6 +1258,7 @@ export async function runLoop(
 		projectRoot: ctx.cwd,
 		jobId: job.jobId,
 		createAgentSession: dependencies.createAgentSession,
+		busDependencies: dependencies.busDependencies,
 		now: dependencies.now,
 		accumulatedCostUsd: dependencies.accumulatedCostUsd,
 		limits: task.limits,

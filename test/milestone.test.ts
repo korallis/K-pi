@@ -20,7 +20,11 @@ import { UsageCache } from "../packages/coding-agent/src/kpi/extensions/accounts
 import { renderAccountsWidget } from "../packages/coding-agent/src/kpi/extensions/accounts/widget.ts";
 import { appendEvent } from "../packages/coding-agent/src/kpi/extensions/append-log.ts";
 import { WorkerProtocol } from "../packages/coding-agent/src/kpi/extensions/bus/protocol.ts";
-import { BackgroundBus, type WorkerLauncher } from "../packages/coding-agent/src/kpi/extensions/bus/spawn.ts";
+import {
+	BackgroundBus,
+	createWorkerAdmission,
+	type WorkerLauncher,
+} from "../packages/coding-agent/src/kpi/extensions/bus/spawn.ts";
 import {
 	refreshCursorModels,
 	registerCursorProvider,
@@ -218,11 +222,13 @@ test("background bus caps workers, writers, messages, and leases", async () => {
 			},
 		};
 	};
+	const bus = new BackgroundBus(directory, runDirectory, "job", {
+		launcher,
+		isProcessAlive: (candidate) => alive.has(candidate),
+		admission: createWorkerAdmission(),
+		contractWaitTimeoutMs: 2_000,
+	});
 	try {
-		const bus = new BackgroundBus(directory, runDirectory, "job", {
-			launcher,
-			isProcessAlive: (candidate) => alive.has(candidate),
-		});
 		const writer = await bus.spawn({ role: "implementer", prompt: "one", tools: ["read", "write"] });
 		await assert.rejects(bus.spawn({ role: "implementer", prompt: "two", tools: ["edit"] }), /writer/u);
 		const reviewer = await bus.spawn({ role: "reviewer", prompt: "review" });
@@ -234,6 +240,7 @@ test("background bus caps workers, writers, messages, and leases", async () => {
 		await bus.stop(writer.agentId);
 		await bus.claim(reviewer.agentId, reviewer.pid, "src/a.ts");
 	} finally {
+		await bus.stopAll().catch(() => undefined);
 		await rm(directory, { recursive: true, force: true });
 	}
 });

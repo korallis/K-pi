@@ -85,7 +85,7 @@ function assistantMessageText(message: unknown): string | undefined {
 export class WorkerProtocol {
 	private readonly stdin: Writable;
 	private readonly pending = new Map<string, PendingRequest>();
-	private readonly settledWaiters: (() => void)[] = [];
+	private readonly settledWaiters: Array<{ resolve: () => void; reject: (error: Error) => void }> = [];
 	private readonly diagnostics: WorkerDiagnostics = { stderr: "", rejectedRecords: 0, notes: [] };
 	private readonly drainTimeoutMs: number;
 	private detachStdout: () => void;
@@ -96,7 +96,6 @@ export class WorkerProtocol {
 	private streamingText = "";
 	/** Rises on every settle, so a waiter can tell a new one from an old one. */
 	private settleCount = 0;
-
 	constructor(streams: { stdin: Writable; stdout: Readable; stderr?: Readable; drainTimeoutMs?: number }) {
 		this.stdin = streams.stdin;
 		this.drainTimeoutMs = streams.drainTimeoutMs ?? MAX_DRAIN_WAIT_MS;
@@ -185,7 +184,7 @@ export class WorkerProtocol {
 			this.settleCount += 1;
 			const waiters = this.settledWaiters.splice(0, this.settledWaiters.length);
 			for (const waiter of waiters) {
-				waiter();
+				waiter.resolve();
 			}
 			return;
 		}
@@ -288,26 +287,42 @@ export class WorkerProtocol {
 	}
 
 	/**
-	 * Resolves on the next `agent_settled`, or refuses when the bound passes.
+	 * Resolves once `settleCount` has advanced past `afterCount`, or refuses when
+	 * the bound passes.
 	 *
-	 * Registered before a delivery, never after: a worker can settle between the
-	 * acceptance response and a later registration, and a waiter installed then
-	 * would wait for the turn after the one it cares about.
+	 * Pass the count observed *before* the delivery whose settlement you care
+	 * about. Registering with the default (`this.settleCount`) after a delivery
+	 * can miss a settle that already happened; registering with a pre-delivery
+	 * baseline cannot. A fresh protocol starts at zero, so installing
+	 * `waitForSettled(ms, 0)` before the first prompt is the safe initial-turn wait.
 	 */
-	waitForSettled(timeoutMs = WORKER_RESULT_TIMEOUT_MS): Promise<void> {
+	waitForSettled(timeoutMs = WORKER_RESULT_TIMEOUT_MS, afterCount?: number): Promise<void> {
+		if (this.closed) {
+			return Promise.reject(this.closeReason ?? new Error("worker protocol closed"));
+		}
+		const baseline = afterCount ?? this.settleCount;
+		if (this.settleCount > baseline) {
+			return Promise.resolve();
+		}
 		return new Promise<void>((resolve, reject) => {
+			const entry = {
+				resolve: (): void => {
+					clearTimeout(timer);
+					resolve();
+				},
+				reject: (error: Error): void => {
+					clearTimeout(timer);
+					reject(error);
+				},
+			};
 			const timer = setTimeout(() => {
-				const index = this.settledWaiters.indexOf(waiter);
+				const index = this.settledWaiters.indexOf(entry);
 				if (index >= 0) {
 					this.settledWaiters.splice(index, 1);
 				}
 				reject(new Error(`worker did not settle within ${timeoutMs}ms`));
 			}, timeoutMs);
-			const waiter = (): void => {
-				clearTimeout(timer);
-				resolve();
-			};
-			this.settledWaiters.push(waiter);
+			this.settledWaiters.push(entry);
 		});
 	}
 
@@ -331,7 +346,11 @@ export class WorkerProtocol {
 			waiter.reject(reason ?? new Error("worker protocol closed"));
 		}
 		this.pending.clear();
-		this.settledWaiters.splice(0, this.settledWaiters.length);
+		const settleWaiters = this.settledWaiters.splice(0, this.settledWaiters.length);
+		const closed = reason ?? new Error("worker protocol closed");
+		for (const waiter of settleWaiters) {
+			waiter.reject(closed);
+		}
 	}
 }
 

@@ -9,6 +9,7 @@ import { promisify } from "node:util";
 
 import type { ExtensionCommandContext } from "../packages/coding-agent/src/core/extensions/types.ts";
 
+import type { BusDependencies } from "../packages/coding-agent/src/kpi/extensions/bus/spawn.ts";
 import { registerControlPlane } from "../packages/coding-agent/src/kpi/extensions/control-plane.ts";
 import {
 	CONVENTIONAL_COMMIT_PATTERN,
@@ -20,6 +21,7 @@ import {
 	GraphEngine,
 } from "../packages/coding-agent/src/kpi/extensions/graph/engine.ts";
 import type { GraphDefinition } from "../packages/coding-agent/src/kpi/extensions/graph/schema.ts";
+import { reviewerBusDependencies } from "./helpers/reviewer-bus.ts";
 
 const execFile = promisify(execFileCallback);
 const fixtureSource = fileURLToPath(new URL("../fixtures/healthcheck-gated/", import.meta.url));
@@ -140,7 +142,6 @@ function loopSessions(
 	} = {},
 ): GraphAgentSessionFactory {
 	let sessionNumber = 0;
-	let reviewAttempt = 0;
 	return async (sessionOptions) => {
 		let implementationAttempt = 0;
 		sessionNumber += 1;
@@ -203,8 +204,9 @@ function loopSessions(
 							ac_results: [{ id: "AC-01", passed: true }],
 						});
 					} else if (currentNode === "review") {
-						lastAssistantText = options.reviewResponses?.[reviewAttempt] ?? validVerdict;
-						reviewAttempt += 1;
+						// Review runs on the RP-13 bus (workerRole). In-process
+						// transcript is never the verdict; leave assistant text unset.
+						lastAssistantText = undefined;
 					} else if (currentNode === "ship") {
 						// The commit carries the trailer the prompt asked for: that is how
 						// the control plane recognises this job's own commit.
@@ -226,6 +228,7 @@ function commandHarness(
 	factory: GraphAgentSessionFactory,
 	jobId: string,
 	confirmations: string[],
+	busDependencies: BusDependencies = reviewerBusDependencies(),
 ): {
 	commands: Map<string, CommandHandler>;
 	context: ExtensionCommandContext;
@@ -241,6 +244,7 @@ function commandHarness(
 	};
 	registerControlPlane(pi as unknown as Parameters<typeof registerControlPlane>[0], {
 		createAgentSession: factory,
+		busDependencies,
 		jobId,
 	});
 	const context = {
@@ -343,7 +347,7 @@ test("kpi --plan freezes and hashes plan files without executing specify", async
 	}
 });
 
-test("reviewer output retries until it validates against verdict schema", async () => {
+test("agent response retries until it validates against response schema", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "k-pi-review-response-"));
 	const prompts: string[] = [];
 	const responses = [JSON.stringify({ approved: true }), validVerdict];

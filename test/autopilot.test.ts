@@ -9,8 +9,10 @@ import { promisify } from "node:util";
 
 import type { ExtensionCommandContext } from "../packages/coding-agent/src/core/extensions/types.ts";
 
+import type { BusDependencies } from "../packages/coding-agent/src/kpi/extensions/bus/spawn.ts";
 import { registerControlPlane } from "../packages/coding-agent/src/kpi/extensions/control-plane.ts";
 import type { GraphAgentSessionFactory } from "../packages/coding-agent/src/kpi/extensions/graph/engine.ts";
+import { reviewerBusDependencies } from "./helpers/reviewer-bus.ts";
 
 const execFile = promisify(execFileCallback);
 const implementedServer = `import { createServer } from "node:http";
@@ -162,7 +164,8 @@ function autoSessions(
 							ac_results: ["AC-01", "AC-02", "AC-03", "AC-04", "AC-05"].map((id) => ({ id, passed: true })),
 						});
 					} else if (currentNode === "review") {
-						lastAssistantText = behavior.reviewResponse ?? verdict;
+						// Review is a bus worker; transcript is not the verdict.
+						lastAssistantText = undefined;
 					} else if (currentNode === "ship") {
 						// The commit carries the trailer the prompt asked for: that is how
 						// the control plane recognises this job's own commit.
@@ -183,6 +186,7 @@ function commandHarness(
 	directory: string,
 	factory: GraphAgentSessionFactory,
 	jobId: string,
+	busDependencies: BusDependencies = reviewerBusDependencies(),
 ): {
 	command: CommandHandler;
 	confirmations: string[];
@@ -200,6 +204,7 @@ function commandHarness(
 	};
 	registerControlPlane(pi as unknown as Parameters<typeof registerControlPlane>[0], {
 		createAgentSession: factory,
+		busDependencies,
 		jobId,
 	});
 	const context = {
@@ -318,8 +323,9 @@ test("an untestable reviewer issue stops autopilot at NEEDS_HUMAN", async () => 
 	const executed: string[] = [];
 	const harness = commandHarness(
 		directory,
-		autoSessions(directory, executed, { reviewResponse: blockedVerdict, jobId }),
+		autoSessions(directory, executed, { jobId }),
 		jobId,
+		reviewerBusDependencies({ verdict: JSON.parse(blockedVerdict) as Record<string, unknown> }),
 	);
 	try {
 		const task = await readFile(join(directory, "task.txt"), "utf8");
@@ -438,6 +444,7 @@ test("autopilot cannot release from model prose alone", async () => {
 							ac_results: ["AC-01", "AC-02", "AC-03", "AC-04", "AC-05"].map((id) => ({ id, passed: false })),
 						});
 					} else if (currentNode === "review") {
+						// Transcript alone must never approve; bus publishes nothing.
 						lastAssistantText = verdict;
 					} else if (currentNode === "ship") {
 						await git(directory, "add", "-A");
@@ -450,7 +457,12 @@ test("autopilot cannot release from model prose alone", async () => {
 			},
 		};
 	};
-	const harness = commandHarness(directory, factory, jobId);
+	const harness = commandHarness(
+		directory,
+		factory,
+		jobId,
+		reviewerBusDependencies({ verdict: null, transcript: verdict }),
+	);
 	try {
 		const task = await readFile(join(directory, "task.txt"), "utf8");
 		await harness.command(`--mode autopilot ${task}`, harness.context).catch(() => undefined);
@@ -510,7 +522,7 @@ test("an unrelated conventional commit never counts as this job shipping", async
 							ac_results: ["AC-01", "AC-02", "AC-03", "AC-04", "AC-05"].map((id) => ({ id, passed: true })),
 						});
 					} else if (currentNode === "review") {
-						lastAssistantText = verdict;
+						lastAssistantText = undefined;
 					}
 					// The ship node deliberately commits nothing.
 				},
@@ -616,7 +628,7 @@ test("two commits claiming one job fail closed", async () => {
 							ac_results: ["AC-01", "AC-02", "AC-03", "AC-04", "AC-05"].map((id) => ({ id, passed: true })),
 						});
 					} else if (currentNode === "review") {
-						lastAssistantText = verdict;
+						lastAssistantText = undefined;
 					} else if (currentNode === "ship") {
 						const trailer = /^KPI-Job: [^\s`]+$/mu.exec(prompt)?.[0] ?? "";
 						await git(directory, "add", "-A");

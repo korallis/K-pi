@@ -46,6 +46,83 @@ export const STOP_GRACE_TIMEOUT_MS = 60_000;
 export const STOP_MESSAGE = "stop: publish your result file, then exit";
 const CONTRACT_POLL_INTERVAL_MS = 50;
 
+/**
+ * Process-wide (or test-scoped) admission for live background workers.
+ *
+ * Caps are within the process, not per `BackgroundBus` instance: a graph engine
+ * bus and a parent-tool bus in the same checkout share one budget. Creating a
+ * second bus must not reset the count.
+ */
+export interface WorkerAdmission {
+	/** Reserve one slot; returns a release that returns the slot. */
+	acquire(slot: { key: string; isWriter: boolean }): Promise<() => void>;
+	/** Current occupancy. */
+	counts(): { workers: number; writers: number };
+}
+
+/** Builds an isolated admission table. Tests inject one per harness. */
+export function createWorkerAdmission(limits: { maxWorkers?: number; maxWriters?: number } = {}): WorkerAdmission {
+	const maxWorkers = limits.maxWorkers ?? MAX_LIVE_WORKERS;
+	const maxWriters = limits.maxWriters ?? MAX_LIVE_WRITERS;
+	const slots = new Map<string, { isWriter: boolean }>();
+	let queue: Promise<unknown> = Promise.resolve();
+	const serialize = <T>(operation: () => T | Promise<T>): Promise<T> => {
+		const result = queue.then(operation, operation);
+		queue = result.then(
+			() => undefined,
+			() => undefined,
+		);
+		return result;
+	};
+	return {
+		async acquire(slot) {
+			return serialize(() => {
+				if (slots.has(slot.key)) {
+					throw new Error(`admission key already held: ${slot.key}`);
+				}
+				if (slots.size >= maxWorkers) {
+					throw new Error(`Background worker limit is ${maxWorkers}`);
+				}
+				if (slot.isWriter) {
+					let writers = 0;
+					for (const held of slots.values()) {
+						if (held.isWriter) {
+							writers += 1;
+						}
+					}
+					if (writers >= maxWriters) {
+						throw new Error("A writer worker is already live");
+					}
+				}
+				slots.set(slot.key, { isWriter: slot.isWriter });
+				let released = false;
+				return (): void => {
+					if (released) {
+						return;
+					}
+					released = true;
+					slots.delete(slot.key);
+				};
+			});
+		},
+		counts() {
+			let writers = 0;
+			for (const held of slots.values()) {
+				if (held.isWriter) {
+					writers += 1;
+				}
+			}
+			return { workers: slots.size, writers };
+		},
+	};
+}
+
+/**
+ * Default process-wide admission. Production buses share this. Tests MUST inject
+ * `createWorkerAdmission()` so parallel harnesses do not contend.
+ */
+export const processWorkerAdmission: WorkerAdmission = createWorkerAdmission();
+
 export interface WorkerRecord {
 	agentId: string;
 	role: WorkerRole;
@@ -59,6 +136,13 @@ export interface WorkerRecord {
 	launch: WorkerLaunch;
 	spawnedAt: string;
 	lastEvent: string;
+	/**
+	 * Settlement of the initial spawn prompt. Installed on the protocol *before*
+	 * that prompt is sent, so a fast `agent_settled` cannot race past the parent.
+	 */
+	initialSettlement: Promise<void>;
+	/** Returns this worker's process-level admission slot. */
+	releaseAdmission: () => void;
 }
 
 export interface WorkerStatus {
@@ -88,6 +172,11 @@ export interface BusDependencies extends LeaseDependencies {
 	contractPollIntervalMs?: number;
 	newCapabilityId?: () => string;
 	newAgentSuffix?: () => string;
+	/**
+	 * Shared worker/writer admission. Defaults to the process-wide table so a
+	 * graph bus and a parent-tool bus cannot each take a full budget.
+	 */
+	admission?: WorkerAdmission;
 }
 
 /**
@@ -112,6 +201,7 @@ export class BackgroundBus {
 	private readonly isProcessAlive: (pid: number) => boolean;
 	private readonly sleep: (ms: number) => Promise<void>;
 	private readonly dependencies: BusDependencies;
+	private readonly admission: WorkerAdmission;
 	/** The serialization point for every in-process shared-state mutation. */
 	private queue: Promise<unknown> = Promise.resolve();
 	/** Once closing, nothing new starts: shutdown cannot be outrun by a spawn. */
@@ -130,6 +220,7 @@ export class BackgroundBus {
 		this.sleep =
 			dependencies.sleep ?? ((ms: number) => new Promise((resolvePromise) => setTimeout(resolvePromise, ms)));
 		this.dependencies = dependencies;
+		this.admission = dependencies.admission ?? processWorkerAdmission;
 	}
 
 	/** What the lease primitive needs, taken from this bus's own injections. */
@@ -221,6 +312,7 @@ export class BackgroundBus {
 			const alive = worker.launch.isAlive() && this.isProcessAlive(worker.pid);
 			if (!alive) {
 				this.workers.delete(agentId);
+				worker.releaseAdmission();
 				worker.launch.protocol.close();
 			}
 		}
@@ -248,11 +340,12 @@ export class BackgroundBus {
 	/**
 	 * Starts one worker.
 	 *
-	 * The caps are checked, the identity minted, the session file created and the
-	 * process launched inside one serialized step, so two concurrent spawns cannot
-	 * both see one free slot and take it. Every failure after the process exists -
-	 * the session bookkeeping, either log, the initial prompt - stops it again,
-	 * because a worker nobody is tracking is a worker nobody will ever stop.
+	 * Worker and writer caps are admitted through the process-level (or
+	 * test-injected) admission table before launch, so two `BackgroundBus`
+	 * instances in the same process cannot each take a full budget. Identity,
+	 * session file, and process launch still run inside this bus's serialize so
+	 * concurrent spawns on one bus stay ordered. Every failure after the process
+	 * exists stops it again and returns the admission slot.
 	 */
 	async spawn(options: {
 		role: WorkerRole;
@@ -267,87 +360,110 @@ export class BackgroundBus {
 			await this.reapUnlocked();
 			const tools = resolveRoleTools(options.role, options.tools);
 			const isWriter = isWriterToolSet(tools);
-			if (this.workers.size >= MAX_LIVE_WORKERS) {
-				throw new Error(`Background worker limit is ${MAX_LIVE_WORKERS}`);
-			}
-			if (isWriter && [...this.workers.values()].filter((worker) => worker.isWriter).length >= MAX_LIVE_WRITERS) {
-				throw new Error("A writer worker is already live");
-			}
 
 			const agentId = `${options.role}-${(this.dependencies.newAgentSuffix ?? randomUUID)()}`;
-			const capabilityId = (this.dependencies.newCapabilityId ?? mintCapabilityId)();
-			const sessionDirectory = this.agentsDirectory;
-			const sessionPath = join(sessionDirectory, `${agentId}.jsonl`);
-			// The gates are read once, here, and travel with the worker. A later edit
-			// to `task.json` cannot widen a shell that has already started.
-			const task = await readTaskForJob(this.cwd, this.jobId).catch(() => undefined);
-			const descriptor = mintWorkerDescriptor({
-				agentId,
-				jobId: this.jobId,
-				role: options.role,
-				runDirectory: this.runDirectory,
-				tools,
-				capabilityId,
-				qualityGates: task?.quality_gates,
-			});
-			const contractPin = mintContractPin({
-				agentId,
-				jobId: this.jobId,
-				role: options.role,
-				runDirectory: this.runDirectory,
-				capabilityId,
-			});
-
-			await mkdir(sessionDirectory, { recursive: true });
-			// The session file exists before the worker starts, so the path it is
-			// given is the path it opens.
-			const handle = await open(sessionPath, "a", 0o600);
-			await handle.close();
-
-			const launch = await this.launcher({
-				cwd: this.cwd,
-				sessionPath,
-				sessionDirectory,
-				tools,
-				model: options.model,
-				descriptor,
-				cliPath: this.dependencies.cliPath,
-				execPath: this.dependencies.execPath,
-				startupTimeoutMs: this.dependencies.startupTimeoutMs,
-			});
-
-			const record: WorkerRecord = {
-				agentId,
-				role: options.role,
-				pid: launch.pid,
-				sessionPath,
-				sessionDirectory,
-				tools,
+			const releaseAdmission = await this.admission.acquire({
+				key: `${this.jobId}:${agentId}`,
 				isWriter,
-				contractPin,
-				descriptor,
-				launch,
-				spawnedAt: this.now().toISOString(),
-				lastEvent: "agent.spawned",
+			});
+			/** True until the slot is either on a live record or explicitly returned. */
+			let admissionHeld = true;
+			const returnAdmission = (): void => {
+				if (!admissionHeld) {
+					return;
+				}
+				admissionHeld = false;
+				releaseAdmission();
 			};
-			this.workers.set(agentId, record);
 
 			try {
-				await this.logSpawned({
-					agent_id: agentId,
+				const capabilityId = (this.dependencies.newCapabilityId ?? mintCapabilityId)();
+				const sessionDirectory = this.agentsDirectory;
+				const sessionPath = join(sessionDirectory, `${agentId}.jsonl`);
+				// The gates are read once, here, and travel with the worker. A later edit
+				// to `task.json` cannot widen a shell that has already started.
+				const task = await readTaskForJob(this.cwd, this.jobId).catch(() => undefined);
+				const descriptor = mintWorkerDescriptor({
+					agentId,
+					jobId: this.jobId,
+					role: options.role,
+					runDirectory: this.runDirectory,
+					tools,
+					capabilityId,
+					qualityGates: task?.quality_gates,
+				});
+				const contractPin = mintContractPin({
+					agentId,
+					jobId: this.jobId,
+					role: options.role,
+					runDirectory: this.runDirectory,
+					capabilityId,
+				});
+
+				await mkdir(sessionDirectory, { recursive: true });
+				// The session file exists before the worker starts, so the path it is
+				// given is the path it opens.
+				const handle = await open(sessionPath, "a", 0o600);
+				await handle.close();
+
+				const launch = await this.launcher({
+					cwd: this.cwd,
+					sessionPath,
+					sessionDirectory,
+					tools,
+					model: options.model,
+					descriptor,
+					cliPath: this.dependencies.cliPath,
+					execPath: this.dependencies.execPath,
+					startupTimeoutMs: this.dependencies.startupTimeoutMs,
+				});
+				// Capture settlement of the initial turn before the prompt leaves this
+				// process. A worker that settles in the same tick as acceptance would
+				// otherwise race past a waiter installed after spawn returns.
+				const settleTimeout = this.dependencies.contractWaitTimeoutMs ?? WORKER_RESULT_TIMEOUT_MS;
+				const initialSettlement = launch.protocol.waitForSettled(settleTimeout, launch.protocol.settles);
+				// Avoid an unhandled rejection if spawn fails before anyone awaits it.
+				initialSettlement.catch(() => undefined);
+
+				const record: WorkerRecord = {
+					agentId,
 					role: options.role,
 					pid: launch.pid,
-					tools: [...tools],
-					session_path: sessionPath,
-				});
-				// The initial delivery is a prompt, and its response is acceptance.
-				await launch.protocol.prompt(options.prompt);
+					sessionPath,
+					sessionDirectory,
+					tools,
+					isWriter,
+					contractPin,
+					descriptor,
+					launch,
+					spawnedAt: this.now().toISOString(),
+					lastEvent: "agent.spawned",
+					initialSettlement,
+					releaseAdmission: returnAdmission,
+				};
+				this.workers.set(agentId, record);
+
+				try {
+					await this.logSpawned({
+						agent_id: agentId,
+						role: options.role,
+						pid: launch.pid,
+						tools: [...tools],
+						session_path: sessionPath,
+					});
+					// The initial delivery is a prompt, and its response is acceptance.
+					await launch.protocol.prompt(options.prompt);
+				} catch (error) {
+					this.workers.delete(agentId);
+					returnAdmission();
+					await launch.stop().catch(() => undefined);
+					throw error;
+				}
+				return record;
 			} catch (error) {
-				this.workers.delete(agentId);
-				await launch.stop().catch(() => undefined);
+				returnAdmission();
 				throw error;
 			}
-			return record;
 		});
 	}
 
@@ -464,6 +580,41 @@ export class BackgroundBus {
 		}
 		const written = await this.waitForWriterResult(resultFile, baselineBytes, limit);
 		return { accepted: true, contractPath: resultFile, contentSha256: written.contentSha256 };
+	}
+
+	/**
+	 * Waits for the worker's initial spawn turn to settle, then requires a fresh
+	 * receipt-backed publication for that worker's pin.
+	 *
+	 * No second model turn is sent. Transcript text is never consulted: only the
+	 * authorized receipt + schema-valid contract file count as the result.
+	 */
+	async awaitInitialContract(
+		agentId: string,
+		timeoutMs?: number,
+	): Promise<{
+		receipt: PublicationReceipt;
+		document: Record<string, unknown>;
+		agentId: string;
+		sessionPath: string;
+	}> {
+		const worker = this.workers.get(agentId);
+		if (worker === undefined) {
+			throw new Error(`Unknown or stopped worker: ${agentId}`);
+		}
+		const pin = worker.contractPin;
+		if (pin === undefined) {
+			throw new Error(`worker ${agentId} (${worker.role}) has no contract pin to collect`);
+		}
+		await worker.initialSettlement;
+		worker.lastEvent = "agent.settled";
+		const published = await this.waitForPublication(pin, undefined, timeoutMs);
+		return {
+			receipt: published.receipt,
+			document: published.document,
+			agentId: worker.agentId,
+			sessionPath: worker.sessionPath,
+		};
 	}
 
 	/** The result file's current bytes, or `undefined` when it is not there. */
@@ -661,7 +812,11 @@ export class BackgroundBus {
 			return false;
 		}
 		this.workers.delete(agentId);
+		worker.releaseAdmission();
 		await worker.launch.stop().catch(() => undefined);
+		// Always close the protocol so waitForSettled timers (initialSettlement)
+		// cannot keep the event loop alive after the worker is gone.
+		worker.launch.protocol.close();
 		await releaseAllLeasesFor(this.runDirectory, agentId, this.leaseDependencies);
 		return true;
 	}

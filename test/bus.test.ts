@@ -73,6 +73,7 @@ import {
 } from "../packages/coding-agent/src/kpi/extensions/bus/roles.ts";
 import {
 	BackgroundBus,
+	createWorkerAdmission,
 	MAX_LIVE_WORKERS,
 	MAX_LIVE_WRITERS,
 } from "../packages/coding-agent/src/kpi/extensions/bus/spawn.ts";
@@ -1902,6 +1903,7 @@ async function parentHarness(
 		contractWaitTimeoutMs: 400,
 		lockTimeoutMs: 2_000,
 		lockRetryMs: 2,
+		admission: createWorkerAdmission(),
 		...(options.dependencies ?? {}),
 	});
 
@@ -2602,6 +2604,7 @@ async function parentToolHarness(): Promise<ParentToolHarness> {
 		stopGraceMs: 60,
 		lockTimeoutMs: 2_000,
 		lockRetryMs: 2,
+		admission: createWorkerAdmission(),
 	});
 
 	return {

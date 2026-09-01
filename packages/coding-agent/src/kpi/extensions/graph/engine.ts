@@ -8,6 +8,8 @@ import { type CreateAgentSessionOptions, createAgentSession } from "../../../cor
 import { SessionManager } from "../../../core/session-manager.ts";
 
 import { appendEvent } from "../append-log.ts";
+import { ROLE_CONTRACT_FILE } from "../bus/roles.ts";
+import { BackgroundBus, type BusDependencies } from "../bus/spawn.ts";
 import { atomicWrite } from "../run-store.ts";
 import {
 	type BudgetExhaustion,
@@ -21,6 +23,7 @@ import {
 import { type JsonSchema, validateJsonSchema } from "./json-schema.ts";
 import {
 	type AgentGraphNode,
+	type AgentWorkerRole,
 	GRAPH_ROUTED_TERMINALS,
 	type GraphBudgetLimits,
 	type GraphBudgetOverrides,
@@ -55,6 +58,11 @@ export interface GraphEngineOptions {
 	projectRoot: string;
 	jobId: string;
 	createAgentSession?: GraphAgentSessionFactory;
+	/**
+	 * RP-13 bus injections for nodes that declare `workerRole`. Tests supply a
+	 * fake launcher; production uses the default process launcher.
+	 */
+	busDependencies?: BusDependencies;
 	/** Injected wall clock in epoch milliseconds. */
 	now?: () => number;
 	/** Injected accumulated job cost in USD. */
@@ -202,6 +210,33 @@ function validateNode(value: unknown, index: number): asserts value is GraphNode
 		const mutatingTool = value.tools.find((tool) => !READ_ONLY_TOOLS.has(tool));
 		if (mutatingTool !== undefined) {
 			throw new Error(`read-only agent node ${value.id} cannot enable tool ${mutatingTool}`);
+		}
+	}
+	if (value.workerRole !== undefined) {
+		if (value.workerRole !== "reviewer") {
+			throw new Error(
+				`agent node ${value.id}.workerRole must be a known contract-publishing role (got ${String(value.workerRole)})`,
+			);
+		}
+		const contract = ROLE_CONTRACT_FILE[value.workerRole as AgentWorkerRole];
+		if (contract === undefined) {
+			throw new Error(`agent node ${value.id}.workerRole ${value.workerRole} has no contract file`);
+		}
+		if (value.response === undefined) {
+			throw new Error(`agent node ${value.id} with workerRole requires a response contract`);
+		}
+		if (!isJsonObject(value.response)) {
+			throw new Error(`agent node ${value.id}.response must be an object`);
+		}
+		if (value.response.path !== contract.file) {
+			throw new Error(
+				`agent node ${value.id}.response.path must be ${contract.file} for workerRole ${value.workerRole}`,
+			);
+		}
+		if (value.response.schema !== contract.schema) {
+			throw new Error(
+				`agent node ${value.id}.response.schema must be ${contract.schema} for workerRole ${value.workerRole}`,
+			);
 		}
 	}
 	if (value.response !== undefined) {
@@ -561,6 +596,30 @@ export class GraphEngine {
 		return lines.join("\n");
 	}
 
+	/**
+	 * Prompt for an RP-13 contract-publishing worker. Never claims the graph
+	 * engine will write the contract file: the worker must call write_contract.
+	 */
+	private workerNodePrompt(node: AgentGraphNode): string {
+		const lines = [
+			node.prompt.replaceAll("{{job_id}}", this.options.jobId),
+			"",
+			`Job: ${this.options.jobId}`,
+			`Run directory: ${this.runDirectory()}`,
+			"Read task.json, context.md, candidate.json, and evidence from the run directory before acting.",
+			"Inspect the candidate and quality-gate results against every required acceptance criterion.",
+			"Do not change repository product files.",
+		];
+		if (node.response !== undefined) {
+			lines.push(
+				`Publish the verdict only by calling write_contract with path ${node.response.path} and a payload matching ${node.response.schema}.`,
+				"write_contract is pinned to this worker, job, role, and path; it is the only authoritative publication.",
+				"Assistant transcript text is never the verdict and never authorizes release.",
+			);
+		}
+		return lines.join("\n");
+	}
+
 	private checkpointDirectory(): string {
 		return join(this.runDirectory(), "graph");
 	}
@@ -695,6 +754,10 @@ export class GraphEngine {
 			throw new Error(`terminal node ${node.id} must stop the run before execution`);
 		}
 
+		if (node.workerRole !== undefined) {
+			return this.executeWorkerAgentNode(node);
+		}
+
 		const { session, disposeAfter } = await this.createSessionForNode(node);
 		this.runState.nodes[node.id].sessionId = session.sessionId;
 		try {
@@ -756,6 +819,85 @@ export class GraphEngine {
 		} finally {
 			if (disposeAfter) {
 				session.dispose();
+			}
+		}
+	}
+
+	/**
+	 * Runs an agent node as an RP-13 background worker.
+	 *
+	 * Spawns once, waits for the settlement promise captured before the initial
+	 * prompt, then requires a fresh receipt-backed contract publication. The
+	 * worker already wrote the file through write_contract; this path never
+	 * rewrites it and never treats transcript text as the result.
+	 */
+	private async executeWorkerAgentNode(node: AgentGraphNode): Promise<NodeResult> {
+		if (node.workerRole === undefined || node.response === undefined) {
+			throw new GraphNodeContractError(
+				node.id,
+				`worker-role agent node ${node.id} requires workerRole and a response contract`,
+			);
+		}
+
+		const bus = new BackgroundBus(
+			this.options.projectRoot,
+			this.runDirectory(),
+			this.options.jobId,
+			this.options.busDependencies ?? {},
+		);
+		let agentId: string | undefined;
+		try {
+			const worker = await bus.spawn({
+				role: node.workerRole,
+				prompt: this.workerNodePrompt(node),
+			});
+			agentId = worker.agentId;
+			const nodeState = this.runState.nodes[node.id];
+			nodeState.sessionId = worker.sessionPath;
+			nodeState.agentId = worker.agentId;
+
+			let published: {
+				receipt: { declared_path: string };
+				document: Record<string, unknown>;
+			};
+			try {
+				published = await bus.awaitInitialContract(worker.agentId);
+			} catch (error) {
+				throw new GraphNodeContractError(
+					node.id,
+					`worker-role agent node ${node.id} failed closed without a receipt-backed ${node.response.path}: ${
+						error instanceof Error ? error.message : String(error)
+					}`,
+				);
+			}
+
+			if (published.receipt.declared_path !== node.response.path) {
+				throw new GraphNodeContractError(
+					node.id,
+					`worker published ${published.receipt.declared_path}, expected ${node.response.path}`,
+				);
+			}
+
+			const output = published.document;
+			if (!isJsonObject(output)) {
+				throw new GraphNodeContractError(node.id, `published ${node.response.path} is not a JSON object`);
+			}
+			const assignments: Record<string, JsonValue> = {};
+			for (const [statePath, responsePath] of Object.entries(node.response.state)) {
+				const value = getStatePath(output, responsePath);
+				if (value === undefined) {
+					throw new GraphNodeContractError(
+						node.id,
+						`published ${node.response.path} is missing state path ${responsePath}`,
+					);
+				}
+				assignments[statePath] = structuredClone(value);
+			}
+			// File bytes stay as the worker published them. GraphEngine does not rewrite.
+			return { nodeId: node.id, assignments };
+		} finally {
+			if (agentId !== undefined) {
+				await bus.stop(agentId).catch(() => undefined);
 			}
 		}
 	}

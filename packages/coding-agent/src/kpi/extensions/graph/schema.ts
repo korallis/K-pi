@@ -18,6 +18,13 @@ export interface AgentResponseContract {
 	state: Record<string, string>;
 }
 
+/**
+ * Optional RP-13 worker role. When set, the graph engine spawns a background
+ * worker instead of an in-process session and collects a receipt-backed contract
+ * file rather than parsing assistant transcript.
+ */
+export type AgentWorkerRole = "reviewer";
+
 export interface AgentGraphNode {
 	id: string;
 	type: "agent";
@@ -29,6 +36,8 @@ export interface AgentGraphNode {
 	tools: string[];
 	readOnly: boolean;
 	response?: AgentResponseContract;
+	/** When set, run as an RP-13 background worker of this role. */
+	workerRole?: AgentWorkerRole;
 }
 
 export interface SetGraphNode {
@@ -153,6 +162,8 @@ export interface GraphNodeRunState {
 	status: GraphNodeRunStatus;
 	runs: number;
 	sessionId?: string;
+	/** Background worker agent id when this node ran via the bus. */
+	agentId?: string;
 	error?: string;
 	/**
 	 * Transient retries already spent on this node. Durable on purpose: a kill
