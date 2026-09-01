@@ -3,26 +3,39 @@
 /**
  * Fork-integrity guard for K-pi CI.
  *
- * K-pi is its own harness, built from its own vendored source. Three properties
+ * K-pi is its own harness, built from its own vendored source. Four properties
  * have to stay true, and none of them is provable by a build passing:
  *
- *   1. The gates CI invokes actually exist as root npm scripts.
+ *   1. The hard gate `.github/workflows/check.yml` exists, and the gates it
+ *      invokes actually exist as root npm scripts.
  *   2. No manifest points at a `scripts/<file>` that no longer exists, so
  *      removing upstream publish machinery cannot silently break `npm run check`.
  *   3. No workflow or root script carries upstream publish, release, registry,
  *      governance, issue automation, or pnpm/peer-install machinery.
+ *   4. Write tokens, pushes and merges live in exactly two reviewed workflows:
+ *      `cursor-review.yml` may push its autofix commit, `auto-merge.yml` may ask
+ *      GitHub to merge a PR *after* required checks pass. Every other workflow
+ *      stays read-only, and neither exemption widens to release, registry or
+ *      governance automation.
  *
+ * Exemptions are per file and per rule (see WORKFLOW_EXEMPTIONS): there is no
+ * blanket allow pattern, and no way to opt a workflow out from inside itself.
+ *
+ * Usage: node scripts/check-ci-contract.mjs
  * Exit codes: 0 clean, 1 violations found.
+ *
+ * The rule surface is exported as `inspectForkIntegrity(root)`;
+ * `scripts/check-ci-contract.test.mjs` runs it against fixture repositories.
  */
 
-import { readFileSync, readdirSync, statSync } from "node:fs";
-import { dirname, join, relative, resolve } from "node:path";
+import { readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const scriptPath = fileURLToPath(import.meta.url);
 const repoRoot = resolve(dirname(scriptPath), "..");
 
-/** Gates `.github/workflows/ci.yml` invokes by name. */
+/** Gates `.github/workflows/check.yml` invokes by name. */
 const REQUIRED_ROOT_SCRIPTS = [
 	"build",
 	"build:offline",
@@ -32,6 +45,9 @@ const REQUIRED_ROOT_SCRIPTS = [
 	"kstack:sync:check",
 	"upstream:check",
 ];
+
+/** Workflows the fork cannot lose: without them nothing runs the gates above. */
+const REQUIRED_WORKFLOWS = [".github/workflows/check.yml"];
 
 /** Directories that never hold first-party manifests. */
 const SKIPPED_DIRECTORIES = new Set([
@@ -44,30 +60,98 @@ const SKIPPED_DIRECTORIES = new Set([
 	"install-lock",
 ]);
 
-/** Automation that must not exist anywhere under `.github/`. */
+/**
+ * Automation that must not exist anywhere under `.github/`.
+ *
+ * Ids are the exemption keys: a workflow in WORKFLOW_EXEMPTIONS is excused from
+ * the listed ids and from nothing else.
+ */
 const FORBIDDEN_IN_WORKFLOWS = [
-	[/npm\s+publish/, "npm publish (K-pi is not published to a registry)"],
-	[/registry\.npmjs\.org/, "npm registry target"],
-	[/\b(NPM_TOKEN|NODE_AUTH_TOKEN)\b/, "registry credential"],
-	[/\bpnpm\b/, "pnpm (this fork uses npm workspaces)"],
-	[/\bpi\s+install\b/, "pi install (Pi is vendored, never installed)"],
-	[/@earendil-works\/pi-[a-z-]+@\d/, "pinned upstream package install from a registry"],
-	[/peter-evans\/create-pull-request/, "pull-request automation"],
-	[/softprops\/action-gh-release|actions\/create-release|ncipollo\/release-action/, "release automation"],
-	[/gh\s+(release|pr)\s+(create|merge|edit)/, "GitHub release/PR automation"],
-	[/git\s+(push|merge|rebase|cherry-pick)\b/, "workflow that mutates history"],
-	[/pull_request_target/, "pull_request_target"],
-	[/actions\/stale|dessant\/|actions\/labeler/, "issue/PR governance automation"],
-	[/^\s*(contents|pull-requests|issues|packages|id-token):\s*write/m, "write permission"],
+	{ id: "npm-publish", pattern: /npm\s+publish/, label: "npm publish (K-pi is not published to a registry)" },
+	{ id: "npm-registry", pattern: /registry\.npmjs\.org/, label: "npm registry target" },
+	{ id: "registry-credential", pattern: /\b(NPM_TOKEN|NODE_AUTH_TOKEN)\b/, label: "registry credential" },
+	{ id: "pnpm", pattern: /\bpnpm\b/, label: "pnpm (this fork uses npm workspaces)" },
+	{ id: "pi-install", pattern: /\bpi\s+install\b/, label: "pi install (Pi is vendored, never installed)" },
+	{
+		id: "upstream-package-install",
+		pattern: /@earendil-works\/pi-[a-z-]+@\d/,
+		label: "pinned upstream package install from a registry",
+	},
+	{
+		id: "release-automation",
+		pattern: /softprops\/action-gh-release|actions\/create-release|ncipollo\/release-action/,
+		label: "release automation",
+	},
+	{ id: "gh-release", pattern: /gh\s+release\s+(create|edit|delete|upload)/, label: "GitHub release automation" },
+	{
+		id: "pull-request-automation",
+		pattern: /peter-evans\/create-pull-request/,
+		label: "pull-request automation",
+	},
+	{ id: "gh-pr-write", pattern: /gh\s+pr\s+(create|edit|close|reopen)/, label: "GitHub PR automation" },
+	// Merging at all is exempt only for `auto-merge.yml`; merging *past* the
+	// checks is exempt nowhere, so `--admin` is its own rule.
+	{ id: "gh-pr-merge", pattern: /gh\s+pr\s+merge/, label: "PR merge automation" },
+	{
+		id: "merge-bypass",
+		pattern: /gh\s+pr\s+merge[^\n]*--admin\b/,
+		label: "merge that bypasses required checks (--admin)",
+	},
+	{ id: "git-push", pattern: /git\s+push\b/, label: "workflow that pushes" },
+	{
+		id: "git-history-rewrite",
+		pattern: /git\s+(merge|rebase|cherry-pick)\b/,
+		label: "workflow that rewrites history",
+	},
+	// The hazard is the trigger, not the word: workflow comments have to be able
+	// to state that this fork refuses the privileged variant.
+	{ id: "privileged-pr-trigger", pattern: /^[ \t]*pull_request_target[ \t]*:/m, label: "pull_request_target trigger" },
+	{
+		id: "governance-automation",
+		pattern: /actions\/stale|dessant\/|actions\/labeler/,
+		label: "issue/PR governance automation",
+	},
 ];
+
+/** Every GitHub permission scope; `write` on any of them is an escalation. */
+const WRITE_PERMISSION =
+	/^[ \t]*(actions|attestations|checks|contents|deployments|discussions|id-token|issues|models|packages|pages|pull-requests|repository-projects|security-events|statuses)[ \t]*:[ \t]*write\b/gm;
+
+const GH_PR_MERGE_COMMAND = /gh\s+pr\s+merge[^\n]*/g;
+
+/**
+ * The two reviewed escalations, spelled out file by file.
+ *
+ * `rules` lists the forbidden-pattern ids the workflow is excused from;
+ * `writePermissions` lists the permission keys it may raise to `write`. Anything
+ * absent here stays forbidden in that file too.
+ */
+const WORKFLOW_EXEMPTIONS = new Map([
+	[
+		".github/workflows/cursor-review.yml",
+		{
+			reason: "reviewed Cursor pipeline: pushes its own tagged autofix commit to the PR head branch",
+			rules: new Set(["git-push"]),
+			writePermissions: new Set(["contents", "pull-requests"]),
+		},
+	],
+	[
+		".github/workflows/auto-merge.yml",
+		{
+			reason: "asks GitHub to merge only after required checks pass (`gh pr merge --auto`)",
+			rules: new Set(["gh-pr-merge"]),
+			writePermissions: new Set(["contents", "pull-requests"]),
+		},
+	],
+]);
 
 /** Publish machinery that must not come back into root `scripts/`. */
 const FORBIDDEN_IN_SCRIPTS = [
-	[/npm\s+publish/, "npm publish"],
-	[/registry\.npmjs\.org/, "npm registry target"],
-	[/\b(NPM_TOKEN|NODE_AUTH_TOKEN)\b/, "registry credential"],
-	[/gh\s+release\s+create/, "GitHub release automation"],
-	[/npm-shrinkwrap\.json/, "publish-boundary shrinkwrap generation"],
+	{ id: "npm-publish", pattern: /npm\s+publish/, label: "npm publish" },
+	{ id: "npm-registry", pattern: /registry\.npmjs\.org/, label: "npm registry target" },
+	{ id: "registry-credential", pattern: /\b(NPM_TOKEN|NODE_AUTH_TOKEN)\b/, label: "registry credential" },
+	{ id: "gh-release", pattern: /gh\s+release\s+create/, label: "GitHub release automation" },
+	{ id: "shrinkwrap", pattern: /npm-shrinkwrap\.json/, label: "publish-boundary shrinkwrap generation" },
 ];
 
 /** Upstream governance files that must never be imported. */
@@ -81,10 +165,8 @@ const FORBIDDEN_GITHUB_PATHS = [
 
 const FORBIDDEN_WORKFLOW_NAME = /(publish|release|announce|npm-audit|issue|triage|label|stale|approve|contributor|binaries)/i;
 
-const violations = [];
-
-function violation(where, message) {
-	violations.push(`${where}: ${message}`);
+function toPosix(path) {
+	return sep === "/" ? path : path.split(sep).join("/");
 }
 
 function exists(path) {
@@ -119,31 +201,36 @@ function listFiles(directory) {
 	return found;
 }
 
-function readManifest(path) {
+function readManifest(context, path) {
 	try {
 		return JSON.parse(readFileSync(path, "utf8"));
 	} catch (error) {
-		violation(relative(repoRoot, path), `unreadable manifest: ${error?.message ?? error}`);
+		context.violation(context.name(path), `unreadable manifest: ${error?.message ?? error}`);
 		return undefined;
 	}
 }
 
-function checkRequiredScripts() {
-	const manifest = readManifest(join(repoRoot, "package.json"));
+function checkRequiredScripts(context) {
+	const manifest = readManifest(context, join(context.root, "package.json"));
 	if (!manifest) return;
 	const scripts = manifest.scripts ?? {};
 	for (const name of REQUIRED_ROOT_SCRIPTS) {
 		if (typeof scripts[name] !== "string" || scripts[name].trim() === "") {
-			violation("package.json", `missing required script "${name}" (CI invokes it)`);
+			context.violation("package.json", `missing required script "${name}" (CI invokes it)`);
+		}
+	}
+	for (const workflow of REQUIRED_WORKFLOWS) {
+		if (!exists(join(context.root, workflow))) {
+			context.violation(workflow, "required gate workflow is missing (nothing runs the gates above)");
 		}
 	}
 }
 
 const SCRIPT_REFERENCE = /(?:^|[\s"'=(&|;])((?:\.{1,2}\/)*scripts\/[\w.@-]+\.(?:mjs|cjs|js|ts|sh))/g;
 
-function checkScriptReferences() {
-	for (const manifestPath of listFiles(repoRoot).filter((path) => path.endsWith("package.json"))) {
-		const manifest = readManifest(manifestPath);
+function checkScriptReferences(context) {
+	for (const manifestPath of listFiles(context.root).filter((path) => path.endsWith("package.json"))) {
+		const manifest = readManifest(context, manifestPath);
 		const scripts = manifest?.scripts;
 		if (!scripts || typeof scripts !== "object") continue;
 		const manifestDirectory = dirname(manifestPath);
@@ -152,59 +239,128 @@ function checkScriptReferences() {
 			for (const match of command.matchAll(SCRIPT_REFERENCE)) {
 				const referenced = resolve(manifestDirectory, match[1]);
 				if (!exists(referenced)) {
-					violation(
-						relative(repoRoot, manifestPath),
-						`script "${name}" runs ${match[1]}, which does not exist`,
-					);
+					context.violation(context.name(manifestPath), `script "${name}" runs ${match[1]}, which does not exist`);
 				}
 			}
 		}
 	}
 }
 
-function scan(path, rules) {
+/** Applies a rule table to one file, skipping only this file's exempt rule ids. */
+function scan(context, path, rules, exemptRules) {
+	const relativePath = context.name(path);
 	const contents = readFileSync(path, "utf8");
-	for (const [pattern, label] of rules) {
-		if (pattern.test(contents)) violation(relative(repoRoot, path), `forbidden ${label}`);
+	for (const rule of rules) {
+		if (exemptRules?.has(rule.id)) continue;
+		if (rule.pattern.test(contents)) context.violation(relativePath, `forbidden ${rule.label}`);
+	}
+	return contents;
+}
+
+/**
+ * `gh pr merge` is exempt for `auto-merge.yml` only in its queueing form: every
+ * invocation there must carry `--auto`, so GitHub — not this workflow — decides
+ * when the required checks are satisfied.
+ */
+function checkMergeWaitsForChecks(context, relativePath, contents) {
+	for (const command of contents.match(GH_PR_MERGE_COMMAND) ?? []) {
+		// Tolerates prose markup around the flag (`--auto`) but not a different
+		// flag that merely starts with it (--auto-x, --autofix).
+		if (!/--auto(?![\w-])/.test(command)) {
+			context.violation(relativePath, "forbidden merge that does not wait for checks (`gh pr merge` without --auto)");
+		}
 	}
 }
 
-function checkGithub() {
-	const githubDirectory = join(repoRoot, ".github");
+function checkWritePermissions(context, relativePath, contents, allowed) {
+	for (const match of contents.matchAll(WRITE_PERMISSION)) {
+		const key = match[1];
+		if (allowed?.has(key)) continue;
+		context.violation(relativePath, `forbidden write permission "${key}: write"`);
+	}
+}
+
+function checkGithub(context) {
+	const githubDirectory = join(context.root, ".github");
 	for (const forbidden of FORBIDDEN_GITHUB_PATHS) {
-		if (exists(join(repoRoot, forbidden))) {
-			violation(forbidden, "upstream governance file must not be imported");
+		if (exists(join(context.root, forbidden))) {
+			context.violation(forbidden, "upstream governance file must not be imported");
 		}
 	}
 	if (!exists(githubDirectory)) return;
 	for (const path of listFiles(githubDirectory)) {
-		const relativePath = relative(repoRoot, path);
-		if (relativePath.startsWith(".github/workflows/") && FORBIDDEN_WORKFLOW_NAME.test(relativePath.split("/").pop())) {
-			violation(relativePath, "workflow name declares publish/release/governance automation");
+		const relativePath = context.name(path);
+		const isWorkflow = relativePath.startsWith(".github/workflows/");
+		if (isWorkflow && FORBIDDEN_WORKFLOW_NAME.test(relativePath.slice(relativePath.lastIndexOf("/") + 1))) {
+			context.violation(relativePath, "workflow name declares publish/release/governance automation");
 		}
-		scan(path, FORBIDDEN_IN_WORKFLOWS);
+		const exemption = isWorkflow ? WORKFLOW_EXEMPTIONS.get(relativePath) : undefined;
+		const contents = scan(context, path, FORBIDDEN_IN_WORKFLOWS, exemption?.rules);
+		if (exemption?.rules.has("gh-pr-merge")) checkMergeWaitsForChecks(context, relativePath, contents);
+		checkWritePermissions(context, relativePath, contents, exemption?.writePermissions);
 	}
 }
 
-function checkScripts() {
-	for (const path of listFiles(join(repoRoot, "scripts"))) {
-		if (path === scriptPath) continue; // this guard names the patterns it forbids
-		scan(path, FORBIDDEN_IN_SCRIPTS);
+function checkScripts(context) {
+	for (const path of listFiles(join(context.root, "scripts"))) {
+		// This guard names the patterns it forbids; its own source cannot be a
+		// violation of itself.
+		if (path === scriptPath) continue;
+		scan(context, path, FORBIDDEN_IN_SCRIPTS);
 	}
 }
 
-checkRequiredScripts();
-checkScriptReferences();
-checkGithub();
-checkScripts();
-
-if (violations.length > 0) {
-	console.error("fork integrity check failed:");
-	for (const entry of violations) console.error(`  - ${entry}`);
-	console.error("");
-	console.error("K-pi builds its own harness from vendored source: no registry publish, no release");
-	console.error("automation, no upstream governance, no pnpm, no peer install of Pi.");
-	process.exit(1);
+/**
+ * Runs every rule against one repository root and returns the violations as
+ * `"<path>: <message>"` strings. Empty array means clean.
+ */
+export function inspectForkIntegrity(root = repoRoot) {
+	const violations = [];
+	const context = {
+		root,
+		violations,
+		violation: (where, message) => violations.push(`${where}: ${message}`),
+		name: (path) => toPosix(relative(root, path)),
+	};
+	checkRequiredScripts(context);
+	checkScriptReferences(context);
+	checkGithub(context);
+	checkScripts(context);
+	return violations;
 }
 
-console.log(`fork integrity ok: ${REQUIRED_ROOT_SCRIPTS.length} required scripts present, no publish/release/governance automation`);
+function main() {
+	const violations = inspectForkIntegrity();
+	if (violations.length > 0) {
+		console.error("fork integrity check failed:");
+		for (const entry of violations) console.error(`  - ${entry}`);
+		console.error("");
+		console.error("K-pi builds its own harness from vendored source: no registry publish, no release");
+		console.error("automation, no upstream governance, no pnpm, no peer install of Pi. Write tokens,");
+		console.error("pushes and merges exist only in the reviewed workflows named in WORKFLOW_EXEMPTIONS:");
+		for (const [workflow, exemption] of WORKFLOW_EXEMPTIONS) {
+			console.error(`  - ${workflow}: ${exemption.reason}`);
+		}
+		process.exit(1);
+	}
+	console.log(
+		`fork integrity ok: ${REQUIRED_ROOT_SCRIPTS.length} required scripts present, no publish/release/governance automation, ${WORKFLOW_EXEMPTIONS.size} reviewed write exemptions`,
+	);
+}
+
+/**
+ * CLI only when invoked directly. `import.meta.url` is already symlink-resolved
+ * by the loader while argv[1] is not (macOS `/var` → `/private/var`), so both
+ * sides go through realpath before they are compared.
+ */
+function invokedDirectly() {
+	const entry = process.argv[1];
+	if (entry === undefined) return false;
+	try {
+		return realpathSync(resolve(entry)) === scriptPath;
+	} catch {
+		return false;
+	}
+}
+
+if (invokedDirectly()) main();

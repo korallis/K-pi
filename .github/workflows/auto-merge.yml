@@ -1,0 +1,57 @@
+# Queue a PR for merge *after* its required checks go green.
+#
+# This workflow does not merge anything itself. `gh pr merge --auto` asks GitHub
+# to hold the merge until every branch-protection requirement is satisfied, so
+# the hard gate (`check`) stays the thing that decides. Nothing here bypasses a
+# check: no `--admin`, no direct merge API call, no force push.
+#
+# Ops prerequisites — without both of these the queue is not a queue:
+#   1. Repository setting "Allow auto-merge" is enabled.
+#   2. Branch protection on `main` requires the `check` status check. If no check
+#      is required, an already-mergeable PR merges the moment this runs.
+#
+# Hosted Ubuntu on purpose: this is seconds of `gh` API work and must not sit
+# behind the self-hosted macOS backlog it is waiting on.
+#
+# `pull_request`, never `pull_request_target`: this job needs no PR code, does
+# not check the branch out, and must not run untrusted code with a write token.
+# Fork PRs are skipped — outside contributions get merged by a human.
+#
+# See ../../UPSTREAM.md (fork patch register) and AGENTS.md.
+
+name: auto-merge
+
+on:
+  pull_request:
+    # No `synchronize`: auto-merge is enabled once per PR and survives pushes.
+    # ready_for_review is load-bearing — a PR opened as a draft is skipped below
+    # and would otherwise never be queued after being marked ready.
+    types: [opened, reopened, ready_for_review]
+
+permissions: {}
+
+concurrency:
+  group: auto-merge-${{ github.event.pull_request.number }}
+  # Enabling auto-merge is idempotent but not free; do not cancel a run
+  # mid-request only to redo it.
+  cancel-in-progress: false
+
+jobs:
+  enable:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: >-
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    # Minimum for the enablePullRequestAutoMerge mutation, scoped to this job.
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Enable auto-merge
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Via env, not inline `${{ }}`: PR-controlled text never reaches the
+          # shell as code.
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: gh pr merge --auto --merge "$PR_URL"
