@@ -132,6 +132,96 @@ function pathFromPlusPlusLine(line) {
 }
 
 /**
+ * Parse a unified-diff chunk into the only locations a finding may cite:
+ * repository-relative paths present in the chunk, and the set of **new-side**
+ * changed line numbers per path (added `+` lines and the new side of
+ * replacements). Context (` `) and deletion-only (`-`) lines are excluded.
+ *
+ * @param {string} diffText
+ * @returns {{
+ *   paths: string[],
+ *   newSideLines: Map<string, Set<number>>,
+ * }}
+ */
+export function parseChunkLocationIndex(diffText) {
+	/** @type {Map<string, Set<number>>} */
+	const newSideLines = new Map();
+	/** @type {Set<string>} */
+	const seenPaths = new Set();
+
+	/** @type {string | null} */
+	let currentPath = null;
+	let newLine = 0;
+	let inHunk = false;
+
+	const ensurePath = (path) => {
+		if (!path) return;
+		seenPaths.add(path);
+		if (!newSideLines.has(path)) newSideLines.set(path, new Set());
+	};
+
+	const normalized = diffText.endsWith("\n") ? diffText : `${diffText}\n`;
+	for (const line of normalized.split("\n")) {
+		if (line.startsWith("diff --git ")) {
+			currentPath = pathFromDiffGitLine(line);
+			ensurePath(currentPath);
+			inHunk = false;
+			newLine = 0;
+			continue;
+		}
+		if (line.startsWith("--- ")) {
+			// keep currentPath from diff --git / +++
+			continue;
+		}
+		if (line.startsWith("+++ ")) {
+			if (line === "+++ /dev/null") {
+			} else {
+				const fromPlus = pathFromPlusPlusLine(line);
+				if (fromPlus) {
+					currentPath = fromPlus;
+					ensurePath(currentPath);
+				}
+			}
+			continue;
+		}
+		const hunk = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/u.exec(line);
+		if (hunk) {
+			inHunk = true;
+			newLine = Number.parseInt(hunk[3], 10);
+			ensurePath(currentPath);
+			continue;
+		}
+		if (!inHunk || !currentPath) continue;
+
+		if (line.startsWith("+") && !line.startsWith("+++")) {
+			ensurePath(currentPath);
+			newSideLines.get(currentPath).add(newLine);
+			newLine += 1;
+			continue;
+		}
+		if (line.startsWith("-") && !line.startsWith("---")) {
+			// old-side only — does not advance new-side line counter
+			continue;
+		}
+		if (line.startsWith(" ") || line === "") {
+			// context / empty: advances new side but is NOT a changed line
+			if (line.startsWith(" ")) newLine += 1;
+			continue;
+		}
+		if (line.startsWith("\\")) {
+			// "\ No newline at end of file"
+			continue;
+		}
+	}
+
+	return {
+		paths: [...seenPaths],
+		newSideLines,
+	};
+}
+
+
+/**
  * Split one oversized file section into argv-safe pieces on line boundaries.
  * Each piece repeats the leading `diff --git` / `---` / `+++` header so the
  * model still sees a valid unified-diff fragment. Never exceeds maxChunkBytes

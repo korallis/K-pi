@@ -327,7 +327,7 @@ jobs:
                 echo
                 echo '### Findings'
                 echo
-                jq -r '.[] | "### \(.severity): \(.title)\n\n- `\(.path)`" + (if .line == null then "" else ":\(.line)" end) + "\n- ID: `\(.id)`\n\n\(.body)\n"' \
+                jq -r '.[] | "### \(.severity): \(.title)\n\n- `\(.path)`" + (if .line == null then "" else ":\(.line)" end) + "\n- ID: `\(.id)`\n- Location: `\(.locationConfidence // "unknown")`\n\n\(.body)\n"' \
                   "$RUNNER_TEMP/grok-review.json" >> "$RUNNER_TEMP/grok-findings-body.md" || true
               fi
             fi

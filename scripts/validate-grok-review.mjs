@@ -4,10 +4,12 @@ import { readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 const ALLOWED_SEVERITIES = new Set(["P0", "P1", "P2"]);
+/** Model input keys — output adds locationConfidence after validation. */
 const FINDING_KEYS = ["body", "id", "line", "path", "severity", "title"];
 const ID_PATTERN = /^grok-[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/u;
 /** Hard per-document ceiling for a single chunk/model response. */
 export const MAX_FINDINGS_PER_DOCUMENT = 20;
+
 /** Floor for the adaptive multi-chunk union bound. */
 export const MIN_UNION_FINDINGS = 20;
 /** Absolute hard ceiling for the adaptive multi-chunk union bound. */
@@ -109,12 +111,53 @@ function findingFingerprint(finding) {
 		finding.severity,
 		canonicalizeFindingPath(finding.path),
 		finding.line,
+		finding.locationConfidence ?? null,
 		finding.title,
 		finding.body,
 	]);
 }
 
-export function normalizeGrokReview(raw, changedPaths) {
+/**
+ * Resolve line + locationConfidence against an optional chunk location index.
+ * Path scope is the hard boundary (caller already enforced). A structurally
+ * valid positive line that is not a new-side changed line is preserved as a
+ * finding with line normalized to null and locationConfidence "file" — never
+ * discarded. Exact new-side hits stay "exact". Model null is "file".
+ *
+ * @param {number | null} line
+ * @param {string} path
+ * @param {Map<string, Set<number>> | null} newSideLines
+ * @returns {{ line: number | null, locationConfidence: "exact" | "file" }}
+ */
+export function resolveFindingLocation(line, path, newSideLines) {
+	if (!(newSideLines instanceof Map)) {
+		// No chunk index (CLI path): treat provided line as exact, null as file.
+		return { line, locationConfidence: line === null ? "file" : "exact" };
+	}
+	const allowedLines = newSideLines.get(path) ?? new Set();
+	if (line === null) {
+		return { line: null, locationConfidence: "file" };
+	}
+	if (allowedLines.has(line)) {
+		return { line, locationConfidence: "exact" };
+	}
+	// Off-hunk / off-by-one / deletion-only invented line: keep the defect,
+	// drop the unreliable coordinate.
+	return { line: null, locationConfidence: "file" };
+}
+
+/**
+ * @param {string} raw
+ * @param {string[]} changedPaths
+ * @param {{
+ *   locationIndex?: {
+ *     paths?: string[],
+ *     newSideLines?: Map<string, Set<number>>,
+ *   },
+ *   requireLocationIndex?: boolean,
+ * }} [options]
+ */
+export function normalizeGrokReview(raw, changedPaths, options = {}) {
 	let parsed;
 	try {
 		parsed = JSON.parse(stripFence(raw));
@@ -126,7 +169,21 @@ export function normalizeGrokReview(raw, changedPaths) {
 		throw new Error(`Grok output exceeds ${MAX_FINDINGS_PER_DOCUMENT} findings`);
 	}
 
-	const allowedPaths = new Set(changedPaths.map((path) => canonicalizeFindingPath(path)));
+	const locationIndex = options.locationIndex;
+	if (options.requireLocationIndex && !locationIndex) {
+		throw new Error("location index is required for chunk-scoped validation");
+	}
+
+	/** @type {Set<string>} */
+	const allowedPaths = new Set(
+		(locationIndex?.paths?.length ? locationIndex.paths : changedPaths).map((path) =>
+			canonicalizeFindingPath(path),
+		),
+	);
+	/** @type {Map<string, Set<number>> | null} */
+	const newSideLines =
+		locationIndex?.newSideLines instanceof Map ? locationIndex.newSideLines : null;
+
 	const ids = new Set();
 	return parsed.map((finding, index) => {
 		const label = `finding ${index + 1}`;
@@ -146,21 +203,32 @@ export function normalizeGrokReview(raw, changedPaths) {
 			throw new Error(`${label}.severity must be P0, P1, or P2`);
 		}
 		const path = canonicalizeFindingPath(assertText(finding.path, `${label}.path`, 512));
-		if (!allowedPaths.has(path)) throw new Error(`${label}.path is not a changed path: ${path}`);
+		if (!allowedPaths.has(path)) {
+			throw new Error(
+				locationIndex?.paths?.length
+					? `${label}.path is not in this chunk's paths: ${path}`
+					: `${label}.path is not a changed path: ${path}`,
+			);
+		}
+
 		if (finding.line !== null && (!Number.isSafeInteger(finding.line) || finding.line <= 0)) {
 			throw new Error(`${label}.line must be null or a positive integer`);
 		}
+
+		const located = resolveFindingLocation(finding.line, path, newSideLines);
 
 		return {
 			id,
 			severity: finding.severity,
 			path,
-			line: finding.line,
+			line: located.line,
 			title: assertText(finding.title, `${label}.title`, 160),
 			body: assertText(finding.body, `${label}.body`, 2000),
+			locationConfidence: located.locationConfidence,
 		};
 	});
 }
+
 
 /**
  * Prefer the higher-severity finding; ties break on stable id then title.
@@ -168,12 +236,17 @@ export function normalizeGrokReview(raw, changedPaths) {
  * @param {ReturnType<typeof normalizeGrokReview>[number]} right
  */
 function preferFinding(left, right) {
+	const confidenceRank = (value) => (value === "exact" ? 0 : 1);
+	const confidence =
+		confidenceRank(left.locationConfidence) - confidenceRank(right.locationConfidence);
+	if (confidence !== 0) return confidence < 0 ? left : right;
 	const severity = SEVERITY_RANK[left.severity] - SEVERITY_RANK[right.severity];
 	if (severity !== 0) return severity < 0 ? left : right;
 	const id = left.id.localeCompare(right.id);
 	if (id !== 0) return id < 0 ? left : right;
 	return left.title.localeCompare(right.title) <= 0 ? left : right;
 }
+
 
 /**
  * Sort findings: severity → path → line → id.

@@ -322,7 +322,7 @@ test("union overflow writes full validated findings then fails closed", async ()
 								finding({
 									id: `grok-call${call}-f${index}`,
 									path,
-									line: index + 1,
+									line: 1,
 									title: `Issue call${call} ${index}`,
 									body: `Body call${call} ${index}`,
 								}),

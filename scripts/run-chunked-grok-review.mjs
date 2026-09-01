@@ -19,6 +19,7 @@ import {
 	DEFAULT_MAX_CHUNK_BYTES,
 	PROMPT_ARGV_TEST_CEILING_BYTES,
 	adaptiveMaxChunkBytes,
+	parseChunkLocationIndex,
 	partitionUnifiedDiff,
 	writeDiffChunks,
 } from "./partition-pr-diff.mjs";
@@ -28,6 +29,7 @@ import {
 	adaptiveUnionCap,
 	sortFindings,
 } from "./validate-grok-review.mjs";
+
 
 
 /** One concurrent wave covers provenance-reduced selection with pack headroom. */
@@ -59,8 +61,13 @@ Rules for id (mandatory):
 - examples: "grok-missing-timeout", "grok-token-leak"
 
 severity must be exactly "P0", "P1", or "P2".
-path must be a repository-relative path from the diff.
-line must be a positive integer for the new-file line, or null.
+
+Location rules (mandatory):
+- path MUST be a repository-relative path that appears in THIS diff chunk only. Never cite paths from other chunks or other PR files. Wrong path fails closed.
+- Prefer line as a positive integer that is an added or modified **new-side** line from this chunk's unified-diff hunks (a "+" row after the hunk header's +start count).
+- Do not invent coordinates for unchanged context lines or deletion-only old-side lines. If unsure of the exact new-side line, use null (file-level).
+- line may be null for file-level issues or when no reliable new-side line exists. The gate keeps the finding either way; off-hunk positive lines are normalized to file-level rather than discarded.
+
 title and body must be non-empty strings describing the defect and concrete fix.
 
 BEGIN UNTRUSTED DIFF
@@ -69,6 +76,7 @@ BEGIN UNTRUSTED DIFF
 const PROMPT_EPILOGUE = `
 END UNTRUSTED DIFF
 `;
+
 
 function parseArgs(argv) {
 	const opts = {
@@ -360,7 +368,12 @@ export async function runChunkedGrokReview(options, hooks = {}) {
 		}
 
 		try {
-			const findings = normalizeGrokReview(result.stdout, changedPaths);
+			const locationIndex = parseChunkLocationIndex(chunk.text);
+			// Restrict allowed paths to this chunk only — never the full PR path list.
+			const findings = normalizeGrokReview(result.stdout, chunk.paths, {
+				locationIndex,
+				requireLocationIndex: true,
+			});
 			return {
 				index: chunk.index,
 				paths: chunk.paths,

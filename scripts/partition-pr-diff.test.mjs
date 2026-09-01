@@ -10,6 +10,7 @@ import {
 	HARD_MAX_CHUNK_BYTES,
 	PROMPT_ARGV_TEST_CEILING_BYTES,
 	adaptiveMaxChunkBytes,
+	parseChunkLocationIndex,
 	partitionUnifiedDiff,
 	splitOversizedSection,
 	splitDiffFileSections,
@@ -121,4 +122,38 @@ test("oversized file sections split under the argv-safe cap", () => {
 	const chunks = partitionUnifiedDiff(big, { maxChunkBytes: 96_000 });
 	assert.ok(chunks.length >= 2);
 	assert.ok(chunks.every((chunk) => chunk.bytes <= 96_000));
+});
+
+test("parseChunkLocationIndex indexes new-side lines only", () => {
+	const diff = [
+		"diff --git a/a.ts b/a.ts",
+		"--- a/a.ts",
+		"+++ b/a.ts",
+		"@@ -1,3 +1,4 @@",
+		" keep",
+		"-old",
+		"+new",
+		"+added",
+		" trail",
+		"",
+	].join("\n");
+	const index = parseChunkLocationIndex(diff);
+	assert.deepEqual(index.paths, ["a.ts"]);
+	assert.deepEqual([...index.newSideLines.get("a.ts")].sort((a, b) => a - b), [2, 3]);
+});
+
+test("parseChunkLocationIndex leaves deletion-only paths with empty new-side sets", () => {
+	const diff = [
+		"diff --git a/gone.ts b/gone.ts",
+		"--- a/gone.ts",
+		"+++ /dev/null",
+		"@@ -1,2 +0,0 @@",
+		"-one",
+		"-two",
+		"",
+	].join("\n");
+	const index = parseChunkLocationIndex(diff);
+	assert.ok(index.paths.includes("gone.ts"));
+	assert.equal(index.newSideLines.get("gone.ts")?.size ?? 0, 0);
+	assert.equal(index.deletionOnlyPaths, undefined);
 });

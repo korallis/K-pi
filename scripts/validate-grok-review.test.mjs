@@ -9,6 +9,7 @@ import {
 	normalizeGrokReview,
 	unionGrokFindings,
 } from "./validate-grok-review.mjs";
+import { parseChunkLocationIndex } from "./partition-pr-diff.mjs";
 
 
 const changedPaths = ["src/review.ts", ".github/workflows/grok-review.yml"];
@@ -26,7 +27,10 @@ test("accepts an empty review", () => {
 });
 
 test("normalizes a fenced finding document", () => {
-	assert.deepEqual(normalizeGrokReview(`\`\`\`json\n${JSON.stringify([validFinding])}\n\`\`\``, changedPaths), [validFinding]);
+	const [row] = normalizeGrokReview(`\`\`\`json\n${JSON.stringify([validFinding])}\n\`\`\``, changedPaths);
+	assert.equal(row.id, validFinding.id);
+	assert.equal(row.line, validFinding.line);
+	assert.equal(row.locationConfidence, "exact");
 });
 
 test("rejects valid JSON that is not an array", () => {
@@ -67,7 +71,9 @@ test("accepts only blocking severities and changed paths", () => {
 
 test("requires a positive new-file line or null", () => {
 	assert.throws(() => normalizeGrokReview(JSON.stringify([{ ...validFinding, line: 0 }]), changedPaths), /positive integer/);
-	assert.deepEqual(normalizeGrokReview(JSON.stringify([{ ...validFinding, line: null }]), changedPaths)[0].line, null);
+	const nullLine = normalizeGrokReview(JSON.stringify([{ ...validFinding, line: null }]), changedPaths)[0];
+	assert.equal(nullLine.line, null);
+	assert.equal(nullLine.locationConfidence, "file");
 });
 
 test("bounds the number of findings per document", () => {
@@ -203,4 +209,109 @@ test("normalize rejects invalid locations before they can reach the union cap", 
 	assert.equal(normalizeGrokReview(raw, changedPaths)[0].path, "src/review.ts");
 });
 
+
+
+test("rejects paths outside the chunk location index", () => {
+	const diff = [
+		"diff --git a/src/review.ts b/src/review.ts",
+		"--- a/src/review.ts",
+		"+++ b/src/review.ts",
+		"@@ -1,1 +1,1 @@",
+		"+only",
+		"",
+	].join("\n");
+	const locationIndex = parseChunkLocationIndex(diff);
+	assert.throws(
+		() =>
+			normalizeGrokReview(
+				JSON.stringify([
+					{
+						...validFinding,
+						path: ".github/workflows/grok-review.yml",
+						line: 1,
+					},
+				]),
+				["src/review.ts", ".github/workflows/grok-review.yml"],
+				{ locationIndex, requireLocationIndex: true },
+			),
+		/not in this chunk's paths/,
+	);
+});
+
+test("off-hunk lines normalize to file confidence; exact lines stay exact", () => {
+	const diff = [
+		"diff --git a/src/review.ts b/src/review.ts",
+		"--- a/src/review.ts",
+		"+++ b/src/review.ts",
+		"@@ -1,3 +1,4 @@",
+		" context-one",
+		"-old",
+		"+new",
+		"+added",
+		" context-two",
+		"",
+	].join("\n");
+	const locationIndex = parseChunkLocationIndex(diff);
+	// context line 1 is not new-side → preserve finding, line null, file confidence
+	const offHunk = normalizeGrokReview(
+		JSON.stringify([{ ...validFinding, line: 1 }]),
+		["src/review.ts"],
+		{ locationIndex, requireLocationIndex: true },
+	);
+	assert.equal(offHunk[0].line, null);
+	assert.equal(offHunk[0].locationConfidence, "file");
+	// new-side lines 2 and 3 stay exact
+	const exact = normalizeGrokReview(
+		JSON.stringify([{ ...validFinding, line: 2 }]),
+		["src/review.ts"],
+		{ locationIndex, requireLocationIndex: true },
+	);
+	assert.equal(exact[0].line, 2);
+	assert.equal(exact[0].locationConfidence, "exact");
+	const exact2 = normalizeGrokReview(
+		JSON.stringify([{ ...validFinding, id: "grok-added-line", line: 3 }]),
+		["src/review.ts"],
+		{ locationIndex, requireLocationIndex: true },
+	);
+	assert.equal(exact2[0].line, 3);
+	assert.equal(exact2[0].locationConfidence, "exact");
+	// model-supplied null is file confidence (finding preserved)
+	const fileLevel = normalizeGrokReview(
+		JSON.stringify([{ ...validFinding, id: "grok-file-level", line: null }]),
+		["src/review.ts"],
+		{ locationIndex, requireLocationIndex: true },
+	);
+	assert.equal(fileLevel[0].line, null);
+	assert.equal(fileLevel[0].locationConfidence, "file");
+});
+
+test("deletion-only path keeps finding with file confidence", () => {
+	const diff = [
+		"diff --git a/gone.ts b/gone.ts",
+		"--- a/gone.ts",
+		"+++ /dev/null",
+		"@@ -1,2 +0,0 @@",
+		"-one",
+		"-two",
+		"",
+	].join("\n");
+	const locationIndex = parseChunkLocationIndex(diff);
+	assert.equal(locationIndex.newSideLines.get("gone.ts")?.size ?? 0, 0);
+	const ok = normalizeGrokReview(
+		JSON.stringify([
+			{
+				id: "grok-deleted-file",
+				severity: "P1",
+				path: "gone.ts",
+				line: 1,
+				title: "Deletion drops required export",
+				body: "Restoring the export or updating callers is required.",
+			},
+		]),
+		["gone.ts"],
+		{ locationIndex, requireLocationIndex: true },
+	);
+	assert.equal(ok[0].line, null);
+	assert.equal(ok[0].locationConfidence, "file");
+});
 
