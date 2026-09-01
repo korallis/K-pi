@@ -1,12 +1,19 @@
+import { execFile as execFileCallback } from "node:child_process";
 import { constants } from "node:fs";
 import { copyFile, mkdir, readFile } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { promisify } from "node:util";
 
 import { CONFIG_DIR_NAME, getKpiResourceDir } from "../../config.ts";
 
 import { type ExtensionAPI, isToolCallEventType, type ToolCallEvent } from "../../core/extensions/types.ts";
 
+import { readActiveJob, type RunState } from "./control-plane.ts";
+import { isJsonObject } from "./graph/schema.ts";
 import { isAuthoritativeKnowledgeGraphPath } from "./kg/store.ts";
+import { type Task, writeAllowForTask } from "./run-store.ts";
+
+const execFile = promisify(execFileCallback);
 
 export interface PolicyConfig {
 	deny: string[];
@@ -20,20 +27,66 @@ export interface PolicyConfig {
 	};
 }
 
-export interface PolicyDecision {
-	allowed: boolean;
-	reason?: string;
+/** Loop mode of the active job. Without one, policy runs the safe mode: `gated`. */
+export type PolicyMode = "gated" | "autopilot";
+
+/**
+ * Everything policy needs from the active run. One resolver reads one job, so a
+ * single decision never mixes one job's mode with another job's write bounds.
+ */
+export interface ActivePolicyState {
+	mode: PolicyMode;
+	/** `release.approved === true` for this job: the autopilot commit gate. */
+	releaseApproved: boolean;
+	writeAllow: readonly string[];
+	/** Commands the task declares as its gates; safe to run without a prompt. */
+	qualityGates: readonly string[];
 }
+
+/** No active job: gated, unreleased, no declared gates, and no write bounds. */
+export const DEFAULT_ACTIVE_POLICY_STATE: ActivePolicyState = {
+	mode: "gated",
+	releaseApproved: false,
+	writeAllow: [],
+	qualityGates: [],
+};
+
+export type PolicyDecision =
+	| { kind: "allow" }
+	| { kind: "deny"; reason: string }
+	| {
+			kind: "confirm";
+			title: string;
+			question: string;
+			/** Recorded when the operator declines, or when no operator can answer. */
+			declineReason: string;
+	  };
+
+export interface DiffStat {
+	filesChanged: number;
+	insertions: number;
+	deletions: number;
+}
+
+export type DiffStatReader = (cwd: string) => DiffStat | Promise<DiffStat>;
 
 export interface PolicyEvaluationOptions {
 	cwd: string;
 	policy: PolicyConfig;
-	writeAllow: readonly string[];
+	active: ActivePolicyState;
+	/** Defaults to the real `git diff --shortstat HEAD` of `cwd`. */
+	readDiffStat?: DiffStatReader;
 }
 
 export interface PolicyRegistrationOptions {
+	/** Write bounds for the active job. Defaults to the resolved active state. */
 	resolveWriteAllow?: (cwd: string) => readonly string[] | Promise<readonly string[]>;
+	/** Mode, release gate, bounds, and declared gates. Defaults to the active job. */
+	resolveActiveState?: (cwd: string) => ActivePolicyState | Promise<ActivePolicyState>;
+	readDiffStat?: DiffStatReader;
 }
+
+const ALLOW: PolicyDecision = { kind: "allow" };
 
 const SENSITIVE_FILE_PATTERN = /^(?:\.env(?:\..*)?|id_rsa|auth\.json|accounts\.secrets\.json)$/i;
 const PRODUCTION_COMMAND_PATTERNS = [
@@ -45,8 +98,55 @@ const PRODUCTION_COMMAND_PATTERNS = [
 	/\b(?:pnpm|yarn|bun)\s+add\b/i,
 ] as const;
 
+/**
+ * Non-mutating inspection commands that never prompt. Matching is literal after
+ * whitespace collapsing: `git log` is safe, `git log --all -p > /tmp/dump` is a
+ * different command and stays unknown. Keep this list exact and small.
+ */
+const SAFE_COMMANDS: Record<string, true> = {
+	ls: true,
+	"ls -a": true,
+	"ls -l": true,
+	"ls -la": true,
+	pwd: true,
+	"git branch": true,
+	"git branch --show-current": true,
+	"git diff": true,
+	"git diff --cached": true,
+	"git diff --stat": true,
+	"git diff --staged": true,
+	"git diff HEAD": true,
+	"git log": true,
+	"git log -1": true,
+	"git log --oneline": true,
+	"git log --stat": true,
+	"git status": true,
+	"git status --porcelain": true,
+	"git status --short": true,
+};
+
+/**
+ * Shell syntax that can attach a second command to the first. A command holding
+ * any of it is never safe and is never read as a standalone `git commit`, so an
+ * allowlisted head or a declared quality gate cannot smuggle a payload behind
+ * `;`, `&&`, a pipe, a redirect, a backtick, or a substitution.
+ */
+const SHELL_COMPOSITION_PATTERN = /[;&|`\n\r<>]|\$[({]/u;
+
+/** Shell punctuation that separates one word of a command from the next. */
+const SHELL_WORD_SEPARATOR = /[\s;&|`()<>="',]+/u;
+
+const DIFF_STAT_FILES_PATTERN = /(\d+)\s+files?\s+changed/u;
+const DIFF_STAT_INSERTIONS_PATTERN = /(\d+)\s+insertions?\(\+\)/u;
+const DIFF_STAT_DELETIONS_PATTERN = /(\d+)\s+deletions?\(-\)/u;
+
 function normalizeCommand(command: string): string {
 	return command.trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+/** Exact-match form: whitespace collapsed, case preserved. */
+function collapseWhitespace(command: string): string {
+	return command.trim().replace(/\s+/gu, " ");
 }
 
 function includesGitPush(command: string): boolean {
@@ -91,6 +191,23 @@ function commandDenied(command: string, deny: readonly string[]): boolean {
 
 	const normalized = normalizeCommand(command);
 	return deny.some((entry) => normalized.includes(normalizeCommand(entry)));
+}
+
+/** True only for one unchained command whose program is `git` and verb is `commit`. */
+function isStandaloneGitCommit(command: string): boolean {
+	if (SHELL_COMPOSITION_PATTERN.test(command)) {
+		return false;
+	}
+	const tokens = collapseWhitespace(command).split(" ");
+	return tokens[0] === "git" && tokens[1] === "commit";
+}
+
+function isSafeCommand(command: string, qualityGates: readonly string[]): boolean {
+	if (SHELL_COMPOSITION_PATTERN.test(command)) {
+		return false;
+	}
+	const exact = collapseWhitespace(command);
+	return SAFE_COMMANDS[exact] === true || qualityGates.some((gate) => collapseWhitespace(gate) === exact);
 }
 
 function normalizePath(path: string): string {
@@ -154,6 +271,30 @@ function protectedRunArtifact(cwd: string, path: string): ProtectedRunArtifact |
 	return Object.hasOwn(PROTECTED_RUN_ARTIFACT_OWNERS, artifact) ? (artifact as ProtectedRunArtifact) : undefined;
 }
 
+/**
+ * A reserved path named anywhere in a shell command, chained or not. The shell
+ * is a mutation path like any other, so a reviewer verdict, a release approval,
+ * and the authoritative knowledge graph are denied to `bash` on the same terms
+ * as to `write` and `edit` — and a deny is never offered to an operator as a
+ * confirm, because approving it would break a one-writer rule rather than
+ * authorize a risky-but-legal action.
+ */
+function protectedCommandTarget(cwd: string, command: string): { path: string; owner: string } | undefined {
+	for (const word of command.split(SHELL_WORD_SEPARATOR)) {
+		if (word.length === 0) {
+			continue;
+		}
+		const artifact = protectedRunArtifact(cwd, word);
+		if (artifact !== undefined) {
+			return { path: word, owner: PROTECTED_RUN_ARTIFACT_OWNERS[artifact] };
+		}
+		if (isAuthoritativeKnowledgeGraphPath(cwd, word)) {
+			return { path: word, owner: "the knowledge graph control plane" };
+		}
+	}
+	return undefined;
+}
+
 export function isWriteAllowed(cwd: string, path: string, writeAllow: readonly string[]): boolean {
 	const relativePath = relativeWritePath(cwd, path);
 	if (relativePath === undefined || relativePath.split("/").some((part) => SENSITIVE_FILE_PATTERN.test(part))) {
@@ -168,40 +309,157 @@ export function isWriteAllowed(cwd: string, path: string, writeAllow: readonly s
 	});
 }
 
-export function evaluateToolCall(event: ToolCallEvent, options: PolicyEvaluationOptions): PolicyDecision {
-	if (isToolCallEventType("bash", event)) {
-		if (commandDenied(event.input.command, options.policy.deny)) {
+function matchCount(summary: string, pattern: RegExp): number {
+	const match = pattern.exec(summary);
+	return match === null ? 0 : Number(match[1]);
+}
+
+/**
+ * `git diff --shortstat` prints only its non-zero clauses, so a field git leaves
+ * out is an explicit zero rather than a missing number.
+ */
+export function parseDiffStat(summary: string): DiffStat {
+	return {
+		filesChanged: matchCount(summary, DIFF_STAT_FILES_PATTERN),
+		insertions: matchCount(summary, DIFF_STAT_INSERTIONS_PATTERN),
+		deletions: matchCount(summary, DIFF_STAT_DELETIONS_PATTERN),
+	};
+}
+
+/**
+ * The staged and unstaged diff against the current HEAD, taken from git itself
+ * with no shell between: the argument vector is fixed, so nothing in a tool call
+ * can extend it. An unreadable diff — no repository, no HEAD — reports zeros;
+ * the prompt still names the command being approved.
+ */
+export async function readGitDiffStat(cwd: string): Promise<DiffStat> {
+	try {
+		const { stdout } = await execFile("git", ["diff", "--shortstat", "HEAD"], { cwd });
+		return parseDiffStat(stdout);
+	} catch {
+		return { filesChanged: 0, insertions: 0, deletions: 0 };
+	}
+}
+
+/**
+ * `release.set` assigns the graph state path `release.approved`. A run publishes
+ * those graph values into its state document, flattened when the loop writes the
+ * progress document and nested under `values` in the raw run state, so the one
+ * lookup resolves the container before reading the path.
+ */
+function isReleaseApproved(state: RunState): boolean {
+	const values = isJsonObject(state.values) ? state.values : state;
+	return isJsonObject(values.release) && values.release.approved === true;
+}
+
+/**
+ * The policy view of the active run, read once from the one job policy is about
+ * to judge: its mode, its release gate, its write bounds, and its declared
+ * quality gates always describe the same job. No readable active job — none at
+ * all, or a task contract that will not parse — resolves to the safe default
+ * instead of throwing past the hook and leaving the call unjudged.
+ *
+ * The release gate is only as fresh as the loop's own release rule: the engine
+ * assigns `release.approved` after `releaseReady` proves green receipts bound to
+ * the current HEAD, so reading the flag reads a checked one.
+ */
+export async function resolveActivePolicyState(cwd: string): Promise<ActivePolicyState> {
+	const job = await readActiveJob(cwd);
+	if (job === undefined) {
+		return DEFAULT_ACTIVE_POLICY_STATE;
+	}
+	let task: Task;
+	try {
+		task = JSON.parse(await readFile(join(job.directory, "task.json"), "utf8")) as Task;
+	} catch {
+		return DEFAULT_ACTIVE_POLICY_STATE;
+	}
+	return {
+		mode: task.mode === "autopilot" ? "autopilot" : "gated",
+		releaseApproved: isReleaseApproved(job.state),
+		writeAllow: Array.isArray(task.acceptance) ? writeAllowForTask(task) : [],
+		qualityGates: Array.isArray(task.quality_gates) ? task.quality_gates : [],
+	};
+}
+
+async function evaluateCommand(command: string, options: PolicyEvaluationOptions): Promise<PolicyDecision> {
+	const { active, policy } = options;
+	if (commandDenied(command, policy.deny)) {
+		return { kind: "deny", reason: `Policy denied command: ${command}` };
+	}
+
+	const reserved = protectedCommandTarget(options.cwd, command);
+	if (reserved !== undefined) {
+		return {
+			kind: "deny",
+			reason: `Policy reserved ${reserved.path} for ${reserved.owner}: ${command}`,
+		};
+	}
+
+	if (isStandaloneGitCommit(command)) {
+		if (policy.commit[active.mode] === "confirm") {
+			const stat = await (options.readDiffStat ?? readGitDiffStat)(options.cwd);
+			const summary = `${stat.filesChanged} files changed, ${stat.insertions} insertions(+), ${stat.deletions} deletions(-)`;
 			return {
-				allowed: false,
-				reason: `Policy denied command: ${event.input.command}`,
+				kind: "confirm",
+				title: "Approve git commit",
+				question: `${command}\n\n${summary} against HEAD.\n\nCommit on the job branch?`,
+				declineReason: `Policy requires confirmation for git commit; not approved: ${command}`,
 			};
 		}
-		return { allowed: true };
+		return active.releaseApproved
+			? ALLOW
+			: { kind: "deny", reason: `Policy denied git commit before release.approved: ${command}` };
+	}
+
+	if (isSafeCommand(command, active.qualityGates)) {
+		return ALLOW;
+	}
+
+	if (policy.unknown[active.mode] === "confirm") {
+		return {
+			kind: "confirm",
+			title: "Approve unrecognized command",
+			question: `${command}\n\nThis command is not on the policy safe list. Run it?`,
+			declineReason: `Policy requires confirmation for an unrecognized command; not approved: ${command}`,
+		};
+	}
+	return { kind: "deny", reason: `Policy denied unrecognized command: ${command}` };
+}
+
+function evaluateWrite(path: string, options: PolicyEvaluationOptions): PolicyDecision {
+	const artifact = protectedRunArtifact(options.cwd, path);
+	if (artifact !== undefined) {
+		return {
+			kind: "deny",
+			reason: `Policy reserved ${artifact} for ${PROTECTED_RUN_ARTIFACT_OWNERS[artifact]}: ${path}`,
+		};
+	}
+	if (isAuthoritativeKnowledgeGraphPath(options.cwd, path)) {
+		return {
+			kind: "deny",
+			reason: `Policy reserved the authoritative knowledge graph for the control plane: ${path}`,
+		};
+	}
+	if (!isWriteAllowed(options.cwd, path, options.active.writeAllow)) {
+		return { kind: "deny", reason: `Policy denied write outside write_allow: ${path}` };
+	}
+	return ALLOW;
+}
+
+export async function evaluateToolCall(
+	event: ToolCallEvent,
+	options: PolicyEvaluationOptions,
+): Promise<PolicyDecision> {
+	if (isToolCallEventType("bash", event)) {
+		return await evaluateCommand(event.input.command, options);
 	}
 
 	if (isToolCallEventType("write", event) || isToolCallEventType("edit", event)) {
-		const artifact = protectedRunArtifact(options.cwd, event.input.path);
-		if (artifact !== undefined) {
-			return {
-				allowed: false,
-				reason: `Policy reserved ${artifact} for ${PROTECTED_RUN_ARTIFACT_OWNERS[artifact]}: ${event.input.path}`,
-			};
-		}
-		if (isAuthoritativeKnowledgeGraphPath(options.cwd, event.input.path)) {
-			return {
-				allowed: false,
-				reason: `Policy reserved the authoritative knowledge graph for the control plane: ${event.input.path}`,
-			};
-		}
-		if (!isWriteAllowed(options.cwd, event.input.path, options.writeAllow)) {
-			return {
-				allowed: false,
-				reason: `Policy denied write outside write_allow: ${event.input.path}`,
-			};
-		}
+		return evaluateWrite(event.input.path, options);
 	}
 
-	return { allowed: true };
+	return ALLOW;
 }
 
 export async function ensurePolicyFile(cwd: string): Promise<string> {
@@ -233,14 +491,31 @@ export function registerPolicy(pi: ExtensionAPI, options: PolicyRegistrationOpti
 	});
 
 	pi.on("tool_call", async (event, ctx) => {
-		const [policy, writeAllow] = await Promise.all([readPolicy(ctx.cwd), options.resolveWriteAllow?.(ctx.cwd) ?? []]);
-		const decision = evaluateToolCall(event, {
+		const [policy, resolved] = await Promise.all([
+			readPolicy(ctx.cwd),
+			(options.resolveActiveState ?? resolveActivePolicyState)(ctx.cwd),
+		]);
+		const active =
+			options.resolveWriteAllow === undefined
+				? resolved
+				: { ...resolved, writeAllow: await options.resolveWriteAllow(ctx.cwd) };
+		const decision = await evaluateToolCall(event, {
+			active,
 			cwd: ctx.cwd,
 			policy,
-			writeAllow,
+			readDiffStat: options.readDiffStat,
 		});
-		if (!decision.allowed) {
+		if (decision.kind === "allow") {
+			return;
+		}
+		if (decision.kind === "deny") {
 			return { block: true, reason: decision.reason };
 		}
+		// Without dialog-capable UI the harness resolves confirm to false, so an
+		// unattended session blocks the call instead of running it unapproved.
+		if (await ctx.ui.confirm(decision.title, decision.question)) {
+			return;
+		}
+		return { block: true, reason: decision.declineReason };
 	});
 }

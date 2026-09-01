@@ -225,31 +225,40 @@ test("a direct authoritative write through the public tool fails", async () => {
 	};
 	// A write_allow wide enough to cover everything, so the denial can only come
 	// from the one-writer reservation.
-	const options = { cwd, policy, writeAllow: ["**"] };
+	const options = {
+		cwd,
+		policy,
+		active: {
+			mode: "gated" as const,
+			releaseApproved: false,
+			writeAllow: ["**"],
+			qualityGates: [],
+		},
+	};
 	try {
 		for (const path of [".kpi/kg/nodes.jsonl", ".kpi/kg/edges.jsonl", ".kpi/kg/sources.jsonl"]) {
 			assert.equal(isAuthoritativeKnowledgeGraphPath(cwd, path), true, path);
-			const decision = evaluateToolCall(writeEvent(path), options);
-			assert.equal(decision.allowed, false, `${path} must be denied to the public write tool`);
-			assert.match(decision.reason ?? "", /reserved the authoritative knowledge graph for the control plane/u);
+			const decision = await evaluateToolCall(writeEvent(path), options);
+			assert.equal(decision.kind, "deny", `${path} must be denied to the public write tool`);
+			assert.match(
+				decision.kind === "deny" ? decision.reason : "",
+				/reserved the authoritative knowledge graph for the control plane/u,
+			);
 		}
-		assert.equal(
-			evaluateToolCall(
-				{
-					type: "tool_call",
-					toolCallId: "call-edit",
-					toolName: "edit",
-					input: { path: ".kpi/kg/snapshots/2026-01-01/nodes.jsonl", oldString: "a", newString: "b" },
-				},
-				options,
-			).allowed,
-			false,
-			"snapshots are authoritative too",
+		const snapshotEdit = await evaluateToolCall(
+			{
+				type: "tool_call",
+				toolCallId: "call-edit",
+				toolName: "edit",
+				input: { path: ".kpi/kg/snapshots/2026-01-01/nodes.jsonl", oldString: "a", newString: "b" },
+			},
+			options,
 		);
+		assert.equal(snapshotEdit.kind, "deny", "snapshots are authoritative too");
 
 		// A proposal is the one path a worker keeps.
 		assert.equal(isAuthoritativeKnowledgeGraphPath(cwd, ".kpi/kg/inbox/patch.json"), false);
-		assert.equal(evaluateToolCall(writeEvent(".kpi/kg/inbox/patch.json"), options).allowed, true);
+		assert.deepEqual(await evaluateToolCall(writeEvent(".kpi/kg/inbox/patch.json"), options), { kind: "allow" });
 
 		// The proposal surface has no authoritative write method at all, and the
 		// control plane refuses a target outside the inbox.
