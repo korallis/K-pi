@@ -145,9 +145,9 @@ node --test --experimental-strip-types test/schema-conformance.test.ts test/run-
 
 ### DoD
 
-- [ ] Schemas and live writers agree
-- [ ] Research/bus events are typed, redacted, and hash-chained
-- [ ] Publish payload is explicit and secret-safe
+- [x] Schemas and live writers agree
+- [x] Research/bus events are typed, redacted, and hash-chained
+- [x] Publish payload is explicit and secret-safe
 
 ---
 

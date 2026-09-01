@@ -16,7 +16,8 @@
   "properties": {
     "job_id": {
       "type": "string",
-      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+      "maxLength": 128
     },
     "mode": {
       "enum": ["gated", "autopilot"]
@@ -54,59 +55,73 @@
     "playbook": {
       "type": "string",
       "minLength": 1
+    },
+    "runtime_dependencies": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "dependency_baseline": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "current_module_id": {
+      "type": "string",
+      "minLength": 1
     }
   },
   "$defs": {
     "acceptanceCriterion": {
       "type": "object",
-      "required": ["id", "statement", "required", "check"],
+      "required": ["id", "statement", "required"],
       "properties": {
         "id": { "type": "string", "minLength": 1 },
         "statement": { "type": "string", "minLength": 1 },
         "required": { "type": "boolean" },
-        "check": {
-          "type": "object",
-          "required": ["kind"],
-          "properties": {
-            "kind": {
-              "enum": [
-                "command",
-                "file_exists",
-                "file_absent",
-                "grep_empty",
-                "grep_matches",
-                "json_path",
-                "http_probe"
-              ]
-            },
-            "cmd": { "type": "string", "minLength": 1 },
-            "expect": {
-              "type": "object",
-              "properties": {
-                "exit": { "type": "integer" },
-                "stdout_includes": {
-                  "type": "array",
-                  "items": { "type": "string" }
-                }
-              },
-              "additionalProperties": false
-            }
-          },
-          "additionalProperties": true
+        "check": { "$ref": "#/$defs/acceptanceCheck" },
+        "bounds": { "$ref": "#/$defs/acceptanceBounds" }
+      },
+      "additionalProperties": false
+    },
+    "acceptanceCheck": {
+      "type": "object",
+      "required": ["kind"],
+      "properties": {
+        "kind": {
+          "enum": [
+            "command",
+            "file_exists",
+            "file_absent",
+            "grep_empty",
+            "grep_matches",
+            "json_path",
+            "http_probe"
+          ]
         },
-        "bounds": {
+        "cmd": { "type": "string", "minLength": 1 },
+        "expect": {
           "type": "object",
           "properties": {
-            "write_allow": {
-              "type": "array",
-              "items": { "type": "string" }
-            },
-            "write_deny": {
+            "exit": { "type": "integer" },
+            "stdout_includes": {
               "type": "array",
               "items": { "type": "string" }
             }
           },
           "additionalProperties": false
+        }
+      },
+      "additionalProperties": true
+    },
+    "acceptanceBounds": {
+      "type": "object",
+      "properties": {
+        "write_allow": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "write_deny": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
         }
       },
       "additionalProperties": false
