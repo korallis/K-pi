@@ -803,8 +803,8 @@ node --test --experimental-strip-types test/minimalist.test.ts
 
 ### DoD
 
-- [ ] Ladder data is semantically enforced, not presence-checked
-- [ ] One-concat fixture prevents needless structure
+- [x] Ladder data is semantically enforced, not presence-checked
+- [x] One-concat fixture prevents needless structure
 
 ---
 
