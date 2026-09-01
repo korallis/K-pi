@@ -525,13 +525,18 @@ export function buildReviewInventory(input) {
 		})
 		.sort((a, b) => a.split("\t")[1].localeCompare(b.split("\t")[1]));
 
-	const priority = [];
+	// Three tiers so package-manager replacements survive bulk exclude noise:
+	// 1) lockfile / package.json  2) other excludes  3) includes
+	const critical = [];
+	const excludes = [];
 	const rest = [];
 	for (const line of lines) {
 		const path = line.split("\t")[1];
-		if (INVENTORY_PRIORITY.test(path) || line.includes("\texclude\t")) priority.push(line);
+		if (INVENTORY_PRIORITY.test(path)) critical.push(line);
+		else if (line.includes("\texclude\t")) excludes.push(line);
 		else rest.push(line);
 	}
+	const priority = [...critical, ...excludes];
 
 	const header = [
 		"TRUSTED_PR_INVENTORY",
