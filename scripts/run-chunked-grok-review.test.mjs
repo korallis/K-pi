@@ -8,8 +8,11 @@ import { test } from "node:test";
 import { unionGrokFindings } from "./validate-grok-review.mjs";
 import {
 	DEFAULT_CHUNK_TIMEOUT_SEC,
+	DEFAULT_MAX_CHUNK_BYTES,
 	DEFAULT_MAX_CONCURRENCY,
+	PROMPT_ARGV_TEST_CEILING_BYTES,
 	REQUIRED_EFFORT,
+	copilotSpawnEnv,
 	mapPool,
 	runChunkedGrokReview,
 } from "./run-chunked-grok-review.mjs";
@@ -272,8 +275,26 @@ test("invalid chunk schema fails closed", async () => {
 	}
 });
 
-test("budget defaults stay latency-bound", () => {
+test("budget defaults stay latency-bound under argv ceiling", () => {
 	assert.equal(REQUIRED_EFFORT, "high");
-	assert.equal(DEFAULT_MAX_CONCURRENCY, 8);
+	assert.equal(DEFAULT_MAX_CONCURRENCY, 20);
 	assert.equal(DEFAULT_CHUNK_TIMEOUT_SEC, 480);
+	assert.equal(DEFAULT_MAX_CHUNK_BYTES, 96_000);
+	// Prompt argv element must stay under the conservative 100 KiB ceiling
+	// (Linux MAX_ARG_STRLEN is ~128 KiB; preamble is a few KiB on top of the chunk).
+	assert.ok(DEFAULT_MAX_CHUNK_BYTES < PROMPT_ARGV_TEST_CEILING_BYTES);
+	assert.ok(PROMPT_ARGV_TEST_CEILING_BYTES < 128 * 1024);
+	// Provenance-reduced PR3-scale selection (~1.43 MB) fits one concurrent wave.
+	const provenanceReducedMax = 1_450_000;
+	const chunksNeeded = Math.ceil(provenanceReducedMax / DEFAULT_MAX_CHUNK_BYTES);
+	assert.ok(
+		chunksNeeded <= DEFAULT_MAX_CONCURRENCY,
+		`need ${chunksNeeded} chunks <= concurrency ${DEFAULT_MAX_CONCURRENCY}`,
+	);
+	// Spawn env must not forward the Actions GITHUB_TOKEN.
+	const env = copilotSpawnEnv({ PATH: "/bin", HOME: "/tmp", COPILOT_GITHUB_TOKEN: "t", GITHUB_TOKEN: "nope", GH_TOKEN: "nope" });
+	assert.equal(env.COPILOT_GITHUB_TOKEN, "t");
+	assert.equal(env.GITHUB_TOKEN, "");
+	assert.equal(env.GH_TOKEN, "");
+	assert.equal(env.PATH, "/bin");
 });

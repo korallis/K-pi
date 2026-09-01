@@ -13,23 +13,32 @@
 import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-/** Default soft floor per concurrent Grok prompt. */
-export const DEFAULT_MAX_CHUNK_BYTES = 200_000;
+/**
+ * Linux `MAX_ARG_STRLEN` is ~128 KiB per argv element. Copilot takes the full
+ * prompt as `--prompt <text>`, so each chunk must stay under that ceiling.
+ * Provenance reduction owns *what* is reviewed; concurrency owns one-wave fit.
+ */
+export const DEFAULT_MAX_CHUNK_BYTES = 96_000;
 
-/** Hard ceiling so one pathologically large file cannot explode a prompt. */
-export const HARD_MAX_CHUNK_BYTES = 400_000;
+/** Hard ceiling — never raise a prompt past the argv-safe bound. */
+export const HARD_MAX_CHUNK_BYTES = 96_000;
 
 /**
- * Choose a chunk byte cap so selected review input fits roughly one concurrent
- * wave (`ceil(selected / waveSlots)`), never below the floor or above hard max.
- * Provenance reduction owns *what* is reviewed; this only bounds latency.
+ * Conservative test ceiling for prompt argv bytes (chunk + preamble margin).
+ * Must stay below Linux MAX_ARG_STRLEN (~128 KiB).
+ */
+export const PROMPT_ARGV_TEST_CEILING_BYTES = 100_000;
+
+/**
+ * Resolve the pack cap: never above the argv-safe hard max, never above the
+ * caller floor request. Adaptive growth past 96 KiB is forbidden (E2BIG).
  *
  * @param {number} selectedBytes
  * @param {{ floor?: number, hardMax?: number, waveSlots?: number }} [opts]
  */
 export function adaptiveMaxChunkBytes(
 	selectedBytes,
-	{ floor = DEFAULT_MAX_CHUNK_BYTES, hardMax = HARD_MAX_CHUNK_BYTES, waveSlots = 8 } = {},
+	{ floor = DEFAULT_MAX_CHUNK_BYTES, hardMax = HARD_MAX_CHUNK_BYTES, waveSlots = 16 } = {},
 ) {
 	if (!Number.isSafeInteger(selectedBytes) || selectedBytes < 0) {
 		throw new Error("selectedBytes must be a non-negative integer");
@@ -40,13 +49,12 @@ export function adaptiveMaxChunkBytes(
 	if (!Number.isSafeInteger(floor) || floor < 1) {
 		throw new Error("floor must be a positive integer");
 	}
-	if (!Number.isSafeInteger(hardMax) || hardMax < floor) {
-		throw new Error("hardMax must be an integer >= floor");
+	if (!Number.isSafeInteger(hardMax) || hardMax < 1) {
+		throw new Error("hardMax must be a positive integer");
 	}
-	const perSlot = Math.ceil(selectedBytes / waveSlots);
-	return Math.min(hardMax, Math.max(floor, perSlot));
+	// Cap only — never inflate past the argv-safe hard max to "fit" a wave.
+	return Math.min(floor, hardMax, DEFAULT_MAX_CHUNK_BYTES);
 }
-
 
 
 /**
@@ -124,6 +132,87 @@ function pathFromPlusPlusLine(line) {
 }
 
 /**
+ * Split one oversized file section into argv-safe pieces on line boundaries.
+ * Each piece repeats the leading `diff --git` / `---` / `+++` header so the
+ * model still sees a valid unified-diff fragment. Never exceeds maxChunkBytes
+ * unless a single line alone is larger (then that line is its own piece).
+ *
+ * @param {DiffFileSection} section
+ * @param {number} maxChunkBytes
+ * @returns {DiffFileSection[]}
+ */
+export function splitOversizedSection(section, maxChunkBytes) {
+	if (section.bytes <= maxChunkBytes) return [section];
+	const lines = section.text.endsWith("\n")
+		? section.text.slice(0, -1).split("\n")
+		: section.text.split("\n");
+	/** @type {string[]} */
+	const header = [];
+	let bodyStart = 0;
+	for (let i = 0; i < lines.length; i++) {
+		const line = lines[i];
+		header.push(line);
+		bodyStart = i + 1;
+		// Header ends after the first hunk start or after +++ line when no hunk yet.
+		if (line.startsWith("@@ ")) break;
+		if (line.startsWith("+++ ") && i + 1 < lines.length && !lines[i + 1].startsWith("@@ ")) {
+			// binary or empty body — keep collecting until body-ish content
+			continue;
+		}
+		if (line.startsWith("+++ ")) {
+			// include +++ in header; next lines are body unless @@ follows
+			if (i + 1 < lines.length && lines[i + 1].startsWith("@@ ")) continue;
+			break;
+		}
+	}
+	// Prefer: everything through first @@ line as header when present.
+	const firstHunk = lines.findIndex((line) => line.startsWith("@@ "));
+	if (firstHunk >= 0) {
+		header.length = 0;
+		header.push(...lines.slice(0, firstHunk)); // meta without first @@
+		bodyStart = firstHunk;
+	}
+
+	const headerText = header.length ? `${header.join("\n")}\n` : "";
+	const headerBytes = Buffer.byteLength(headerText, "utf8");
+	const bodyBudget = Math.max(1, maxChunkBytes - headerBytes);
+
+	/** @type {DiffFileSection[]} */
+	const pieces = [];
+	/** @type {string[]} */
+	let body = [];
+	let bodyBytes = 0;
+
+	const flushBody = () => {
+		if (body.length === 0 && pieces.length > 0) return;
+		const text = `${headerText}${body.join("\n")}${body.length ? "\n" : ""}`;
+		pieces.push({
+			path: section.path,
+			text,
+			bytes: Buffer.byteLength(text, "utf8"),
+		});
+		body = [];
+		bodyBytes = 0;
+	};
+
+	for (let i = bodyStart; i < lines.length; i++) {
+		const line = lines[i];
+		const lineBytes = Buffer.byteLength(`${line}\n`, "utf8");
+		if (body.length > 0 && bodyBytes + lineBytes > bodyBudget) {
+			flushBody();
+		}
+		body.push(line);
+		bodyBytes += lineBytes;
+		if (lineBytes > bodyBudget && body.length === 1) {
+			// Single line exceeds budget — emit alone (caller still sees fail-closed if > hard max).
+			flushBody();
+		}
+	}
+	flushBody();
+	return pieces.length > 0 ? pieces : [section];
+}
+
+/**
  * @param {string} diffText
  * @param {{ maxChunkBytes?: number }} [options]
  * @returns {DiffChunk[]}
@@ -133,7 +222,9 @@ export function partitionUnifiedDiff(diffText, { maxChunkBytes = DEFAULT_MAX_CHU
 		throw new Error("maxChunkBytes must be a positive integer");
 	}
 
-	const sections = splitDiffFileSections(diffText);
+	const sections = splitDiffFileSections(diffText).flatMap((section) =>
+		splitOversizedSection(section, maxChunkBytes),
+	);
 	/** @type {DiffChunk[]} */
 	const chunks = [];
 	/** @type {{ paths: string[], parts: string[], bytes: number }} */
@@ -152,6 +243,7 @@ export function partitionUnifiedDiff(diffText, { maxChunkBytes = DEFAULT_MAX_CHU
 
 	for (const section of sections) {
 		if (section.bytes > maxChunkBytes) {
+			// Still oversized after split (single-line blow-up) — own chunk; runner argv test guards.
 			pushCurrent();
 			chunks.push({
 				index: chunks.length,
@@ -171,6 +263,7 @@ export function partitionUnifiedDiff(diffText, { maxChunkBytes = DEFAULT_MAX_CHU
 	pushCurrent();
 	return chunks;
 }
+
 
 /**
  * Write chunk files and a JSON manifest for the workflow.

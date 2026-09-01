@@ -17,17 +17,22 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
 	DEFAULT_MAX_CHUNK_BYTES,
+	PROMPT_ARGV_TEST_CEILING_BYTES,
 	adaptiveMaxChunkBytes,
 	partitionUnifiedDiff,
 	writeDiffChunks,
 } from "./partition-pr-diff.mjs";
 import { normalizeGrokReview, unionGrokFindings } from "./validate-grok-review.mjs";
 
-export const DEFAULT_MAX_CONCURRENCY = 8;
+/** One concurrent wave covers provenance-reduced selection with pack headroom. */
+export const DEFAULT_MAX_CONCURRENCY = 20;
 /** Per-chunk wall timeout so a hung call fails closed inside the 15m job. */
 export const DEFAULT_CHUNK_TIMEOUT_SEC = 480;
-export const DEFAULT_MAX_AI_CREDITS = 40;
+export const DEFAULT_MAX_AI_CREDITS = 50;
 export const REQUIRED_EFFORT = "high";
+
+export { DEFAULT_MAX_CHUNK_BYTES, PROMPT_ARGV_TEST_CEILING_BYTES };
+
 
 
 const PROMPT_PREAMBLE = `You are the required K-π pull-request reviewer. Review only defects introduced by the supplied diff chunk.
@@ -155,6 +160,39 @@ export async function mapPool(items, concurrency, worker) {
 }
 
 /**
+ * Env vars Copilot needs for non-interactive Grok. Drop the Actions process
+ * environment so argv+env stay under ARG_MAX while each prompt stays ≤96 KiB.
+ * @param {NodeJS.ProcessEnv} [source]
+ */
+export function copilotSpawnEnv(source = process.env) {
+	/** @type {NodeJS.ProcessEnv} */
+	const env = {
+		PATH: source.PATH ?? "/usr/bin:/bin",
+		HOME: source.HOME ?? "/tmp",
+		LANG: source.LANG ?? "C.UTF-8",
+		COPILOT_GITHUB_TOKEN: source.COPILOT_GITHUB_TOKEN ?? "",
+		GITHUB_TOKEN: "",
+		GH_TOKEN: "",
+	};
+	for (const key of [
+		"HTTPS_PROXY",
+		"HTTP_PROXY",
+		"NO_PROXY",
+		"https_proxy",
+		"http_proxy",
+		"no_proxy",
+		"SSL_CERT_FILE",
+		"NODE_EXTRA_CA_CERTS",
+		"XDG_CONFIG_HOME",
+		"XDG_CACHE_HOME",
+		"XDG_DATA_HOME",
+	]) {
+		if (source[key]) env[key] = source[key];
+	}
+	return env;
+}
+
+/**
  * @param {{
  *   copilotBin: string,
  *   prompt: string,
@@ -163,7 +201,6 @@ export async function mapPool(items, concurrency, worker) {
  *   maxAiCredits: number,
  *   timeoutSec: number,
  * }} spec
- * @param {{ runCommand?: typeof defaultRunCommand }} [hooks]
  */
 export function defaultRunCommand(spec) {
 	return new Promise((resolve) => {
@@ -186,13 +223,10 @@ export function defaultRunCommand(spec) {
 			],
 			{
 				stdio: ["ignore", "pipe", "pipe"],
-				env: {
-					...process.env,
-					GITHUB_TOKEN: "",
-					GH_TOKEN: "",
-				},
+				env: copilotSpawnEnv(),
 			},
 		);
+
 		let stdout = "";
 		let stderr = "";
 		let settled = false;
@@ -263,6 +297,12 @@ export async function runChunkedGrokReview(options, hooks = {}) {
 	});
 	const chunks = partitionUnifiedDiff(diffText, { maxChunkBytes });
 	writeDiffChunks(diffText, join(options.workDir, "chunks"), { maxChunkBytes });
+	const oversized = chunks.filter((chunk) => chunk.bytes > PROMPT_ARGV_TEST_CEILING_BYTES);
+	if (oversized.length > 0) {
+		throw new Error(
+			`failed closed: ${oversized.length} chunk(s) exceed argv-safe prompt ceiling ${PROMPT_ARGV_TEST_CEILING_BYTES} (largest ${Math.max(...oversized.map((c) => c.bytes))} bytes)`,
+		);
+	}
 
 
 	if (chunks.length === 0) {

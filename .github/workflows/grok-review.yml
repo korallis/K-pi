@@ -217,10 +217,10 @@ jobs:
             --out-meta "$RUNNER_TEMP/grok-review-meta.json" \
             --work-dir "$RUNNER_TEMP/chunked-review" \
             --effort high \
-            --max-chunk-bytes 200000 \
-            --max-concurrency 8 \
+            --max-chunk-bytes 96000 \
+            --max-concurrency 20 \
             --chunk-timeout-sec 480 \
-            --max-ai-credits 40
+            --max-ai-credits 50
           status=$?
           set -e
           # Always surface model/chunk meta for the sticky comment, including fail-closed runs.

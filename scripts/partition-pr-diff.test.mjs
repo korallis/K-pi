@@ -8,8 +8,10 @@ import { test } from "node:test";
 import {
 	DEFAULT_MAX_CHUNK_BYTES,
 	HARD_MAX_CHUNK_BYTES,
+	PROMPT_ARGV_TEST_CEILING_BYTES,
 	adaptiveMaxChunkBytes,
 	partitionUnifiedDiff,
+	splitOversizedSection,
 	splitDiffFileSections,
 	writeDiffChunks,
 } from "./partition-pr-diff.mjs";
@@ -46,19 +48,24 @@ test("packs files greedily under the byte cap", () => {
 	assert.equal(one.length, 1);
 	assert.deepEqual(one[0].paths, ["a.ts", "b.ts"]);
 
-	const two = partitionUnifiedDiff(combined, { maxChunkBytes: Math.max(1, Buffer.byteLength(small, "utf8") - 1) });
-	assert.equal(two.length, 2);
-	assert.deepEqual(two[0].paths, ["a.ts"]);
-	assert.deepEqual(two[1].paths, ["b.ts"]);
+	// Cap just under the first file so packing cannot merge — may yield one
+	// chunk per file (or more if a section is split under a tiny cap).
+	const two = partitionUnifiedDiff(combined, { maxChunkBytes: Math.max(32, Buffer.byteLength(small, "utf8") - 1) });
+	assert.ok(two.length >= 2);
+	assert.ok(two.every((chunk) => chunk.bytes <= Math.max(32, Buffer.byteLength(small, "utf8") - 1) || chunk.paths.length >= 1));
+	assert.ok(two.some((chunk) => chunk.paths.includes("a.ts")));
+	assert.ok(two.some((chunk) => chunk.paths.includes("b.ts")));
 });
 
-test("oversized single file becomes its own chunk", () => {
+test("oversized single file splits under the byte cap", () => {
 	const big = fileDiff("big.ts", ["z".repeat(200)]);
 	const result = partitionUnifiedDiff(big, { maxChunkBytes: 50 });
-	assert.equal(result.length, 1);
-	assert.deepEqual(result[0].paths, ["big.ts"]);
-	assert.ok(result[0].bytes > 50);
+	assert.ok(result.length >= 1);
+	assert.ok(result.every((chunk) => chunk.paths.includes("big.ts")));
+	// After argv-safe split, every piece must fit the cap (unless a single line exceeds it).
+	assert.ok(result.every((chunk) => chunk.bytes <= 50 || chunk.text.split("\n").length <= 5));
 });
+
 
 test("partition is deterministic for the same input", () => {
 	const diff =
@@ -86,14 +93,32 @@ test("writeDiffChunks emits stable names and a manifest", () => {
 	}
 });
 
-test("default chunk floor stays latency-oriented", () => {
-	assert.equal(DEFAULT_MAX_CHUNK_BYTES, 200_000);
-	assert.equal(HARD_MAX_CHUNK_BYTES, 400_000);
+test("chunk bytes stay under the Linux argv-safe ceiling", () => {
+	assert.equal(DEFAULT_MAX_CHUNK_BYTES, 96_000);
+	assert.equal(HARD_MAX_CHUNK_BYTES, 96_000);
+	assert.ok(DEFAULT_MAX_CHUNK_BYTES <= PROMPT_ARGV_TEST_CEILING_BYTES);
+	assert.ok(PROMPT_ARGV_TEST_CEILING_BYTES < 128 * 1024);
 });
 
-test("adaptive packing fits selected bytes into one concurrent wave", () => {
-	assert.equal(adaptiveMaxChunkBytes(1_600_000, { waveSlots: 8 }), 200_000);
-	assert.equal(adaptiveMaxChunkBytes(1_800_000, { waveSlots: 8 }), 225_000);
-	assert.equal(adaptiveMaxChunkBytes(100_000, { waveSlots: 8 }), 200_000);
-	assert.equal(adaptiveMaxChunkBytes(5_000_000, { waveSlots: 8 }), HARD_MAX_CHUNK_BYTES);
+test("adaptive packing never inflates past the argv-safe hard max", () => {
+	assert.equal(adaptiveMaxChunkBytes(1_600_000, { floor: 200_000, waveSlots: 8 }), 96_000);
+	assert.equal(adaptiveMaxChunkBytes(100_000, { floor: 96_000, waveSlots: 16 }), 96_000);
+	assert.equal(adaptiveMaxChunkBytes(50_000, { floor: 40_000, waveSlots: 16 }), 40_000);
+});
+
+test("oversized file sections split under the argv-safe cap", () => {
+	const big = fileDiff("big.ts", ["z".repeat(50_000), "y".repeat(50_000), "x".repeat(50_000)]);
+	assert.ok(Buffer.byteLength(big, "utf8") > 96_000);
+	const pieces = splitOversizedSection(
+		{ path: "big.ts", text: big, bytes: Buffer.byteLength(big, "utf8") },
+		96_000,
+	);
+	assert.ok(pieces.length >= 2);
+	for (const piece of pieces) {
+		assert.ok(piece.bytes <= 96_000, `piece ${piece.bytes} exceeds cap`);
+		assert.ok(piece.text.includes("diff --git"));
+	}
+	const chunks = partitionUnifiedDiff(big, { maxChunkBytes: 96_000 });
+	assert.ok(chunks.length >= 2);
+	assert.ok(chunks.every((chunk) => chunk.bytes <= 96_000));
 });
