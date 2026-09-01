@@ -2,7 +2,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { normalizeGrokReview, unionGrokFindings } from "./validate-grok-review.mjs";
+import { normalizeFindingId, normalizeGrokReview, unionGrokFindings } from "./validate-grok-review.mjs";
 
 const changedPaths = ["src/review.ts", ".github/workflows/grok-review.yml"];
 const validFinding = {
@@ -39,7 +39,8 @@ test("requires the exact finding fields", () => {
 });
 
 test("requires unique stable finding ids", () => {
-	assert.throws(() => normalizeGrokReview(JSON.stringify([{ ...validFinding, id: "unstable" }]), changedPaths), /must match/);
+	assert.equal(normalizeGrokReview(JSON.stringify([{ ...validFinding, id: "unstable" }]), changedPaths)[0].id, "grok-unstable");
+	assert.throws(() => normalizeGrokReview(JSON.stringify([{ ...validFinding, id: "!!!" }]), changedPaths), /must match|empty grok slug/);
 	assert.throws(
 		() => normalizeGrokReview(JSON.stringify([validFinding, validFinding]), changedPaths),
 		/duplicates grok-missing-fail-closed/,
@@ -69,6 +70,24 @@ test("bounds the number of findings", () => {
 	}));
 	assert.throws(() => normalizeGrokReview(JSON.stringify(findings), changedPaths), /exceeds 20 findings/);
 });
+
+test("normalizes drifted finding ids into grok kebab slugs", () => {
+	assert.equal(normalizeFindingId("Grok_Missing_Timeout"), "grok-missing-timeout");
+	assert.equal(normalizeFindingId("missing-timeout"), "grok-missing-timeout");
+	assert.equal(normalizeFindingId("grok.token.leak"), "grok-token-leak");
+	assert.throws(() => normalizeFindingId("!!!"), /must match|empty grok slug/);
+});
+
+test("accepts underscore ids after normalize in the document path", () => {
+	const raw = JSON.stringify([
+		{
+			...validFinding,
+			id: "Grok_Missing_Fail_Closed",
+		},
+	]);
+	assert.equal(normalizeGrokReview(raw, changedPaths)[0].id, "grok-missing-fail-closed");
+});
+
 
 test("unions chunk findings with stable severity ordering", () => {
 	const p2 = { ...validFinding, id: "grok-later", severity: "P2", path: "src/review.ts" };

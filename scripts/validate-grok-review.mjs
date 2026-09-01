@@ -25,6 +25,44 @@ function assertText(value, field, maximum) {
 	return value.trim();
 }
 
+/**
+ * Repair common model id drift without weakening the final pattern:
+ * lowercase, underscores/dots/spaces→hyphens, strip illegal chars, ensure
+ * grok- prefix. Still fail closed if the result is not a stable grok-* slug.
+ */
+export function normalizeFindingId(raw, label = "id") {
+	if (typeof raw !== "string" || raw.trim().length === 0) {
+		throw new Error(`${label} must be a non-empty string`);
+	}
+	if (raw.includes("\0")) throw new Error(`${label} contains a NUL byte`);
+	if (raw.length > 96) throw new Error(`${label} exceeds 96 characters before normalize`);
+
+	let id = raw.trim().toLowerCase();
+	id = id.replace(/[_\s.]+/g, "-");
+	id = id.replace(/[^a-z0-9-]/g, "");
+	id = id.replace(/-+/g, "-");
+	id = id.replace(/^-+|-+$/g, "");
+	if (!id.startsWith("grok-")) {
+		if (id.startsWith("grok") && id.length > 4) {
+			id = `grok-${id.slice(4)}`;
+		} else if (id !== "grok") {
+			id = `grok-${id}`;
+		}
+		id = id.replace(/-+/g, "-");
+	}
+	id = id.replace(/-+$/g, "");
+	if (id === "grok" || id === "grok-") {
+		throw new Error(`${label} collapsed to an empty grok slug`);
+	}
+	if (!ID_PATTERN.test(id)) {
+		throw new Error(`${label} must match ${ID_PATTERN} (got ${JSON.stringify(raw)} → ${JSON.stringify(id)})`);
+	}
+	if (id.length > 64) throw new Error(`${label} exceeds 64 characters`);
+	return id;
+}
+
+
+
 export function normalizeGrokReview(raw, changedPaths) {
 	let parsed;
 	try {
@@ -47,8 +85,7 @@ export function normalizeGrokReview(raw, changedPaths) {
 			throw new Error(`${label} must contain exactly ${FINDING_KEYS.join(", ")}`);
 		}
 
-		const id = assertText(finding.id, `${label}.id`, 64);
-		if (!ID_PATTERN.test(id)) throw new Error(`${label}.id must match ${ID_PATTERN}`);
+		const id = normalizeFindingId(finding.id, `${label}.id`);
 		if (ids.has(id)) throw new Error(`${label}.id duplicates ${id}`);
 		ids.add(id);
 

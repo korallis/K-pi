@@ -156,6 +156,7 @@ jobs:
           HOME: ${{ runner.temp }}/copilot-home
         run: |
           mkdir -p "$HOME" "$RUNNER_TEMP/chunked-review"
+          set +e
           node "$RUNNER_TEMP/gate-scripts/run-chunked-grok-review.mjs" \
             --diff "$RUNNER_TEMP/pr.diff" \
             --changed-paths "$RUNNER_TEMP/changed-paths" \
@@ -168,16 +169,21 @@ jobs:
             --max-concurrency 4 \
             --chunk-timeout-sec 600 \
             --max-ai-credits 30
-          if [ -f "$RUNNER_TEMP/grok-review.json" ]; then
-            count=$(jq -r 'length' "$RUNNER_TEMP/grok-review.json")
-            echo "count=$count" >> "$GITHUB_OUTPUT"
-          fi
+          status=$?
+          set -e
+          # Always surface model/chunk meta for the sticky comment, including fail-closed runs.
           if [ -f "$RUNNER_TEMP/grok-review-meta.json" ]; then
             model=$(jq -r '.model // empty' "$RUNNER_TEMP/grok-review-meta.json")
             chunks=$(jq -r '.chunkCount // empty' "$RUNNER_TEMP/grok-review-meta.json")
             echo "model=$model" >> "$GITHUB_OUTPUT"
             echo "chunks=$chunks" >> "$GITHUB_OUTPUT"
+            jq -c '.' "$RUNNER_TEMP/grok-review-meta.json"
           fi
+          if [ -f "$RUNNER_TEMP/grok-review.json" ]; then
+            count=$(jq -r 'length' "$RUNNER_TEMP/grok-review.json")
+            echo "count=$count" >> "$GITHUB_OUTPUT"
+          fi
+          exit "$status"
 
       - name: Publish sticky review result
         if: always()
@@ -201,6 +207,13 @@ jobs:
             fi
             if [ "$INFERENCE_OUTCOME" != "success" ]; then
               echo '**Failed closed:** chunked Grok review did not complete (timeout, inference error, or invalid schema). Inspect the required workflow log.'
+              if [ -f "$RUNNER_TEMP/grok-review-meta.json" ]; then
+                echo
+                echo 'Chunk outcomes:'
+                echo
+                jq -r '.chunks[]? | "- chunk \(.index): \(.reason // "unknown") (\(.bytes // 0) bytes, \(.durationMs // 0) ms)"' \
+                  "$RUNNER_TEMP/grok-review-meta.json"
+              fi
             elif [ -z "$FINDING_COUNT" ]; then
               echo '**Failed closed:** Grok review produced no validated finding document.'
             elif [ "$FINDING_COUNT" = "0" ]; then
