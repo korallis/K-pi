@@ -6,11 +6,13 @@ import type { ExtensionAPI, ResourcesDiscoverResult } from "../../core/extension
 import { registerKMode } from "../kstack/mode.ts";
 import { registerKStackSetup } from "../kstack/models.ts";
 import { registerAccounts } from "./accounts/index.ts";
+import { AccountsStore } from "./accounts/store.ts";
 import { registerAutoWrap } from "./auto-wrap.ts";
 import { registerBackgroundBus } from "./bus/communicate.ts";
 import { registerControlPlane } from "./control-plane.ts";
 import { registerCursorProvider } from "./cursor/provider.ts";
 import { registerKnowledgeGraph } from "./kg/index.ts";
+import { type LocalProviderId, registerLocalProviders } from "./local/providers.ts";
 import { registerPing } from "./ping.ts";
 import { registerPolicy } from "./policy.ts";
 import { registerPrintProfile } from "./print-profile.ts";
@@ -55,7 +57,30 @@ export default function kPi(pi: ExtensionAPI): void {
 		registerKnowledgeGraph(pi);
 		registerResearchTools(pi);
 	}
-	if (typeof pi.registerProvider === "function") registerCursorProvider(pi);
+	if (typeof pi.registerProvider === "function") {
+		registerCursorProvider(pi);
+		// Local pools discover live against the origin their own slot persisted.
+		registerLocalProviders(pi, {
+			resolveBaseUrl: async (poolId: LocalProviderId) => {
+				const store = new AccountsStore();
+				const slots = (await store.read()).pools[poolId]?.slots ?? [];
+				const local = slots.find((slot) => slot.kind === "local");
+				return local?.baseUrl;
+			},
+			resolveToken: async (poolId: LocalProviderId) => {
+				const store = new AccountsStore();
+				const slots = (await store.read()).pools[poolId]?.slots ?? [];
+				const reference = slots.find((slot) => slot.kind === "local")?.secretRef;
+				if (reference === undefined) return undefined;
+				const credential = (await store.readSecrets())[reference];
+				return credential?.type === "api_key"
+					? credential.key
+					: credential?.type === "oauth"
+						? credential.access
+						: undefined;
+			},
+		});
+	}
 	registerControlPlane(pi);
 	registerPing(pi);
 	registerKMode(pi);

@@ -21,13 +21,54 @@ export const POOL_IDS = [
 
 export type PoolId = (typeof POOL_IDS)[number];
 export type PoolStrategy = "quota-first" | "round-robin" | "sticky";
-export type SlotKind = "oauth" | "api_key";
+
+/** NH-01: a credential-free `local` kind beside the two credentialed kinds. */
+export type SlotKind = "oauth" | "api_key" | "local";
+
+/** Pools served by a local server the operator runs. */
+export const LOCAL_POOL_IDS: Record<string, true> = {
+	llama: true,
+	ollama: true,
+	lmstudio: true,
+	"local-openai": true,
+};
+
+export function isLocalPool(poolId: string): boolean {
+	return LOCAL_POOL_IDS[poolId] === true;
+}
+
+/**
+ * K-π pool id to the provider id that actually answers. `llama` is served by
+ * Pi's own built-in `llama.cpp` provider, which K-π never registers.
+ */
+const PROVIDER_ID_BY_POOL: Record<string, string> = { llama: "llama.cpp" };
+
+export function providerIdForPool(poolId: PoolId): string {
+	return PROVIDER_ID_BY_POOL[poolId] ?? poolId;
+}
+
+/** The pool a model's provider id belongs to, or undefined when it is not ours. */
+export function poolIdForProvider(providerId: string): PoolId | undefined {
+	for (const [poolId, provider] of Object.entries(PROVIDER_ID_BY_POOL)) {
+		if (provider === providerId) {
+			return poolId as PoolId;
+		}
+	}
+	return isPoolId(providerId) ? providerId : undefined;
+}
 
 export interface AccountSlot {
 	id: string;
 	kind: SlotKind;
 	label?: string;
 	warningAcceptedAt?: string;
+	/**
+	 * REQ-SL-01: the origin a `local` slot was configured with. Every request
+	 * routed to the slot stays on it, so it is persisted rather than rediscovered.
+	 */
+	baseUrl?: string;
+	/** Optional token name for a local server that wants one. Never a dummy. */
+	secretRef?: string;
 }
 
 export interface AccountPool {
@@ -100,8 +141,18 @@ function assertAccounts(value: unknown, path: string): asserts value is Accounts
 				throw new Error(`${path} pool ${poolName} has a duplicate slot id: ${slot.id}`);
 			}
 			slotIds.add(slot.id);
-			if (slot.kind !== "oauth" && slot.kind !== "api_key") {
+			if (slot.kind !== "oauth" && slot.kind !== "api_key" && slot.kind !== "local") {
 				throw new Error(`${path} pool ${poolName} slot ${slot.id} has an unknown kind`);
+			}
+			if (slot.kind === "local") {
+				if (typeof slot.baseUrl !== "string" || slot.baseUrl.length === 0) {
+					throw new Error(`${path} pool ${poolName} slot ${slot.id} must persist its baseUrl`);
+				}
+				if (slot.secretRef !== undefined && (typeof slot.secretRef !== "string" || slot.secretRef.length === 0)) {
+					throw new Error(`${path} pool ${poolName} slot ${slot.id} has an invalid secretRef`);
+				}
+			} else if (slot.baseUrl !== undefined) {
+				throw new Error(`${path} pool ${poolName} slot ${slot.id} is not local but persists a baseUrl`);
 			}
 			// Optional fields still have a type: a label that is not a string, or
 			// an acceptance stamp that is not an instant, is corruption, not absence.
@@ -373,6 +424,48 @@ export class AccountsStore {
 			await writePrivateJson(this.accountsPath, document);
 			return imported;
 		});
+	}
+
+	/**
+	 * Adds a credential-free `local` slot. No secrets file entry is written: a
+	 * local server that wants no token must not be handed a placeholder one.
+	 */
+	async putLocalSlot(poolId: PoolId, slot: AccountSlot): Promise<void> {
+		assertSlotId(slot.id);
+		if (slot.kind !== "local") {
+			throw new Error(`Slot ${slot.id} is not a local slot`);
+		}
+		if (typeof slot.baseUrl !== "string" || slot.baseUrl.length === 0) {
+			throw new Error(`Local slot ${poolId}/${slot.id} needs a base URL`);
+		}
+		let origin: string;
+		try {
+			origin = new URL(slot.baseUrl).origin;
+		} catch {
+			throw new Error(`Local slot ${poolId}/${slot.id} has an invalid base URL: ${slot.baseUrl}`);
+		}
+		if (!isLocalPool(poolId)) {
+			throw new Error(`${poolId} is not a local pool`);
+		}
+		void origin;
+		await this.mutate(async () => {
+			const document = await this.readAccountsUnlocked();
+			const pool = document.pools[poolId] ?? { strategy: "round-robin" as const, slots: [] };
+			const existingIndex = pool.slots.findIndex((existing) => existing.id === slot.id);
+			if (existingIndex < 0) {
+				pool.slots.push(slot);
+			} else {
+				pool.slots[existingIndex] = { ...pool.slots[existingIndex], ...slot };
+			}
+			document.pools[poolId] = pool;
+			await writePrivateJson(this.accountsPath, document);
+		});
+	}
+
+	/** The origin a local slot is pinned to, if it is a local slot. */
+	async localBaseUrl(poolId: PoolId, slotId: string): Promise<string | undefined> {
+		const slot = await this.getSlot(poolId, slotId);
+		return slot?.kind === "local" ? slot.baseUrl : undefined;
 	}
 
 	async removeSlot(poolId: PoolId, slotId: string): Promise<boolean> {

@@ -35,7 +35,14 @@ export function renderAccountsWidget(document: AccountsDocument, options: Accoun
 		}
 		const slots = pool.slots.map((slot) => {
 			const snapshot = options.usage?.get(poolId as PoolId, slot.id);
-			const percent = snapshot?.remainingPercent === undefined ? "?%" : `${snapshot.remainingPercent}%`;
+			// AC-27.6: a local slot has no quota, so it shows no percentage at all
+			// rather than an unknown one.
+			const percent =
+				slot.kind === "local"
+					? "(local)"
+					: snapshot?.remainingPercent === undefined
+						? "?%"
+						: `${snapshot.remainingPercent}%`;
 			const window = snapshot?.window === undefined ? "" : ` ${snapshot.window}`;
 			const cooldownUntil = options.health?.cooldownUntil(poolId as PoolId, slot.id);
 			const cooldown =

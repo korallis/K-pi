@@ -5,7 +5,15 @@ import { readActiveJob } from "../run-store.ts";
 import { AccountBalancer, type SelectedSlot } from "./balancer.ts";
 import { classifyProviderFailure } from "./errors.ts";
 
-import { type AccountsDocument, AccountsStore, isPoolId, type PoolId } from "./store.ts";
+import { DEFAULT_LOCAL_BASE_URLS, type LocalProviderId } from "../local/providers.ts";
+import {
+	type AccountsDocument,
+	AccountsStore,
+	isLocalPool,
+	isPoolId,
+	poolIdForProvider,
+	type PoolId,
+} from "./store.ts";
 import { UsageCache } from "./usage/cache.ts";
 import type { UsageReader } from "./usage/types.ts";
 import { renderAccountsWidget } from "./widget.ts";
@@ -180,6 +188,28 @@ async function loginAccount(
 			context.ui.notify(notice.message, "info");
 		}
 		warningAcceptedAt = now().toISOString();
+	}
+
+	if (isLocalPool(providerName)) {
+		// REQ-SL-01: a local slot is credential-free and persists its own origin.
+		const fallbackUrl = DEFAULT_LOCAL_BASE_URLS[providerName as LocalProviderId];
+		const answer = await context.ui.input(
+			`Base URL for ${providerName}`,
+			fallbackUrl ?? "http://127.0.0.1:8000/v1",
+		);
+		const baseUrl = (answer ?? "").trim().length > 0 ? (answer as string).trim() : fallbackUrl;
+		if (baseUrl === undefined || baseUrl.length === 0) {
+			throw new Error(`${providerName} needs a base URL`);
+		}
+		await store.putLocalSlot(providerName, {
+			id: slotId,
+			kind: "local",
+			label: existing?.label ?? slotId,
+			warningAcceptedAt,
+			baseUrl,
+		});
+		context.ui.notify(`Added local account ${providerName}/${slotId} on ${baseUrl}`, "info");
+		return;
 	}
 
 	const credential = await login(providerName, slotId, context);
@@ -410,8 +440,11 @@ export function registerAccounts(pi: ExtensionAPI, dependencies: AccountsDepende
 
 	if (typeof pi.on === "function") {
 		pi.on("before_provider_headers", async (event, context) => {
-			const provider = context.model?.provider;
-			if (provider === undefined || !isPoolId(provider)) return;
+			const modelProvider = context.model?.provider;
+			// `llama` is served by Pi's built-in `llama.cpp`, so the pool a request
+			// belongs to is not always the provider id it carries.
+			const provider = modelProvider === undefined ? undefined : poolIdForProvider(modelProvider);
+			if (provider === undefined) return;
 			const accounts = await resolved.store.read();
 			// Hot path: the cache is read synchronously and never refreshed here,
 			// so no provider call stands between a turn and its headers.
@@ -427,7 +460,12 @@ export function registerAccounts(pi: ExtensionAPI, dependencies: AccountsDepende
 			if (active === undefined || active.poolId !== provider) {
 				return;
 			}
-			const credential = (await resolved.store.readSecrets())[`${active.poolId}/${active.slot.id}`];
+			// A local slot carries no credential unless the operator referenced one:
+			// a placeholder token would be a secret K-π invented.
+			const secretName =
+				active.slot.kind === "local" ? active.slot.secretRef : `${active.poolId}/${active.slot.id}`;
+			if (secretName === undefined) return;
+			const credential = (await resolved.store.readSecrets())[secretName];
 			const token =
 				credential?.type === "oauth"
 					? credential.access

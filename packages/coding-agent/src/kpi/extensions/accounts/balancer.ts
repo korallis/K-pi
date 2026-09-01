@@ -1,6 +1,6 @@
 import type { Model } from "@earendil-works/pi-ai";
 
-import type { AccountSlot, AccountsDocument, PoolId } from "./store.ts";
+import { type AccountSlot, type AccountsDocument, isLocalPool, type PoolId } from "./store.ts";
 import type { UsageView } from "./usage/types.ts";
 
 export const DEFAULT_FALLBACK_CHAIN: readonly PoolId[] = [
@@ -163,7 +163,7 @@ export class AccountBalancer {
 	 * catalog answers, so only the failover path may act on that.
 	 */
 	select(requestedPool: PoolId, accounts: AccountsDocument, usage?: UsageView): Selection | undefined {
-		for (const poolId of this.poolOrder(requestedPool, accounts.fallback)) {
+		for (const poolId of this.poolOrder(requestedPool, accounts)) {
 			const selection = this.selectInFamily(poolId, accounts, usage);
 			if (selection !== undefined) {
 				return selection;
@@ -239,7 +239,35 @@ export class AccountBalancer {
 		return (tier === undefined ? undefined : candidates.find((model) => tier.test(model.id))) ?? candidates[0];
 	}
 
-	private poolOrder(requested: PoolId, configured: readonly PoolId[]): PoolId[] {
-		return [requested, ...configured.filter((poolId) => poolId !== requested)];
+	/**
+	 * The requested pool first, then the chain.
+	 *
+	 * A local pool is different: AC-27.5 keeps local slots out of the default
+	 * cloud chain, and the converse matters just as much — a run on a local
+	 * server must not escape to a paid cloud seat on its own. So a local request
+	 * falls back only to other local pools, unless the operator's own chain names
+	 * that local pool, in which case whatever they put after it applies.
+	 */
+	private poolOrder(requested: PoolId, accounts: AccountsDocument): PoolId[] {
+		const configured = accounts.fallback;
+		if (!isLocalPool(requested)) {
+			return [requested, ...configured.filter((poolId) => poolId !== requested)];
+		}
+		const placed = configured.indexOf(requested);
+		if (placed >= 0) {
+			// The operator put this local pool in the chain themselves, so whatever
+			// they ordered after it — cloud included — is their decision.
+			return [requested, ...configured.slice(placed + 1)];
+		}
+		// Otherwise stay local: the other configured local families, chain order
+		// first so an operator's partial ordering still counts.
+		const locals = Object.keys(accounts.pools).filter(
+			(poolId): poolId is PoolId => isLocalPool(poolId) && poolId !== requested,
+		);
+		return [
+			requested,
+			...configured.filter((poolId) => locals.includes(poolId)),
+			...locals.filter((poolId) => !configured.includes(poolId)),
+		];
 	}
 }
