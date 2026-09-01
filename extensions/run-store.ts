@@ -43,6 +43,8 @@ export interface Task {
   playbook?: string;
   runtime_dependencies?: string[];
   dependency_baseline?: string[];
+  /** The one slice an implement round ships. Never inferred from modules[0]. */
+  current_module_id?: string;
 }
 
 export function writeAllowForTask(

@@ -9,6 +9,23 @@
   "keywords": [
     "pi-package"
   ],
+  "files": [
+    "README.md",
+    "AGENTS.md",
+    "extensions/",
+    "graphs/",
+    "prompts/",
+    "schemas/",
+    "skills/",
+    "templates/",
+    "themes/",
+    "kstack/generated/",
+    "kstack/overlay/",
+    "kstack/mode.ts",
+    "kstack/models.ts",
+    "kstack/NOTICE",
+    "kstack/UPSTREAM.md"
+  ],
   "scripts": {
     "test": "node --test --experimental-strip-types test/*.test.ts",
     "lint": "tsc --noEmit --noUnusedLocals --noUnusedParameters",
