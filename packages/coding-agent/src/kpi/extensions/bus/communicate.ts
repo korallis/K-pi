@@ -1,8 +1,8 @@
 import { Type } from "@earendil-works/pi-ai";
 import { defineTool, type ExtensionAPI } from "../../../core/extensions/types.ts";
 
-import { readActiveJob } from "../run-store.ts";
-import { assertClaimInModule, readDuneStack } from "../stack.ts";
+import { readActiveJob, readTaskForJob } from "../run-store.ts";
+import { assertClaimInModule, freezeCurrentSlice, stackRequiredFor } from "../stack.ts";
 import { BackgroundBus, type WorkerLauncher } from "./spawn.ts";
 
 export function registerBackgroundBus(pi: ExtensionAPI, launcher?: WorkerLauncher): void {
@@ -69,13 +69,13 @@ export function registerBackgroundBus(pi: ExtensionAPI, launcher?: WorkerLaunche
 			async execute(_id, params, _signal, _update, context) {
 				const job = await readActiveJob(context.cwd);
 				if (job !== undefined) {
-					try {
-						const stack = await readDuneStack(job.directory);
-						const module = stack.modules[0];
-						if (module === undefined) throw new Error("Dune stack has no current module");
-						assertClaimInModule(context.cwd, params.path, module);
-					} catch (error) {
-						if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+					// The same frozen slice the graph enforces: a worker and the graph
+					// must not disagree about where the current module ends, and a
+					// missing or stale map denies the claim rather than widening it.
+					const task = await readTaskForJob(context.cwd, job.jobId);
+					if (stackRequiredFor(task)) {
+						const { module } = await freezeCurrentSlice(context.cwd, job.directory, task);
+						await assertClaimInModule(context.cwd, params.path, module);
 					}
 				}
 				await (await activeBus(context.cwd)).claim(params.agent_id, params.path);

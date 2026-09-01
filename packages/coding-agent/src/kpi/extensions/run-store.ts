@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { Dirent } from "node:fs";
 import { mkdir, open, readdir, readFile, rename, rm, stat } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
@@ -190,6 +190,33 @@ export async function createJob(projectRoot: string, task: Task, context = ""): 
 		context,
 		eventsPath,
 	};
+}
+
+/**
+ * The hash of what the job must achieve.
+ *
+ * `current_module_id` and `playbook` are deliberately excluded. They select
+ * which slice this round owns and which rigor playbook shapes its steps, and
+ * both are set by an editor that runs while the job is already open - the plan
+ * re-freezing the slice, the K-mode matcher naming the playbook. Folding them in
+ * would make every selection look like a changed contract and stale the research
+ * and stack bound to it. Goal, non-goals, acceptance, constraints, gates and
+ * caps - the things the job is judged against - are all still covered.
+ */
+export function contractHash(task: Task): string {
+	const { current_module_id: _slice, playbook: _playbook, ...contract } = task;
+	return `sha256:${createHash("sha256").update(JSON.stringify(contract)).digest("hex")}`;
+}
+
+/** The frozen task contract for a job, without its context pack. */
+export async function readTaskForJob(projectRoot: string, jobId: string): Promise<Task> {
+	assertJobId(jobId);
+	const source = await readFile(join(projectRoot, CONFIG_DIR_NAME, "runs", jobId, "task.json"), "utf8");
+	const task = JSON.parse(source) as Task;
+	if (task.job_id !== jobId) {
+		throw new Error(`Job id mismatch: expected ${jobId}, found ${task.job_id}`);
+	}
+	return task;
 }
 
 export async function readJob(projectRoot: string, jobId: string): Promise<Job> {

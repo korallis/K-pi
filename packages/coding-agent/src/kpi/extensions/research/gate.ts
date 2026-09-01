@@ -1,8 +1,7 @@
-import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { isJsonObject } from "../graph/schema.ts";
-import { atomicWrite, type Task } from "../run-store.ts";
+import { atomicWrite, contractHash, type Task } from "../run-store.ts";
 import type { ResearchMode } from "../settings.ts";
 import { exaSearch } from "./exa.ts";
 import { perplexitySearch } from "./perplexity.ts";
@@ -45,8 +44,9 @@ export interface ResearchDependencies {
 	signal?: AbortSignal;
 }
 
+/** Research binds to what the job must achieve, not to which slice is current. */
 export function taskHash(task: Task): string {
-	return `sha256:${createHash("sha256").update(JSON.stringify(task)).digest("hex")}`;
+	return contractHash(task);
 }
 
 /**

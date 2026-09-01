@@ -1,5 +1,5 @@
-AC-01: GET /health returns status 200; cmd npm test exits 0; writes only src/server.js and test/health.test.js
-AC-02: GET /health returns JSON {"status":"ok"}; cmd npm test exits 0; writes only src/server.js and test/health.test.js
-AC-03: GET /health returns application/json; cmd npm test exits 0; writes only src/server.js and test/health.test.js
-AC-04: Unknown routes continue to return status 404; cmd npm test exits 0; writes only src/server.js and test/health.test.js
-AC-05: The healthcheck adds no dependencies; cmd npm test exits 0; writes only src/server.js and test/health.test.js
+AC-01: GET /health returns status 200; cmd npm test exits 0; writes only src/health/** and test/health/**
+AC-02: GET /health returns JSON {"status":"ok"}; cmd npm test exits 0; writes only src/health/** and test/health/**
+AC-03: GET /health returns application/json; cmd npm test exits 0; writes only src/health/** and test/health/**
+AC-04: Unknown routes continue to return status 404; cmd npm test exits 0; writes only src/health/** and test/health/**
+AC-05: The healthcheck adds no dependencies; cmd npm test exits 0; writes only src/health/** and test/health/**

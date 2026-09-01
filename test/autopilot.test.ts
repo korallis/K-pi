@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile as execFileCallback } from "node:child_process";
-import { cp, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -79,12 +79,44 @@ function nodeId(prompt: string): string {
 	return "retry";
 }
 
+/** The map the plan node writes, exactly as `dune-architecture.md` requires. */
+const healthStack = JSON.stringify(
+	{
+		version: 1,
+		shape: "dune",
+		delivery: "vertical",
+		root: "src",
+		current_module_id: "health",
+		modules: [
+			{
+				id: "health",
+				purpose: "healthcheck endpoint and its tests",
+				folder: "src/health",
+				interface: "src/health/api.ts",
+				allowed_paths: ["src/health/**", "test/health/**"],
+				depends_on: [],
+			},
+		],
+		scaffold_first: true,
+	},
+	null,
+	2,
+);
+
+async function writePlannedStack(directory: string, jobId: string, document = healthStack): Promise<void> {
+	const runDirectory = join(directory, ".kpi", "runs", jobId);
+	await mkdir(runDirectory, { recursive: true });
+	await writeFile(join(runDirectory, "stack.json"), `${document}\n`);
+}
+
 function autoSessions(
 	directory: string,
 	executed: string[],
 	behavior: {
 		reviewResponse?: string;
 		violateBounds?: boolean;
+		jobId?: string;
+		stack?: string;
 	} = {},
 ): GraphAgentSessionFactory {
 	let sessionNumber = 0;
@@ -99,8 +131,13 @@ function autoSessions(
 					const detected = nodeId(prompt);
 					if (detected !== "retry") currentNode = detected;
 					executed.push(currentNode || detected);
-					if (currentNode === "implement") {
-						await writeFile(join(directory, "src", "server.js"), implementedServer);
+					if (currentNode === "plan" || currentNode === "plan-check") {
+						// Plan writes the map. The control plane freezes it before implement.
+						if (behavior.jobId !== undefined) {
+							await writePlannedStack(directory, behavior.jobId, behavior.stack);
+						}
+					} else if (currentNode === "implement") {
+						await writeFile(join(directory, "src", "health", "server.js"), implementedServer);
 						if (behavior.violateBounds === true) {
 							await writeFile(join(directory, "outside.txt"), "not allowed\n");
 						}
@@ -214,7 +251,7 @@ test("autopilot healthcheck reaches DONE with one commit and no human node", asy
 	const jobId = "20260831-healthcheck-auto";
 	const initialHead = await git(directory, "rev-parse", "HEAD");
 	const executed: string[] = [];
-	const harness = commandHarness(directory, autoSessions(directory, executed), jobId);
+	const harness = commandHarness(directory, autoSessions(directory, executed, { jobId }), jobId);
 	try {
 		const task = await readFile(join(directory, "task.txt"), "utf8");
 		await harness.command(`--mode autopilot ${task}`, harness.context);
@@ -244,7 +281,7 @@ test("an autopilot write outside bounds stops UNSAFE without a commit", async ()
 	const jobId = "20260831-bounds-unsafe";
 	const initialHead = await git(directory, "rev-parse", "HEAD");
 	const executed: string[] = [];
-	const harness = commandHarness(directory, autoSessions(directory, executed, { violateBounds: true }), jobId);
+	const harness = commandHarness(directory, autoSessions(directory, executed, { violateBounds: true, jobId }), jobId);
 	try {
 		const task = await readFile(join(directory, "task.txt"), "utf8");
 		await harness.command(`--mode autopilot ${task}`, harness.context);
@@ -267,7 +304,7 @@ test("an untestable reviewer issue stops autopilot at NEEDS_HUMAN", async () => 
 	const executed: string[] = [];
 	const harness = commandHarness(
 		directory,
-		autoSessions(directory, executed, { reviewResponse: blockedVerdict }),
+		autoSessions(directory, executed, { reviewResponse: blockedVerdict, jobId }),
 		jobId,
 	);
 	try {
@@ -289,7 +326,7 @@ test("shipping twice for one job leaves one marker and one commit", async () => 
 	const jobId = "20260831-healthcheck-replay";
 	const initialHead = await git(directory, "rev-parse", "HEAD");
 	const executed: string[] = [];
-	const harness = commandHarness(directory, autoSessions(directory, executed), jobId);
+	const harness = commandHarness(directory, autoSessions(directory, executed, { jobId }), jobId);
 	try {
 		const task = await readFile(join(directory, "task.txt"), "utf8");
 		await harness.command(`--mode autopilot ${task}`, harness.context);
@@ -306,7 +343,7 @@ test("shipping twice for one job leaves one marker and one commit", async () => 
 		// A crash after the commit loses the checkpoint's knowledge of it, but not
 		// the marker. Replaying the run must be a no-op: the graph routes past ship.
 		const resumeExecuted: string[] = [];
-		const replay = commandHarness(directory, autoSessions(directory, resumeExecuted), jobId);
+		const replay = commandHarness(directory, autoSessions(directory, resumeExecuted, { jobId }), jobId);
 		await replay.command(jobId, replay.context);
 		assert.deepEqual(
 			replay.notifications.filter((message) => message.includes("failed")),
@@ -328,7 +365,7 @@ test("a replay whose checkpoint predates the commit still refuses a second one",
 	const jobId = "20260831-healthcheck-crash";
 	const initialHead = await git(directory, "rev-parse", "HEAD");
 	const executed: string[] = [];
-	const harness = commandHarness(directory, autoSessions(directory, executed), jobId);
+	const harness = commandHarness(directory, autoSessions(directory, executed, { jobId }), jobId);
 	try {
 		const task = await readFile(join(directory, "task.txt"), "utf8");
 		await harness.command(`--mode autopilot ${task}`, harness.context);
@@ -342,7 +379,7 @@ test("a replay whose checkpoint predates the commit still refuses a second one",
 		await writeFile(join(runDirectory, "state.json"), `${JSON.stringify(document, null, 2)}\n`);
 
 		const resumeExecuted: string[] = [];
-		const replay = commandHarness(directory, autoSessions(directory, resumeExecuted), jobId);
+		const replay = commandHarness(directory, autoSessions(directory, resumeExecuted, { jobId }), jobId);
 		await replay.command(jobId, replay.context);
 		assert.deepEqual(
 			replay.notifications.filter((message) => message.includes("failed")),
@@ -375,8 +412,10 @@ test("autopilot cannot release from model prose alone", async () => {
 					const detected = nodeId(prompt);
 					if (detected !== "retry") currentNode = detected;
 					executed.push(currentNode || detected);
-					if (currentNode === "implement") {
-						await writeFile(join(directory, "src", "server.js"), implementedServer);
+					if (currentNode === "plan" || currentNode === "plan-check") {
+						await writePlannedStack(directory, jobId);
+					} else if (currentNode === "implement") {
+						await writeFile(join(directory, "src", "health", "server.js"), implementedServer);
 					} else if (currentNode === "test") {
 						lastAssistantText = JSON.stringify({
 							head: await git(directory, "rev-parse", "HEAD"),
@@ -441,8 +480,10 @@ test("an unrelated conventional commit never counts as this job shipping", async
 					const detected = nodeId(prompt);
 					if (detected !== "retry") currentNode = detected;
 					executed.push(currentNode || detected);
-					if (currentNode === "implement") {
-						await writeFile(join(directory, "src", "server.js"), implementedServer);
+					if (currentNode === "plan" || currentNode === "plan-check") {
+						await writePlannedStack(directory, jobId);
+					} else if (currentNode === "implement") {
+						await writeFile(join(directory, "src", "health", "server.js"), implementedServer);
 						await writeFile(join(directory, "src", "unrelated.js"), "export const x = 1;\n");
 						await git(directory, "add", "src/unrelated.js");
 						await git(directory, "commit", "-m", "chore(deps): unrelated housekeeping");
@@ -485,7 +526,7 @@ test("a crash after the marked commit recovers exactly once, even behind later c
 	const jobId = "20260831-healthcheck-recover";
 	const initialHead = await git(directory, "rev-parse", "HEAD");
 	const executed: string[] = [];
-	const harness = commandHarness(directory, autoSessions(directory, executed), jobId);
+	const harness = commandHarness(directory, autoSessions(directory, executed, { jobId }), jobId);
 	try {
 		const task = await readFile(join(directory, "task.txt"), "utf8");
 		await harness.command(`--mode autopilot ${task}`, harness.context);
@@ -507,7 +548,7 @@ test("a crash after the marked commit recovers exactly once, even behind later c
 		const headBeforeReplay = await git(directory, "rev-parse", "HEAD");
 
 		const resumeExecuted: string[] = [];
-		const replay = commandHarness(directory, autoSessions(directory, resumeExecuted), jobId);
+		const replay = commandHarness(directory, autoSessions(directory, resumeExecuted, { jobId }), jobId);
 		await replay.command(jobId, replay.context);
 		assert.deepEqual(
 			replay.notifications.filter((message) => message.includes("failed")),
@@ -547,8 +588,10 @@ test("two commits claiming one job fail closed", async () => {
 					const detected = nodeId(prompt);
 					if (detected !== "retry") currentNode = detected;
 					executed.push(currentNode || detected);
-					if (currentNode === "implement") {
-						await writeFile(join(directory, "src", "server.js"), implementedServer);
+					if (currentNode === "plan" || currentNode === "plan-check") {
+						await writePlannedStack(directory, jobId);
+					} else if (currentNode === "implement") {
+						await writeFile(join(directory, "src", "health", "server.js"), implementedServer);
 					} else if (currentNode === "test") {
 						lastAssistantText = JSON.stringify({
 							head: await git(directory, "rev-parse", "HEAD"),
@@ -591,7 +634,7 @@ test("a forged or mismatched ship marker is ignored and never skips shipping", a
 	const directory = await fixture("healthcheck-auto");
 	const jobId = "20260831-healthcheck-forged";
 	const executed: string[] = [];
-	const harness = commandHarness(directory, autoSessions(directory, executed), jobId);
+	const harness = commandHarness(directory, autoSessions(directory, executed, { jobId }), jobId);
 	try {
 		const task = await readFile(join(directory, "task.txt"), "utf8");
 		await harness.command(`--mode autopilot ${task}`, harness.context);
@@ -617,7 +660,7 @@ test("a forged or mismatched ship marker is ignored and never skips shipping", a
 			// commit is still there, so recovery finalizes from git and overwrites
 			// the forgery with the truth.
 			const replayExecuted: string[] = [];
-			const replay = commandHarness(directory, autoSessions(directory, replayExecuted), jobId);
+			const replay = commandHarness(directory, autoSessions(directory, replayExecuted, { jobId }), jobId);
 			const document = JSON.parse(await readFile(join(runDirectory, "state.json"), "utf8")) as Record<
 				string,
 				unknown

@@ -270,7 +270,7 @@ test("research caps results and falls back after a preferred 429", async () => {
 	}
 });
 
-test("Dune stack rejects generic maps and outside-module claims", () => {
+test("Dune stack rejects generic maps and outside-module claims", async () => {
 	const stack: DuneStack = {
 		version: 1,
 		shape: "dune",
@@ -289,7 +289,8 @@ test("Dune stack rejects generic maps and outside-module claims", () => {
 		],
 	};
 	assert.doesNotThrow(() => assertDuneStack(stack));
-	assert.throws(() => assertClaimInModule("/repo", "src/billing/a.ts", stack.modules[0]), /UNSAFE/u);
+	// The claim boundary is asynchronous now: it resolves links before deciding.
+	await assert.rejects(assertClaimInModule("/repo", "src/billing/a.ts", stack.modules[0]), /UNSAFE/u);
 	stack.modules[0] = {
 		...stack.modules[0],
 		id: "helpers",

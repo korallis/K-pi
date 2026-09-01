@@ -27,9 +27,9 @@ import { assertMinimalistBounds } from "./minimalist.ts";
 import { isWriteAllowed } from "./policy.ts";
 import { assertResearchFresh, conductResearch } from "./research/gate.ts";
 import { ResearchShortfallError, resolveResearchKeys } from "./research/session.ts";
-import { atomicWrite, createJob, type Task, writeAllowForTask } from "./run-store.ts";
+import { atomicWrite, createJob, readTaskForJob, type Task, writeAllowForTask } from "./run-store.ts";
 import { readKpiSettings } from "./settings.ts";
-import { readDuneStack, scaffoldModule } from "./stack.ts";
+import { assertScaffoldedBeforeBehavior, freezeCurrentSlice, scaffoldModule, stackRequiredFor } from "./stack.ts";
 
 const execFile = promisify(execFileCallback);
 const PLAN_FILES = ["requirements.md", "design.md", "tasks.md"] as const;
@@ -834,13 +834,16 @@ async function driveUntilPause(
 		if (state.active.includes("implement")) {
 			try {
 				await assertResearchFresh(jobDirectory, task);
-				try {
-					const stack = await readDuneStack(jobDirectory);
-					const module = stack.modules[0];
-					if (module === undefined) throw new Error("Dune stack has no current module");
+				// The contract is re-read here because advancing the slice, or naming a
+				// playbook, is an edit that happens while the job is open. The map is a
+				// precondition, not a convenience: it is read, validated and bound to
+				// this contract before the node's first write, and a missing or stale
+				// stack stops the round rather than being regenerated.
+				const contract = await readTaskForJob(projectRoot, task.job_id).catch(() => task);
+				if (stackRequiredFor(contract)) {
+					const { module } = await freezeCurrentSlice(projectRoot, jobDirectory, contract);
 					await scaffoldModule(projectRoot, module);
-				} catch (error) {
-					if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+					await assertScaffoldedBeforeBehavior(projectRoot, module);
 				}
 			} catch (error) {
 				return {

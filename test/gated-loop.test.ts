@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile as execFileCallback } from "node:child_process";
-import { cp, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -85,10 +85,51 @@ function nodeId(prompt: string): string {
 	return "retry";
 }
 
+/** The map the plan node writes, exactly as `dune-architecture.md` requires. */
+const healthStack = JSON.stringify(
+	{
+		version: 1,
+		shape: "dune",
+		delivery: "vertical",
+		root: "src",
+		current_module_id: "health",
+		modules: [
+			{
+				id: "health",
+				purpose: "healthcheck endpoint and its tests",
+				folder: "src/health",
+				interface: "src/health/api.ts",
+				allowed_paths: ["src/health/**", "test/health/**"],
+				depends_on: [],
+			},
+		],
+		scaffold_first: true,
+	},
+	null,
+	2,
+);
+
+async function writePlannedStack(directory: string, jobId: string, document: string = healthStack): Promise<void> {
+	const runDirectory = join(directory, ".kpi", "runs", jobId);
+	await mkdir(runDirectory, { recursive: true });
+	await writeFile(join(runDirectory, "stack.json"), `${document}\n`);
+}
+
 function loopSessions(
 	directory: string,
 	executed: string[],
-	options: { validateCommands?: boolean; reviewResponses?: string[] } = {},
+	options: {
+		validateCommands?: boolean;
+		reviewResponses?: string[];
+		jobId?: string;
+		/** A document to write, or null when the plan writes no map at all. */
+		stack?: string | null;
+		/**
+		 * Stands in for the K-mode matcher that owns AC-19.2: the name it would have
+		 * written onto `task.json.playbook` before implement.
+		 */
+		playbook?: string;
+	} = {},
 ): GraphAgentSessionFactory {
 	let sessionNumber = 0;
 	let reviewAttempt = 0;
@@ -105,7 +146,18 @@ function loopSessions(
 					if (detected !== "retry") currentNode = detected;
 					executed.push(currentNode || detected);
 
-					if (currentNode === "implement") {
+					if (currentNode === "plan" || currentNode === "plan-check") {
+						// Plan writes the map. The control plane freezes it before implement.
+						if (options.jobId !== undefined && options.stack !== null) {
+							await writePlannedStack(directory, options.jobId, options.stack ?? undefined);
+						}
+						if (options.jobId !== undefined && options.playbook !== undefined) {
+							const taskPath = join(directory, ".kpi", "runs", options.jobId, "task.json");
+							const contract = JSON.parse(await readFile(taskPath, "utf8")) as Record<string, unknown>;
+							contract.playbook = options.playbook;
+							await writeFile(taskPath, `${JSON.stringify(contract, null, 2)}\n`);
+						}
+					} else if (currentNode === "implement") {
 						if (options.validateCommands === true && implementationAttempt === 0) {
 							await assert.rejects(
 								execFile("npm", ["test"], {
@@ -115,7 +167,7 @@ function loopSessions(
 							);
 						}
 						implementationAttempt += 1;
-						await writeFile(join(directory, "src", "server.js"), implementedServer);
+						await writeFile(join(directory, "src", "health", "server.js"), implementedServer);
 					} else if (currentNode === "test") {
 						if (options.validateCommands === true) {
 							await execFile("npm", ["test"], {
@@ -207,7 +259,7 @@ test("loop on healthcheck fixture reaches human confirm with green gates", async
 	const executed: string[] = [];
 	const confirmations: string[] = [];
 	try {
-		assert.ok((await readFile(join(directory, "test", "health.test.js"), "utf8")).includes("GET /health"));
+		assert.ok((await readFile(join(directory, "test", "health", "health.test.js"), "utf8")).includes("GET /health"));
 		const task = await readFile(join(directory, "task.txt"), "utf8");
 		const red = await execFile("npm", ["test"], {
 			cwd: directory,
@@ -219,7 +271,7 @@ test("loop on healthcheck fixture reaches human confirm with green gates", async
 		assert.equal(red.failed, true, red.output);
 		const harness = commandHarness(
 			directory,
-			loopSessions(directory, executed, { validateCommands: true }),
+			loopSessions(directory, executed, { validateCommands: true, jobId }),
 			jobId,
 			confirmations,
 		);
@@ -251,7 +303,7 @@ test("kpi --plan freezes and hashes plan files without executing specify", async
 	const jobId = "20260831-healthcheck-plan";
 	const executed: string[] = [];
 	try {
-		const harness = commandHarness(directory, loopSessions(directory, executed), jobId, []);
+		const harness = commandHarness(directory, loopSessions(directory, executed, { jobId }), jobId, []);
 
 		await harness.commands.get("kpi")!("--plan specs/healthcheck", harness.context);
 
@@ -466,6 +518,325 @@ test("a non-conventional job-marked commit is rejected", async () => {
 		await git(directory, "commit", "-m", "shipped it\n\nKPI-Job: job-e");
 
 		await assert.rejects(findJobCommit(directory, "job-e", previousHead), /not Conventional Commits: shipped it/u);
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+function confirmationsFor(harness: { notifications: string[] }): string[] {
+	return harness.notifications.filter((message) => message.includes("Approve"));
+}
+
+/** Every stack the plan could hand implement, and what must happen next. */
+const invalidStacks: { name: string; document: string; reason: RegExp }[] = [
+	{
+		name: "no stack at all",
+		document: "",
+		reason: /stack\.json is missing/u,
+	},
+	{
+		name: "a stack that names no slice",
+		document: JSON.stringify({
+			version: 1,
+			shape: "dune",
+			delivery: "vertical",
+			root: "src",
+			modules: [
+				{
+					id: "health",
+					purpose: "healthcheck endpoint",
+					folder: "src/health",
+					interface: "src/health/api.ts",
+					allowed_paths: ["src/health/**", "test/health/**"],
+					depends_on: [],
+				},
+			],
+			scaffold_first: true,
+		}),
+		reason: /must name current_module_id/u,
+	},
+	{
+		name: "a slice that names no module",
+		document: JSON.stringify({
+			version: 1,
+			shape: "dune",
+			delivery: "vertical",
+			root: "src",
+			current_module_id: "nope",
+			modules: [
+				{
+					id: "health",
+					purpose: "healthcheck endpoint",
+					folder: "src/health",
+					interface: "src/health/api.ts",
+					allowed_paths: ["src/health/**", "test/health/**"],
+					depends_on: [],
+				},
+			],
+			scaffold_first: true,
+		}),
+		reason: /does not name exactly one module/u,
+	},
+	{
+		name: "a folder that does not match its id",
+		document: JSON.stringify({
+			version: 1,
+			shape: "dune",
+			delivery: "vertical",
+			root: "src",
+			current_module_id: "health",
+			modules: [
+				{
+					id: "health",
+					purpose: "healthcheck endpoint",
+					folder: "src/healthcheck",
+					interface: "src/healthcheck/api.ts",
+					allowed_paths: ["src/healthcheck/**", "test/health/**"],
+					depends_on: [],
+				},
+			],
+			scaffold_first: true,
+		}),
+		reason: /Module folder must match id/u,
+	},
+	{
+		name: "a top-level layer folder as the map",
+		document: JSON.stringify({
+			version: 1,
+			shape: "dune",
+			delivery: "vertical",
+			root: "src",
+			current_module_id: "services",
+			modules: [
+				{
+					id: "services",
+					purpose: "every service in the app",
+					folder: "src/services",
+					interface: "src/services/api.ts",
+					allowed_paths: ["src/services/**", "test/services/**"],
+					depends_on: [],
+				},
+			],
+			scaffold_first: true,
+		}),
+		reason: /cannot be a top-level module/u,
+	},
+	{
+		name: "shared with a single consumer",
+		document: JSON.stringify({
+			version: 1,
+			shape: "dune",
+			delivery: "vertical",
+			root: "src",
+			current_module_id: "health",
+			modules: [
+				{
+					id: "health",
+					purpose: "healthcheck endpoint",
+					folder: "src/health",
+					interface: "src/health/api.ts",
+					allowed_paths: ["src/health/**", "test/health/**"],
+					depends_on: ["shared"],
+				},
+				{
+					id: "shared",
+					purpose: "types used by slices",
+					folder: "src/shared",
+					interface: "src/shared/api.ts",
+					allowed_paths: ["src/shared/**", "test/shared/**"],
+					depends_on: [],
+				},
+			],
+			scaffold_first: true,
+		}),
+		reason: /two consuming slices before extraction/u,
+	},
+	{
+		name: "horizontal delivery with no reason",
+		document: JSON.stringify({
+			version: 1,
+			shape: "dune",
+			delivery: "horizontal",
+			root: "src",
+			current_module_id: "health",
+			modules: [
+				{
+					id: "health",
+					purpose: "healthcheck endpoint",
+					folder: "src/health",
+					interface: "src/health/api.ts",
+					allowed_paths: ["src/health/**", "test/health/**"],
+					depends_on: [],
+				},
+			],
+			scaffold_first: true,
+		}),
+		reason: /Horizontal delivery requires a reason/u,
+	},
+	{
+		name: "a vertical plan staging all APIs",
+		document: JSON.stringify({
+			version: 1,
+			shape: "dune",
+			delivery: "vertical",
+			root: "src",
+			current_module_id: "health",
+			modules: [
+				{
+					id: "health",
+					purpose: "all APIs first, then all screens",
+					folder: "src/health",
+					interface: "src/health/api.ts",
+					allowed_paths: ["src/health/**", "test/health/**"],
+					depends_on: [],
+				},
+			],
+			scaffold_first: true,
+		}),
+		reason: /layer sweep/u,
+	},
+];
+
+test("an invalid or missing stack stops implement UNSAFE before any write", async () => {
+	for (const scenario of invalidStacks) {
+		const directory = await fixture();
+		const jobId = "20260901-stack-invalid";
+		const executed: string[] = [];
+		try {
+			const harness = commandHarness(
+				directory,
+				loopSessions(directory, executed, {
+					jobId,
+					// An empty document means the plan wrote no stack at all.
+					stack: scenario.document === "" ? null : scenario.document,
+				}),
+				jobId,
+				[],
+			);
+			await harness.commands.get("loop")!(await readFile(join(directory, "task.txt"), "utf8"), harness.context);
+
+			const state = JSON.parse(
+				await readFile(join(directory, ".kpi", "runs", jobId, "state.json"), "utf8"),
+			) as Record<string, unknown>;
+			assert.equal(state.status, "UNSAFE", `${scenario.name}: must stop UNSAFE`);
+			assert.match(String(state.reason), scenario.reason, scenario.name);
+
+			// The implement node never ran, so nothing was written and no commit exists.
+			assert.equal(executed.includes("implement"), false, `${scenario.name}: implement must not run`);
+			assert.equal(executed.includes("ship"), false, `${scenario.name}: ship must not run`);
+			// The scaffold never ran, so the map was never created, and the fixture's
+			// own source is exactly as it shipped.
+			for (const untouched of ["src/health/api.ts", "test/health/index.test.ts"]) {
+				await assert.rejects(
+					readFile(join(directory, untouched), "utf8"),
+					{ code: "ENOENT" },
+					`${scenario.name}: ${untouched} must not exist`,
+				);
+			}
+			assert.match(
+				await readFile(join(directory, "src", "health", "server.js"), "utf8"),
+				/not_found/u,
+				`${scenario.name}: the fixture's source was never rewritten`,
+			);
+			assert.deepEqual(confirmationsFor(harness), [], `${scenario.name}: no operator was asked to approve`);
+		} finally {
+			await rm(directory, { recursive: true, force: true });
+		}
+	}
+});
+
+test("a stale stack stops implement, and re-freezing it lets the round proceed", async () => {
+	const directory = await fixture();
+	const jobId = "20260901-stack-stale";
+	const executed: string[] = [];
+	try {
+		// The plan writes a map bound to a different contract.
+		const staleStack = JSON.stringify({
+			version: 1,
+			shape: "dune",
+			delivery: "vertical",
+			root: "src",
+			current_module_id: "health",
+			task_hash: `sha256:${"0".repeat(64)}`,
+			modules: [
+				{
+					id: "health",
+					purpose: "healthcheck endpoint",
+					folder: "src/health",
+					interface: "src/health/api.ts",
+					allowed_paths: ["src/health/**", "test/health/**"],
+					depends_on: [],
+				},
+			],
+			scaffold_first: true,
+		});
+		const harness = commandHarness(
+			directory,
+			loopSessions(directory, executed, { jobId, stack: staleStack }),
+			jobId,
+			[],
+		);
+		await harness.commands.get("loop")!(await readFile(join(directory, "task.txt"), "utf8"), harness.context);
+
+		const state = JSON.parse(await readFile(join(directory, ".kpi", "runs", jobId, "state.json"), "utf8")) as Record<
+			string,
+			unknown
+		>;
+		assert.equal(state.status, "UNSAFE");
+		assert.match(String(state.reason), /frozen against a different task/u);
+		assert.equal(executed.includes("implement"), false);
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("a valid stack reaches implement, scaffolds in order, and freezes the slice", async () => {
+	const directory = await fixture();
+	const jobId = "20260901-stack-valid";
+	const executed: string[] = [];
+	const confirmations: string[] = [];
+	try {
+		const harness = commandHarness(directory, loopSessions(directory, executed, { jobId }), jobId, confirmations);
+		await harness.commands.get("loop")!(await readFile(join(directory, "task.txt"), "utf8"), harness.context);
+
+		assert.ok(executed.includes("implement"), "a valid map reaches implement");
+		const runDirectory = join(directory, ".kpi", "runs", jobId);
+		const task = JSON.parse(await readFile(join(runDirectory, "task.json"), "utf8")) as {
+			current_module_id?: string;
+		};
+		assert.equal(task.current_module_id, "health", "the plan's slice is frozen into the job contract");
+
+		// The scaffold exists, and it was created before the behaviour file.
+		for (const path of ["src/health/api.ts", "test/health/index.test.ts", "src/health/server.js"]) {
+			assert.equal((await stat(join(directory, path))).isFile(), true, path);
+		}
+		const state = JSON.parse(await readFile(join(runDirectory, "state.json"), "utf8")) as Record<string, unknown>;
+		assert.equal(state.status, "DONE", `expected DONE, saw ${String(state.status)}: ${String(state.reason)}`);
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("a no-stack playbook needs no map", async () => {
+	const directory = await fixture();
+	const jobId = "20260901-stack-exempt";
+	const executed: string[] = [];
+	try {
+		// No map is written, and the playbook is one of the named exemptions.
+		const harness = commandHarness(
+			directory,
+			loopSessions(directory, executed, { jobId, stack: null, playbook: "typo" }),
+			jobId,
+			[],
+		);
+		await harness.commands.get("loop")!(await readFile(join(directory, "task.txt"), "utf8"), harness.context);
+
+		const state = JSON.parse(await readFile(join(directory, ".kpi", "runs", jobId, "state.json"), "utf8")) as Record<
+			string,
+			unknown
+		>;
+		assert.notEqual(state.status, "UNSAFE", `an exempt playbook must not be blocked: ${String(state.reason)}`);
+		assert.ok(executed.includes("implement"), "an exempt playbook still implements");
 	} finally {
 		await rm(directory, { recursive: true, force: true });
 	}

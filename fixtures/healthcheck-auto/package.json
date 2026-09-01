@@ -4,6 +4,6 @@
   "type": "module",
   "scripts": {
     "test": "node --test",
-    "lint": "node --check src/server.js && node --check test/health.test.js"
+    "lint": "node --check src/health/server.js && node --check test/health/health.test.js"
   }
 }
