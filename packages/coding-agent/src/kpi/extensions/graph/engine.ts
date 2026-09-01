@@ -7,14 +7,27 @@ import { CONFIG_DIR_NAME, getKpiResourceDir } from "../../../config.ts";
 import { type CreateAgentSessionOptions, createAgentSession } from "../../../core/sdk.ts";
 import { SessionManager } from "../../../core/session-manager.ts";
 
+import { appendEvent } from "../append-log.ts";
 import { atomicWrite } from "../run-store.ts";
+import {
+	batchReadyNodes,
+	type BudgetExhaustion,
+	findExhaustedNodeLimit,
+	findExhaustedRunLimit,
+	isBudgetState,
+	resolveGraphBudgetLimits,
+	type RunBudgetReading,
+} from "./budget.ts";
 import { type JsonSchema, validateJsonSchema } from "./json-schema.ts";
 import {
 	type AgentGraphNode,
+	type GraphBudgetLimits,
+	type GraphBudgetOverrides,
 	type GraphDefinition,
 	type GraphEdge,
 	type GraphNode,
 	type GraphRunState,
+	type GraphTerminalState,
 	isJsonObject,
 	type JsonObject,
 	type JsonValue,
@@ -38,6 +51,17 @@ export interface GraphEngineOptions {
 	projectRoot: string;
 	jobId: string;
 	createAgentSession?: GraphAgentSessionFactory;
+	/** Injected wall clock in epoch milliseconds. */
+	now?: () => number;
+	/** Injected accumulated job cost in USD. */
+	accumulatedCostUsd?: () => number;
+	/** Cap overrides from the validated task/job contract. */
+	limits?: GraphBudgetOverrides;
+	/**
+	 * Sink for the one product terminal event a cap produces. Defaults to
+	 * appending `loop.terminal` to the run's event log.
+	 */
+	emitTerminal?: (terminal: GraphTerminalState) => Promise<void>;
 }
 
 export interface GraphHumanUI {
@@ -308,6 +332,8 @@ export class GraphEngine {
 	private readonly nodes: Map<string, GraphNode>;
 	private readonly sessionFactory: GraphAgentSessionFactory;
 	private readonly threadSessions = new Map<string, GraphAgentSession>();
+	private readonly now: () => number;
+	private readonly accumulatedCostUsd: () => number;
 	private runState: GraphRunState;
 
 	constructor(graph: GraphDefinition, options: GraphEngineOptions, initialState?: GraphRunState) {
@@ -316,15 +342,40 @@ export class GraphEngine {
 		this.options = options;
 		this.nodes = new Map(graph.nodes.map((node) => [node.id, node]));
 		this.sessionFactory = options.createAgentSession ?? createAgentSession;
-		this.runState = initialState ?? {
-			graphId: graph.id,
-			jobId: options.jobId,
-			status: "running",
-			superstep: 0,
-			active: [graph.entry],
-			values: {},
-			nodes: Object.fromEntries(graph.nodes.map((node) => [node.id, { status: "pending" as const, runs: 0 }])),
-		};
+		this.now = options.now ?? Date.now;
+		this.accumulatedCostUsd = options.accumulatedCostUsd ?? (() => 0);
+
+		if (initialState === undefined) {
+			const limits = resolveGraphBudgetLimits(graph.limits, options.limits);
+			this.runState = {
+				graphId: graph.id,
+				jobId: options.jobId,
+				status: "running",
+				superstep: 0,
+				active: [graph.entry],
+				values: {},
+				nodes: Object.fromEntries(graph.nodes.map((node) => [node.id, { status: "pending" as const, runs: 0 }])),
+				budget: {
+					limits,
+					startedAtMs: this.now(),
+					elapsedMs: 0,
+					costUsd: 0,
+					round: 0,
+					batches: 0,
+				},
+			};
+		} else {
+			if (!isBudgetState(initialState.budget)) {
+				throw new Error("checkpoint is missing budget counters");
+			}
+			this.runState = initialState;
+			// A restored run keeps the caps it was started under unless the
+			// caller supplies a freshly validated contract.
+			this.runState.budget.limits = resolveGraphBudgetLimits(
+				graph.limits,
+				options.limits ?? initialState.budget.limits,
+			);
+		}
 
 		if (this.runState.graphId !== graph.id || this.runState.jobId !== options.jobId) {
 			throw new Error("checkpoint does not match graph and job");
@@ -333,6 +384,10 @@ export class GraphEngine {
 
 	get state(): Readonly<GraphRunState> {
 		return this.runState;
+	}
+
+	get limits(): Readonly<GraphBudgetLimits> {
+		return this.runState.budget.limits;
 	}
 
 	private runDirectory(): string {
@@ -509,6 +564,63 @@ export class GraphEngine {
 		throw new Error(message);
 	}
 
+	/**
+	 * Folds the injected clock and cost source into the durable counters and
+	 * returns what the run-wide caps are checked against.
+	 */
+	private readBudget(): RunBudgetReading {
+		const budget = this.runState.budget;
+		budget.elapsedMs = Math.max(0, this.now() - budget.startedAtMs);
+		budget.costUsd = this.accumulatedCostUsd();
+		return {
+			superstep: this.runState.superstep,
+			elapsedMs: budget.elapsedMs,
+			costUsd: budget.costUsd,
+		};
+	}
+
+	/**
+	 * A crossed cap is a product outcome, not a crash. The run becomes durably
+	 * `exhausted`, the checkpoint records which cap ended it, and exactly one
+	 * terminal event leaves the engine. `active` is preserved so a run resumed
+	 * under raised caps still knows what it owed.
+	 */
+	private async exhaust(
+		exhaustion: BudgetExhaustion,
+		nodeIds: readonly string[],
+	): Promise<Readonly<GraphRunState>> {
+		this.runState.status = "exhausted";
+		for (const nodeId of nodeIds) {
+			this.runState.nodes[nodeId].status = "exhausted";
+		}
+		const terminal: GraphTerminalState = {
+			status: "EXHAUSTED",
+			limit: exhaustion.limit,
+			reason: exhaustion.reason,
+			round: this.runState.budget.round,
+			superstep: this.runState.superstep,
+			nodes: [...nodeIds],
+		};
+		this.runState.terminal = terminal;
+		this.runState.superstep += 1;
+		await this.writeCheckpoint();
+
+		if (this.options.emitTerminal !== undefined) {
+			await this.options.emitTerminal(terminal);
+			return this.runState;
+		}
+		await appendEvent(join(this.runDirectory(), "events.jsonl"), {
+			ts: new Date(this.now()).toISOString(),
+			type: "loop.terminal",
+			job_id: this.options.jobId,
+			round: terminal.round,
+			node: terminal.nodes[0] ?? "graph",
+			status: terminal.status,
+			reason: terminal.reason,
+		});
+		return this.runState;
+	}
+
 	async runSuperstep(): Promise<Readonly<GraphRunState>> {
 		if (this.runState.status === "interrupted") {
 			throw new Error("graph is interrupted and must be resumed");
@@ -516,11 +628,11 @@ export class GraphEngine {
 		if (this.runState.status !== "running") {
 			return this.runState;
 		}
-		if (this.runState.superstep >= this.graph.limits.maxSteps) {
-			return this.fail("graph exceeded maxSteps", this.runState.active);
-		}
-		if (this.runState.active.length > this.graph.limits.maxConcurrency) {
-			return this.fail("ready nodes exceed maxConcurrency", this.runState.active);
+
+		const limits = this.runState.budget.limits;
+		const runExhaustion = findExhaustedRunLimit(limits, this.readBudget());
+		if (runExhaustion !== undefined) {
+			return this.exhaust(runExhaustion, this.runState.active);
 		}
 
 		const activeNodes = this.runState.active.map((id) => {
@@ -530,6 +642,14 @@ export class GraphEngine {
 			}
 			return node;
 		});
+
+		for (const node of activeNodes) {
+			const nodeExhaustion = findExhaustedNodeLimit(limits, node.id, this.runState.nodes[node.id].runs);
+			if (nodeExhaustion !== undefined) {
+				return this.exhaust(nodeExhaustion, [node.id]);
+			}
+		}
+
 		const humanNode = activeNodes.find((node) => node.type === "human");
 		if (humanNode !== undefined) {
 			if (activeNodes.length !== 1 || humanNode.type !== "human") {
@@ -538,6 +658,7 @@ export class GraphEngine {
 			const nodeState = this.runState.nodes[humanNode.id];
 			nodeState.runs += 1;
 			nodeState.status = "interrupted";
+			this.countRound();
 			this.runState.status = "interrupted";
 			this.runState.pendingHuman = {
 				nodeId: humanNode.id,
@@ -551,20 +672,32 @@ export class GraphEngine {
 
 		for (const node of activeNodes) {
 			const nodeState = this.runState.nodes[node.id];
-			if (nodeState.runs >= this.graph.limits.maxNodeRuns) {
-				return this.fail(`node ${node.id} exceeded maxNodeRuns`, [node.id]);
-			}
 			nodeState.runs += 1;
 			nodeState.status = "running";
 			delete nodeState.error;
 		}
+		this.countRound();
 
-		let results: NodeResult[];
-		try {
-			results = await Promise.all(activeNodes.map((node) => this.executeNode(node)));
-		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
-			return this.fail(message, this.runState.active);
+		const results: NodeResult[] = [];
+		for (const [index, batch] of batchReadyNodes(activeNodes, limits.maxConcurrency).entries()) {
+			if (index > 0) {
+				const batchExhaustion = findExhaustedRunLimit(limits, this.readBudget());
+				if (batchExhaustion !== undefined) {
+					// A superstep commits its writes together, so batches that already
+					// ran are discarded instead of half-committed.
+					return this.exhaust(
+						batchExhaustion,
+						activeNodes.map((node) => node.id),
+					);
+				}
+			}
+			try {
+				results.push(...(await Promise.all(batch.map((node) => this.executeNode(node)))));
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				return this.fail(message, this.runState.active);
+			}
+			this.runState.budget.batches += 1;
 		}
 
 		const seenPaths = new Set<string>();
@@ -583,12 +716,21 @@ export class GraphEngine {
 		for (const nodeId of completedNodeIds) {
 			this.runState.nodes[nodeId].status = "completed";
 		}
+		this.readBudget();
 		this.runState.values = values;
 		this.runState.active = this.nextNodes(completedNodeIds, values);
 		this.runState.status = this.runState.active.length === 0 ? "completed" : "running";
 		this.runState.superstep += 1;
 		await this.writeCheckpoint();
 		return this.runState;
+	}
+
+	/** A round is one more run of the busiest node in the graph. */
+	private countRound(): void {
+		this.runState.budget.round = Object.values(this.runState.nodes).reduce(
+			(round, node) => Math.max(round, node.runs),
+			0,
+		);
 	}
 
 	async runUntilPause(): Promise<Readonly<GraphRunState>> {

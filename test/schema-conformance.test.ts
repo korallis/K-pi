@@ -38,6 +38,7 @@ const task: Task = {
 	playbook: "feature",
 	runtime_dependencies: [],
 	dependency_baseline: ["typescript"],
+	limits: { maxRounds: 5, maxCostUsd: 12.5 },
 	current_module_id: "schema-contract",
 };
 
@@ -69,6 +70,8 @@ test("task, evidence, and verdict schemas match live payloads", async () => {
 	assertValid(verdict, verdictSchema);
 
 	assertInvalid({ ...task, current_module_id: "" }, taskSchema);
+	assertInvalid({ ...task, limits: { maxRounds: 0 } }, taskSchema);
+	assertInvalid({ ...task, limits: { maxTokens: 10 } }, taskSchema);
 	const { head: _head, ...evidenceWithoutHead } = evidence;
 	assertInvalid(evidenceWithoutHead, evidenceSchema);
 	assertInvalid({ ...verdict, status: "GREEN" }, verdictSchema);

@@ -3,6 +3,9 @@ import { dirname, join } from "node:path";
 
 import { CONFIG_DIR_NAME } from "../../config.ts";
 
+import { validateBudgetOverrides } from "./graph/budget.ts";
+import type { GraphBudgetOverrides } from "./graph/schema.ts";
+
 export type CheckKind =
 	| "command"
 	| "file_exists"
@@ -45,6 +48,11 @@ export interface Task {
 	playbook?: string;
 	runtime_dependencies?: string[];
 	dependency_baseline?: string[];
+	/**
+	 * Caps this job runs under. Anything absent falls back to the graph file,
+	 * then to the spec default. Validated before the engine reads it.
+	 */
+	limits?: GraphBudgetOverrides;
 	/** The one slice an implement round ships. Never inferred from modules[0]. */
 	current_module_id?: string;
 }
@@ -113,6 +121,7 @@ export async function atomicWrite(path: string, data: string | Uint8Array): Prom
 
 export async function createJob(projectRoot: string, task: Task, context = ""): Promise<Job> {
 	assertJobId(task.job_id);
+	validateBudgetOverrides(task.limits, `task ${task.job_id} limits`);
 	const runsDirectory = join(projectRoot, CONFIG_DIR_NAME, "runs");
 	const directory = join(runsDirectory, task.job_id);
 	await mkdir(runsDirectory, { recursive: true });
@@ -150,6 +159,7 @@ export async function readJob(projectRoot: string, jobId: string): Promise<Job> 
 	if (task.job_id !== jobId) {
 		throw new Error(`Job id mismatch: expected ${jobId}, found ${task.job_id}`);
 	}
+	validateBudgetOverrides(task.limits, `task ${jobId} limits`);
 
 	return {
 		jobId,

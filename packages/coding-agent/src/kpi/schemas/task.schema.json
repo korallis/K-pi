@@ -64,12 +64,25 @@
       "type": "array",
       "items": { "type": "string", "minLength": 1 }
     },
+    "limits": { "$ref": "#/$defs/taskLimits" },
     "current_module_id": {
       "type": "string",
       "minLength": 1
     }
   },
   "$defs": {
+    "taskLimits": {
+      "type": "object",
+      "properties": {
+        "maxSteps": { "type": "integer", "minimum": 1 },
+        "maxNodeRuns": { "type": "integer", "minimum": 1 },
+        "maxConcurrency": { "type": "integer", "minimum": 1 },
+        "maxRounds": { "type": "integer", "minimum": 1 },
+        "maxCostUsd": { "type": "number", "minimum": 0 },
+        "timeoutMs": { "type": "number", "minimum": 1 }
+      },
+      "additionalProperties": false
+    },
     "acceptanceCriterion": {
       "type": "object",
       "required": ["id", "statement", "required"],

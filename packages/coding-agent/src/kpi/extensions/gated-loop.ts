@@ -12,7 +12,13 @@ import { appendEvent } from "./append-log.ts";
 import { compileAcceptanceCriteria } from "./graph/ac-compiler.ts";
 import { type GraphAgentSessionFactory, GraphEngine, loadNamedGraph } from "./graph/engine.ts";
 import { type GraphRunState, isJsonObject } from "./graph/schema.ts";
-import { createStopState, type StopState, type TerminalStatus, transitionStopState } from "./graph/stop.ts";
+import {
+	createStopState,
+	DEFAULT_MAX_ROUNDS,
+	type StopState,
+	type TerminalStatus,
+	transitionStopState,
+} from "./graph/stop.ts";
 import { assertMinimalistBounds } from "./minimalist.ts";
 import { isWriteAllowed } from "./policy.ts";
 import { assertResearchFresh, conductResearch } from "./research/gate.ts";
@@ -29,6 +35,10 @@ export interface LoopDependencies {
 	createAgentSession?: GraphAgentSessionFactory;
 	onStateChange?: () => Promise<void>;
 	jobId?: string;
+	/** Injected wall clock in epoch milliseconds. */
+	now?: () => number;
+	/** Injected accumulated job cost in USD. */
+	accumulatedCostUsd?: () => number;
 }
 
 export interface LoopInvocation {
@@ -232,7 +242,7 @@ function stateDocument(
 		job_id: task.job_id,
 		mode: task.mode,
 		round,
-		maxRounds: 3,
+		maxRounds: state.budget.limits.maxRounds,
 		stage: stageFor(node),
 		node,
 		passed: isJsonObject(state.values.test) ? state.values.test.passed : undefined,
@@ -251,6 +261,13 @@ function stateDocument(
 		graph_status: state.status,
 		superstep: state.superstep,
 		pending_question: state.pendingHuman?.question,
+		limits: state.budget.limits,
+		started_at_ms: state.budget.startedAtMs,
+		elapsed_ms: state.budget.elapsedMs,
+		cost_usd: state.budget.costUsd,
+		graph_round: state.budget.round,
+		batches: state.budget.batches,
+		exhausted_limit: state.terminal?.limit,
 	};
 }
 
@@ -415,6 +432,8 @@ interface DriveResult {
 	stopState: StopState;
 	terminalStatus?: TerminalStatus;
 	reason?: string;
+	/** The engine already emitted the one `loop.terminal` event for this run. */
+	terminalEmitted?: boolean;
 }
 
 async function driveUntilPause(
@@ -494,6 +513,17 @@ async function driveUntilPause(
 
 		const completedNodes = [...state.active];
 		state = await engine.runSuperstep();
+		if (state.status === "exhausted") {
+			// The engine owns cap exhaustion end to end: it has already written the
+			// durable EXHAUSTED checkpoint and the single terminal event.
+			return {
+				state,
+				stopState: currentStopState,
+				terminalStatus: "EXHAUSTED",
+				reason: state.terminal?.reason ?? "graph exhausted a configured cap",
+				terminalEmitted: true,
+			};
+		}
 		if (completedNodes.includes("review")) {
 			if (reviewStatus(state) === "BLOCKED") {
 				return {
@@ -546,15 +576,17 @@ async function writeTerminalState(
 	if (status === undefined) {
 		return;
 	}
-	await appendEvent(eventsPath, {
-		ts: new Date().toISOString(),
-		type: "loop.terminal",
-		job_id: task.job_id,
-		round: result.stopState.round,
-		node: activeNode(result.state),
-		status,
-		reason: result.reason,
-	});
+	if (result.terminalEmitted !== true) {
+		await appendEvent(eventsPath, {
+			ts: new Date().toISOString(),
+			type: "loop.terminal",
+			job_id: task.job_id,
+			round: result.stopState.round,
+			node: activeNode(result.state),
+			status,
+			reason: result.reason,
+		});
+	}
 	await writeState(jobDirectory, task, result.state, result.stopState.round, status, result.reason);
 }
 
@@ -602,6 +634,9 @@ export async function resumeLoop(
 		projectRoot: ctx.cwd,
 		jobId,
 		createAgentSession: dependencies.createAgentSession,
+		now: dependencies.now,
+		accumulatedCostUsd: dependencies.accumulatedCostUsd,
+		limits: task.limits,
 	});
 	const baselineSource = JSON.parse(await readFile(join(jobDirectory, "baseline.json"), "utf8")) as Record<
 		string,
@@ -611,7 +646,7 @@ export async function resumeLoop(
 	const eventsPath = join(jobDirectory, "events.jsonl");
 	const storedRound = typeof stateDocument.round === "number" ? stateDocument.round : 0;
 	const stopState: StopState = {
-		...createStopState(),
+		...createStopState(engine.limits.maxRounds),
 		round: storedRound,
 	};
 	try {
@@ -712,7 +747,7 @@ export async function runLoop(
 					job_id: task.job_id,
 					mode: task.mode,
 					round: 0,
-					maxRounds: 3,
+					maxRounds: task.limits?.maxRounds ?? DEFAULT_MAX_ROUNDS,
 					stage: "ac-compile",
 					node: "ac-compiler",
 					ac: task.ac,
@@ -754,10 +789,13 @@ export async function runLoop(
 		projectRoot: ctx.cwd,
 		jobId: job.jobId,
 		createAgentSession: dependencies.createAgentSession,
+		now: dependencies.now,
+		accumulatedCostUsd: dependencies.accumulatedCostUsd,
+		limits: task.limits,
 	});
 
 	try {
-		let stopState = createStopState();
+		let stopState = createStopState(engine.limits.maxRounds);
 		await writeState(job.directory, task, engine.state, stopState.round);
 		await dependencies.onStateChange?.();
 		let result = await driveUntilPause(
