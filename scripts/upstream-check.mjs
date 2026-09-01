@@ -207,11 +207,16 @@ function compareVersions(left, right) {
 	return 0;
 }
 
-function parseTagVersion(tag) {
+/**
+ * @param {string} tag
+ * @param {{ allowPrerelease?: boolean }} [opts]
+ */
+function parseTagVersion(tag, opts = {}) {
 	const match = TAG_RE.exec(tag);
 	if (!match) return undefined;
-	// A prerelease never outranks the pinned release line.
-	if (tag.includes("-")) return undefined;
+	// Remote "latest stable" candidates skip prereleases so -rc never outranks
+	// the release line. Pins still need their numeric triple for comparison.
+	if (tag.includes("-") && !opts.allowPrerelease) return undefined;
 	return [Number(match[1]), Number(match[2]), Number(match[3])];
 }
 
@@ -279,7 +284,7 @@ function inspectRemote(pin, timeoutMs) {
 		}
 	}
 
-	const pinnedVersion = parseTagVersion(pin.tag) ?? [0, 0, 0];
+	const pinnedVersion = parseTagVersion(pin.tag, { allowPrerelease: true }) ?? [0, 0, 0];
 	return {
 		status: "ok",
 		defaultBranch: symref ? symref[1].replace(/^refs\/heads\//, "") : null,

@@ -274,3 +274,20 @@ test("hunk body lines starting with +++ or --- count as add/delete", () => {
 	const lines = [...index.newSideLines.get("x.ts")].sort((a, b) => a - b);
 	assert.deepEqual(lines, [2, 3]);
 });
+
+
+test("+++ path keeps leading a/ directory after b/ strip", async () => {
+	const { parseChunkLocationIndex } = await import("./partition-pr-diff.mjs");
+	const diff = [
+		"diff --git a/a/foo.ts b/a/foo.ts",
+		"--- a/a/foo.ts",
+		"+++ b/a/foo.ts",
+		"@@ -1,1 +1,1 @@",
+		"-old",
+		"+new",
+		"",
+	].join("\n");
+	const index = parseChunkLocationIndex(diff);
+	assert.ok(index.paths.includes("a/foo.ts"), JSON.stringify(index.paths));
+	assert.equal(index.paths.includes("foo.ts"), false);
+});

@@ -449,3 +449,23 @@ test("missing HEAD kpi is not relocation-identical via base fallback", () => {
 	assert.equal(result.decisions.get(legacy).decision, "include");
 	assert.equal(result.decisions.get(kpi).decision, "include");
 });
+
+
+test("retained legacy on HEAD stays in review after identical kpi relocate", () => {
+	const legacy = "extensions/gated-loop.ts";
+	const kpi = "packages/coding-agent/src/kpi/extensions/gated-loop.ts";
+	const blobs = new Map([
+		[`${BASE}:${legacy}`, "blob-same"],
+		[`${HEAD}:${kpi}`, "blob-same"],
+		[`${HEAD}:${legacy}`, "blob-same"],
+	]);
+	const result = classifyRelocationProvenance({
+		paths: [legacy, kpi],
+		baseSha: BASE,
+		headSha: HEAD,
+		resolveBlob: (rev, path) => blobs.get(`${rev}:${path}`) ?? null,
+	});
+	assert.equal(result.decisions.get(kpi).decision, "exclude");
+	assert.equal(result.decisions.get(legacy).decision, "include");
+	assert.equal(result.decisions.get(legacy).reason, "relocation-legacy-retained");
+});

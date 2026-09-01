@@ -113,16 +113,17 @@ const FORBIDDEN_IN_WORKFLOWS = [
 	{ id: "git-push", pattern: /git\s+push\b/, label: "workflow that pushes" },
 	{
 		id: "git-history-rewrite",
-		pattern: /git\s+(merge|rebase|cherry-pick)\b/,
+		// Do not treat git merge-base / merge-file / merge-tree as history rewrites.
+		pattern: /git\s+(merge|rebase|cherry-pick)(?![-\w])/,
 		label: "workflow that rewrites history",
 	},
 	// The hazard is the trigger, not the word: workflow comments have to be able
 	// to state that this fork refuses the privileged variant.
 	{
 		id: "privileged-pr-trigger",
-		// Mapping key, scalar on: (optional trailing comment), flow list, or sequence item.
+		// Real trigger forms only — never a prose/comment mention of the forbidden name.
 		pattern:
-			/(?:^[ \t]*['"]?pull_request_target['"]?[ \t]*:|(?:^|[\s\[,])['"]?pull_request_target['"]?(?=[ \t]*[,\]\n #]|$)|^[ \t]*on:[ \t]*['"]?pull_request_target['"]?[ \t]*(?:#.*)?$)/m,
+			/(?:^[ \t]*['"]?pull_request_target['"]?[ \t]*:|^[ \t]*on:[ \t]*\[[^\n\]]*\bpull_request_target\b|^[ \t]*on:[ \t]*['"]?pull_request_target['"]?[ \t]*(?:#.*)?$|^[ \t]*-[ \t]+['"]?pull_request_target['"]?[ \t]*(?:#.*)?$)/m,
 		label: "pull_request_target trigger",
 	},
 	{
@@ -365,12 +366,50 @@ function checkThirdPartyActionPins(context, relativePath, contents) {
  * require same-repository heads for pull_request (plus the existing draft skip).
  * `pull_request_target` remains forbidden separately.
  */
+/**
+ * Drop full-line and unquoted trailing `#` comments so presence checks cannot
+ * be satisfied by documentation alone.
+ * @param {string} text
+ */
+function stripWorkflowComments(text) {
+	return text
+		.split("\n")
+		.map((line) => {
+			let inSingle = false;
+			let inDouble = false;
+			for (let i = 0; i < line.length; i++) {
+				const c = line[i];
+				if (c === "'" && !inDouble) inSingle = !inSingle;
+				else if (c === '"' && !inSingle) inDouble = !inDouble;
+				else if (c === "#" && !inSingle && !inDouble) return line.slice(0, i);
+			}
+			return line;
+		})
+		.join("\n");
+}
+
 function checkSelfHostedPullRequestGuard(context, relativePath, contents) {
 	if (relativePath !== ".github/workflows/check.yml") return;
 
+	const code = stripWorkflowComments(contents);
+	// Prefer the job-level `if:` for the self-hosted check job (order-independent
+	// vs runs-on/env). Folded (`>-`) and single-line forms both count.
+	const jobBlock = /^[ \t]*check:\n([\s\S]*?)(?=\n[ \t]*[A-Za-z0-9_-]+:\s*$|\n[ \t]*steps:\s*$|$)/m.exec(
+		code,
+	)?.[1];
+	const foldedIf = jobBlock
+		? /^[ \t]*if:\s*>-?\s*\n([\s\S]*?)(?=\n[ \t]*(?:runs-on|timeout-minutes|env|permissions|needs|concurrency|defaults|strategy|container|services|outputs|continue-on-error|steps):)/m.exec(
+				jobBlock,
+			)?.[1]
+		: null;
+	const singleIf = jobBlock
+		? /^[ \t]*if:\s*([^\n]+)/m.exec(jobBlock)?.[1]
+		: null;
+	const jobIf = foldedIf ?? singleIf ?? code;
+
 	const hasSameRepo =
-		/github\.event\.pull_request\.head\.repo\.full_name\s*==\s*github\.repository/.test(contents) ||
-		/github\.repository\s*==\s*github\.event\.pull_request\.head\.repo\.full_name/.test(contents);
+		/github\.event\.pull_request\.head\.repo\.full_name\s*==\s*github\.repository/.test(jobIf) ||
+		/github\.repository\s*==\s*github\.event\.pull_request\.head\.repo\.full_name/.test(jobIf);
 	if (!hasSameRepo) {
 		context.violation(
 			relativePath,
@@ -379,7 +418,7 @@ function checkSelfHostedPullRequestGuard(context, relativePath, contents) {
 	}
 
 	// Draft skip remains load-bearing so half-finished work does not occupy the Mac.
-	if (!/github\.event\.pull_request\.draft\s*==\s*false/.test(contents)) {
+	if (!/github\.event\.pull_request\.draft\s*==\s*false/.test(jobIf)) {
 		context.violation(
 			relativePath,
 			"self-hosted check job must skip draft pull requests (github.event.pull_request.draft == false)",
@@ -387,7 +426,7 @@ function checkSelfHostedPullRequestGuard(context, relativePath, contents) {
 	}
 
 	// Non-PR events (push/schedule/dispatch) must still be able to run the gate.
-	if (!/github\.event_name\s*!=\s*'pull_request'/.test(contents)) {
+	if (!/github\.event_name\s*!=\s*'pull_request'/.test(jobIf)) {
 		context.violation(
 			relativePath,
 			"self-hosted check job must preserve non-pull_request events (github.event_name != 'pull_request')",

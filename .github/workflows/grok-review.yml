@@ -411,9 +411,10 @@ jobs:
 
 
           jq -n --rawfile body "$report" '{body: $body}' > "$RUNNER_TEMP/grok-review-comment.json"
+          # jq `first` stops after a match; avoid `head` under pipefail (SIGPIPE/141).
           comment_id=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" --paginate \
-            --jq '.[] | select(.user.login == "github-actions[bot]") | select(.body | contains("<!-- kpi-grok-review -->")) | .id' \
-            | head -1)
+            --jq 'first(.[] | select(.user.login == "github-actions[bot]") | select(.body | contains("<!-- kpi-grok-review -->")) | .id)' \
+            || true)
           if [ -n "$comment_id" ]; then
             gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$comment_id" \
               --input "$RUNNER_TEMP/grok-review-comment.json" > /dev/null

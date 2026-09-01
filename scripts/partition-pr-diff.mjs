@@ -131,11 +131,13 @@ function stripDiffPath(raw) {
 
 function pathFromPlusPlusLine(line) {
 	if (line === "+++ /dev/null") return null;
-	// +++ b/foo  OR  +++ "b/foo bar"
-	const match = /^\+\+\+ (?:[ab]\/(.+)|"([ab]\/[^"]+)"|'([ab]\/[^']+)')$/u.exec(line);
-	if (!match) return null;
-	const raw = match[1] ?? match[2] ?? match[3];
-	return stripDiffPath(raw);
+	// Quoted headers still include the git a/ or b/ prefix — strip once via stripDiffPath.
+	const quoted = /^\+\+\+ "([ab]\/[^"]+)"$/u.exec(line) || /^\+\+\+ '([ab]\/[^']+)'$/u.exec(line);
+	if (quoted) return stripDiffPath(quoted[1]);
+	// Unquoted: +++ b/a/foo.ts → capture is already repo-relative (a/foo.ts).
+	const unquoted = /^\+\+\+ [ab]\/(.+)$/u.exec(line);
+	if (!unquoted) return null;
+	return unquoted[1].replace(/\\(.)/gu, "$1");
 }
 
 /**

@@ -561,3 +561,26 @@ test("comment-only --auto does not satisfy merge wait-for-checks", (t) => {
 		inspectForkIntegrity(root).some((v) => v.includes("without --auto")),
 	);
 });
+
+
+test("git merge-base is not history rewrite", (t) => {
+	const root = fixture(t, {
+		workflows: {
+			"nightly.yml": readOnlyWorkflow(
+				"    steps:\n      - run: git merge-base HEAD origin/main\n",
+			),
+		},
+	});
+	assert.deepEqual(inspectForkIntegrity(root), []);
+});
+
+test("comment mention of pull_request_target is allowed", (t) => {
+	const root = fixture(t, {
+		workflows: {
+			"nightly.yml": readOnlyWorkflow(
+				"    # this fork refuses pull_request_target\n    steps:\n      - run: echo hi\n",
+			),
+		},
+	});
+	assert.deepEqual(inspectForkIntegrity(root), []);
+});

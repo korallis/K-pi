@@ -353,20 +353,40 @@ export function classifyRelocationProvenance(input) {
 		}
 
 		if (sourceBlob === destBlob) {
-			for (const path of [legacy, kpi]) {
-				if (!pathSet.has(path)) continue;
-				decisions.set(path, {
-					path,
+			// kpi side is a pure relocation of base legacy content.
+			if (pathSet.has(kpi)) {
+				decisions.set(kpi, {
+					path: kpi,
 					decision: "exclude",
 					reason: "relocation-identical",
-					counterpart: path === legacy ? kpi : legacy,
+					counterpart: legacy,
 				});
-				consumed.add(path);
+				consumed.add(kpi);
+			}
+			// Legacy is only a dead source side when HEAD no longer carries it.
+			// A leftover (or independently edited) legacy path must stay in review.
+			if (pathSet.has(legacy)) {
+				if (headLegacy) {
+					decisions.set(legacy, {
+						path: legacy,
+						decision: "include",
+						reason: "relocation-legacy-retained",
+						counterpart: kpi,
+					});
+				} else {
+					decisions.set(legacy, {
+						path: legacy,
+						decision: "exclude",
+						reason: "relocation-identical",
+						counterpart: kpi,
+					});
+				}
+				consumed.add(legacy);
 			}
 			continue;
 		}
 
-		// Modified relocation: review kpi path only; drop legacy source side.
+		// Modified relocation: always review kpi. Drop legacy only on a true move.
 		if (pathSet.has(kpi)) {
 			decisions.set(kpi, {
 				path: kpi,
@@ -377,12 +397,21 @@ export function classifyRelocationProvenance(input) {
 			consumed.add(kpi);
 		}
 		if (pathSet.has(legacy)) {
-			decisions.set(legacy, {
-				path: legacy,
-				decision: "exclude",
-				reason: "relocation-source-side",
-				counterpart: kpi,
-			});
+			if (headLegacy) {
+				decisions.set(legacy, {
+					path: legacy,
+					decision: "include",
+					reason: "relocation-legacy-retained",
+					counterpart: kpi,
+				});
+			} else {
+				decisions.set(legacy, {
+					path: legacy,
+					decision: "exclude",
+					reason: "relocation-source-side",
+					counterpart: kpi,
+				});
+			}
 			consumed.add(legacy);
 		}
 	}
