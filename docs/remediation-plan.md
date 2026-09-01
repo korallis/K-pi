@@ -4,7 +4,7 @@
 
 **How agents use this file.** Pick the lowest incomplete package whose dependencies are complete. Implement only that package. Run its scoped verification. Check its DoD only after the observable result passes. Do not use historical `[x]` boxes as proof.
 
-**Ordering.** IDs sort as written: `RP-00`, `RP-01`, `RP-01A`, `RP-02`, … `RP-19`. RP-00 through RP-08 and RP-12 are complete, so **`RP-09` is the current lowest incomplete package**.
+**Ordering.** IDs sort as written: `RP-00`, `RP-01`, `RP-01A`, `RP-02`, … `RP-19`. RP-00 through RP-10 and RP-12 are complete, so **`RP-11` is the current lowest incomplete package**.
 
 IDs: `RP-##`. Stories and ACs: `PRD.md`. Normative contracts: `spec.md`, `../UPSTREAM.md`, and focused product docs. Research and gap IDs: [`remediation-research.md`](remediation-research.md).
 
@@ -53,7 +53,7 @@ RP-00
           ├─ RP-02 ──┐
           ├─ RP-03 → RP-04 ───────┼→ RP-05
           ├─ RP-06 → RP-07 → RP-08
-          │             └→ RP-09  ← current → RP-10
+          │             └→ RP-09 → RP-10  ← current → RP-11
           └─ RP-12
 
 RP-05 + RP-10 → RP-11
@@ -551,8 +551,8 @@ node --test --experimental-strip-types test/research-control-plane.test.ts test/
 
 ### DoD
 
-- [ ] Research keys, modes, budgets, events, and fallback have one owner
-- [ ] US-28 setup variants and US-29 no-network/local paths are deterministic
+- [x] Research keys, modes, budgets, events, and fallback have one owner
+- [x] US-28 setup variants and US-29 no-network/local paths are deterministic
 
 ---
 
@@ -594,9 +594,9 @@ node --test --experimental-strip-types test/research-clients.test.ts test/resear
 
 ### DoD
 
-- [ ] Provider requests match current official REST contracts
-- [ ] Research artifacts are normalized, bounded, cited, and secret-safe
-- [ ] Two-source completion never fabricates evidence
+- [x] Provider requests match current official REST contracts
+- [x] Research artifacts are normalized, bounded, cited, and secret-safe
+- [x] Two-source completion never fabricates evidence
 
 ---
 
