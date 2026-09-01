@@ -179,7 +179,7 @@ test("runs concurrent chunks, validates each, unions findings, records model and
 	}
 });
 
-test("any chunk timeout fails closed without publishing partial findings", async () => {
+test("any chunk timeout fails closed but still writes partial findings artifacts", async () => {
 	const dir = mkdtempSync(join(tmpdir(), "kpi-chunked-fail-"));
 	try {
 		const diff = fileDiff("a.ts", ["aaaa"]) + fileDiff("b.ts", ["bbbb"]);
@@ -227,7 +227,11 @@ test("any chunk timeout fails closed without publishing partial findings", async
 		assert.equal(meta.model, "grok-4.6");
 		assert.ok(meta.chunkCount >= 1);
 		assert.equal(meta.findingCount, null);
+		assert.equal(meta.partialFindingCount, 1);
 		assert.ok(meta.chunks.some((chunk) => chunk.reason === "timeout"));
+		const partial = JSON.parse(readFileSync(join(dir, "out.json"), "utf8"));
+		assert.equal(partial.length, 1);
+		assert.equal(partial[0].id, "grok-sample");
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}
@@ -274,6 +278,81 @@ test("invalid chunk schema fails closed", async () => {
 		rmSync(dir, { recursive: true, force: true });
 	}
 });
+
+test("union overflow writes full validated findings then fails closed", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "kpi-chunked-overflow-"));
+	try {
+		let call = 0;
+		// Three files each larger than the pack cap → three chunks; 12 findings each.
+		// Adaptive cap for 3 chunks is 30; 36 unique findings overflow with full artifact.
+		const diff =
+			fileDiff("a.ts", ["a".repeat(80)]) +
+			fileDiff("b.ts", ["b".repeat(80)]) +
+			fileDiff("c.ts", ["c".repeat(80)]);
+		const diffPath = join(dir, "pr.diff");
+		const pathsPath = join(dir, "changed");
+		writeFileSync(diffPath, diff);
+		writeFileSync(pathsPath, "a.ts\0b.ts\0c.ts\0");
+		await assert.rejects(
+			() =>
+				runChunkedGrokReview(
+					{
+						diffPath,
+						changedPathsPath: pathsPath,
+						model: "grok-4.6",
+						effort: "high",
+						outJson: join(dir, "out.json"),
+						outMeta: join(dir, "meta.json"),
+						workDir: join(dir, "work"),
+						maxChunkBytes: 120,
+						maxConcurrency: 3,
+						chunkTimeoutSec: 30,
+						maxAiCredits: 5,
+						copilotBin: "copilot",
+					},
+					{
+						runCommand: async (spec) => {
+							call += 1;
+							const path = spec.prompt.includes("a.ts")
+								? "a.ts"
+								: spec.prompt.includes("b.ts")
+									? "b.ts"
+									: "c.ts";
+							const findings = Array.from({ length: 12 }, (_, index) =>
+								finding({
+									id: `grok-call${call}-f${index}`,
+									path,
+									line: index + 1,
+									title: `Issue call${call} ${index}`,
+									body: `Body call${call} ${index}`,
+								}),
+							);
+							return {
+								ok: true,
+								reason: "success",
+								stdout: JSON.stringify(findings),
+								stderr: "",
+								code: 0,
+							};
+						},
+					},
+				),
+			/adaptive cap|union exceeds/,
+		);
+		const meta = JSON.parse(readFileSync(join(dir, "meta.json"), "utf8"));
+		const findings = JSON.parse(readFileSync(join(dir, "out.json"), "utf8"));
+		assert.equal(meta.overflow, true);
+		assert.ok(meta.chunkCount >= 3);
+		assert.equal(meta.adaptiveUnionCap, Math.min(200, Math.max(20, meta.chunkCount * 10)));
+		assert.ok(findings.length > meta.adaptiveUnionCap);
+		assert.equal(meta.findingCount, findings.length);
+		assert.ok(findings.every((row) => row.id.startsWith("grok-")));
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+
 
 test("budget defaults stay latency-bound under argv ceiling", () => {
 	assert.equal(REQUIRED_EFFORT, "high");

@@ -162,6 +162,69 @@ test("the Grok gate may not gain contents write", (t) => {
 	]);
 });
 
+
+test("shipped check workflow requires same-repository PR heads on self-hosted", () => {
+	const check = readFileSync(workflowPath("check.yml"), "utf8");
+	assert.match(
+		check,
+		/github\.event\.pull_request\.head\.repo\.full_name\s*==\s*github\.repository/,
+	);
+	assert.match(check, /github\.event\.pull_request\.draft\s*==\s*false/);
+	assert.match(check, /github\.event_name\s*!=\s*'pull_request'/);
+	assert.doesNotMatch(check, /^[ \t]*pull_request_target[ \t]*:/m);
+	assert.match(
+		check,
+		/maintainer-owned branch|External fork contributions require a maintainer-owned branch/i,
+	);
+});
+
+test("check workflow missing same-repository guard fails the contract", (t) => {
+	const broken = `name: check
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  schedule:
+    - cron: "0 4 * * *"
+  workflow_dispatch:
+jobs:
+  check:
+    runs-on: [self-hosted, macOS]
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    steps:
+      - run: echo ok
+`;
+	const root = fixture(t, {
+		omitCheckWorkflow: true,
+		workflows: { "check.yml": broken },
+	});
+	assert.deepEqual(inspectForkIntegrity(root), [
+		".github/workflows/check.yml: self-hosted check job must require same-repository PR heads (github.event.pull_request.head.repo.full_name == github.repository)",
+	]);
+});
+
+test("check workflow that drops non-PR event preservation fails the contract", (t) => {
+	const broken = `name: check
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+jobs:
+  check:
+    runs-on: [self-hosted, macOS]
+    if: github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      - run: echo ok
+`;
+	const root = fixture(t, {
+		omitCheckWorkflow: true,
+		workflows: { "check.yml": broken },
+	});
+	assert.deepEqual(inspectForkIntegrity(root), [
+		".github/workflows/check.yml: self-hosted check job must preserve non-pull_request events (github.event_name != 'pull_request')",
+	]);
+});
+
 test("floating third-party action tags fail closed", (t) => {
 	const root = fixture(t, {
 		workflows: {

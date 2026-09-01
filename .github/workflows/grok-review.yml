@@ -237,6 +237,20 @@ jobs:
           fi
           exit "$status"
 
+      - name: Upload Grok review artifacts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: grok-review-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
+          path: |
+            ${{ runner.temp }}/grok-review.json
+            ${{ runner.temp }}/grok-review-meta.json
+            ${{ runner.temp }}/grok-input-meta.json
+            ${{ runner.temp }}/changed-paths
+            ${{ runner.temp }}/chunked-review/**
+          if-no-files-found: warn
+          retention-days: 14
+
       - name: Publish sticky review result
         if: always()
         env:
@@ -248,6 +262,8 @@ jobs:
           CHUNK_COUNT: ${{ steps.inference.outputs.chunks }}
         run: |
           report="$RUNNER_TEMP/grok-review-comment.md"
+          # GitHub issue comment body soft limit ~65536; keep headroom for JSON wrap.
+          COMMENT_BODY_MAX=60000
           {
             echo '<!-- kpi-grok-review -->'
             echo '## Grok review'
@@ -266,15 +282,32 @@ jobs:
                 echo "- Pin: \`${pin:-unknown}\`"
                 echo "- Provenance coverage: \`${selected:-?}\` / \`${total:-?}\` diff bytes; paths \`${included:-?}\` / \`${changed:-?}\` (excluded byte-identical-to-pin=\`${identical:-0}\`, check-covered=\`${covered:-0}\`)"
               fi
+              if [ -f "$RUNNER_TEMP/grok-review-meta.json" ]; then
+                cap=$(jq -r '.adaptiveUnionCap // empty' "$RUNNER_TEMP/grok-review-meta.json")
+                overflow=$(jq -r '.overflow // false' "$RUNNER_TEMP/grok-review-meta.json")
+                fcount=$(jq -r '.findingCount // .partialFindingCount // empty' "$RUNNER_TEMP/grok-review-meta.json")
+                echo "- Adaptive union cap: \`${cap:-n/a}\`"
+                echo "- Findings (artifact): \`${fcount:-n/a}\`"
+                if [ "$overflow" = "true" ]; then
+                  echo "- **Overflow:** validated findings exceeded the adaptive hard cap; full list is in the workflow artifact (not truncated)."
+                fi
+              fi
+              echo
+              echo "Full raw + validated findings are uploaded as the \`grok-review-*\` artifact."
               echo
             fi
             if [ "$INFERENCE_OUTCOME" != "success" ]; then
-              echo '**Failed closed:** Grok review did not complete (provenance reduction, timeout, inference error, or invalid schema). Inspect the required workflow log.'
+              overflow=$(jq -r '.overflow // false' "$RUNNER_TEMP/grok-review-meta.json" 2>/dev/null || echo false)
+              if [ "$overflow" = "true" ]; then
+                echo '**Failed closed:** union exceeded the adaptive hard cap after dedupe. Full validated findings are in the artifact and summarized below when space allows.'
+              else
+                echo '**Failed closed:** Grok review did not complete (provenance reduction, timeout, inference error, invalid schema, or overflow). Inspect the required workflow log and artifact.'
+              fi
               if [ -f "$RUNNER_TEMP/grok-review-meta.json" ]; then
                 echo
                 echo 'Chunk outcomes:'
                 echo
-                jq -r '.chunks[]? | "- chunk \(.index): \(.reason // "unknown") (\(.bytes // 0) bytes, \(.durationMs // 0) ms)"' \
+                jq -r '.chunks[]? | "- chunk \(.index): \(.reason // "unknown") (\(.bytes // 0) bytes, \(.durationMs // 0) ms, findings=\(.findingCount // "n/a"))"' \
                   "$RUNNER_TEMP/grok-review-meta.json"
               fi
             elif [ -z "$FINDING_COUNT" ]; then
@@ -282,9 +315,75 @@ jobs:
             elif [ "$FINDING_COUNT" = "0" ]; then
               echo 'No blocking P0–P2 defects found in this revision.'
             else
-              jq -r '.[] | "### \(.severity): \(.title)\n\n- `\(.path)`" + (if .line == null then "" else ":\(.line)" end) + "\n- ID: `\(.id)`\n\n\(.body)\n"' "$RUNNER_TEMP/grok-review.json"
+              echo "**Blocking findings:** \`$FINDING_COUNT\` (gate fails on every validated finding; full list in artifact)."
+              echo
+            fi
+
+            # Append findings when present (success with findings OR overflow/partial
+            # artifacts). Cap total comment size; never truncate the artifact JSON.
+            if [ -f "$RUNNER_TEMP/grok-review.json" ]; then
+              count=$(jq -r 'length' "$RUNNER_TEMP/grok-review.json")
+              if [ "$count" != "0" ]; then
+                echo
+                echo '### Findings'
+                echo
+                jq -r '.[] | "### \(.severity): \(.title)\n\n- `\(.path)`" + (if .line == null then "" else ":\(.line)" end) + "\n- ID: `\(.id)`\n\n\(.body)\n"' \
+                  "$RUNNER_TEMP/grok-review.json" >> "$RUNNER_TEMP/grok-findings-body.md" || true
+              fi
             fi
           } > "$report"
+
+          if [ -f "$RUNNER_TEMP/grok-findings-body.md" ]; then
+            current=$(wc -c < "$report" | tr -d ' ')
+            remain=$((COMMENT_BODY_MAX - current))
+            if [ "$remain" -gt 500 ]; then
+              # Append complete finding sections only; never mid-truncate a section.
+              node -e '
+                const fs = require("fs");
+                const remain = Number(process.argv[1]);
+                const body = fs.readFileSync(process.argv[2], "utf8");
+                const reportPath = process.argv[3];
+                const sections = body.split("\n### ");
+                const out = [];
+                let used = 0;
+                let omitted = 0;
+                for (let i = 0; i < sections.length; i++) {
+                  const chunk = i === 0 ? sections[i] : "### " + sections[i];
+                  if (!chunk.trim()) continue;
+                  const size = Buffer.byteLength(chunk, "utf8");
+                  if (used + size > remain) {
+                    omitted += sections.length - i;
+                    break;
+                  }
+                  out.push(chunk);
+                  used += size;
+                }
+                let extra = out.join("");
+                if (omitted > 0) {
+                  extra += "\n\n_" + omitted + " additional finding section(s) omitted from the sticky comment; see the workflow artifact for the full validated list._\n";
+                }
+                fs.appendFileSync(reportPath, extra);
+              ' "$remain" "$RUNNER_TEMP/grok-findings-body.md" "$report"
+            else
+              echo >> "$report"
+              echo '_Findings omitted from the sticky comment due to size; see the workflow artifact for the full validated list._' >> "$report"
+            fi
+          fi
+
+          # Hard cap the comment payload as a last resort (artifact remains full).
+          node -e '
+            const fs = require("fs");
+            const limit = Number(process.argv[1]);
+            const path = process.argv[2];
+            const raw = fs.readFileSync(path);
+            if (raw.length > limit) {
+              const note = "\n\n_Comment truncated for GitHub size limits; full validated findings are in the workflow artifact._\n";
+              const keep = Math.max(0, limit - Buffer.byteLength(note, "utf8"));
+              const clipped = raw.subarray(0, keep).toString("utf8").replace(/\uFFFD$/u, "").trimEnd() + note;
+              fs.writeFileSync(path, clipped);
+            }
+          ' "$COMMENT_BODY_MAX" "$report"
+
 
           jq -n --rawfile body "$report" '{body: $body}' > "$RUNNER_TEMP/grok-review-comment.json"
           comment_id=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" --paginate \
@@ -304,6 +403,14 @@ jobs:
           INFERENCE_OUTCOME: ${{ steps.inference.outcome }}
           FINDING_COUNT: ${{ steps.inference.outputs.count }}
         run: |
+          overflow=false
+          if [ -f "$RUNNER_TEMP/grok-review-meta.json" ]; then
+            overflow=$(jq -r '.overflow // false' "$RUNNER_TEMP/grok-review-meta.json")
+          fi
+          if [ "$overflow" = "true" ]; then
+            echo "::error::Grok review failed closed: validated findings exceeded the adaptive hard union cap. Full findings are in the artifact."
+            exit 1
+          fi
           if [ "$INFERENCE_OUTCOME" != "success" ] || [ -z "$FINDING_COUNT" ]; then
             echo "::error::Grok review failed closed."
             exit 1

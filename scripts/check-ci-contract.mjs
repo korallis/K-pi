@@ -315,6 +315,43 @@ function checkThirdPartyActionPins(context, relativePath, contents) {
 	}
 }
 
+/**
+ * The hard `check` gate runs on a persistent self-hosted Mac. Fork pull_request
+ * heads must never schedule there. The job `if:` must keep non-PR events and
+ * require same-repository heads for pull_request (plus the existing draft skip).
+ * `pull_request_target` remains forbidden separately.
+ */
+function checkSelfHostedPullRequestGuard(context, relativePath, contents) {
+	if (relativePath !== ".github/workflows/check.yml") return;
+
+	const hasSameRepo =
+		/github\.event\.pull_request\.head\.repo\.full_name\s*==\s*github\.repository/.test(contents) ||
+		/github\.repository\s*==\s*github\.event\.pull_request\.head\.repo\.full_name/.test(contents);
+	if (!hasSameRepo) {
+		context.violation(
+			relativePath,
+			"self-hosted check job must require same-repository PR heads (github.event.pull_request.head.repo.full_name == github.repository)",
+		);
+	}
+
+	// Draft skip remains load-bearing so half-finished work does not occupy the Mac.
+	if (!/github\.event\.pull_request\.draft\s*==\s*false/.test(contents)) {
+		context.violation(
+			relativePath,
+			"self-hosted check job must skip draft pull requests (github.event.pull_request.draft == false)",
+		);
+	}
+
+	// Non-PR events (push/schedule/dispatch) must still be able to run the gate.
+	if (!/github\.event_name\s*!=\s*'pull_request'/.test(contents)) {
+		context.violation(
+			relativePath,
+			"self-hosted check job must preserve non-pull_request events (github.event_name != 'pull_request')",
+		);
+	}
+}
+
+
 
 function checkGithub(context) {
 	const githubDirectory = join(context.root, ".github");
@@ -340,6 +377,7 @@ function checkGithub(context) {
 		if (exemption?.rules.has("gh-pr-merge")) checkMergeWaitsForChecks(context, relativePath, contents);
 		checkWritePermissions(context, relativePath, contents, exemption?.writePermissions);
 		checkThirdPartyActionPins(context, relativePath, contents);
+		checkSelfHostedPullRequestGuard(context, relativePath, contents);
 
 	}
 }

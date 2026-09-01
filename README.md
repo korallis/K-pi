@@ -130,6 +130,9 @@ The status board guarantees information, not pixel identity: K-π, MODE, JOB, RO
 
 K-π tracks Pi through the `upstream` git remote. Releases are fetched, reviewed, and merged deliberately; fork identity and the built-in registration always win. Full policy, patched-file register, and sync procedure: [`UPSTREAM.md`](UPSTREAM.md).
 
+**External GitHub fork PRs do not run the self-hosted `check` gate.** Untrusted fork heads never schedule on the persistent Mac runner. Outside contributors need a maintainer-owned branch in `korallis/K-pi` (push access or a maintainer-created branch from the fork tip) so `pull_request` heads stay same-repository. The workflow does not use `pull_request_target` and does not expose secrets to PR code.
+
+
 ## Non-goals
 
 K-π does not install community account/provider packs, replace official model catalogs, run remote hosted workers, merge origin branches, publish itself to npm, or claim in-process hooks are an OS sandbox. It is a fork, so it also does not pretend to be the official Pi distribution: bugs found here go to this repository, not upstream.

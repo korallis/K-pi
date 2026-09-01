@@ -8,6 +8,18 @@
 # never installed from a registry and is never a peer dependency, and nothing
 # here publishes, releases, or pushes.
 #
+# Self-hosted trust boundary:
+#   - This job runs on a persistent Mac runner. Fork pull_request code must never
+#     reach it: secrets are unavailable on fork PRs for `pull_request`, but the
+#     larger risk is untrusted code executing on durable self-hosted hardware.
+#   - Job-level guard: non-PR events (push/schedule/workflow_dispatch) always run;
+#     pull_request runs only when the PR is not a draft AND
+#     `head.repo.full_name == github.repository` (same-repository head).
+#   - External fork contributions therefore require a maintainer-owned branch
+#     (push to a branch in korallis/K-pi, or an internal PR from that branch).
+#   - Never switch this workflow to `pull_request_target` and never expose secrets
+#     to PR-controlled code.
+#
 # Deliberate deviations from the template:
 #   - No `paths-ignore` for `**/*.md` / `docs/**`. In this repo docs are
 #     executable product contracts: AGENTS.md and the K-stack docs are inputs to
@@ -19,6 +31,7 @@
 #   - `timeout-minutes: 60` rather than 45 — build + four suites on one runner.
 #
 # See ../../UPSTREAM.md (fork patch register) and AGENTS.md.
+
 
 name: check
 
@@ -46,7 +59,13 @@ jobs:
   check:
     runs-on: [self-hosted, macOS]
     timeout-minutes: 60
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    # Same-repository only on pull_request: fork heads never schedule on the
+    # persistent self-hosted Mac. push/schedule/workflow_dispatch keep running.
+    if: >-
+      github.event_name != 'pull_request'
+      || (github.event.pull_request.draft == false
+          && github.event.pull_request.head.repo.full_name == github.repository)
+
     env:
       CI: "1"
       # A runner-user `url.*.insteadOf` rewrite would otherwise force SSH clones

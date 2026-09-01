@@ -22,7 +22,13 @@ import {
 	partitionUnifiedDiff,
 	writeDiffChunks,
 } from "./partition-pr-diff.mjs";
-import { normalizeGrokReview, unionGrokFindings } from "./validate-grok-review.mjs";
+import {
+	normalizeGrokReview,
+	unionGrokFindings,
+	adaptiveUnionCap,
+	sortFindings,
+} from "./validate-grok-review.mjs";
+
 
 /** One concurrent wave covers provenance-reduced selection with pack headroom. */
 export const DEFAULT_MAX_CONCURRENCY = 20;
@@ -380,37 +386,23 @@ export async function runChunkedGrokReview(options, hooks = {}) {
 		}
 	});
 
-	const failures = chunkResults.filter((row) => !row.ok);
-	if (failures.length > 0) {
-		const meta = {
-			model: options.model,
-			effort: options.effort,
-			chunkCount: chunks.length,
-			maxChunkBytes: maxChunkBytes,
-			maxConcurrency: options.maxConcurrency,
-			chunkTimeoutSec: options.chunkTimeoutSec,
-			durationMs: Date.now() - startedAll,
-			chunks: chunkResults.map((row) => ({
-				index: row.index,
-				paths: row.paths,
-				bytes: row.bytes,
-				ok: row.ok,
-				reason: row.reason,
-				durationMs: row.durationMs,
-				findingCount: row.findingCount ?? null,
-				stderr: row.stderr,
-			})),
-			findingCount: null,
-		};
-		writeFileSync(options.outMeta, `${JSON.stringify(meta, null, 2)}\n`);
-		const detail = failures.map((row) => `chunk ${row.index}: ${row.reason}`).join("; ");
-		const error = new Error(`chunked Grok review failed closed (${detail})`);
-		error.meta = meta;
-		throw error;
-	}
+	const writeArtifacts = ({ findings, meta, overflow = false }) => {
+		const payload = findings ?? [];
+		writeFileSync(options.outJson, `${JSON.stringify(payload, null, 2)}\n`);
+		// Raw per-chunk outputs already live under workDir; also dump a joined raw
+		// index so the workflow can upload one artifact tree.
+		const rawIndex = chunkResults.map((row) => ({
+			index: row.index,
+			ok: row.ok,
+			reason: row.reason,
+			rawPath: `chunk-${String(row.index).padStart(3, "0")}.raw`,
+			findingCount: row.findingCount ?? (Array.isArray(row.findings) ? row.findings.length : null),
+		}));
+		writeFileSync(join(options.workDir, "raw-index.json"), `${JSON.stringify(rawIndex, null, 2)}\n`);
+		writeFileSync(options.outMeta, `${JSON.stringify({ ...meta, overflow }, null, 2)}\n`);
+	};
 
-	const findings = unionGrokFindings(chunkResults.map((row) => row.findings));
-	const meta = {
+	const baseMeta = {
 		model: options.model,
 		effort: options.effort,
 		chunkCount: chunks.length,
@@ -418,20 +410,75 @@ export async function runChunkedGrokReview(options, hooks = {}) {
 		maxConcurrency: options.maxConcurrency,
 		chunkTimeoutSec: options.chunkTimeoutSec,
 		durationMs: Date.now() - startedAll,
+		adaptiveUnionCap: adaptiveUnionCap(chunks.length),
 		chunks: chunkResults.map((row) => ({
 			index: row.index,
 			paths: row.paths,
 			bytes: row.bytes,
-			ok: true,
-			reason: "success",
+			ok: row.ok,
+			reason: row.reason,
 			durationMs: row.durationMs,
-			findingCount: row.findingCount,
+			findingCount: row.findingCount ?? null,
+			stderr: row.stderr,
 		})),
-		findingCount: findings.length,
 	};
-	writeFileSync(options.outJson, `${JSON.stringify(findings, null, 2)}\n`);
-	writeFileSync(options.outMeta, `${JSON.stringify(meta, null, 2)}\n`);
-	return { findings, meta };
+
+	const failures = chunkResults.filter((row) => !row.ok);
+	if (failures.length > 0) {
+		// Preserve every validated finding from successful chunks as an artifact
+		// before fail-closed. Do not treat partials as a green review document.
+		const partial = sortFindings(
+			chunkResults.flatMap((row) => (Array.isArray(row.findings) ? row.findings : [])),
+		);
+		const meta = {
+			...baseMeta,
+			findingCount: null,
+			partialFindingCount: partial.length,
+			failedChunkCount: failures.length,
+		};
+		writeArtifacts({ findings: partial, meta, overflow: false });
+		const detail = failures.map((row) => `chunk ${row.index}: ${row.reason}`).join("; ");
+		const error = new Error(`chunked Grok review failed closed (${detail})`);
+		error.meta = meta;
+		error.findings = partial;
+		throw error;
+	}
+
+	try {
+		const findings = unionGrokFindings(
+			chunkResults.map((row) => row.findings),
+			{ chunkCount: chunks.length },
+		);
+		const meta = {
+			...baseMeta,
+			findingCount: findings.length,
+			partialFindingCount: findings.length,
+			failedChunkCount: 0,
+		};
+		writeArtifacts({ findings, meta, overflow: false });
+		return { findings, meta };
+	} catch (error) {
+		if (error?.code === "union-overflow" && Array.isArray(error.findings)) {
+			const findings = error.findings;
+			const meta = {
+				...baseMeta,
+				findingCount: findings.length,
+				partialFindingCount: findings.length,
+				failedChunkCount: 0,
+				overflow: true,
+				adaptiveUnionCap: error.adaptiveCap ?? adaptiveUnionCap(chunks.length),
+			};
+			// Write the full validated set (never truncated) then fail closed.
+			writeArtifacts({ findings, meta, overflow: true });
+			const wrapped = new Error(error.message);
+			wrapped.code = "union-overflow";
+			wrapped.meta = meta;
+			wrapped.findings = findings;
+			wrapped.overflow = true;
+			throw wrapped;
+		}
+		throw error;
+	}
 }
 
 async function main() {

@@ -2,7 +2,14 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { normalizeFindingId, normalizeGrokReview, unionGrokFindings } from "./validate-grok-review.mjs";
+import {
+	adaptiveUnionCap,
+	findingContentKey,
+	normalizeFindingId,
+	normalizeGrokReview,
+	unionGrokFindings,
+} from "./validate-grok-review.mjs";
+
 
 const changedPaths = ["src/review.ts", ".github/workflows/grok-review.yml"];
 const validFinding = {
@@ -63,7 +70,7 @@ test("requires a positive new-file line or null", () => {
 	assert.deepEqual(normalizeGrokReview(JSON.stringify([{ ...validFinding, line: null }]), changedPaths)[0].line, null);
 });
 
-test("bounds the number of findings", () => {
+test("bounds the number of findings per document", () => {
 	const findings = Array.from({ length: 21 }, (_, index) => ({
 		...validFinding,
 		id: `grok-finding-${index + 1}`,
@@ -88,7 +95,6 @@ test("accepts underscore ids after normalize in the document path", () => {
 	assert.equal(normalizeGrokReview(raw, changedPaths)[0].id, "grok-missing-fail-closed");
 });
 
-
 test("unions chunk findings with stable severity ordering", () => {
 	const p2 = { ...validFinding, id: "grok-later", severity: "P2", path: "src/review.ts" };
 	const p0 = { ...validFinding, id: "grok-first", severity: "P0", path: ".github/workflows/grok-review.yml" };
@@ -109,4 +115,92 @@ test("union rejects conflicting duplicate ids", () => {
 		/conflicting findings/,
 	);
 });
+
+test("adaptive union cap is min(200, max(20, chunkCount*10))", () => {
+	assert.equal(adaptiveUnionCap(0), 20);
+	assert.equal(adaptiveUnionCap(1), 20);
+	assert.equal(adaptiveUnionCap(2), 20);
+	assert.equal(adaptiveUnionCap(3), 30);
+	assert.equal(adaptiveUnionCap(18), 180);
+	assert.equal(adaptiveUnionCap(25), 200);
+	assert.equal(adaptiveUnionCap(1000), 200);
+	assert.throws(() => adaptiveUnionCap(-1), /non-negative/);
+});
+
+test("union collapses path+line+substantive duplicates across ids", () => {
+	const a = {
+		...validFinding,
+		id: "grok-dup-a",
+		severity: "P2",
+		title: "Same defect",
+		body: "Whitespace   does   not matter.",
+	};
+	const b = {
+		...validFinding,
+		id: "grok-dup-b",
+		severity: "P1",
+		title: "Same defect",
+		body: "Whitespace does not matter.",
+	};
+	assert.equal(findingContentKey(a), findingContentKey(b));
+	const merged = unionGrokFindings([[a], [b]], { chunkCount: 2 });
+	assert.equal(merged.length, 1);
+	assert.equal(merged[0].severity, "P1");
+	assert.equal(merged[0].id, "grok-dup-b");
+});
+
+test("union applies adaptive hard cap only after validation and dedupe", () => {
+	const chunks = Array.from({ length: 3 }, (_, chunkIndex) =>
+		Array.from({ length: 12 }, (_, findingIndex) => ({
+			...validFinding,
+			id: `grok-c${chunkIndex}-f${findingIndex}`,
+			title: `Defect ${chunkIndex}-${findingIndex}`,
+			body: `Body ${chunkIndex}-${findingIndex}`,
+			line: findingIndex + 1,
+		})),
+	);
+	// 36 unique findings; cap for 3 chunks is 30 → overflow with full list on error.
+	assert.throws(
+		() => unionGrokFindings(chunks, { chunkCount: 3 }),
+		(error) => {
+			assert.match(error.message, /adaptive cap 30/);
+			assert.equal(error.code, "union-overflow");
+			assert.equal(error.overflow, true);
+			assert.equal(error.findings.length, 36);
+			return true;
+		},
+	);
+
+	// Dedupe collapses content clones before the cap is applied.
+	const clones = Array.from({ length: 3 }, (_, chunkIndex) =>
+		Array.from({ length: 10 }, (_, findingIndex) => ({
+			...validFinding,
+			id: `grok-clone-${chunkIndex}-${findingIndex}`,
+			title: `Shared ${findingIndex}`,
+			body: `Shared body ${findingIndex}`,
+			line: findingIndex + 1,
+		})),
+	);
+	const collapsed = unionGrokFindings(clones, { chunkCount: 3 });
+	assert.equal(collapsed.length, 10);
+});
+
+test("normalize rejects invalid locations before they can reach the union cap", () => {
+	assert.throws(
+		() =>
+			normalizeGrokReview(
+				JSON.stringify([{ ...validFinding, path: "../escape.ts" }]),
+				changedPaths,
+			),
+		/not a changed path|repository-relative/,
+	);
+	assert.throws(
+		() => normalizeGrokReview(JSON.stringify([{ ...validFinding, line: -3 }]), changedPaths),
+		/positive integer/,
+	);
+	// Canonical path form still matches the changed-path set.
+	const raw = JSON.stringify([{ ...validFinding, path: "./src/review.ts" }]);
+	assert.equal(normalizeGrokReview(raw, changedPaths)[0].path, "src/review.ts");
+});
+
 

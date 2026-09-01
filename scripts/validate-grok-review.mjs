@@ -6,9 +6,18 @@ import { fileURLToPath } from "node:url";
 const ALLOWED_SEVERITIES = new Set(["P0", "P1", "P2"]);
 const FINDING_KEYS = ["body", "id", "line", "path", "severity", "title"];
 const ID_PATTERN = /^grok-[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/u;
-const MAX_FINDINGS = 20;
+/** Hard per-document ceiling for a single chunk/model response. */
+export const MAX_FINDINGS_PER_DOCUMENT = 20;
+/** Floor for the adaptive multi-chunk union bound. */
+export const MIN_UNION_FINDINGS = 20;
+/** Absolute hard ceiling for the adaptive multi-chunk union bound. */
+export const MAX_UNION_FINDINGS = 200;
+/** Per-chunk contribution to the adaptive union bound. */
+export const UNION_FINDINGS_PER_CHUNK = 10;
 const SEVERITY_RANK = Object.freeze({ P0: 0, P1: 1, P2: 2 });
 
+/** @deprecated Prefer MAX_FINDINGS_PER_DOCUMENT; kept for older callers. */
+const MAX_FINDINGS = MAX_FINDINGS_PER_DOCUMENT;
 
 function stripFence(raw) {
 	const trimmed = raw.trim();
@@ -17,12 +26,11 @@ function stripFence(raw) {
 }
 
 function assertText(value, field, maximum) {
-	if (typeof value !== "string" || value.trim().length === 0) {
-		throw new Error(`${field} must be a non-empty string`);
-	}
-	if (value.length > maximum) throw new Error(`${field} exceeds ${maximum} characters`);
-	if (value.includes("\0")) throw new Error(`${field} contains a NUL byte`);
-	return value.trim();
+	if (typeof value !== "string") throw new Error(`${field} must be a string`);
+	const trimmed = value.trim();
+	if (!trimmed) throw new Error(`${field} must be non-empty`);
+	if (trimmed.length > maximum) throw new Error(`${field} exceeds ${maximum} characters`);
+	return trimmed;
 }
 
 /**
@@ -31,37 +39,80 @@ function assertText(value, field, maximum) {
  * grok- prefix. Still fail closed if the result is not a stable grok-* slug.
  */
 export function normalizeFindingId(raw, label = "id") {
-	if (typeof raw !== "string" || raw.trim().length === 0) {
-		throw new Error(`${label} must be a non-empty string`);
+	if (typeof raw !== "string") throw new Error(`${label} must be a string`);
+	let value = raw.trim().toLowerCase();
+	value = value.replace(/[_\s.]+/gu, "-");
+	value = value.replace(/[^a-z0-9-]/gu, "");
+	value = value.replace(/-+/gu, "-").replace(/^-|-$/gu, "");
+	if (!value.startsWith("grok-")) {
+		value = value.startsWith("grok") ? `grok-${value.slice(4).replace(/^-/, "")}` : `grok-${value}`;
 	}
-	if (raw.includes("\0")) throw new Error(`${label} contains a NUL byte`);
-	if (raw.length > 96) throw new Error(`${label} exceeds 96 characters before normalize`);
-
-	let id = raw.trim().toLowerCase();
-	id = id.replace(/[_\s.]+/g, "-");
-	id = id.replace(/[^a-z0-9-]/g, "");
-	id = id.replace(/-+/g, "-");
-	id = id.replace(/^-+|-+$/g, "");
-	if (!id.startsWith("grok-")) {
-		if (id.startsWith("grok") && id.length > 4) {
-			id = `grok-${id.slice(4)}`;
-		} else if (id !== "grok") {
-			id = `grok-${id}`;
-		}
-		id = id.replace(/-+/g, "-");
-	}
-	id = id.replace(/-+$/g, "");
-	if (id === "grok" || id === "grok-") {
-		throw new Error(`${label} collapsed to an empty grok slug`);
-	}
-	if (!ID_PATTERN.test(id)) {
-		throw new Error(`${label} must match ${ID_PATTERN} (got ${JSON.stringify(raw)} → ${JSON.stringify(id)})`);
-	}
-	if (id.length > 64) throw new Error(`${label} exceeds 64 characters`);
-	return id;
+	value = value.replace(/-+/gu, "-").replace(/^-|-$/gu, "");
+	if (!value || value === "grok") throw new Error(`${label} produced empty grok slug`);
+	if (!ID_PATTERN.test(value)) throw new Error(`${label} must match ${ID_PATTERN}`);
+	return value;
 }
 
+/**
+ * Adaptive but hard union ceiling for multi-chunk reviews.
+ * `min(200, max(20, chunkCount * 10))`
+ *
+ * @param {number} chunkCount
+ */
+export function adaptiveUnionCap(chunkCount) {
+	if (!Number.isSafeInteger(chunkCount) || chunkCount < 0) {
+		throw new Error("chunkCount must be a non-negative integer");
+	}
+	return Math.min(MAX_UNION_FINDINGS, Math.max(MIN_UNION_FINDINGS, chunkCount * UNION_FINDINGS_PER_CHUNK));
+}
 
+/**
+ * Canonicalize a repo-relative path for location identity (no silent remap of
+ * meaning — only slash normalization and trim).
+ * @param {string} path
+ */
+export function canonicalizeFindingPath(path) {
+	if (typeof path !== "string") throw new Error("path must be a string");
+	let value = path.trim().replace(/\\/gu, "/");
+	while (value.startsWith("./")) value = value.slice(2);
+	if (!value || value.includes("\0")) throw new Error(`invalid finding path: ${path}`);
+	if (value.startsWith("/") || /^[a-z]:/iu.test(value)) {
+		throw new Error(`finding path must be repository-relative: ${path}`);
+	}
+	return value;
+}
+
+/**
+ * Normalize substantive message text for cross-chunk duplicate collapse.
+ * @param {string} title
+ * @param {string} body
+ */
+export function normalizeSubstantiveMessage(title, body) {
+	return `${title}\n${body}`.replace(/\s+/gu, " ").trim().toLowerCase();
+}
+
+/**
+ * Content identity used to collapse the same defect reported under different ids.
+ * @param {{ path: string, line: number | null, title: string, body: string }} finding
+ */
+export function findingContentKey(finding) {
+	return JSON.stringify([
+		canonicalizeFindingPath(finding.path),
+		finding.line,
+		normalizeSubstantiveMessage(finding.title, finding.body),
+	]);
+}
+
+function findingFingerprint(finding) {
+	return JSON.stringify([
+		finding.id,
+		finding.severity,
+		canonicalizeFindingPath(finding.path),
+		finding.line,
+		finding.title,
+		finding.body,
+	]);
+}
 
 export function normalizeGrokReview(raw, changedPaths) {
 	let parsed;
@@ -71,9 +122,11 @@ export function normalizeGrokReview(raw, changedPaths) {
 		throw new Error(`Grok output is not one JSON document: ${error.message}`);
 	}
 	if (!Array.isArray(parsed)) throw new Error("Grok output must be a JSON array");
-	if (parsed.length > MAX_FINDINGS) throw new Error(`Grok output exceeds ${MAX_FINDINGS} findings`);
+	if (parsed.length > MAX_FINDINGS_PER_DOCUMENT) {
+		throw new Error(`Grok output exceeds ${MAX_FINDINGS_PER_DOCUMENT} findings`);
+	}
 
-	const allowedPaths = new Set(changedPaths);
+	const allowedPaths = new Set(changedPaths.map((path) => canonicalizeFindingPath(path)));
 	const ids = new Set();
 	return parsed.map((finding, index) => {
 		const label = `finding ${index + 1}`;
@@ -92,7 +145,7 @@ export function normalizeGrokReview(raw, changedPaths) {
 		if (!ALLOWED_SEVERITIES.has(finding.severity)) {
 			throw new Error(`${label}.severity must be P0, P1, or P2`);
 		}
-		const path = assertText(finding.path, `${label}.path`, 512);
+		const path = canonicalizeFindingPath(assertText(finding.path, `${label}.path`, 512));
 		if (!allowedPaths.has(path)) throw new Error(`${label}.path is not a changed path: ${path}`);
 		if (finding.line !== null && (!Number.isSafeInteger(finding.line) || finding.line <= 0)) {
 			throw new Error(`${label}.line must be null or a positive integer`);
@@ -109,27 +162,59 @@ export function normalizeGrokReview(raw, changedPaths) {
 	});
 }
 
-function findingFingerprint(finding) {
-	return JSON.stringify([
-		finding.id,
-		finding.severity,
-		finding.path,
-		finding.line,
-		finding.title,
-		finding.body,
-	]);
+/**
+ * Prefer the higher-severity finding; ties break on stable id then title.
+ * @param {ReturnType<typeof normalizeGrokReview>[number]} left
+ * @param {ReturnType<typeof normalizeGrokReview>[number]} right
+ */
+function preferFinding(left, right) {
+	const severity = SEVERITY_RANK[left.severity] - SEVERITY_RANK[right.severity];
+	if (severity !== 0) return severity < 0 ? left : right;
+	const id = left.id.localeCompare(right.id);
+	if (id !== 0) return id < 0 ? left : right;
+	return left.title.localeCompare(right.title) <= 0 ? left : right;
 }
 
 /**
- * Union validated per-chunk findings. Identical ids collapse; conflicting
- * payloads for the same id fail closed. Order is severity → path → line → id.
+ * Sort findings: severity → path → line → id.
+ * @param {ReturnType<typeof normalizeGrokReview>} findings
+ */
+export function sortFindings(findings) {
+	return [...findings].sort((left, right) => {
+		const severity = SEVERITY_RANK[left.severity] - SEVERITY_RANK[right.severity];
+		if (severity !== 0) return severity;
+		const path = left.path.localeCompare(right.path);
+		if (path !== 0) return path;
+		const leftLine = left.line ?? Number.MAX_SAFE_INTEGER;
+		const rightLine = right.line ?? Number.MAX_SAFE_INTEGER;
+		if (leftLine !== rightLine) return leftLine - rightLine;
+		return left.id.localeCompare(right.id);
+	});
+}
+
+/**
+ * Union validated per-chunk findings.
+ *
+ * 1. Same id + identical payload → collapse
+ * 2. Same id + conflicting payload → fail closed
+ * 3. Different ids + same path/line/substantive message → collapse (keep preferred)
+ * 4. Apply adaptive hard cap after dedupe (never silently drop)
+ *
+ * On overflow the error carries the full validated list so callers can write
+ * artifacts before failing closed.
  *
  * @param {Array<ReturnType<typeof normalizeGrokReview>>} chunkFindingsList
+ * @param {{ chunkCount?: number }} [options]
+ * @returns {ReturnType<typeof normalizeGrokReview>}
  */
-export function unionGrokFindings(chunkFindingsList) {
+export function unionGrokFindings(chunkFindingsList, options = {}) {
 	if (!Array.isArray(chunkFindingsList)) {
 		throw new Error("chunk findings list must be an array");
 	}
+	const chunkCount =
+		options.chunkCount !== undefined ? options.chunkCount : chunkFindingsList.length;
+	const adaptiveCap = adaptiveUnionCap(chunkCount);
+
 	const byId = new Map();
 	for (let chunkIndex = 0; chunkIndex < chunkFindingsList.length; chunkIndex++) {
 		const findings = chunkFindingsList[chunkIndex];
@@ -144,27 +229,42 @@ export function unionGrokFindings(chunkFindingsList) {
 				}
 				continue;
 			}
-			byId.set(finding.id, finding);
+			byId.set(finding.id, {
+				...finding,
+				path: canonicalizeFindingPath(finding.path),
+			});
 		}
 	}
 
-	const merged = [...byId.values()].sort((left, right) => {
-		const severity = SEVERITY_RANK[left.severity] - SEVERITY_RANK[right.severity];
-		if (severity !== 0) return severity;
-		const path = left.path.localeCompare(right.path);
-		if (path !== 0) return path;
-		const leftLine = left.line ?? Number.MAX_SAFE_INTEGER;
-		const rightLine = right.line ?? Number.MAX_SAFE_INTEGER;
-		if (leftLine !== rightLine) return leftLine - rightLine;
-		return left.id.localeCompare(right.id);
-	});
-
-	if (merged.length > MAX_FINDINGS) {
-		throw new Error(`union exceeds ${MAX_FINDINGS} findings`);
+	// Collapse content-identical defects reported under different ids.
+	const byContent = new Map();
+	for (const finding of byId.values()) {
+		const key = findingContentKey(finding);
+		const prior = byContent.get(key);
+		if (!prior) {
+			byContent.set(key, finding);
+			continue;
+		}
+		byContent.set(key, preferFinding(prior, finding));
 	}
+
+	const merged = sortFindings([...byContent.values()]);
+
+	if (merged.length > adaptiveCap) {
+		const error = new Error(
+			`union exceeds adaptive cap ${adaptiveCap} findings (got ${merged.length}; chunkCount=${chunkCount})`,
+		);
+		error.code = "union-overflow";
+		error.overflow = true;
+		error.adaptiveCap = adaptiveCap;
+		error.chunkCount = chunkCount;
+		/** Full validated list — never truncated. */
+		error.findings = merged;
+		throw error;
+	}
+
 	return merged;
 }
-
 
 function main() {
 	const [rawPath, changedPathsPath, outputPath] = process.argv.slice(2);
