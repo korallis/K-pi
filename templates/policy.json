@@ -1,0 +1,17 @@
+{
+  "deny": [
+    "git push",
+    "git push --force",
+    "git reset --hard",
+    "rm -rf",
+    "chmod 777"
+  ],
+  "commit": {
+    "gated": "confirm",
+    "autopilot": "after-release"
+  },
+  "unknown": {
+    "gated": "confirm",
+    "autopilot": "deny"
+  }
+}

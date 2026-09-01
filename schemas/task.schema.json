@@ -1,0 +1,116 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "task.schema.json",
+  "title": "K-pi task",
+  "type": "object",
+  "required": [
+    "job_id",
+    "mode",
+    "goal",
+    "nongoals",
+    "acceptance",
+    "constraints",
+    "quality_gates",
+    "ac"
+  ],
+  "properties": {
+    "job_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+    },
+    "mode": {
+      "enum": ["gated", "autopilot"]
+    },
+    "goal": {
+      "type": "string",
+      "minLength": 1
+    },
+    "nongoals": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "acceptance": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/acceptanceCriterion" }
+    },
+    "constraints": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "quality_gates": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "ac": {
+      "type": "object",
+      "required": ["quality"],
+      "properties": {
+        "quality": {
+          "enum": ["executable", "partial", "narrative"]
+        }
+      },
+      "additionalProperties": false
+    },
+    "playbook": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "$defs": {
+    "acceptanceCriterion": {
+      "type": "object",
+      "required": ["id", "statement", "required", "check"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "statement": { "type": "string", "minLength": 1 },
+        "required": { "type": "boolean" },
+        "check": {
+          "type": "object",
+          "required": ["kind"],
+          "properties": {
+            "kind": {
+              "enum": [
+                "command",
+                "file_exists",
+                "file_absent",
+                "grep_empty",
+                "grep_matches",
+                "json_path",
+                "http_probe"
+              ]
+            },
+            "cmd": { "type": "string", "minLength": 1 },
+            "expect": {
+              "type": "object",
+              "properties": {
+                "exit": { "type": "integer" },
+                "stdout_includes": {
+                  "type": "array",
+                  "items": { "type": "string" }
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": true
+        },
+        "bounds": {
+          "type": "object",
+          "properties": {
+            "write_allow": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "write_deny": {
+              "type": "array",
+              "items": { "type": "string" }
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

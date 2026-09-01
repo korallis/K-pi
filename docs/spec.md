@@ -1,0 +1,639 @@
+# spec.md — k-pi
+
+**Status:** Implementable  
+**Normative.** If code disagrees with this file, the code is wrong unless this file is updated in the same change.  
+**IDs:** `REQ-*`, `NFR-*`, `SCH-*`, `EVT-*`
+
+---
+
+## 1. System context
+
+```
+operator
+  └─ Pi interactive / print / rpc
+       └─ package k-pi
+            ├─ extensions/control-plane   /kpi commands, widgets, policy
+            ├─ extensions/status-line     Oh My Pi-style footer, brand K-π
+            ├─ extensions/graph           DAG runner on Pi SDK
+            ├─ extensions/accounts        multi-sub pool + failover
+            ├─ extensions/cursor          registerProvider("cursor")
+            ├─ extensions/kg              JSONL claim store
+            ├─ skills / prompts / themes
+            └─ graphs/*.json
+```
+
+Pi remains the process. We do not fork it. We do not embed Oh My Pi or Atomic.
+
+## 2. Package manifest
+
+`package.json` MUST contain:
+
+```json
+{
+  "name": "k-pi",
+  "version": "0.1.0",
+  "keywords": ["pi-package"],
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "@earendil-works/pi-agent-core": "*",
+    "@earendil-works/pi-ai": "*"
+  },
+  "pi": {
+    "extensions": ["./extensions"],
+    "skills": ["./skills"],
+    "prompts": ["./prompts"],
+    "themes": ["./themes"]
+  }
+}
+```
+
+Forbidden runtime dependencies: `oh-my-pi`, `@oh-my-pi/*`, `atomic`, `pi-graph`, `@shying/pi-graph`, `pi-multi-account`, `pi-multi-pass`, `pi-cursor-oauth`, `pi-cursor-provider`, `@pi-stef/cursor`, `pi-kimi-coder`, `pi-moonshot`, `@czottmann/pi-zai-api`, `pi-ollama`, `@jamesjfoong/pi-ollama`, `pi-ollama-keyring`, `pi-ollama-cloud-provider`, `exa-js`, `@perplexity-ai/perplexity_ai`.
+
+## 3. Repository layout (this package)
+
+```
+k-pi/
+├── package.json
+├── AGENTS.md
+├── templates/
+│   ├── AGENTS.md
+│   ├── APPEND_SYSTEM.md
+│   └── context-pack/{product,structure,tech}.md
+├── extensions/
+│   ├── index.ts
+│   ├── control-plane.ts
+│   ├── run-store.ts
+│   ├── append-log.ts
+│   ├── policy.ts
+│   ├── renderers.ts
+│   ├── graph/{engine.ts,schema.ts}
+│   ├── accounts/{index.ts,store.ts,balancer.ts,errors.ts,usage/*.ts}
+│   ├── cursor/{provider.ts,oauth.ts}
+│   └── kg/{index.ts,store.ts}
+├── graphs/{coding-loop.gated.json,coding-loop.auto.json,spec-first.json,hotfix.json}
+├── skills/{spec-first,tdd-cycle,isolated-review,quality-gates,conventional-commit,context-pack,concise-output,kg-claim}/SKILL.md
+├── prompts/{specify,plan,implement,review,verify,ship}.md
+├── themes/{loop-amber.json,protocol-blue.json}
+└── schemas/*.json
+```
+
+Target install paths after `pi install -l ./`:
+
+- Project: `.pi/` settings + graphs copied or referenced
+- User secrets: `~/.pi/agent/accounts.json`, `~/.pi/agent/accounts.secrets.json`
+
+Consumer repo after bootstrap:
+
+```
+AGENTS.md
+.pi/APPEND_SYSTEM.md
+.pi/graphs/
+.pi/kg/
+.pi/runs/
+.pi/context/
+.pi/policy.json
+specs/
+```
+
+## 4. Entry points
+
+| Command | Behavior |
+|---|---|
+| *(bare text)* | If `kpi.autoWrap` (default on) and no job: sticky K-mode + gated `/kpi`. |
+| `/kpi off` | Disable autoWrap for this session |
+| `/kpi [goal]` | Gated coding loop from a task. `/loop` is an alias. |
+| `/kpi --plan <path>` | Skip specify; freeze plan files |
+| `/kpi --mode gated\|autopilot` | Force mode |
+| `/kpi --until-green` | Alias of autopilot |
+| `/kpi status` | Overlay from files, no model. Must look like the Avid boards. |
+| `/kpi stop` | Write `BLOCKED`, halt |
+| `/statusbar` | Toggle the K-π footer |
+| `/specify [goal]` | Spec files only |
+| `/plan [goal]` | Isolated plan |
+| `/implement` | Implementer node only |
+| `/review` | Isolated reviewer |
+| `/verify` | Run gates → `evidence.json` |
+| `/ship` | Gated confirm or no-op if already `DONE` |
+| `/accounts` | Slot overlay |
+| `/accounts login <provider>` | Add slot. Providers: anthropic, openai, openai-codex, xai, zai, zai-coding-cn, kimi-coding, cursor, llama, ollama, lmstudio, local-openai, exa, perplexity. |
+| `/accounts logout <slot>` | Drop slot |
+| `/accounts next` | Force sibling |
+| `/accounts pin <slot>` | Stick session |
+| `/pool strategy <provider> <name>` | |
+| `/pool chain a,b,c` | Fallback order |
+| `/kg query` `/kg propose` | Claim store |
+| `/setup-kstack` | Role map from `model-ladder.md`, then Exa and Perplexity key save/skip. See `kstack.md`. |
+| `/k-mode [task]` | Sticky rigor playbook. `/k-mode off` clears it. |
+| `spawn_background` | Tool. Headless Pi worker. See `agents-bus.md`. |
+| `communicate` | Tool. Deliver via `sendUserMessage` / RPC `prompt`. |
+
+Prompt templates expand via official slash-template mechanism (`prompts/*.md`). Commands that need UI or side effects are extensions (`pi.registerCommand`).
+
+## 5. Run store
+
+**REQ-RS-01** Every job has `job_id` kebab-case, time-prefixed allowed.
+
+**Path:** `.pi/runs/<job_id>/`
+
+| File | Writer | Role |
+|---|---|---|
+| `task.json` | ac-compiler / control plane | Contract |
+| `context.md` | control plane at start | Frozen pack |
+| `candidate.json` | implementer via contract | Semantic payload only |
+| `evidence.json` | tester | HEAD-bound receipts |
+| `verdict.json` | reviewer only | PASS/REVISE/BLOCKED |
+| `state.json` | graph engine | Progress |
+| `events.jsonl` | append-log | Hash chain |
+| `research.md` / `research.json` | specify/plan research node | Sources + notes. Required before implement. |
+| `stack.json` | plan | Dune modules. Frozen before implement. |
+| `fingerprints.json` | control plane | SHA-256 of canonical JSON |
+
+**REQ-RS-02** Atomic write: `foo.tmp` → fsync → rename to `foo` in the same directory.
+
+**REQ-RS-03** One writer per file. Graph workers do not write `state.json` or `kg/*.jsonl`.
+
+### SCH-task
+
+```json
+{
+  "job_id": "2026-08-31-healthcheck",
+  "mode": "gated",
+  "goal": "string",
+  "nongoals": ["string"],
+  "acceptance": [
+    {
+      "id": "AC-03",
+      "statement": "string",
+      "required": true,
+      "check": {
+        "kind": "command",
+        "cmd": "pnpm test -- tests/health.test.ts",
+        "expect": { "exit": 0, "stdout_includes": ["ok"] }
+      },
+      "bounds": {
+        "write_allow": ["src/health.ts", "tests/health.test.ts"],
+        "write_deny": [".env", "pnpm-lock.yaml"]
+      }
+    }
+  ],
+  "constraints": ["string"],
+  "quality_gates": ["pnpm test", "pnpm lint"],
+  "ac": { "quality": "executable" }
+}
+```
+
+`check.kind` enum: `command | file_exists | file_absent | grep_empty | grep_matches | json_path | http_probe`.  
+`http_probe` is local-only (localhost / 127.0.0.1).  
+`ac.quality` enum: `executable | partial | narrative`.
+
+### SCH-verdict
+
+```json
+{
+  "status": "REVISE",
+  "approved": false,
+  "blockingIssues": ["string"],
+  "nonBlockingIssues": ["string"],
+  "evidence": ["path:line"],
+  "round": 2,
+  "output_fingerprint": "sha256:…"
+}
+```
+
+Reviewer `response.schema` MUST require `approved`, `blockingIssues`, `evidence`.
+
+### SCH-evidence
+
+```json
+{
+  "head": "<git sha>",
+  "commands": [
+    { "cmd": "pnpm test", "exit": 0, "excerpt": "…" }
+  ],
+  "ac_results": [{ "id": "AC-03", "passed": true }]
+}
+```
+
+Stale if `head` ≠ current `git rev-parse HEAD`.
+
+### SCH-event
+
+```json
+{
+  "ts": "2026-08-31T14:12:01.331Z",
+  "type": "handoff.created",
+  "job_id": "…",
+  "round": 2,
+  "node": "reviewer",
+  "prev_hash": "…",
+  "record_hash": "…"
+}
+```
+
+**EVT types:** `handoff.created`, `tool.request`, `approval.result`, `tool.result`, `checkpoint`, `handoff.completed`, `recovery.started`, `recovery.completed`, `kg.patch.proposed`, `kg.patch.accepted`, `accounts.failover`, `ac.refused`, `loop.terminal`.
+
+**REQ-RS-04** Hash: serialize record without `record_hash` as RFC 8785 canonical JSON UTF-8, SHA-256 lowercase hex. Chain `prev_hash` to previous `record_hash`. First record `prev_hash` is 64 zeros.
+
+**REQ-RS-05** Redact tokens, cookies, passwords, `sk-`, `oat01-`, bearer values from events.
+
+## 6. Modes and stop states
+
+`mode` on the job is `gated | autopilot`.
+
+Autopilot load rule:
+
+- Requested AND `ac.quality == executable` AND risk `repo-local` → `graphs/coding-loop.auto.json`
+- Else → `graphs/coding-loop.gated.json`
+- Forced autopilot with non-executable AC → do not start; write `ac.refused`; operator-visible reason
+
+### Stop states
+
+| State | Meaning |
+|---|---|
+| `DONE` | Required AC receipts green + fresh, review.approved, bounds.held |
+| `BLOCKED` | Required AC not executable after start, or forbidden action requested |
+| `EXHAUSTED` | maxRounds / maxCostUsd / timeoutMs / maxNodeRuns |
+| `NO_PROGRESS` | Repeated output_fingerprint or same failing AC ids two rounds |
+| `UNSAFE` | Write outside bounds, policy deny, secret-shaped path |
+| `NEEDS_HUMAN` | AC changed, untestable review issue, risk left repo-local |
+
+Default caps: `maxRounds=3`, `maxCostUsd=5`, `timeoutMs=1800000`, `maxConcurrency=2`.
+
+Retry ≠ round. Transient transport/429/timeout: same round key, max 2 retries, exponential backoff.
+
+## 7. Graphs
+
+Node types we implement: `agent | set | human`.
+
+Context modes for agent nodes: `isolated | thread`. Default thread key = node id. Reviewer and planner and ac-compiler and specify are `isolated` + `readOnly`. Implementer is `thread` key `coder`.
+
+### coding-loop.gated.json (normative shape)
+
+```
+ac-compiler → specify? → plan → implement → test → bounds → review → human → ship
+                              ▲                         │
+                              └─────────────────────────┘  REVISE / red
+```
+
+Conditional:
+
+- skip specify when `--plan` present
+- `test.passed == false` → implement
+- `bounds.held == false` → `UNSAFE`
+- `review.approved == false` and testable → implement
+- `review.approved == false` and untestable → `NEEDS_HUMAN`
+- review pass → human
+- human true → ship
+- human false → implement or `__end__`
+
+Policy on gated graph: `allowNonInteractive: false`.
+
+### coding-loop.auto.json
+
+Same until review. Then:
+
+- review pass + bounds + fresh receipts → `release.set` → ship
+- no human node on the happy path
+
+Policy: `allowNonInteractive: true`, `allowNonInteractiveMutations: true`.
+
+`release.set` assignments:
+
+```
+release.approved = true
+status = DONE
+```
+
+only if all evidence flags are true. Engine evaluates this as data, not as model text.
+
+### Node tool policy
+
+| Node | tools | readOnly |
+|---|---|---|
+| ac-compiler | read, grep, find, ls | true |
+| specify | read, grep, find, ls | true |
+| plan | read, grep, find, ls | true |
+| implement | read, grep, find, ls, bash, edit, write | false |
+| test | read, bash (quality_gates + AC commands only) | false but command-allowlisted |
+| bounds | set | n/a |
+| review | read, grep, find, ls | true |
+| human | none | n/a |
+| release.set | set | n/a |
+| ship | bash: `git add` `git commit` on job branch only | false |
+
+## 8. Graph engine (ours)
+
+**REQ-GE-01** Implement in `extensions/graph/`. Do not import `@shying/pi-graph`.
+
+Minimum engine behavior:
+
+- Load JSON schemaVersion 2 graphs from package `graphs/` and project `.pi/graphs/`
+- Superstep: ready nodes run, writes commit together
+- Agent nodes call official `createAgentSession` from `@earendil-works/pi-coding-agent`
+- Isolated = new in-memory or fresh session; thread = persisted JSONL keyed by threadKey
+- Human node: `ctx.ui.confirm` / `select` / `input`; status `interrupted` until resume
+- Checkpoint after each superstep under `.pi/runs/<job_id>/graph/`
+- Resume unresolved nodes only
+- Checkpoints are at-least-once. Ship/commit must be idempotent (do not create a second commit if HEAD already has the job marker)
+
+## 9. Context pack and voice
+
+Load order (Pi native + ours):
+
+1. `~/.pi/agent/APPEND_SYSTEM.md` (operator global)
+2. `~/.pi/agent/AGENTS.md`
+3. Project `AGENTS.md`
+4. `AGENTS.override.md` if present
+5. `.pi/context/{product,structure,tech}.md` via context-pack skill, not dumped always
+6. `.pi/runs/<id>/context.md` frozen at job start
+7. Skills on demand
+
+**REQ-CX-01** Do not ship project `SYSTEM.md` that replaces Pi’s instruction template. Use `APPEND_SYSTEM.md`.
+
+`templates/APPEND_SYSTEM.md` MUST include:
+
+- Outer-loop operator identity
+- Short answers: verdict, paths, commands, next action
+- No completion claim without verification the node ran
+- Irreversible external actions require a human or an evidence-backed release.set
+- Prefer run files over guessing
+
+`templates/AGENTS.md` MUST include exact setup/test/lint commands placeholders, quality gates, do-not list, loop protocol, voice.
+
+## 10. Skills and prompts
+
+Each skill is a directory with `SKILL.md` frontmatter `name` + `description` (max 1024). Description MUST state when to use it so Pi progressive disclosure works.
+
+| Skill | When |
+|---|---|
+| spec-first | Non-trivial feature, no spec files yet |
+| tdd-cycle | Implementer writing production code |
+| isolated-review | Reviewer node |
+| quality-gates | Tester / verify |
+| conventional-commit | Ship |
+| context-pack | Job start |
+| concise-output | Any user-visible assistant message |
+| kg-claim | Decision that should outlive the run |
+
+Prompts `/specify` `/plan` `/implement` `/review` `/verify` `/ship` are templates for manual invocation. The graph supplies node prompts from graph JSON; keep them aligned.
+
+## 11. UI
+
+### Themes
+
+`loop-amber.json` required tokens include:
+
+- `accent`, `borderAccent`, `toolTitle`: `#ff6a1a`
+- `success`: `#3dff6a`
+- `error`: `#ff3b3b`
+- `warning`: `#ffb020`
+
+`protocol-blue.json`:
+
+- `accent`, `borderAccent`: `#3da9fc`
+
+Switch to protocol-blue while a human node is paused. Switch back on resume.
+
+### Status bar (Oh My Pi layout, k-pi brand)
+
+Implement in `extensions/status-line/`. Visual contract: `visual-targets.md`. Reference frames: `visual/omp-statusbar-codemod.jpg`, `visual/omp-statusbar-collab.jpg`.
+
+**REQ-SB-01** Idle brand cell is `K-π` (unicode). Nerd: `K-` + `U+F0D57`. Ascii: `K-pi`. Never bare `π`. Never `omp`.
+
+**REQ-SB-02** Default left segments, OMP order: `brand, model, thinking, path, git, context_pct, cost`. Right: last request or session name.
+
+**REQ-SB-03** Separators: powerline-thin chevrons.
+
+**REQ-SB-04** Context color: <50 green, 50–70 yellow, 70–90 orange, >90 red.
+
+**REQ-SB-05** OAuth subscription active slot → cost cell is `(sub)`.
+
+**REQ-SB-06** During a turn: brand shows spinner + elapsed seconds.
+
+**REQ-SB-07** Do not import oh-my-pi, pi-status-bar, pi-vitals, pi-powerline-footer.
+
+Default render (unicode):
+
+```
+K-π  >  ⬡ claude-opus · ● high  >  📁 repo  >  ⎇ main  >  ▦ 12%/200k  >  (sub)  ────  add healthcheck
+```
+
+`/statusbar` toggles. Off restores Pi default footer.
+
+Job-aware extra slot via `ctx.ui.setStatus("kpi", …)`:
+
+```
+K-π  LOOP gated r2/3  STAGE implement  GATE human  AC 4/5
+```
+
+### Overlay (Avid boards)
+
+Canonical look: https://x.com/av1dlive/status/2092622516544270781
+
+`/kpi status` and the above-editor widget must contain: header with `K-π`, stages 01–08, ROUND, PASS/FAIL, six file lamps, STOP state. Human pause adds the oversight box and the three laws. Geometry in `visual-targets.md` §2.
+
+### Widgets
+
+Always-on during a job, `setWidget` above editor:
+
+```
+LOOP  <name>  MODE <gated|autopilot>  ROUND <n>/<max>  STAGE <id>  NODE <id>
+GATE  <human|machine>  AC <ok>/<total> executable  evidence <fresh|stale|missing>
+STOP  <running|DONE|…>
+FILES task.json context.md candidate.json evidence.json verdict.json events.jsonl
+```
+
+Accounts widget:
+
+```
+ACCOUNTS
+  ANTH  ● <slot>  <pct>%  <window>   <slot>  <pct>% cd <eta>
+  …
+ROUTE   <provider>/<model>  via <slot>
+```
+
+Per-slot percentages. No unlabeled aggregate as the only number.
+
+`/kpi status` uses `ctx.ui.custom` overlay. Data from files.
+
+Footer `setStatus("loopgraph", …)` and `setStatus("accounts", …)`.
+
+Custom entry renderers for EVT types listed above.
+
+## 12. Policy
+
+`.pi/policy.json` default:
+
+```json
+{
+  "deny": [
+    "git push",
+    "git push --force",
+    "git reset --hard",
+    "rm -rf",
+    "chmod 777"
+  ],
+  "commit": {
+    "gated": "confirm",
+    "autopilot": "after-release"
+  },
+  "unknown": {
+    "gated": "confirm",
+    "autopilot": "deny"
+  }
+}
+```
+
+Hook: `pi.on("tool_call", …)`.
+
+Deny if:
+
+- command matches deny list
+- write path outside active job `write_allow`
+- path looks like `.env`, `id_rsa`, `auth.json`, `accounts.secrets.json`
+
+Allowlisted reads (`ls`, `git status`, `git diff`, `git log`, test commands from `quality_gates`) do not confirm.
+
+## 13. Accounts and providers
+
+### Store
+
+`~/.pi/agent/accounts.json` mode 0600. Schema version 1:
+
+```json
+{
+  "version": 1,
+  "pools": {
+    "anthropic": {
+      "strategy": "quota-first",
+      "slots": [
+        {
+          "id": "home",
+          "kind": "oauth",
+          "label": "personal max",
+          "warningAcceptedAt": "2026-08-31T00:00:00.000Z"
+        }
+      ]
+    }
+  },
+  "fallback": ["anthropic", "openai-codex", "xai", "zai", "kimi-coding", "cursor"],
+  "stickiness": "session-until-exhausted"
+}
+```
+
+Pool ids: `anthropic | openai | openai-codex | xai | zai | zai-coding-cn | kimi-coding | cursor | llama | ollama | lmstudio | local-openai`.
+
+Local pools use official llama.cpp (`LLAMA_BASE_URL`) or first-party `refreshModels` on `/v1/models`. They are not on the default cloud fallback chain. Footer `(local)`, cost zero.  
+Strategy: `quota-first | round-robin | sticky`.  
+Slot kind: `oauth | api_key`.
+
+Secrets in `~/.pi/agent/accounts.secrets.json` keyed by `pool/slot`. Never log them.
+
+Official `~/.pi/agent/auth.json` primary credential is imported as slot `default` if present.
+
+### Official catalogs
+
+**REQ-PR-01** Do not pass `models` when overlaying `anthropic`, `openai`, `openai-codex`, `xai`, `zai`, `zai-coding-cn`, `kimi-coding`.
+
+Credential injection: `before_provider_headers` sets `Authorization` from the selected slot for that provider family.
+
+Detection: `after_provider_response` inspects `event.status` and headers/`retry-after`. Classifier in `accounts/errors.ts` treats 429, 402, and quota-shaped 403 plus body tokens `usage limit`, `rate_limit`, `quota` as cooldown events.
+
+Cooldown: parsed reset timestamp if present, else 5 hours. Slot is skipped while cooling.
+
+Selection order:
+
+1. Sticky slot if healthy
+2. quota-first among healthy siblings (usage readers in `accounts/usage/*`)
+3. else round-robin among healthy
+4. else cross-family fallback + `pi.setModel` to mapped equivalent
+5. else wait or `NEEDS_HUMAN`
+
+**REQ-PR-02** Never select a cooling slot when a healthy sibling exists.
+
+Model mapping for fallback is a table in `accounts/balancer.ts` updated when catalogs refresh (`ctx.modelRegistry.getAvailable()`). Prefer same-class: opus→strongest available, sonnet→mid, etc. If no mapping, skip that family.
+
+### Anthropic warning (normative text)
+
+Show with `ctx.ui.confirm` before OAuth for a **new** anthropic slot if `warningAcceptedAt` missing:
+
+```
+Claude Pro/Max in this harness uses Anthropic’s subscription OAuth, same as Pi and Atomic.
+
+Anthropic’s own docs: third-party harness usage draws from extra usage and is billed per token, not against the in-app Claude plan bar.
+
+API keys (ANTHROPIC_API_KEY) are a separate pay-as-you-go path.
+
+You are responsible for the seats you attach.
+
+Continue?
+```
+
+Cancel → no slot. Accept → write `warningAcceptedAt`.
+
+Codex and Cursor get a one-line provider billing confirm once per new slot.
+
+### Cursor provider
+
+`extensions/cursor/provider.ts`:
+
+```ts
+pi.registerProvider("cursor", {
+  name: "Cursor",
+  oauth: { name: "Cursor", login, refreshToken, getApiKey },
+  async refreshModels({ signal }) { /* live usable list */ },
+});
+```
+
+Fallback static models only so `/model` is not empty before first sync. Live list replaces fallback after refresh.
+
+Do not load community Cursor packages.
+
+## 14. Knowledge graph
+
+Paths: `.pi/kg/nodes.jsonl`, `edges.jsonl`, `sources.jsonl`, `inbox/`, `snapshots/<iso>/`.
+
+Node minimum: `id`, `kind`, `source_ids`, `status`, `rev`, `observed_at`.  
+Optional: `confidence` on inferred edges, `valid_from`, `valid_to`.  
+Status: `proposed | verified | rejected | superseded`.
+
+One writer. Inbox patches are JSON files. Accept → append JSONL, bump rev, snapshot first.
+
+Markdown projection is optional and not authoritative.
+
+## 15. Voice
+
+User-visible assistant text after a protocol step:
+
+```
+Reviewer blocked ship.
+Blocking: src/auth/refresh.ts:81 accepts expired tokens.
+Evidence: tests/auth.refresh.test.ts:44
+Next: implementer, round 3. Approval still outside the loop.
+```
+
+No preamble. No restating the task. No ASCII board.
+
+## 16. Non-functional
+
+| ID | Requirement |
+|---|---|
+| NFR-01 | Secrets never in git or events |
+| NFR-02 | accounts.json and secrets 0600 |
+| NFR-03 | TypeScript strict |
+| NFR-04 | Tests for balancer, classifier, atomic write, AC compiler, hash chain |
+| NFR-05 | Loads on `@earendil-works/pi-coding-agent` `>=0.84.0`. CI pin `0.84.4`. |
+| NFR-06 | Board render does not call a model |
+| NFR-07 | TUI required fields (US-25) present. Pixel match is not required. |
+| NFR-08 | One writer worker. `claim_path` exclusive per job. |
+
+## 17. Test fixtures (normative)
+
+Repo `fixtures/` MUST include:
+
+1. `healthcheck-gated` — small app, `/loop` reaches human confirm
+2. `healthcheck-auto` — five executable AC, reaches `DONE` + commit
+3. `narrative-ac` — “make it nicer”, autopilot refused
+4. `bounds-violation` — implementer tries to edit outside allow → `UNSAFE`
+5. `accounts-failover` — slot A classified exhausted, slot B healthy, A never selected

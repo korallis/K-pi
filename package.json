@@ -1,0 +1,45 @@
+{
+  "name": "k-pi",
+  "version": "0.1.0",
+  "description": "First-party graph-engineered coding loop for Pi",
+  "type": "module",
+  "engines": {
+    "node": ">=22.19"
+  },
+  "keywords": [
+    "pi-package"
+  ],
+  "scripts": {
+    "test": "node --test --experimental-strip-types test/*.test.ts",
+    "lint": "tsc --noEmit --noUnusedLocals --noUnusedParameters",
+    "typecheck": "tsc --noEmit",
+    "kstack:sync": "node --experimental-strip-types kstack/scripts/sync-kstack.ts",
+    "kstack:sync:check": "node --experimental-strip-types kstack/scripts/sync-kstack.ts --check"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=0.84.0",
+    "@earendil-works/pi-tui": ">=0.84.0",
+    "@earendil-works/pi-agent-core": ">=0.84.0",
+    "@earendil-works/pi-ai": ">=0.84.0"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "0.84.4",
+    "@types/node": "^22.19.0",
+    "typescript": "^5.9.3"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ],
+    "skills": [
+      "./skills",
+      "./kstack/generated/skills"
+    ],
+    "prompts": [
+      "./prompts"
+    ],
+    "themes": [
+      "./themes"
+    ]
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "name": "bounds-violation-fixture",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test",
+    "lint": "node --check src/server.js && node --check test/health.test.js"
+  }
+}

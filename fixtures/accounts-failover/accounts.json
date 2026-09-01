@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "pools": {
+    "anthropic": {
+      "strategy": "round-robin",
+      "slots": [
+        { "id": "A", "kind": "oauth", "label": "A" },
+        { "id": "B", "kind": "oauth", "label": "B" }
+      ]
+    }
+  },
+  "fallback": ["anthropic", "openai-codex", "xai", "zai", "kimi-coding", "cursor"],
+  "stickiness": "session-until-exhausted"
+}

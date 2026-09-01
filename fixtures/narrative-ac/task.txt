@@ -1,0 +1,1 @@
+Add a healthcheck endpoint that reports whether the service is healthy.

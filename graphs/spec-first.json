@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 2,
+  "id": "spec-first",
+  "entry": "specify",
+  "nodes": [
+    {
+      "id": "specify",
+      "type": "agent",
+      "prompt": "Apply the spec-first skill. Research the repository and produce requirements, design, tasks, constraints, non-goals, and executable acceptance criteria without changing production files.",
+      "context": { "mode": "isolated" },
+      "tools": ["read", "grep", "find", "ls"],
+      "readOnly": true
+    },
+    {
+      "id": "plan",
+      "type": "agent",
+      "prompt": "Turn the approved specification into ordered vertical slices and stack.json module boundaries without changing production files.",
+      "context": { "mode": "isolated" },
+      "tools": ["read", "grep", "find", "ls"],
+      "readOnly": true
+    }
+  ],
+  "edges": [
+    { "from": "specify", "to": "plan" },
+    { "from": "plan", "to": "__end__" }
+  ],
+  "limits": {
+    "maxSteps": 4,
+    "maxNodeRuns": 2,
+    "maxConcurrency": 1,
+    "maxCostUsd": 2,
+    "timeoutMs": 900000
+  },
+  "policy": {
+    "allowNonInteractive": false,
+    "allowNonInteractiveMutations": false,
+    "confirmProjectGraph": true,
+    "confirmMutatingNodes": true
+  }
+}

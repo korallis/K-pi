@@ -1,0 +1,1 @@
+Add GET /health returning status 200 and JSON {"status":"ok"}; cmd npm test exits 0; writes only src/server.js and test/health.test.js

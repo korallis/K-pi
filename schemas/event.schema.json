@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "event.schema.json",
+  "title": "K-pi event",
+  "type": "object",
+  "required": [
+    "ts",
+    "type",
+    "job_id",
+    "round",
+    "node",
+    "prev_hash",
+    "record_hash"
+  ],
+  "properties": {
+    "ts": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "type": {
+      "enum": [
+        "handoff.created",
+        "tool.request",
+        "approval.result",
+        "tool.result",
+        "checkpoint",
+        "handoff.completed",
+        "recovery.started",
+        "recovery.completed",
+        "kg.patch.proposed",
+        "kg.patch.accepted",
+        "accounts.failover",
+        "ac.refused",
+        "loop.terminal"
+      ]
+    },
+    "job_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "round": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "node": {
+      "type": "string",
+      "minLength": 1
+    },
+    "prev_hash": {
+      "$ref": "#/$defs/hash"
+    },
+    "record_hash": {
+      "$ref": "#/$defs/hash"
+    }
+  },
+  "$defs": {
+    "hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  },
+  "additionalProperties": true
+}
