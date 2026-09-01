@@ -80,12 +80,13 @@ jobs:
       - name: Install pinned Copilot CLI
         env:
           HOME: ${{ runner.temp }}/npm-home
-          NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/empty-npmrc
-          NPM_CONFIG_GLOBALCONFIG: ${{ runner.temp }}/empty-npmrc
+          NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/empty-user-npmrc
+          NPM_CONFIG_GLOBALCONFIG: ${{ runner.temp }}/empty-global-npmrc
           npm_config_cache: ${{ runner.temp }}/npm-cache
         run: |
           mkdir -p "$HOME" "$npm_config_cache"
           : > "$NPM_CONFIG_USERCONFIG"
+          : > "$NPM_CONFIG_GLOBALCONFIG"
           npm install --global @github/copilot@1.0.82 --ignore-scripts --no-audit --fund=false
 
       - name: Checkout base for trusted gate scripts
