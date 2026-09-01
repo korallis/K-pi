@@ -8,7 +8,7 @@ import { registerKStackSetup } from "../kstack/models.ts";
 import { registerAccounts } from "./accounts/index.ts";
 import { registerAutoWrap } from "./auto-wrap.ts";
 import { registerBackgroundBus } from "./bus/communicate.ts";
-import { readActiveJob, registerControlPlane } from "./control-plane.ts";
+import { registerControlPlane } from "./control-plane.ts";
 import { registerCursorProvider } from "./cursor/provider.ts";
 import { registerKnowledgeGraph } from "./kg/index.ts";
 import { registerPing } from "./ping.ts";
@@ -16,7 +16,7 @@ import { registerPolicy } from "./policy.ts";
 import { registerPrintProfile } from "./print-profile.ts";
 import { registerEventRenderers } from "./renderers.ts";
 import { registerResearchTools } from "./research/index.ts";
-import { type Task, writeAllowForTask } from "./run-store.ts";
+import { readActiveJob, type Task, writeAllowForTask } from "./run-store.ts";
 import { registerStatusLine } from "./status-line/index.ts";
 
 export async function resolveActiveWriteAllow(cwd: string): Promise<string[]> {

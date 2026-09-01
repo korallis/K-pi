@@ -8,10 +8,9 @@ import { CONFIG_DIR_NAME, getKpiResourceDir } from "../../config.ts";
 
 import { type ExtensionAPI, isToolCallEventType, type ToolCallEvent } from "../../core/extensions/types.ts";
 
-import { readActiveJob, type RunState } from "./control-plane.ts";
 import { isJsonObject } from "./graph/schema.ts";
 import { isAuthoritativeKnowledgeGraphPath } from "./kg/store.ts";
-import { type Task, writeAllowForTask } from "./run-store.ts";
+import { readActiveJob, type RunState, type Task, writeAllowForTask } from "./run-store.ts";
 
 const execFile = promisify(execFileCallback);
 

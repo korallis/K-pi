@@ -1,7 +1,7 @@
 import type { AuthEvent, AuthPrompt, Credential, ProviderAuthInteraction } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionCommandContext } from "../../../core/extensions/types.ts";
 import { appendEvent } from "../append-log.ts";
-import { readActiveJob } from "../control-plane.ts";
+import { readActiveJob } from "../run-store.ts";
 import { AccountBalancer, type SelectedSlot } from "./balancer.ts";
 import { classifyProviderFailure } from "./errors.ts";
 

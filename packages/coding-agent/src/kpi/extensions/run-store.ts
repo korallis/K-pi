@@ -1,8 +1,10 @@
-import { mkdir, open, readFile, rename } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import type { Dirent } from "node:fs";
+import { mkdir, open, readdir, readFile, rename, stat } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
 
 import { CONFIG_DIR_NAME } from "../../config.ts";
 
+import type { JsonValue } from "./append-log.ts";
 import { validateBudgetOverrides } from "./graph/budget.ts";
 import type { GraphBudgetOverrides } from "./graph/schema.ts";
 
@@ -92,6 +94,17 @@ export interface Job {
 	eventsPath: string;
 }
 
+/** A run's progress document, as written to `state.json`. */
+export type RunState = Record<string, JsonValue>;
+
+export interface ActiveJob {
+	directory: string;
+	eventsPath: string;
+	jobId: string;
+	state: RunState;
+	statePath: string;
+}
+
 const JOB_ID_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 function assertJobId(jobId: string): void {
@@ -168,4 +181,54 @@ export async function readJob(projectRoot: string, jobId: string): Promise<Job> 
 		context,
 		eventsPath: join(directory, "events.jsonl"),
 	};
+}
+
+async function readStateCandidate(directory: string): Promise<(ActiveJob & { modifiedAt: number }) | undefined> {
+	const statePath = join(directory, "state.json");
+	try {
+		const [source, metadata] = await Promise.all([readFile(statePath, "utf8"), stat(statePath)]);
+		const state = JSON.parse(source) as RunState;
+		const jobId = typeof state.job_id === "string" ? state.job_id : basename(directory);
+		return {
+			directory,
+			eventsPath: join(directory, "events.jsonl"),
+			jobId,
+			modifiedAt: metadata.mtimeMs,
+			state,
+			statePath,
+		};
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+			return undefined;
+		}
+		throw error;
+	}
+}
+
+/**
+ * The run the operator is working in: the most recently written `state.json`
+ * under `.kpi/runs`. A run directory without a progress document has not
+ * started and is skipped.
+ */
+export async function readActiveJob(cwd: string): Promise<ActiveJob | undefined> {
+	const runsDirectory = join(cwd, CONFIG_DIR_NAME, "runs");
+	let entries: Dirent[];
+	try {
+		entries = await readdir(runsDirectory, { withFileTypes: true });
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+			return undefined;
+		}
+		throw error;
+	}
+
+	const candidates = (
+		await Promise.all(
+			entries
+				.filter((entry) => entry.isDirectory())
+				.map((entry) => readStateCandidate(join(runsDirectory, entry.name))),
+		)
+	).filter((candidate) => candidate !== undefined);
+	candidates.sort((left, right) => right.modifiedAt - left.modifiedAt);
+	return candidates[0];
 }

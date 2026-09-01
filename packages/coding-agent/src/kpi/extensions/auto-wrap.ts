@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from "../../core/extensions/types.ts";
 
 import { kModeState } from "../kstack/mode.ts";
-import { readActiveJob } from "./control-plane.ts";
+import { readActiveJob } from "./run-store.ts";
 import { autoWrapState } from "./settings.ts";
 
 export function registerAutoWrap(pi: ExtensionAPI): void {

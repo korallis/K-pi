@@ -1,6 +1,5 @@
-import type { Dirent } from "node:fs";
-import { readdir, readFile, stat } from "node:fs/promises";
-import { basename, join } from "node:path";
+import { readFile, stat } from "node:fs/promises";
+import { join } from "node:path";
 
 import { CONFIG_DIR_NAME } from "../../config.ts";
 
@@ -9,7 +8,7 @@ import { kModeState } from "../kstack/mode.ts";
 
 import { appendEvent, type JsonValue } from "./append-log.ts";
 import { type LoopDependencies, type LoopOutcome, parseLoopInvocation, resumeLoop, runLoop } from "./gated-loop.ts";
-import { atomicWrite } from "./run-store.ts";
+import { atomicWrite, readActiveJob, type RunState } from "./run-store.ts";
 import { autoWrapState } from "./settings.ts";
 
 const STAGES = [
@@ -30,61 +29,6 @@ const RUN_FILES = [
 	"verdict.json",
 	"events.jsonl",
 ] as const;
-
-export type RunState = Record<string, JsonValue>;
-
-export interface ActiveJob {
-	directory: string;
-	eventsPath: string;
-	jobId: string;
-	state: RunState;
-	statePath: string;
-}
-
-async function readStateCandidate(directory: string): Promise<(ActiveJob & { modifiedAt: number }) | undefined> {
-	const statePath = join(directory, "state.json");
-	try {
-		const [source, metadata] = await Promise.all([readFile(statePath, "utf8"), stat(statePath)]);
-		const state = JSON.parse(source) as RunState;
-		const jobId = typeof state.job_id === "string" ? state.job_id : basename(directory);
-		return {
-			directory,
-			eventsPath: join(directory, "events.jsonl"),
-			jobId,
-			modifiedAt: metadata.mtimeMs,
-			state,
-			statePath,
-		};
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-			return undefined;
-		}
-		throw error;
-	}
-}
-
-export async function readActiveJob(cwd: string): Promise<ActiveJob | undefined> {
-	const runsDirectory = join(cwd, CONFIG_DIR_NAME, "runs");
-	let entries: Dirent[];
-	try {
-		entries = await readdir(runsDirectory, { withFileTypes: true });
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-			return undefined;
-		}
-		throw error;
-	}
-
-	const candidates = (
-		await Promise.all(
-			entries
-				.filter((entry) => entry.isDirectory())
-				.map((entry) => readStateCandidate(join(runsDirectory, entry.name))),
-		)
-	).filter((candidate) => candidate !== undefined);
-	candidates.sort((left, right) => right.modifiedAt - left.modifiedAt);
-	return candidates[0];
-}
 
 function nestedValue(state: RunState, parent: string, child: string): JsonValue | undefined {
 	const value = state[parent];

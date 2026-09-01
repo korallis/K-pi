@@ -1,11 +1,17 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
 import { type JsonSchema, validateJsonSchema } from "../packages/coding-agent/src/kpi/extensions/graph/json-schema.ts";
-import { atomicWrite, createJob, readJob, type Task } from "../packages/coding-agent/src/kpi/extensions/run-store.ts";
+import {
+	atomicWrite,
+	createJob,
+	readActiveJob,
+	readJob,
+	type Task,
+} from "../packages/coding-agent/src/kpi/extensions/run-store.ts";
 
 const taskSchema = JSON.parse(
 	await readFile(new URL("../packages/coding-agent/src/kpi/schemas/task.schema.json", import.meta.url), "utf8"),
@@ -91,5 +97,40 @@ test("a crash before rename cannot expose a partial candidate.json", async () =>
 			complete: true,
 		});
 		await assert.rejects(readFile(tempPath, "utf8"), { code: "ENOENT" });
+	});
+});
+
+test("the active job is the most recently written progress document", async () => {
+	await withTempDirectory("active-job", async (directory) => {
+		assert.equal(await readActiveJob(directory), undefined, "no runs directory means no active job");
+
+		const runs = join(directory, ".kpi", "runs");
+		await mkdir(join(runs, "job-unstarted"), { recursive: true });
+		assert.equal(await readActiveJob(directory), undefined, "a run without state.json has not started");
+
+		await atomicWrite(join(runs, "job-older", "state.json"), JSON.stringify({ job_id: "job-older", round: 1 }));
+		const older = await readActiveJob(directory);
+		assert.equal(older?.jobId, "job-older");
+		assert.equal(older?.state.round, 1);
+		assert.equal(older?.directory, join(runs, "job-older"));
+		assert.equal(older?.statePath, join(runs, "job-older", "state.json"));
+		assert.equal(older?.eventsPath, join(runs, "job-older", "events.jsonl"));
+
+		// mtime resolution is coarse, so the newer document is stamped forward
+		// rather than raced against the clock.
+		const newerPath = join(runs, "job-newer", "state.json");
+		await atomicWrite(newerPath, JSON.stringify({ job_id: "job-newer", round: 7 }));
+		const future = new Date(Date.now() + 60_000);
+		await utimes(newerPath, future, future);
+		const newer = await readActiveJob(directory);
+		assert.equal(newer?.jobId, "job-newer", "the newest state.json wins");
+		assert.equal(newer?.state.round, 7);
+
+		// A document with no job_id falls back to its run directory name.
+		const namelessPath = join(runs, "job-nameless", "state.json");
+		await atomicWrite(namelessPath, JSON.stringify({ round: 9 }));
+		const later = new Date(Date.now() + 120_000);
+		await utimes(namelessPath, later, later);
+		assert.equal((await readActiveJob(directory))?.jobId, "job-nameless");
 	});
 });

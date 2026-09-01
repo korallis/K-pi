@@ -1,7 +1,7 @@
 import { Type } from "@earendil-works/pi-ai";
 import { defineTool, type ExtensionAPI } from "../../../core/extensions/types.ts";
 
-import { readActiveJob } from "../control-plane.ts";
+import { readActiveJob } from "../run-store.ts";
 import { assertClaimInModule, readDuneStack } from "../stack.ts";
 import { BackgroundBus, type WorkerLauncher } from "./spawn.ts";
 
