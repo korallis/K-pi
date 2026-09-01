@@ -2,7 +2,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { normalizeGrokReview } from "./validate-grok-review.mjs";
+import { normalizeGrokReview, unionGrokFindings } from "./validate-grok-review.mjs";
 
 const changedPaths = ["src/review.ts", ".github/workflows/grok-review.yml"];
 const validFinding = {
@@ -69,3 +69,25 @@ test("bounds the number of findings", () => {
 	}));
 	assert.throws(() => normalizeGrokReview(JSON.stringify(findings), changedPaths), /exceeds 20 findings/);
 });
+
+test("unions chunk findings with stable severity ordering", () => {
+	const p2 = { ...validFinding, id: "grok-later", severity: "P2", path: "src/review.ts" };
+	const p0 = { ...validFinding, id: "grok-first", severity: "P0", path: ".github/workflows/grok-review.yml" };
+	const merged = unionGrokFindings([[p2], [p0]]);
+	assert.deepEqual(
+		merged.map((row) => row.id),
+		["grok-first", "grok-later"],
+	);
+});
+
+test("union rejects conflicting duplicate ids", () => {
+	assert.throws(
+		() =>
+			unionGrokFindings([
+				[validFinding],
+				[{ ...validFinding, title: "Different title" }],
+			]),
+		/conflicting findings/,
+	);
+});
+

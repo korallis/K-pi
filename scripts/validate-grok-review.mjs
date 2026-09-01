@@ -7,6 +7,8 @@ const ALLOWED_SEVERITIES = new Set(["P0", "P1", "P2"]);
 const FINDING_KEYS = ["body", "id", "line", "path", "severity", "title"];
 const ID_PATTERN = /^grok-[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/u;
 const MAX_FINDINGS = 20;
+const SEVERITY_RANK = Object.freeze({ P0: 0, P1: 1, P2: 2 });
+
 
 function stripFence(raw) {
 	const trimmed = raw.trim();
@@ -69,6 +71,63 @@ export function normalizeGrokReview(raw, changedPaths) {
 		};
 	});
 }
+
+function findingFingerprint(finding) {
+	return JSON.stringify([
+		finding.id,
+		finding.severity,
+		finding.path,
+		finding.line,
+		finding.title,
+		finding.body,
+	]);
+}
+
+/**
+ * Union validated per-chunk findings. Identical ids collapse; conflicting
+ * payloads for the same id fail closed. Order is severity → path → line → id.
+ *
+ * @param {Array<ReturnType<typeof normalizeGrokReview>>} chunkFindingsList
+ */
+export function unionGrokFindings(chunkFindingsList) {
+	if (!Array.isArray(chunkFindingsList)) {
+		throw new Error("chunk findings list must be an array");
+	}
+	const byId = new Map();
+	for (let chunkIndex = 0; chunkIndex < chunkFindingsList.length; chunkIndex++) {
+		const findings = chunkFindingsList[chunkIndex];
+		if (!Array.isArray(findings)) {
+			throw new Error(`chunk ${chunkIndex} findings must be an array`);
+		}
+		for (const finding of findings) {
+			const prior = byId.get(finding.id);
+			if (prior) {
+				if (findingFingerprint(prior) !== findingFingerprint(finding)) {
+					throw new Error(`conflicting findings for id ${finding.id} across chunks`);
+				}
+				continue;
+			}
+			byId.set(finding.id, finding);
+		}
+	}
+
+	const merged = [...byId.values()].sort((left, right) => {
+		const severity = SEVERITY_RANK[left.severity] - SEVERITY_RANK[right.severity];
+		if (severity !== 0) return severity;
+		const path = left.path.localeCompare(right.path);
+		if (path !== 0) return path;
+		const leftLine = left.line ?? Number.MAX_SAFE_INTEGER;
+		const rightLine = right.line ?? Number.MAX_SAFE_INTEGER;
+		if (leftLine !== rightLine) return leftLine - rightLine;
+		return left.id.localeCompare(right.id);
+	});
+
+	if (merged.length > MAX_FINDINGS) {
+		throw new Error(`union exceeds ${MAX_FINDINGS} findings`);
+	}
+	return merged;
+}
+
 
 function main() {
 	const [rawPath, changedPathsPath, outputPath] = process.argv.slice(2);
