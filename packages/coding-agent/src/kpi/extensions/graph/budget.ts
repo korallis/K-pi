@@ -7,7 +7,7 @@ import {
 	type GraphLimits,
 	isJsonObject,
 } from "./schema.ts";
-import { DEFAULT_MAX_ROUNDS } from "./stop.ts";
+import { DEFAULT_MAX_ROUNDS, MAX_TRANSIENT_RETRIES } from "./stop.ts";
 
 /** Caps a task/job contract may override, and whether each counts whole units. */
 const OVERRIDABLE_LIMITS: Record<string, { integer: boolean }> = {
@@ -15,9 +15,17 @@ const OVERRIDABLE_LIMITS: Record<string, { integer: boolean }> = {
 	maxNodeRuns: { integer: true },
 	maxConcurrency: { integer: true },
 	maxRounds: { integer: true },
+	maxTransientRetries: { integer: true },
 	maxCostUsd: { integer: false },
 	timeoutMs: { integer: false },
 };
+
+/**
+ * Caps a checkpoint must already carry. `maxRounds` and `maxTransientRetries`
+ * are resolved defaults rather than graph-file fields, so a checkpoint written
+ * before they existed is completed rather than rejected.
+ */
+const PERSISTED_LIMIT_NAMES = ["maxSteps", "maxNodeRuns", "maxConcurrency", "maxCostUsd", "timeoutMs"] as const;
 
 export interface BudgetExhaustion {
 	limit: BudgetLimitName;
@@ -69,6 +77,7 @@ export function resolveGraphBudgetLimits(graphLimits: GraphLimits, overrides?: u
 	return {
 		...graphLimits,
 		maxRounds: DEFAULT_MAX_ROUNDS,
+		maxTransientRetries: MAX_TRANSIENT_RETRIES,
 		...overrides,
 	};
 }
@@ -83,9 +92,7 @@ export function isBudgetState(value: unknown): value is GraphBudgetState {
 		return false;
 	}
 	const limits = value.limits;
-	return [...BUDGET_LIMIT_NAMES, "maxConcurrency"].every(
-		(key) => typeof limits[key] === "number" && Number.isFinite(limits[key]),
-	);
+	return PERSISTED_LIMIT_NAMES.every((key) => typeof limits[key] === "number" && Number.isFinite(limits[key]));
 }
 
 /**

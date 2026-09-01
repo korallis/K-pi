@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -14,6 +14,15 @@ import {
 import type { GraphDefinition } from "../packages/coding-agent/src/kpi/extensions/graph/schema.ts";
 import { transitionStopState } from "../packages/coding-agent/src/kpi/extensions/graph/stop.ts";
 import type { Task } from "../packages/coding-agent/src/kpi/extensions/run-store.ts";
+
+async function latestCheckpoint(projectRoot: string, jobId: string) {
+	const directory = join(projectRoot, ".kpi", "runs", jobId, "graph");
+	const names = (await readdir(directory)).filter((name) => /^checkpoint-\d{6}\.json$/u.test(name)).sort();
+	return JSON.parse(await readFile(join(directory, names.at(-1) as string), "utf8")) as {
+		nodes: Record<string, { runs: number; transientRetries?: number; retryDelaysMs?: number[] }>;
+		budget: { round: number };
+	};
+}
 
 function factory(executed: string[]): GraphAgentSessionFactory {
 	let sessionId = 0;
@@ -314,6 +323,104 @@ test("a non-default maxRounds and the budget counters survive an engine restore"
 		assert.equal(finished.status, "completed");
 		assert.equal(finished.nodes.first.runs, 1, "a completed node does not rerun");
 		assert.equal(finished.nodes.second.runs, 1);
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("a kill during a transient backoff resumes with the allowance already spent", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "kpi-retry-resume-"));
+	const graph: GraphDefinition = {
+		schemaVersion: 2,
+		id: "retry-resume",
+		entry: "implement",
+		nodes: [
+			{
+				id: "implement",
+				type: "agent" as const,
+				prompt: "implement",
+				context: { mode: "isolated" as const },
+				tools: ["read"],
+				readOnly: true,
+			},
+		],
+		edges: [{ from: "implement", to: "__end__" }],
+		limits: { maxSteps: 10, maxNodeRuns: 5, maxConcurrency: 1, maxCostUsd: 10, timeoutMs: 600_000 },
+		policy: {
+			allowNonInteractive: true,
+			allowNonInteractiveMutations: false,
+			confirmProjectGraph: false,
+			confirmMutatingNodes: false,
+		},
+	};
+	const alwaysTransient: GraphAgentSessionFactory = async () => ({
+		session: {
+			sessionId: "flaky",
+			async prompt() {
+				throw Object.assign(new Error("socket hang up"), { code: "ECONNRESET" });
+			},
+		getActiveToolNames: () => ["read"],
+			dispose() {},
+		},
+	});
+
+	try {
+		// The kill lands during the first backoff: the sleeper never returns.
+		const firstSlept: number[] = [];
+		// A real kill stops the process mid-wait: nothing unwinds, so the last
+		// checkpoint on disk is the one written before the backoff began.
+		let backoffStarted = (): void => {};
+		const reachedBackoff = new Promise<void>((resolve) => {
+			backoffStarted = resolve;
+		});
+		const neverReturns = new Promise<void>(() => {});
+		const killed = new GraphEngine(graph, {
+			projectRoot: directory,
+			jobId: "retry-resume-job",
+			createAgentSession: alwaysTransient,
+			retryBaseDelayMs: 100,
+			sleep: async (ms) => {
+				firstSlept.push(ms);
+				backoffStarted();
+				await neverReturns;
+			},
+		});
+		void killed.runSuperstep().catch(() => undefined);
+		await reachedBackoff;
+		killed.dispose();
+		assert.deepEqual(firstSlept, [100], "one backoff had begun");
+
+		// The checkpoint written before the wait carries the spent allowance.
+		const persisted = await latestCheckpoint(directory, "retry-resume-job");
+		assert.equal(persisted.nodes.implement.transientRetries, 1, "the counter is durable, not in-memory");
+		assert.deepEqual(persisted.nodes.implement.retryDelaysMs, [100]);
+		assert.equal(persisted.nodes.implement.runs, 1, "the retry did not advance the run");
+		assert.equal(persisted.budget.round, 1);
+
+		// The resumed run has one retry left, not two, and spends it on the
+		// doubled delay rather than restarting the backoff sequence.
+		const secondSlept: number[] = [];
+		const restored = await GraphEngine.restore(graph, {
+			projectRoot: directory,
+			jobId: "retry-resume-job",
+			createAgentSession: alwaysTransient,
+			retryBaseDelayMs: 100,
+			sleep: async (ms) => {
+				secondSlept.push(ms);
+			},
+		});
+		assert.equal(restored.state.nodes.implement.transientRetries, 1, "the allowance survived the kill");
+
+		const finished = await restored.runUntilPause();
+		restored.dispose();
+
+		assert.deepEqual(secondSlept, [200], "the resumed run continues the sequence and stops after one retry");
+		assert.equal(finished.nodes.implement.runs, 2, "a resume is a new run, though a retry never was");
+		assert.equal(finished.status, "exhausted");
+		assert.equal(finished.terminal?.limit, "maxTransientRetries");
+		assert.equal(finished.nodes.implement.transientRetries, 2);
+		assert.deepEqual(finished.nodes.implement.retryDelaysMs, [100, 200]);
+		assert.deepEqual(finished.active, ["implement"], "the unresolved node is preserved");
 	} finally {
 		await rm(directory, { recursive: true, force: true });
 	}

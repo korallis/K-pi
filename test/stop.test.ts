@@ -5,11 +5,13 @@ import { resolveGraphBudgetLimits } from "../packages/coding-agent/src/kpi/exten
 import type { GraphLimits } from "../packages/coding-agent/src/kpi/extensions/graph/schema.ts";
 import {
 	canonicalFingerprint,
+	classifyTransientFailure,
 	createStopState,
 	failingAcSetKey,
 	MAX_TRANSIENT_RETRIES,
 	planRetry,
 	retryTransient,
+	stopFingerprint,
 	transitionStopState,
 } from "../packages/coding-agent/src/kpi/extensions/graph/stop.ts";
 
@@ -253,4 +255,61 @@ test("a new round restores the retry budget", async () => {
 
 	assert.equal(state.retries, 0, "the next round starts with its own retry budget");
 	assert.equal(state.round, 1);
+});
+
+test("the transition path canonicalizes fingerprints rather than trusting the caller's spelling", () => {
+	const digest = `sha256:${"A".repeat(64)}`;
+	const first = transitionStopState(createStopState(), {
+		type: "verifier",
+		passed: false,
+		evidenceFingerprint: fingerprint("1"),
+		outputFingerprint: digest,
+	});
+
+	assert.deepEqual(first.outputFingerprints, [`sha256:${"a".repeat(64)}`], "a digest is stored in one canonical case");
+
+	// The same digest in different case and padding is the same output, so the
+	// repeat is caught instead of buying another round.
+	const repeated = transitionStopState(first, {
+		type: "verifier",
+		passed: false,
+		evidenceFingerprint: fingerprint("2"),
+		outputFingerprint: `  sha256:${"a".repeat(64)}  `,
+	});
+	assert.equal(repeated.status, "NO_PROGRESS");
+
+	// A caller holding the payload rather than a digest is hashed canonically by
+	// the reducer, on the same terms.
+	const fromPayload = transitionStopState(createStopState(), {
+		type: "verifier",
+		passed: false,
+		evidenceFingerprint: fingerprint("1"),
+		outputFingerprint: stopFingerprint({ approved: false, blocking: ["x"] }),
+	});
+	assert.deepEqual(fromPayload.outputFingerprints, [canonicalFingerprint({ blocking: ["x"], approved: false })]);
+	assert.equal(stopFingerprint(digest), stopFingerprint(digest.toLowerCase()));
+});
+
+test("transient classification retries only transport, 429, and timeout", () => {
+	assert.equal(classifyTransientFailure(Object.assign(new Error("rate limited"), { status: 429 })), "http");
+	assert.equal(classifyTransientFailure(Object.assign(new Error("x"), { statusCode: 429 })), "http");
+	assert.equal(classifyTransientFailure(Object.assign(new Error("x"), { code: "UND_ERR_BODY_TIMEOUT" })), "timeout");
+	assert.equal(classifyTransientFailure(Object.assign(new Error("request timed out"), {})), "timeout");
+	assert.equal(classifyTransientFailure(Object.assign(new Error("x"), { code: "ECONNRESET" })), "transport");
+	assert.equal(classifyTransientFailure(new Error("socket hang up")), "transport");
+	assert.equal(classifyTransientFailure(new Error("fetch failed")), "transport");
+
+	// Not transient: an operator decision, a defect, or an unrecognized failure.
+	assert.equal(classifyTransientFailure(Object.assign(new Error("aborted"), { name: "AbortError" })), undefined);
+	assert.equal(classifyTransientFailure(Object.assign(new Error("cancelled by operator"), {})), undefined);
+	assert.equal(
+		classifyTransientFailure(Object.assign(new Error("connection reset after timeout"), { name: "AbortError" })),
+		undefined,
+		"an abort wins over a transport-shaped message",
+	);
+	assert.equal(classifyTransientFailure(Object.assign(new Error("bad request"), { status: 400 })), undefined);
+	assert.equal(classifyTransientFailure(Object.assign(new Error("server error"), { status: 500 })), undefined);
+	assert.equal(classifyTransientFailure(new Error("failed response validation")), undefined);
+	assert.equal(classifyTransientFailure("a string"), undefined);
+	assert.equal(classifyTransientFailure(undefined), undefined);
 });

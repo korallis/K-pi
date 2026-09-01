@@ -78,6 +78,7 @@
         "maxNodeRuns": { "type": "integer", "minimum": 1 },
         "maxConcurrency": { "type": "integer", "minimum": 1 },
         "maxRounds": { "type": "integer", "minimum": 1 },
+        "maxTransientRetries": { "type": "integer", "minimum": 1 },
         "maxCostUsd": { "type": "number", "minimum": 0 },
         "timeoutMs": { "type": "number", "minimum": 1 }
       },

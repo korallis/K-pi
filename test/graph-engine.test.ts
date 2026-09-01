@@ -578,3 +578,208 @@ test("custom task limits override graph and default caps", async () => {
 		await rm(projectRoot, { recursive: true, force: true });
 	}
 });
+
+/** A prompt that fails transiently a fixed number of times, then succeeds. */
+function flakyFactory(
+	failures: number,
+	make: () => unknown,
+): { factory: GraphAgentSessionFactory; attempts: () => number } {
+	let attempts = 0;
+	const factory: GraphAgentSessionFactory = async (options) => ({
+		session: {
+			sessionId: "flaky",
+			async prompt() {
+				attempts += 1;
+				if (attempts <= failures) {
+					throw make();
+				}
+			},
+			getActiveToolNames: () => [...(options.tools ?? [])],
+			dispose() {},
+		},
+	});
+	return { factory, attempts: () => attempts };
+}
+
+function transientError(kind: "http" | "timeout" | "transport"): Error {
+	if (kind === "http") {
+		return Object.assign(new Error("Too Many Requests"), { status: 429 });
+	}
+	if (kind === "timeout") {
+		return Object.assign(new Error("request timed out"), { code: "UND_ERR_HEADERS_TIMEOUT" });
+	}
+	return Object.assign(new Error("socket hang up"), { code: "ECONNRESET" });
+}
+
+function flakyGraph(id: string): GraphDefinition {
+	return graph(
+		id,
+		[
+			{
+				id: "implement",
+				type: "agent",
+				prompt: "implement",
+				context: { mode: "isolated" },
+				tools: ["read"],
+				readOnly: true,
+			},
+		],
+		[{ from: "implement", to: "__end__" }],
+	);
+}
+
+test("a transient prompt failure retries in place with exponential backoff", async () => {
+	for (const kind of ["http", "timeout", "transport"] as const) {
+		const projectRoot = await fixture();
+		try {
+			const slept: number[] = [];
+			const { factory, attempts } = flakyFactory(1, () => transientError(kind));
+			const engine = new GraphEngine(flakyGraph(`retry-${kind}`), {
+				projectRoot,
+				jobId: `retry-${kind}-job`,
+				createAgentSession: factory,
+				sleep: async (ms) => {
+					slept.push(ms);
+				},
+				retryBaseDelayMs: 100,
+			});
+
+			const state = await engine.runUntilPause();
+
+			assert.equal(state.status, "completed", kind);
+			assert.equal(attempts(), 2, `${kind}: the node was retried exactly once`);
+			assert.deepEqual(slept, [100], `${kind}: the first backoff step`);
+			assert.equal(state.nodes.implement.runs, 1, `${kind}: a retry is not a run`);
+			assert.equal(state.budget.round, 1, `${kind}: a retry is not a round`);
+			assert.equal(state.nodes.implement.transientRetries, 1);
+			assert.deepEqual(state.nodes.implement.retryDelaysMs, [100]);
+			engine.dispose();
+		} finally {
+			await rm(projectRoot, { recursive: true, force: true });
+		}
+	}
+});
+
+test("two transient failures retry twice with increasing delays and still finish", async () => {
+	const projectRoot = await fixture();
+	try {
+		const slept: number[] = [];
+		const { factory, attempts } = flakyFactory(2, () => transientError("timeout"));
+		const engine = new GraphEngine(flakyGraph("retry-twice"), {
+			projectRoot,
+			jobId: "retry-twice-job",
+			createAgentSession: factory,
+			sleep: async (ms) => {
+				slept.push(ms);
+			},
+			retryBaseDelayMs: 50,
+		});
+
+		const state = await engine.runUntilPause();
+
+		assert.equal(state.status, "completed");
+		assert.equal(attempts(), 3);
+		assert.deepEqual(slept, [50, 100], "each retry waits twice as long as the last");
+		assert.equal(state.nodes.implement.runs, 1);
+		assert.equal(state.budget.round, 1);
+		engine.dispose();
+	} finally {
+		await rm(projectRoot, { recursive: true, force: true });
+	}
+});
+
+test("a third transient failure ends the run as EXHAUSTED without a third sleep", async () => {
+	const projectRoot = await fixture();
+	try {
+		const slept: number[] = [];
+		const { factory, attempts } = flakyFactory(3, () => transientError("transport"));
+		const engine = new GraphEngine(flakyGraph("retry-spent"), {
+			projectRoot,
+			jobId: "retry-spent-job",
+			createAgentSession: factory,
+			sleep: async (ms) => {
+				slept.push(ms);
+			},
+			retryBaseDelayMs: 20,
+		});
+
+		const state = await engine.runUntilPause();
+
+		assert.equal(state.status, "exhausted", "a spent retry allowance is a product outcome, not a crash");
+		assert.equal(state.terminal?.status, "EXHAUSTED");
+		assert.equal(state.terminal?.limit, "maxTransientRetries");
+		assert.match(state.terminal?.reason ?? "", /exhausted maxTransientRetries 2 after a transport failure/u);
+		assert.equal(attempts(), 3, "the third failure is not retried");
+		assert.deepEqual(slept, [20, 40], "no third backoff was waited");
+		assert.equal(state.nodes.implement.runs, 1, "retries never advanced the run");
+		assert.deepEqual(state.active, ["implement"], "the stalled node stays unresolved");
+
+		const events = await terminalEvents(projectRoot, "retry-spent-job");
+		assert.equal(events.length, 1, "exactly one terminal event");
+		assert.equal(events[0].status, "EXHAUSTED");
+		engine.dispose();
+	} finally {
+		await rm(projectRoot, { recursive: true, force: true });
+	}
+});
+
+test("a non-transient failure is never retried", async () => {
+	const cases: Array<{ name: string; error: () => unknown }> = [
+		{ name: "operator abort", error: () => Object.assign(new Error("The operation was aborted"), { name: "AbortError" }) },
+		{ name: "validation", error: () => new Error("agent node implement produced an unusable answer") },
+		{ name: "http 500", error: () => Object.assign(new Error("Internal Server Error"), { status: 500 }) },
+	];
+	for (const scenario of cases) {
+		const projectRoot = await fixture();
+		try {
+			const slept: number[] = [];
+			const { factory, attempts } = flakyFactory(1, scenario.error);
+			const engine = new GraphEngine(flakyGraph("no-retry"), {
+				projectRoot,
+				jobId: "no-retry-job",
+				createAgentSession: factory,
+				sleep: async (ms) => {
+					slept.push(ms);
+				},
+			});
+
+			await assert.rejects(engine.runSuperstep(), Error, scenario.name);
+			assert.equal(attempts(), 1, `${scenario.name}: no retry`);
+			assert.deepEqual(slept, [], `${scenario.name}: no backoff`);
+			assert.equal(engine.state.status, "failed", `${scenario.name}: a defect is a failure, not a budget outcome`);
+			assert.equal(engine.state.nodes.implement.transientRetries, undefined);
+			engine.dispose();
+		} finally {
+			await rm(projectRoot, { recursive: true, force: true });
+		}
+	}
+});
+
+test("a read-only contract breach is a defect, not a transient failure", async () => {
+	const projectRoot = await fixture();
+	try {
+		const slept: number[] = [];
+		const createSession: GraphAgentSessionFactory = async () => ({
+			session: {
+				sessionId: "unsafe",
+				async prompt() {},
+				getActiveToolNames: () => ["read", "write"],
+				dispose() {},
+			},
+		});
+		const engine = new GraphEngine(flakyGraph("contract-breach"), {
+			projectRoot,
+			jobId: "contract-breach-job",
+			createAgentSession: createSession,
+			sleep: async (ms) => {
+				slept.push(ms);
+			},
+		});
+
+		await assert.rejects(engine.runSuperstep(), /registered forbidden tool write/u);
+		assert.deepEqual(slept, [], "a contract defect is never retried");
+		assert.equal(engine.state.status, "failed");
+	} finally {
+		await rm(projectRoot, { recursive: true, force: true });
+	}
+});

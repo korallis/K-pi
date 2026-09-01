@@ -67,18 +67,27 @@ export interface GraphLimits {
 }
 
 /**
- * Graph limits plus the round cap. A graph file does not carry `maxRounds`
- * because a round belongs to the job contract, not to the topology.
+ * Graph limits plus the caps a graph file does not carry: a round and a
+ * transient-retry allowance both belong to the job contract, not the topology.
  */
 export interface GraphBudgetLimits extends GraphLimits {
 	maxRounds: number;
+	/** Transient transport/429/timeout retries allowed per node. */
+	maxTransientRetries: number;
 }
 
 /** The caps a validated task/job contract may override. */
 export type GraphBudgetOverrides = Partial<GraphBudgetLimits>;
 
 /** Every cap whose exhaustion is the product terminal `EXHAUSTED`. */
-export const BUDGET_LIMIT_NAMES = ["maxSteps", "maxNodeRuns", "maxRounds", "maxCostUsd", "timeoutMs"] as const;
+export const BUDGET_LIMIT_NAMES = [
+	"maxSteps",
+	"maxNodeRuns",
+	"maxRounds",
+	"maxCostUsd",
+	"timeoutMs",
+	"maxTransientRetries",
+] as const;
 
 export type BudgetLimitName = (typeof BUDGET_LIMIT_NAMES)[number];
 
@@ -108,6 +117,13 @@ export interface GraphNodeRunState {
 	runs: number;
 	sessionId?: string;
 	error?: string;
+	/**
+	 * Transient retries already spent on this node. Durable on purpose: a kill
+	 * during a backoff must not hand the node a fresh allowance on resume.
+	 */
+	transientRetries?: number;
+	/** The backoff actually waited on this node, in order. */
+	retryDelaysMs?: number[];
 }
 
 export interface PendingHumanInput {

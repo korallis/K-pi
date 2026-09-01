@@ -92,6 +92,82 @@ export function failingAcSetKey(ids: readonly string[]): string | undefined {
 	return unique.length === 0 ? undefined : unique.join(",");
 }
 
+const DIGEST_PATTERN = /^sha256:[0-9a-fA-F]{64}$/u;
+
+/**
+ * The canonical form of a fingerprint the reducer compares and stores. A
+ * reviewer supplies the normative `sha256:…` digest, which is normalized rather
+ * than re-hashed so a persisted comparison survives a resume; anything else —
+ * a payload, a prose blob — is hashed canonically so the two sources can never
+ * be compared on different terms.
+ */
+export function stopFingerprint(value: unknown): string {
+	if (typeof value === "string") {
+		const trimmed = value.trim();
+		return DIGEST_PATTERN.test(trimmed) ? `sha256:${trimmed.slice(7).toLowerCase()}` : canonicalFingerprint(trimmed);
+	}
+	return canonicalFingerprint(value);
+}
+
+/** Why a failure may be retried inside the same round. */
+export type TransientReason = "http" | "timeout" | "transport";
+
+const ABORT_CODES: Record<string, true> = { ABORT_ERR: true, ERR_CANCELED: true };
+const TIMEOUT_CODES: Record<string, true> = {
+	ETIMEDOUT: true,
+	ESERVFAIL: true,
+	UND_ERR_CONNECT_TIMEOUT: true,
+	UND_ERR_HEADERS_TIMEOUT: true,
+	UND_ERR_BODY_TIMEOUT: true,
+};
+const TRANSPORT_CODES: Record<string, true> = {
+	ECONNABORTED: true,
+	ECONNREFUSED: true,
+	ECONNRESET: true,
+	EAI_AGAIN: true,
+	EHOSTUNREACH: true,
+	ENETDOWN: true,
+	ENETRESET: true,
+	ENETUNREACH: true,
+	ENOTFOUND: true,
+	EPIPE: true,
+	UND_ERR_SOCKET: true,
+};
+
+/**
+ * Classifies a thrown provider failure. Only a transport fault, a 429, or a
+ * timeout may be retried; an operator abort is a decision, and a validation or
+ * contract failure is a defect that retrying would only repeat. Anything
+ * unrecognized is treated as non-transient, so a retry is never the default.
+ */
+export function classifyTransientFailure(error: unknown): TransientReason | undefined {
+	if (typeof error !== "object" || error === null) {
+		return undefined;
+	}
+	const candidate = error as { name?: unknown; code?: unknown; status?: unknown; statusCode?: unknown; message?: unknown };
+	const name = typeof candidate.name === "string" ? candidate.name : "";
+	const code = typeof candidate.code === "string" ? candidate.code : "";
+	const message = typeof candidate.message === "string" ? candidate.message : "";
+
+	// An abort is the operator's, or the run's, own decision. Checked first: an
+	// aborted request often also looks like a socket failure.
+	if (name === "AbortError" || ABORT_CODES[code] === true || /\babort(?:ed)?\b|\bcancell?ed\b/iu.test(message)) {
+		return undefined;
+	}
+
+	const status = typeof candidate.status === "number" ? candidate.status : candidate.statusCode;
+	if (status === 429) {
+		return "http";
+	}
+	if (name === "TimeoutError" || TIMEOUT_CODES[code] === true || /\btimed?\s?out\b/iu.test(message)) {
+		return "timeout";
+	}
+	if (TRANSPORT_CODES[code] === true || /socket hang up|fetch failed|network error|connection reset/iu.test(message)) {
+		return "transport";
+	}
+	return undefined;
+}
+
 export function createStopState(maxRounds = DEFAULT_MAX_ROUNDS): StopState {
 	if (!Number.isInteger(maxRounds) || maxRounds <= 0) {
 		throw new Error("maxRounds must be a positive integer");
@@ -146,11 +222,16 @@ export function transitionStopState(state: StopState, event: StopEvent): StopSta
 		};
 	}
 
+	// Both fingerprints are canonicalized here, so the reducer compares and
+	// stores one form whatever a caller handed it: a reviewer's normative digest
+	// stays itself, and a payload is hashed on sorted keys.
+	const outputFingerprint = stopFingerprint(event.outputFingerprint);
+	const evidenceFingerprint = stopFingerprint(event.evidenceFingerprint);
 	const failingKey = failingAcSetKey(event.failingAcIds ?? []);
 	const repeatedFailingSet = failingKey !== undefined && state.failingAcSets.includes(failingKey);
-	const repeatedOutput = state.outputFingerprints.includes(event.outputFingerprint);
+	const repeatedOutput = state.outputFingerprints.includes(outputFingerprint);
 
-	if (state.evidenceFingerprints.includes(event.evidenceFingerprint)) {
+	if (state.evidenceFingerprints.includes(evidenceFingerprint)) {
 		// Nothing new was verified. Only a repeat of what already failed proves
 		// the loop is stuck.
 		return repeatedOutput || repeatedFailingSet ? { ...state, status: "NO_PROGRESS" } : state;
@@ -172,8 +253,8 @@ export function transitionStopState(state: StopState, event: StopEvent): StopSta
 		...state,
 		status,
 		round,
-		evidenceFingerprints: [...state.evidenceFingerprints, event.evidenceFingerprint],
-		outputFingerprints: [...state.outputFingerprints, event.outputFingerprint],
+		evidenceFingerprints: [...state.evidenceFingerprints, evidenceFingerprint],
+		outputFingerprints: [...state.outputFingerprints, outputFingerprint],
 		failingAcSets: failingKey === undefined ? state.failingAcSets : [...state.failingAcSets, failingKey],
 		// A new round starts with a fresh retry budget.
 		retries: 0,

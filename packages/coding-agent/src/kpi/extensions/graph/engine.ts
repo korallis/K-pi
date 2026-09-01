@@ -32,6 +32,12 @@ import {
 	type JsonObject,
 	type JsonValue,
 } from "./schema.ts";
+import {
+	classifyTransientFailure,
+	DEFAULT_RETRY_BASE_MS,
+	type Sleeper,
+	type TransientReason,
+} from "./stop.ts";
 
 const READ_ONLY_TOOLS = new Set(["read", "grep", "find", "ls"]);
 const FORBIDDEN_PATH_PARTS = new Set(["__proto__", "prototype", "constructor"]);
@@ -62,10 +68,50 @@ export interface GraphEngineOptions {
 	 * appending `loop.terminal` to the run's event log.
 	 */
 	emitTerminal?: (terminal: GraphTerminalState) => Promise<void>;
+	/** Injected backoff. Tests record the delays instead of waiting them out. */
+	sleep?: Sleeper;
+	/** First backoff step; each further retry doubles it. */
+	retryBaseDelayMs?: number;
 }
 
 export interface GraphHumanUI {
 	confirm(title: string, message: string): Promise<boolean>;
+}
+
+function defaultSleep(milliseconds: number): Promise<void> {
+	return new Promise((resolve) => {
+		setTimeout(resolve, milliseconds);
+	});
+}
+
+/**
+ * A defect in a node's own output or configuration: a response that will not
+ * validate, a read-only node that registered a mutating tool. Retrying only
+ * repeats it, so it is never transient.
+ */
+export class GraphNodeContractError extends Error {
+	readonly nodeId: string;
+
+	constructor(nodeId: string, message: string) {
+		super(message);
+		this.name = "GraphNodeContractError";
+		this.nodeId = nodeId;
+	}
+}
+
+/** A node whose transient-retry allowance is spent. Ends the run as EXHAUSTED. */
+class TransientRetriesExhaustedError extends Error {
+	readonly nodeId: string;
+
+	constructor(nodeId: string, reason: TransientReason, spent: number, cause: unknown) {
+		super(
+			`node ${nodeId} exhausted maxTransientRetries ${spent} after a ${reason} failure: ${
+				cause instanceof Error ? cause.message : String(cause)
+			}`,
+		);
+		this.name = "TransientRetriesExhaustedError";
+		this.nodeId = nodeId;
+	}
 }
 
 interface NodeResult {
@@ -334,6 +380,9 @@ export class GraphEngine {
 	private readonly threadSessions = new Map<string, GraphAgentSession>();
 	private readonly now: () => number;
 	private readonly accumulatedCostUsd: () => number;
+	private readonly sleep: Sleeper;
+	private readonly retryBaseDelayMs: number;
+	private checkpointWrites: Promise<void> = Promise.resolve();
 	private runState: GraphRunState;
 
 	constructor(graph: GraphDefinition, options: GraphEngineOptions, initialState?: GraphRunState) {
@@ -344,6 +393,8 @@ export class GraphEngine {
 		this.sessionFactory = options.createAgentSession ?? createAgentSession;
 		this.now = options.now ?? Date.now;
 		this.accumulatedCostUsd = options.accumulatedCostUsd ?? (() => 0);
+		this.sleep = options.sleep ?? defaultSleep;
+		this.retryBaseDelayMs = options.retryBaseDelayMs ?? DEFAULT_RETRY_BASE_MS;
 
 		if (initialState === undefined) {
 			const limits = resolveGraphBudgetLimits(graph.limits, options.limits);
@@ -439,9 +490,19 @@ export class GraphEngine {
 		return join(this.runDirectory(), "graph");
 	}
 
-	private async writeCheckpoint(): Promise<void> {
+	/**
+	 * Snapshots the state now and queues the write. Nodes in one bounded batch
+	 * can each be waiting out a retry, and `atomicWrite` derives its temporary
+	 * path from the target, so two concurrent writers would share it.
+	 */
+	private writeCheckpoint(): Promise<void> {
 		const name = `checkpoint-${String(this.runState.superstep).padStart(6, "0")}.json`;
-		await atomicWrite(join(this.checkpointDirectory(), name), `${JSON.stringify(this.runState, null, 2)}\n`);
+		const snapshot = `${JSON.stringify(this.runState, null, 2)}\n`;
+		const write = this.checkpointWrites.then(() =>
+			atomicWrite(join(this.checkpointDirectory(), name), snapshot),
+		);
+		this.checkpointWrites = write.catch(() => undefined);
+		return write;
 	}
 
 	private outgoing(nodeId: string): GraphEdge[] {
@@ -494,7 +555,10 @@ export class GraphEngine {
 			: undefined;
 		if (unexpectedTool !== undefined) {
 			result.session.dispose();
-			throw new Error(`read-only agent node ${node.id} registered forbidden tool ${unexpectedTool}`);
+			throw new GraphNodeContractError(
+				node.id,
+				`read-only agent node ${node.id} registered forbidden tool ${unexpectedTool}`,
+			);
 		}
 
 		if (node.context.mode === "thread") {
@@ -568,12 +632,50 @@ export class GraphEngine {
 				await atomicWrite(join(this.runDirectory(), node.response.path), `${JSON.stringify(output, null, 2)}\n`);
 				return { nodeId: node.id, assignments };
 			}
-			throw new Error(
+			throw new GraphNodeContractError(
+				node.id,
 				`agent node ${node.id} failed response validation after ${node.response.retries + 1} attempts: ${validationErrors.join("; ")}`,
 			);
 		} finally {
 			if (disposeAfter) {
 				session.dispose();
+			}
+		}
+	}
+
+	/**
+	 * Runs one node, retrying only a transient transport, 429, or timeout failure
+	 * and only inside the allowance the checkpoint already records.
+	 *
+	 * A retry is neither a round nor a run: the node's `runs` count and the
+	 * graph's round are untouched, which is what keeps `maxRounds` and
+	 * `maxNodeRuns` meaning what they say. The counter and its delay are
+	 * checkpointed before the wait, so a kill during a backoff resumes with the
+	 * allowance already spent rather than a fresh one.
+	 */
+	private async executeWithRetries(node: GraphNode): Promise<NodeResult> {
+		const nodeState = this.runState.nodes[node.id];
+		for (;;) {
+			try {
+				return await this.executeNode(node);
+			} catch (error) {
+				if (error instanceof GraphNodeContractError) {
+					throw error;
+				}
+				const reason = classifyTransientFailure(error);
+				if (reason === undefined) {
+					throw error;
+				}
+				const spent = nodeState.transientRetries ?? 0;
+				if (spent >= this.runState.budget.limits.maxTransientRetries) {
+					throw new TransientRetriesExhaustedError(node.id, reason, spent, error);
+				}
+				const delayMs = this.retryBaseDelayMs * 2 ** spent;
+				nodeState.transientRetries = spent + 1;
+				nodeState.retryDelaysMs = [...(nodeState.retryDelaysMs ?? []), delayMs];
+				nodeState.error = `transient ${reason}: ${error instanceof Error ? error.message : String(error)}`;
+				await this.writeCheckpoint();
+				await this.sleep(delayMs);
 			}
 		}
 	}
@@ -727,8 +829,21 @@ export class GraphEngine {
 			this.countRound();
 
 			try {
-				results.push(...(await Promise.all(batch.map((node) => this.executeNode(node)))));
+				results.push(...(await Promise.all(batch.map((node) => this.executeWithRetries(node)))));
 			} catch (error) {
+				if (error instanceof TransientRetriesExhaustedError) {
+					// A spent retry allowance is a budget outcome, not a crash: the run
+					// reaches the durable product terminal and the node it stalled on
+					// stays unresolved for a resume.
+					const conflict = this.commitResults(results, executed);
+					if (conflict !== undefined) {
+						return this.fail(conflict, this.runState.active);
+					}
+					this.runState.active = activeNodes
+						.filter((node) => !executed.includes(node))
+						.map((node) => node.id);
+					return this.exhaust({ limit: "maxTransientRetries", reason: error.message }, [error.nodeId]);
+				}
 				const message = error instanceof Error ? error.message : String(error);
 				return this.fail(message, batch.map((node) => node.id));
 			}

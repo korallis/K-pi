@@ -13,10 +13,13 @@ import { compileAcceptanceCriteria } from "./graph/ac-compiler.ts";
 import { type GraphAgentSessionFactory, GraphEngine, loadNamedGraph } from "./graph/engine.ts";
 import { type GraphRunState, isJsonObject } from "./graph/schema.ts";
 import {
+	canonicalFingerprint,
 	createStopState,
 	DEFAULT_MAX_ROUNDS,
 	MAX_TRANSIENT_RETRIES,
+	type Sleeper,
 	type StopState,
+	stopFingerprint,
 	type TerminalStatus,
 	transitionStopState,
 } from "./graph/stop.ts";
@@ -40,6 +43,10 @@ export interface LoopDependencies {
 	now?: () => number;
 	/** Injected accumulated job cost in USD. */
 	accumulatedCostUsd?: () => number;
+	/** Injected transient-retry backoff. */
+	sleep?: Sleeper;
+	/** First backoff step; each further retry doubles it. */
+	retryBaseDelayMs?: number;
 }
 
 export interface LoopInvocation {
@@ -307,8 +314,10 @@ export function restoreStopState(document: Record<string, unknown>, maxRounds: n
 	return {
 		...createStopState(maxRounds),
 		round: typeof document.round === "number" ? document.round : 0,
-		evidenceFingerprints: stringArray(document.evidence_fingerprints),
-		outputFingerprints: stringArray(document.output_fingerprints),
+		// Normalized on the way back in, so a comparison after a resume is made on
+		// the same terms the reducer used before the kill.
+		evidenceFingerprints: stringArray(document.evidence_fingerprints).map(stopFingerprint),
+		outputFingerprints: stringArray(document.output_fingerprints).map(stopFingerprint),
 		failingAcSets: stringArray(document.failing_ac_sets),
 		retries: Math.max(0, Math.min(MAX_TRANSIENT_RETRIES, retries)),
 		retryDelaysMs: Array.isArray(document.retry_delays_ms)
@@ -380,9 +389,18 @@ function changedPaths(before: ReadonlyMap<string, string>, after: ReadonlyMap<st
 	return [...paths].filter((path) => before.get(path) !== after.get(path));
 }
 
+/**
+ * The verifier's evidence, fingerprinted canonically so reformatting the same
+ * receipts cannot look like progress. Unparseable evidence falls back to its
+ * bytes, which is still a stable witness of the same file.
+ */
 async function evidenceFingerprint(runDirectory: string): Promise<string> {
 	const content = await readFile(join(runDirectory, "evidence.json"));
-	return `sha256:${createHash("sha256").update(content).digest("hex")}`;
+	try {
+		return canonicalFingerprint(JSON.parse(content.toString("utf8")));
+	} catch {
+		return `sha256:${createHash("sha256").update(content).digest("hex")}`;
+	}
 }
 
 /**
@@ -690,6 +708,8 @@ export async function resumeLoop(
 		now: dependencies.now,
 		accumulatedCostUsd: dependencies.accumulatedCostUsd,
 		limits: task.limits,
+		sleep: dependencies.sleep,
+		retryBaseDelayMs: dependencies.retryBaseDelayMs,
 	});
 	const baselineSource = JSON.parse(await readFile(join(jobDirectory, "baseline.json"), "utf8")) as Record<
 		string,
@@ -841,6 +861,8 @@ export async function runLoop(
 		now: dependencies.now,
 		accumulatedCostUsd: dependencies.accumulatedCostUsd,
 		limits: task.limits,
+		sleep: dependencies.sleep,
+		retryBaseDelayMs: dependencies.retryBaseDelayMs,
 	});
 
 	try {
