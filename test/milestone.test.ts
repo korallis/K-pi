@@ -127,6 +127,13 @@ test("accounts widget labels each slot percentage", () => {
 });
 
 test("Cursor registers its id and refreshes a mocked live array", async () => {
+	// The refresh caches the catalog in the agent directory, so this stays in a
+	// temporary one rather than writing into the operator's real home.
+	const agentDirectory = await mkdtemp(join(tmpdir(), "kpi-cursor-milestone-"));
+	const previousAgentDir = process.env.KPI_CODING_AGENT_DIR;
+	const previousHome = process.env.HOME;
+	process.env.KPI_CODING_AGENT_DIR = agentDirectory;
+	process.env.HOME = agentDirectory;
 	let id = "";
 	let config: { refreshModels?: (context: RefreshModelsContext) => Promise<unknown[]> } | undefined;
 	registerCursorProvider({
@@ -138,9 +145,19 @@ test("Cursor registers its id and refreshes a mocked live array", async () => {
 	assert.equal(id, "cursor");
 	const response = new Response(JSON.stringify({ data: [{ id: "live", name: "Live" }] }), { status: 200 });
 	const context = { allowNetwork: true, signal: new AbortController().signal } as RefreshModelsContext;
-	const models = await refreshCursorModels(context, async () => response);
-	assert.equal(models[0]?.id, "live");
-	assert.equal(Array.isArray(await config?.refreshModels?.(context).catch(() => [])), true);
+	try {
+		const models = await refreshCursorModels(context, async () => response);
+		assert.equal(models[0]?.id, "live");
+		assert.equal(Array.isArray(await config?.refreshModels?.(context).catch(() => [])), true);
+	} finally {
+		if (previousAgentDir === undefined) {
+			delete process.env.KPI_CODING_AGENT_DIR;
+		} else {
+			process.env.KPI_CODING_AGENT_DIR = previousAgentDir;
+		}
+		if (previousHome !== undefined) process.env.HOME = previousHome;
+		await rm(agentDirectory, { recursive: true, force: true });
+	}
 });
 
 test("K-mode feature starts with principles and ship needs approval", async () => {

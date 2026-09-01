@@ -241,13 +241,15 @@ async function logoutAccount(
 	context.ui.notify(`Removed account ${slot.poolId}/${slot.slotId}`, "info");
 }
 
-/** The session routing a command may steer: the pin and the rotation. */
+/** The session routing a command may steer: the pin, the rotation, the route. */
 interface RoutingControls {
-	advance: (poolId: PoolId) => void;
-	pin: (poolId: PoolId, slotId: string) => void;
+	/** The pool the session is currently routed through, if any. */
+	activePool: () => PoolId | undefined;
+	advance: (poolId: PoolId) => Promise<void>;
+	pin: (poolId: PoolId, slotId: string) => Promise<void>;
 }
 
-/** Resolves true when the command changed the stored accounts. */
+/** Resolves true when the command changed something the widget shows. */
 async function handleAccountsCommand(
 	args: string,
 	context: ExtensionCommandContext,
@@ -276,19 +278,17 @@ async function handleAccountsCommand(
 		return true;
 	}
 	if (action === "next") {
-		if (first === undefined) {
-			throw new Error("Usage: /accounts next <pool>");
+		// Normative grammar is no-arg: it advances the pool the session is on.
+		if (first !== undefined) {
+			throw new Error("Usage: /accounts next");
 		}
-		if (!isPoolId(first) || second !== undefined) {
-			throw new Error(`Unknown pool id: ${first}`);
+		const current = routing.activePool();
+		if (current === undefined) {
+			throw new Error("No active route to advance; run a turn first");
 		}
-		const document = await dependencies.store.read();
-		if (document.pools[first] === undefined) {
-			throw new Error(`No accounts configured for ${first}`);
-		}
-		routing.advance(first);
-		context.ui.notify(`Advanced past the pinned ${first} slot`, "info");
-		return false;
+		await routing.advance(current);
+		context.ui.notify(`Advanced past the pinned ${current} slot`, "info");
+		return true;
 	}
 	if (action === "pin") {
 		if (second !== undefined) {
@@ -299,9 +299,9 @@ async function handleAccountsCommand(
 		if (slot === undefined) {
 			throw new Error(`Unknown account slot: ${reference.poolId}/${reference.slotId}`);
 		}
-		routing.pin(reference.poolId, reference.slotId);
+		await routing.pin(reference.poolId, reference.slotId);
 		context.ui.notify(`Pinned ${reference.poolId}/${reference.slotId} for this session`, "info");
-		return false;
+		return true;
 	}
 	throw new Error(`Unknown /accounts command: ${action}`);
 }
@@ -363,6 +363,7 @@ export function registerAccounts(pi: ExtensionAPI, dependencies: AccountsDepende
 	let active: SelectedSlot | undefined;
 	let activeModel: string | undefined;
 
+
 	const configuredSlots = (accounts: AccountsDocument): { poolId: PoolId; slotId: string }[] =>
 		Object.entries(accounts.pools).flatMap(([poolId, pool]) =>
 			(pool?.slots ?? []).map((slot) => ({ poolId: poolId as PoolId, slotId: slot.id })),
@@ -388,6 +389,23 @@ export function registerAccounts(pi: ExtensionAPI, dependencies: AccountsDepende
 			now: nowMs(),
 		});
 		context.ui.setStatus("accounts", widget === "ACCOUNTS" ? undefined : widget);
+	};
+
+	/**
+	 * Recomputes the route inside one family after an operator steer, so the
+	 * widget states where the next request will actually go rather than the slot
+	 * the session has just been moved off. The next header hook selects again and
+	 * lands on the same slot, because the pin and the skip are what it reads.
+	 */
+	const reroute = async (poolId: PoolId): Promise<void> => {
+		if (active?.poolId !== poolId) {
+			return;
+		}
+		const next = balancer.selectInFamily(poolId, await resolved.store.read(), usage);
+		active = next === undefined ? undefined : { poolId: next.poolId, slot: next.slot };
+		if (next === undefined) {
+			activeModel = undefined;
+		}
 	};
 
 	if (typeof pi.on === "function") {
@@ -526,11 +544,20 @@ export function registerAccounts(pi: ExtensionAPI, dependencies: AccountsDepende
 						}
 					},
 					{
-						advance: (poolId) => balancer.advance(poolId),
-						pin: (poolId, slotId) => balancer.pinSlot(poolId, slotId),
+						activePool: () => active?.poolId,
+						advance: async (poolId) => {
+							balancer.advance(poolId);
+							await reroute(poolId);
+						},
+						pin: async (poolId, slotId) => {
+							balancer.pinSlot(poolId, slotId);
+							await reroute(poolId);
+						},
 					},
 				);
 				if (changed) {
+					// A steer moves the route now, so the widget must not keep showing
+					// the slot the session has just been moved off.
 					await publishWidget(context);
 				}
 			} catch (error) {

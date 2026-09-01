@@ -160,15 +160,32 @@ test("a live refresh replaces the bootstrap list and stores the last known catal
 	}
 });
 
-test("an offline refresh falls back rather than emptying the catalog", async () => {
-	const context = { allowNetwork: false, signal: new AbortController().signal } as RefreshModelsContext;
-	const models = await refreshCursorModels(context, async () => {
-		throw new Error("the network must not be touched");
-	});
-	assert.deepEqual(
-		models.map((entry) => entry.id),
-		CURSOR_FALLBACK_MODELS.map((entry) => entry.id),
-	);
+test("an offline refresh with nothing stored falls back to the bounded list", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "k-pi-cursor-offline-"));
+	const previousAgentDir = process.env.KPI_CODING_AGENT_DIR;
+	const previousHome = process.env.HOME;
+	try {
+		process.env.KPI_CODING_AGENT_DIR = directory;
+		process.env.HOME = directory;
+
+		const context = { allowNetwork: false, signal: new AbortController().signal } as RefreshModelsContext;
+		const models = await refreshCursorModels(context, async () => {
+			throw new Error("the network must not be touched");
+		});
+
+		assert.deepEqual(
+			models.map((entry) => entry.id),
+			CURSOR_FALLBACK_MODELS.map((entry) => entry.id),
+		);
+	} finally {
+		if (previousAgentDir === undefined) {
+			delete process.env.KPI_CODING_AGENT_DIR;
+		} else {
+			process.env.KPI_CODING_AGENT_DIR = previousAgentDir;
+		}
+		if (previousHome !== undefined) process.env.HOME = previousHome;
+		await rm(directory, { recursive: true, force: true });
+	}
 });
 
 test("a malformed stored catalog is ignored instead of trusted", async () => {
@@ -197,4 +214,120 @@ test("the global response classifier never reads a body", async () => {
 	assert.match(hook, /classifyProviderFailure\(/u, "the hook classifies status and headers");
 	assert.doesNotMatch(hook, /classifyProviderBodyFailure/u, "the global hook must not reach the body classifier");
 	assert.doesNotMatch(hook.slice(0, hook.indexOf("session_start")), /\bbody\b/u, "no body is consumed in the hook");
+});
+
+test("an offline or empty refresh returns the stored catalog and never overwrites it", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "k-pi-cursor-keep-"));
+	const previousAgentDir = process.env.KPI_CODING_AGENT_DIR;
+	const previousHome = process.env.HOME;
+	try {
+		process.env.KPI_CODING_AGENT_DIR = directory;
+		process.env.HOME = directory;
+
+		// A live sync stores a catalog.
+		const live = new Response(JSON.stringify({ data: [{ id: "cursor-live", name: "Cursor Live" }] }), { status: 200 });
+		await refreshCursorModels({ allowNetwork: true, signal: new AbortController().signal } as RefreshModelsContext, async () => live);
+		const stored = await readFile(storedCursorModelsPath(directory), "utf8");
+		assert.match(stored, /cursor-live/u);
+
+		// Offline: the stored catalog is returned and left untouched.
+		const offline = await refreshCursorModels(
+			{ allowNetwork: false, signal: new AbortController().signal } as RefreshModelsContext,
+			async () => {
+				throw new Error("the network must not be touched");
+			},
+		);
+		assert.deepEqual(
+			offline.map((entry) => entry.id),
+			["cursor-live"],
+			"offline prefers the last known catalog over a bootstrap guess",
+		);
+		assert.equal(await readFile(storedCursorModelsPath(directory), "utf8"), stored, "offline wrote nothing");
+
+		// An empty live answer is not a catalog and must not replace one.
+		const empty = new Response(JSON.stringify({ data: [] }), { status: 200 });
+		const afterEmpty = await refreshCursorModels(
+			{ allowNetwork: true, signal: new AbortController().signal } as RefreshModelsContext,
+			async () => empty,
+		);
+		assert.deepEqual(
+			afterEmpty.map((entry) => entry.id),
+			["cursor-live"],
+			"an empty answer keeps what was known",
+		);
+		assert.equal(await readFile(storedCursorModelsPath(directory), "utf8"), stored, "an empty answer wrote nothing");
+	} finally {
+		if (previousAgentDir === undefined) {
+			delete process.env.KPI_CODING_AGENT_DIR;
+		} else {
+			process.env.KPI_CODING_AGENT_DIR = previousAgentDir;
+		}
+		if (previousHome !== undefined) process.env.HOME = previousHome;
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("the stored catalog is rehydrated through current defaults, not trusted wholesale", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "k-pi-cursor-rehydrate-"));
+	try {
+		await writeFile(
+			storedCursorModelsPath(directory),
+			JSON.stringify([
+				{
+					id: "cursor-live",
+					name: "Cursor Live",
+					// Stale fields from an older release that must not survive.
+					contextWindow: 1,
+					maxTokens: 1,
+					api: "anthropic-messages",
+					cost: { input: 999, output: 999, cacheRead: 999, cacheWrite: 999 },
+					reasoning: false,
+				},
+				{ name: "no id" },
+			]),
+		);
+
+		const [rehydrated, ...rest] = readStoredCursorModels(directory) ?? [];
+
+		assert.equal(rest.length, 0, "an entry without an id is dropped");
+		assert.equal(rehydrated.id, "cursor-live");
+		assert.equal(rehydrated.name, "Cursor Live", "the display name is kept");
+		const [fresh] = CURSOR_FALLBACK_MODELS;
+		assert.equal(rehydrated.api, fresh.api, "the api comes from this release");
+		assert.equal(rehydrated.contextWindow, fresh.contextWindow);
+		assert.equal(rehydrated.maxTokens, fresh.maxTokens);
+		assert.deepEqual(rehydrated.cost, fresh.cost, "a cached cost never outlives its release");
+		assert.equal(rehydrated.reasoning, fresh.reasoning);
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("the catalog cache creates its directory and is written atomically", async () => {
+	const parent = await mkdtemp(join(tmpdir(), "k-pi-cursor-mkdir-"));
+	const previousAgentDir = process.env.KPI_CODING_AGENT_DIR;
+	const previousHome = process.env.HOME;
+	const directory = join(parent, "missing", "agent");
+	try {
+		process.env.KPI_CODING_AGENT_DIR = directory;
+		process.env.HOME = directory;
+
+		const live = new Response(JSON.stringify({ data: [{ id: "cursor-live" }] }), { status: 200 });
+		await refreshCursorModels({ allowNetwork: true, signal: new AbortController().signal } as RefreshModelsContext, async () => live);
+
+		assert.match(await readFile(storedCursorModelsPath(directory), "utf8"), /cursor-live/u);
+		assert.deepEqual(
+			(await readdir(directory)).filter((name) => name.includes(".tmp")),
+			[],
+			"no temporary file is left behind",
+		);
+	} finally {
+		if (previousAgentDir === undefined) {
+			delete process.env.KPI_CODING_AGENT_DIR;
+		} else {
+			process.env.KPI_CODING_AGENT_DIR = previousAgentDir;
+		}
+		if (previousHome !== undefined) process.env.HOME = previousHome;
+		await rm(parent, { recursive: true, force: true });
+	}
 });

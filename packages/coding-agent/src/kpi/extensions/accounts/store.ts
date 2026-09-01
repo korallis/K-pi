@@ -91,20 +91,62 @@ function assertAccounts(value: unknown, path: string): asserts value is Accounts
 		if (!Array.isArray(pool.slots)) {
 			throw new Error(`${path} pool ${poolName} must define slots`);
 		}
+		const slotIds = new Set<string>();
 		for (const slot of pool.slots) {
 			if (!isRecord(slot) || typeof slot.id !== "string" || !SLOT_ID_PATTERN.test(slot.id)) {
 				throw new Error(`${path} pool ${poolName} has an invalid slot id`);
 			}
+			if (slotIds.has(slot.id)) {
+				throw new Error(`${path} pool ${poolName} has a duplicate slot id: ${slot.id}`);
+			}
+			slotIds.add(slot.id);
 			if (slot.kind !== "oauth" && slot.kind !== "api_key") {
 				throw new Error(`${path} pool ${poolName} slot ${slot.id} has an unknown kind`);
 			}
+			// Optional fields still have a type: a label that is not a string, or
+			// an acceptance stamp that is not an instant, is corruption, not absence.
+			if (slot.label !== undefined && (typeof slot.label !== "string" || slot.label.length === 0)) {
+				throw new Error(`${path} pool ${poolName} slot ${slot.id} has an invalid label`);
+			}
+			if (
+				slot.warningAcceptedAt !== undefined &&
+				(typeof slot.warningAcceptedAt !== "string" || Number.isNaN(Date.parse(slot.warningAcceptedAt)))
+			) {
+				throw new Error(`${path} pool ${poolName} slot ${slot.id} has an invalid warningAcceptedAt`);
+			}
 		}
 	}
+	if (value.fallback.length === 0) {
+		throw new Error(`${path} fallback must name at least one pool`);
+	}
+	const chain = new Set<string>();
 	for (const entry of value.fallback) {
 		if (typeof entry !== "string" || !isPoolId(entry)) {
 			throw new Error(`${path} fallback has an unknown pool id: ${String(entry)}`);
 		}
+		if (chain.has(entry)) {
+			throw new Error(`${path} fallback repeats ${entry}`);
+		}
+		chain.add(entry);
 	}
+}
+
+/**
+ * A credential K-π can actually route with. An official `auth.json` may hold
+ * shapes from a newer Pi or a half-written file; those are skipped rather than
+ * imported as a slot that would fail on its first request.
+ */
+function asRoutableCredential(value: unknown): Credential | undefined {
+	if (!isRecord(value)) {
+		return undefined;
+	}
+	if (value.type === "oauth") {
+		return typeof value.access === "string" && value.access.length > 0 ? (value as unknown as Credential) : undefined;
+	}
+	if (value.type === "api_key") {
+		return typeof value.key === "string" && value.key.length > 0 ? (value as unknown as Credential) : undefined;
+	}
+	return undefined;
 }
 
 function assertSecrets(value: unknown, path: string): asserts value is AccountSecrets {
@@ -305,21 +347,23 @@ export class AccountsStore {
 		return this.mutate(async () => {
 			const [document, secrets] = await Promise.all([this.readAccountsUnlocked(), this.readSecretsUnlocked()]);
 			const imported: string[] = [];
-			for (const [providerId, credential] of Object.entries(value)) {
-				if (!isPoolId(providerId) || !isRecord(credential)) {
+			for (const [providerId, entry] of Object.entries(value)) {
+				if (!isPoolId(providerId)) {
 					continue;
 				}
-				const kind = credential.type === "oauth" ? "oauth" : credential.type === "api_key" ? "api_key" : undefined;
-				if (kind === undefined) {
+				// A malformed credential is skipped, and because every write happens
+				// after the loop, skipping one cannot leave a partial import behind.
+				const credential = asRoutableCredential(entry);
+				if (credential === undefined) {
 					continue;
 				}
 				const pool = document.pools[providerId] ?? { strategy: "quota-first" as const, slots: [] };
 				if (pool.slots.some((slot) => slot.id === "default")) {
 					continue;
 				}
-				pool.slots.push({ id: "default", kind, label: "default" });
+				pool.slots.push({ id: "default", kind: credential.type === "oauth" ? "oauth" : "api_key", label: "default" });
 				document.pools[providerId] = pool;
-				secrets[secretKey(providerId, "default")] = credential as unknown as Credential;
+				secrets[secretKey(providerId, "default")] = credential;
 				imported.push(`${providerId}/default`);
 			}
 			if (imported.length === 0) {

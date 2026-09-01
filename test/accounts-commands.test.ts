@@ -29,6 +29,7 @@ interface Harness {
 	hooks: Map<string, ProviderHook>;
 	notes: string[];
 	prompts: string[];
+	status: Array<string | undefined>;
 	store: AccountsStore;
 	route: (provider?: string) => Promise<string>;
 }
@@ -41,6 +42,7 @@ async function harness(confirm = true): Promise<Harness> {
 	const notes: string[] = [];
 	const errors: string[] = [];
 	const prompts: string[] = [];
+	const status: Array<string | undefined> = [];
 	const pi = {
 		on(event: string, handler: ProviderHook) {
 			hooks.set(event, handler);
@@ -67,7 +69,9 @@ async function harness(confirm = true): Promise<Harness> {
 		notify(message: string, level?: string) {
 			(level === "error" ? errors : notes).push(message);
 		},
-		setStatus() {},
+		setStatus(_key: string, value?: string) {
+			status.push(value);
+		},
 	};
 	const context = { cwd: directory, hasUI: true, mode: "tui", ui } as unknown as ExtensionCommandContext;
 	const route = async (provider = "anthropic"): Promise<string> => {
@@ -87,6 +91,7 @@ async function harness(confirm = true): Promise<Harness> {
 		hooks,
 		notes,
 		prompts,
+		status,
 		store,
 		route,
 	};
@@ -127,7 +132,7 @@ test("an invalid pool, strategy, chain, or slot fails without a partial write", 
 		]) {
 			await subject.pool(command, subject.context);
 		}
-		for (const command of ["pin anthropic/absent", "pin nope/home", "next nope", "next xai"]) {
+		for (const command of ["pin anthropic/absent", "pin nope/home", "next anthropic", "next extra args"]) {
 			await subject.accounts(command, subject.context);
 		}
 
@@ -175,7 +180,8 @@ test("next advances past the slot the session is pinned to", async () => {
 		await subject.accounts("pin anthropic/home", subject.context);
 		assert.equal(await subject.route(), "Bearer access-home");
 
-		await subject.accounts("next anthropic", subject.context);
+		// Normative grammar is no-arg: it advances whatever the session is on.
+		await subject.accounts("next", subject.context);
 
 		assert.equal(await subject.route(), "Bearer access-work", "next moved the route off the pin");
 		assert.equal(await subject.route(), "Bearer access-work", "and the new slot is now the pin");
@@ -318,6 +324,162 @@ test("a declined billing confirm creates no slot", async () => {
 		assert.deepEqual(subject.prompts, [CODEX_BILLING_CONFIRM]);
 		assert.deepEqual((await subject.store.read()).pools, {});
 		assert.deepEqual(Object.keys(await subject.store.readSecrets()), []);
+	} finally {
+		await rm(subject.directory, { recursive: true, force: true });
+	}
+});
+
+test("next uses the current active route, needs one, and takes no arguments", async () => {
+	const subject = await harness();
+	try {
+		await subject.accounts("login anthropic home", subject.context);
+		await subject.accounts("login anthropic work", subject.context);
+
+		// No turn has run, so there is no route to advance.
+		await subject.accounts("next", subject.context);
+		assert.equal(subject.errors.length, 1);
+		assert.match(subject.errors[0], /No active route to advance/u);
+
+		// The route is whatever the last request used, not an argument.
+		assert.equal(await subject.route(), "Bearer access-home");
+		subject.notes.length = 0;
+		await subject.accounts("next", subject.context);
+		assert.match(subject.notes.at(-1) ?? "", /Advanced past the pinned anthropic slot/u);
+		assert.equal(await subject.route(), "Bearer access-work", "the next header hook honours the steer");
+
+		// Extra arguments are refused rather than silently ignored.
+		subject.errors.length = 0;
+		await subject.accounts("next anthropic", subject.context);
+		await subject.accounts("next xai extra", subject.context);
+		assert.equal(subject.errors.length, 2);
+		for (const message of subject.errors) {
+			assert.match(message, /Usage: \/accounts next/u);
+		}
+	} finally {
+		await rm(subject.directory, { recursive: true, force: true });
+	}
+});
+
+test("pin and next republish a route the next request will actually use", async () => {
+	const subject = await harness();
+	try {
+		await subject.accounts("login anthropic home", subject.context);
+		await subject.accounts("login anthropic work", subject.context);
+		assert.equal(await subject.route(), "Bearer access-home");
+
+		subject.status.length = 0;
+		await subject.accounts("pin anthropic/work", subject.context);
+		assert.match(
+			subject.status.at(-1) ?? "",
+			/ROUTE {3}anthropic\/anthropic-model {2}via work/u,
+			"the widget states the pinned slot immediately, not the stale one",
+		);
+		assert.equal(await subject.route(), "Bearer access-work", "and the header hook agrees");
+
+		subject.status.length = 0;
+		await subject.accounts("next", subject.context);
+		assert.match(
+			subject.status.at(-1) ?? "",
+			/ROUTE {3}anthropic\/anthropic-model {2}via home/u,
+			"advancing republishes the slot the session moved to",
+		);
+		assert.equal(await subject.route(), "Bearer access-home");
+	} finally {
+		await rm(subject.directory, { recursive: true, force: true });
+	}
+});
+
+test("a malformed persisted accounts document is refused rather than half-read", async () => {
+	const subject = await harness();
+	try {
+		const valid = {
+			version: 1,
+			pools: { anthropic: { strategy: "quota-first", slots: [{ id: "home", kind: "oauth" }] } },
+			fallback: ["anthropic"],
+			stickiness: "session-until-exhausted",
+		};
+
+		const broken: Array<[string, unknown]> = [
+			["empty fallback", { ...valid, fallback: [] }],
+			["repeated fallback", { ...valid, fallback: ["anthropic", "anthropic"] }],
+			["unknown fallback pool", { ...valid, fallback: ["nope"] }],
+			["unknown pool id", { ...valid, pools: { nope: valid.pools.anthropic } }],
+			["unknown strategy", { ...valid, pools: { anthropic: { strategy: "fastest", slots: [] } } }],
+			[
+				"duplicate slot id",
+				{
+					...valid,
+					pools: {
+						anthropic: {
+							strategy: "quota-first",
+							slots: [
+								{ id: "home", kind: "oauth" },
+								{ id: "home", kind: "api_key" },
+							],
+						},
+					},
+				},
+			],
+			[
+				"unknown slot kind",
+				{ ...valid, pools: { anthropic: { strategy: "quota-first", slots: [{ id: "home", kind: "magic" }] } } },
+			],
+			[
+				"non-string label",
+				{
+					...valid,
+					pools: { anthropic: { strategy: "quota-first", slots: [{ id: "home", kind: "oauth", label: 7 }] } },
+				},
+			],
+			[
+				"invalid acceptance stamp",
+				{
+					...valid,
+					pools: {
+						anthropic: {
+							strategy: "quota-first",
+							slots: [{ id: "home", kind: "oauth", warningAcceptedAt: "yesterday" }],
+						},
+					},
+				},
+			],
+		];
+
+		for (const [label, document] of broken) {
+			await writeFile(subject.store.accountsPath, JSON.stringify(document));
+			await assert.rejects(new AccountsStore(subject.directory).read(), Error, label);
+		}
+
+		await writeFile(subject.store.accountsPath, JSON.stringify(valid));
+		assert.equal((await new AccountsStore(subject.directory).read()).pools.anthropic?.slots.length, 1);
+	} finally {
+		await rm(subject.directory, { recursive: true, force: true });
+	}
+});
+
+test("a malformed official credential is skipped without a partial import", async () => {
+	const subject = await harness();
+	try {
+		await writeFile(
+			subject.store.authPath,
+			JSON.stringify({
+				anthropic: { type: "oauth" },
+				xai: { type: "api_key", key: "" },
+				cursor: { type: "future-scheme", token: "x" },
+				"openai-codex": { type: "api_key", key: "usable-codex-key" },
+			}),
+		);
+
+		await subject.hooks.get("session_start")!({ type: "session_start" }, subject.context as never);
+
+		const document = await new AccountsStore(subject.directory).read();
+		assert.deepEqual(
+			Object.keys(document.pools),
+			["openai-codex"],
+			"only the routable credential became a slot",
+		);
+		assert.deepEqual(Object.keys(await subject.store.readSecrets()), ["openai-codex/default"]);
+		assert.equal(await subject.route("openai-codex"), "Bearer usable-codex-key");
 	} finally {
 		await rm(subject.directory, { recursive: true, force: true });
 	}
