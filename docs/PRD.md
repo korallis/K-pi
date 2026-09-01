@@ -4,8 +4,10 @@
 **Product:** K-π — a standalone coding-agent harness, maintained as a fork of Pi `v0.84.4` (base commit `b79e4cc`)  
 **Brand cell:** `K-π` (never bare `π`)  
 **Audience:** Coding agents and the humans who review them  
-**Companion docs:** `START-HERE.md`, `BUILD-PROMPT.md`, `../UPSTREAM.md`, `spec.md`, `kstack.md`, `model-ladder.md`, `research.md`, `dune-architecture.md`, `minimalist.md`, `agents-bus.md`, `visual-targets.md`  
-**Active queue:** [`docs/remediation-plan.md`](remediation-plan.md) is the only active implementation queue; start at the lowest incomplete `RP-##`, currently RP-01A. Research and gap register: [`remediation-research.md`](remediation-research.md).  
+**Contract:** [`../AGENTS.md`](../AGENTS.md) is the only normative project contract.  
+**Companion docs, read on demand:** `../START-HERE.md`, `BUILD-PROMPT.md`, `../UPSTREAM.md`, `spec.md`, `kstack.md`, `model-ladder.md`, `research.md`, `dune-architecture.md`, `minimalist.md`, `agents-bus.md`, `visual-targets.md`, `uat.md`  
+**Active queue:** [`docs/remediation-plan.md`](remediation-plan.md) is the only active implementation queue and names the current package itself; start at the lowest incomplete `RP-##` whose dependencies are complete. Research and gap register: [`remediation-research.md`](remediation-research.md).  
+**Feature acceptance:** [`uat.md`](uat.md), after every package and the full gates.  
 **Historical, non-authoritative:** `roadmap.md` and `implementation-plan.md` are historical build records. Their checked boxes are not completion evidence.  
 **Visual sources:** https://x.com/av1dlive/status/2092622516544270781 · `visual/omp-statusbar-codemod.jpg` · `visual/omp-statusbar-collab.jpg`  
 **ID prefix:** `PRD-1`

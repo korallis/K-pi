@@ -4,12 +4,16 @@ import test from "node:test";
 
 const repositoryRoot = new URL("../", import.meta.url);
 
+const projectContract = "AGENTS.md";
 const activePlan = "docs/remediation-plan.md";
 const remediationResearch = "docs/remediation-research.md";
+const featureAcceptance = "docs/uat.md";
 const planBasename = "remediation-plan.md";
+const acceptanceBasename = "uat.md";
 
+/** Every file that has to send a reader to the active queue: the contract, its pointers, the entry points. */
 const routingSurfaces = [
-	"AGENTS.md",
+	projectContract,
 	"docs/AGENTS.md",
 	"START-HERE.md",
 	"docs/START-HERE.md",
@@ -18,9 +22,41 @@ const routingSurfaces = [
 	"docs/PRD.md",
 ] as const;
 
+/**
+ * Redirect-only stubs, and the file each one must land a reader on. They exist so
+ * someone who opens `docs/` still reaches the contract; they are not second copies
+ * of it. A rule restated here is a rule that can drift from the original.
+ */
+const pointerSurfaces: Record<string, string> = {
+	"docs/AGENTS.md": projectContract,
+	"docs/START-HERE.md": "START-HERE.md",
+};
+
 const historicalRecords = ["docs/roadmap.md", "docs/implementation-plan.md"] as const;
 
 const gateIds = ["NH-01", "NH-02", "NH-03"] as const;
+
+/** Headings that carry normative weight. Only the project contract may own them. */
+const normativeHeading =
+	/^#{2,3}\s+(?:hard rules|gates|quality gates|how to work|do not|read order|non-negotiables|stack)\b/iu;
+
+/** A rule restated outside the contract. Pointer files must contain none. */
+const restatedRule = /^\s*(?:[-*]|\d+\.)\s.*\b(?:MUST(?:\s+NOT)?|never|do not|does not|cannot|always)\b/u;
+
+/**
+ * Claims that a *named* package is the one to work on now. Only the queue may make
+ * one; every other file names the queue and lets it answer. Each pattern here is a
+ * phrasing that actually drifted once.
+ */
+const currentPackageClaims = [
+	/\bcurrently\s+\**`?RP-\d{2}[A-Z]?/iu,
+	/\b(?:start|starting|begin|beginning)\s+at\s+\**`?RP-\d{2}[A-Z]?/iu,
+	/\bRP-\d{2}[A-Z]?\b[^.]{0,24}\bis\s+the\s+(?:current|lowest incomplete)\b/iu,
+	/\bqueue,?\s+RP-\d{2}[A-Z]?\s+first\b/iu,
+] as const;
+
+/** Only the queue may call itself the queue or the completion authority. */
+const authorityClaim = /\b(?:active (?:work |implementation )?queue|completion authority)\b/iu;
 
 /** A next-step pointer says the plan is what to do now, rather than merely naming it. */
 const activityMarker = /\b(?:active|next|queue|start|resumes?)\b|RP-00/iu;
@@ -170,12 +206,12 @@ function pointersIn(line: string): { destinations: string[]; inlineCode: string[
 	return { destinations, inlineCode };
 }
 
-type PlanPointer = { raw: string; resolved: string | null; line: number };
+type DocPointer = { raw: string; resolved: string | null; line: number };
 
-/** Every way the file names `remediation-plan.md`, with where each pointer actually lands. */
-async function planPointers(surface: string): Promise<PlanPointer[]> {
+/** Every way `surface` names a file ending in `basename`, with where each pointer actually lands. */
+async function pointersTo(surface: string, basename: string): Promise<DocPointer[]> {
 	const directory = directoryOf(surface);
-	const pointers: PlanPointer[] = [];
+	const pointers: DocPointer[] = [];
 	for (const { text, number } of proseLines(await documentLines(surface))) {
 		const { destinations, inlineCode } = pointersIn(text);
 		for (const [raws, allowRepositoryRoot] of [
@@ -183,7 +219,7 @@ async function planPointers(surface: string): Promise<PlanPointer[]> {
 			[inlineCode, true],
 		] as const) {
 			for (const raw of raws) {
-				if (!raw.endsWith(planBasename)) continue;
+				if (!raw.endsWith(basename)) continue;
 				pointers.push({
 					raw,
 					resolved: await resolvePointer(directory, raw, allowRepositoryRoot),
@@ -364,7 +400,7 @@ async function gateRecords(path: string): Promise<Map<string, GateRecord>> {
 
 test("every routing surface resolves its next step to the active remediation plan", async () => {
 	for (const surface of routingSurfaces) {
-		const pointers = await planPointers(surface);
+		const pointers = await pointersTo(surface, planBasename);
 		assert.ok(pointers.length > 0, `${surface} never points at ${planBasename}`);
 
 		const misrouted = pointers
@@ -540,4 +576,153 @@ test("every NEEDS_HUMAN gate is closed with complete decision metadata", async (
 			`RP-00 DoD must stay unchecked while ${open.join(", ")} remain open`,
 		);
 	}
+});
+
+test("the project contract is the only file that carries project rules", async () => {
+	const contract = await documentLines(projectContract);
+	const owned = contract.filter((line) => normativeHeading.test(line));
+	assert.ok(
+		owned.length >= 3,
+		`${projectContract} must own the normative sections; it has ${owned.length}: ${owned.join(" / ")}`,
+	);
+
+	for (const surface of routingSurfaces) {
+		if (surface === projectContract) continue;
+		const duplicated = proseLines(await documentLines(surface))
+			.filter(({ text }) => normativeHeading.test(text))
+			.map(({ text, number }) => `${surface}:${number}: ${text.trim()}`);
+		assert.deepEqual(
+			duplicated,
+			[],
+			`only ${projectContract} may own a normative section heading; a second copy drifts from the first`,
+		);
+	}
+});
+
+test("docs pointers redirect and restate nothing", async () => {
+	for (const [surface, target] of Object.entries(pointerSurfaces)) {
+		const source = await documentLines(surface);
+		const body = source.filter((line) => line.trim() !== "");
+		assert.ok(
+			body.length <= 12,
+			`${surface} is a pointer, not a copy, but carries ${body.length} non-empty lines`,
+		);
+
+		const found = await pointersTo(surface, target.slice(target.lastIndexOf("/") + 1));
+		const landed = found.map((pointer) => pointer.resolved);
+		assert.ok(
+			landed.includes(target),
+			`${surface} must resolve a pointer to ${target}; it resolved ${JSON.stringify(landed)}`,
+		);
+
+		const restated = proseLines(source)
+			.filter(({ text }) => restatedRule.test(text))
+			.map(({ text, number }) => `${surface}:${number}: ${text.trim()}`);
+		assert.deepEqual(restated, [], `${surface} must not restate a rule that lives in ${target}`);
+	}
+});
+
+test("only the active queue names the current package", async () => {
+	for (const surface of [...routingSurfaces, featureAcceptance]) {
+		if (surface === activePlan) continue;
+		const claims = proseLines(await documentLines(surface))
+			.filter(({ text }) => currentPackageClaims.some((pattern) => pattern.test(text)))
+			.map(({ text, number }) => `${surface}:${number}: ${text.trim()}`);
+		assert.deepEqual(
+			claims,
+			[],
+			`${surface} must name ${activePlan} and let it say which package is current, not pin one itself`,
+		);
+	}
+});
+
+test("feature acceptance is routed from the contract and the final package, and is not a second queue", async () => {
+	const source = await documentLines(featureAcceptance);
+
+	for (const surface of [projectContract, activePlan]) {
+		const pointers = await pointersTo(surface, acceptanceBasename);
+		const landed = pointers.filter((pointer) => pointer.resolved === featureAcceptance);
+		assert.ok(landed.length > 0, `${surface} must point at ${featureAcceptance}`);
+	}
+
+	const finalPackage = sectionLines(await documentLines(activePlan), /^##\s+RP-19\s/u);
+	assert.ok(
+		finalPackage.some((line) => line.includes(acceptanceBasename)),
+		`RP-19 must hand off to ${featureAcceptance}; nothing else runs after it`,
+	);
+	const productDoD = sectionLines(await documentLines(activePlan), /^##\s+Definition of done for the whole product\s*$/u);
+	assert.ok(
+		productDoD.some((line) => line.includes(acceptanceBasename)),
+		`the whole-product definition of done must require ${featureAcceptance}`,
+	);
+
+	const packages = source.filter((line) => /^##\s+RP-\d{2}/u.test(line));
+	assert.deepEqual(packages, [], `${featureAcceptance} is acceptance, not a work queue; it declares no RP packages`);
+
+	const usurped = proseLines(source)
+		.filter(({ text }) => authorityClaim.test(text) && !text.includes(planBasename))
+		.map(({ text, number }) => `${featureAcceptance}:${number}: ${text.trim()}`);
+	assert.deepEqual(
+		usurped,
+		[],
+		`${featureAcceptance} may only use queue-authority wording while naming ${planBasename} on the same line`,
+	);
+
+	const misrouted = (await pointersTo(featureAcceptance, planBasename))
+		.filter((pointer) => pointer.resolved !== activePlan)
+		.map((pointer) => `${featureAcceptance}:${pointer.line}: "${pointer.raw}" resolves to ${pointer.resolved ?? "nothing"}`);
+	assert.deepEqual(misrouted, [], `every ${planBasename} pointer in ${featureAcceptance} must resolve to ${activePlan}`);
+});
+
+test("every product story has exactly one acceptance row owned by a real package", async () => {
+	const source = await documentLines(featureAcceptance);
+	const declaredPackages = new Set((await remediationPackages()).map((entry) => entry.id));
+
+	const rows = new Map<string, { row: string; line: number }>();
+	for (let index = 0; index < source.length; index += 1) {
+		const heading = /^###\s+UAT-(\d{2})\s+[—-]\s+US-(\d{2})\b/u.exec(source[index]);
+		if (heading === null) continue;
+		const [, rowNumber, storyNumber] = heading;
+		assert.equal(
+			rowNumber,
+			storyNumber,
+			`${featureAcceptance}:${index + 1}: UAT-${rowNumber} must accept US-${rowNumber}, not US-${storyNumber}`,
+		);
+		const story = `US-${storyNumber}`;
+		assert.ok(!rows.has(story), `${story} has more than one acceptance row`);
+		rows.set(story, { row: `UAT-${rowNumber}`, line: index + 1 });
+	}
+
+	const stories = await documentLines("docs/PRD.md");
+	const declaredStories = stories
+		.map((line) => /^###\s+(US-\d{2})\s/u.exec(line)?.[1])
+		.filter((story): story is string => story !== undefined);
+	assert.ok(declaredStories.length > 0, "docs/PRD.md declares no user stories");
+	assert.deepEqual(
+		[...rows.keys()].sort(),
+		[...declaredStories].sort(),
+		`${featureAcceptance} must carry exactly one row per PRD story`,
+	);
+
+	for (const [story, { row, line }] of rows) {
+		const body = source.slice(line, line + 12);
+		const owner = body.find((text) => /\*\*Owner:\*\*/u.test(text));
+		assert.ok(owner !== undefined, `${row} (${story}) must name an owning package`);
+		const owners = [...owner.matchAll(/RP-(\d{2})([A-Z]?)/gu)].map((match) => packageId(Number(match[1]), match[2]));
+		assert.ok(owners.length > 0, `${row} (${story}) names no RP owner: ${owner.trim()}`);
+		const unknown = owners.filter((id) => !declaredPackages.has(id));
+		assert.deepEqual(unknown, [], `${row} (${story}) names ${unknown.join(", ")}, absent from ${activePlan}`);
+	}
+});
+
+test("every PRD success metric has an acceptance row", async () => {
+	const source = await documentLines(featureAcceptance);
+	const metrics = sectionLines(await documentLines("docs/PRD.md"), /^##\s+\d+\.\s+Success metrics\s*$/u);
+	const table = firstTable(metrics, "PRD success metrics");
+	const id = columnIndex(table, /^id$/u, "PRD success metrics");
+
+	const missing = table.rows
+		.map((row) => plainCell(row[id]))
+		.filter((metric) => !source.some((line) => line.includes(metric)));
+	assert.deepEqual(missing, [], `${featureAcceptance} must carry a row for every PRD success metric`);
 });

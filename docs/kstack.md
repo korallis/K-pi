@@ -265,7 +265,7 @@ Carry every upstream principle that survives the §5 keep/rewrite/drop rules as 
 | proof-or-stop | No DONE without HEAD-bound receipts. LLM “tests passed” is not evidence. |
 | executable-ac-or-gated | Autopilot playbooks refuse to start unless `ac.quality == executable`. |
 
-The four graph principles above are always in force. Beyond them, a `/k-mode` todo list loads only the principle skills whose frontmatter `description` matches the current node — the same description-matched dispatch every other skill uses (`spec.md` §Context, "skills on demand"). There is no blanket principle read, and no todo list opens by reading the whole index.
+The four graph principles above are always in force. Beyond them, a `/k-mode` todo list loads only the principle skills whose frontmatter `description` matches the current node — the same on-demand dispatch `spec.md` §9 already specifies as the last entry in the context-pack load order ("Skills on demand"). There is no blanket principle read, and no todo list opens by reading the whole index.
 
 ---
 
