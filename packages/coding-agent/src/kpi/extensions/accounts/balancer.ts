@@ -109,43 +109,59 @@ export class AccountBalancer {
 		this.sticky.delete(poolId);
 	}
 
+	/**
+	 * Chooses a slot inside one pool and never leaves it. The credential path
+	 * uses this: a request built for one provider may only ever carry a slot from
+	 * that provider's own family, whatever the fallback chain says.
+	 */
+	selectInFamily(poolId: PoolId, accounts: AccountsDocument, usage?: UsageView): Selection | undefined {
+		const pool = accounts.pools[poolId];
+		if (pool === undefined) {
+			return undefined;
+		}
+		const healthy = pool.slots.filter((slot) => this.isHealthy(poolId, slot.id));
+		if (healthy.length === 0) {
+			return undefined;
+		}
+
+		const pinned = this.sticky.get(poolId);
+		const sticky = healthy.find((slot) => slot.id === pinned);
+		if (sticky !== undefined) {
+			return {
+				poolId,
+				slot: sticky,
+				reason: "sticky",
+				remainingPercent: usage?.remainingPercent(poolId, sticky.id),
+			};
+		}
+
+		const skipped = this.advanced.get(poolId);
+		const preferred = skipped === undefined ? healthy : healthy.filter((slot) => slot.id !== skipped);
+		const candidates = preferred.length > 0 ? preferred : healthy;
+		this.advanced.delete(poolId);
+
+		const chosen = pool.strategy === "quota-first" ? this.chooseByQuota(poolId, candidates, usage) : undefined;
+		const selection = chosen ?? {
+			poolId,
+			slot: pool.strategy === "sticky" ? candidates[0] : this.rotate(poolId, candidates),
+			reason: "round-robin" as const,
+			remainingPercent: undefined,
+		};
+		this.pin(poolId, selection.slot.id);
+		return selection;
+	}
+
+	/**
+	 * The requested family first, then the configured chain. A family is only
+	 * left once every sibling in it is cooling. Crossing families changes which
+	 * catalog answers, so only the failover path may act on that.
+	 */
 	select(requestedPool: PoolId, accounts: AccountsDocument, usage?: UsageView): Selection | undefined {
 		for (const poolId of this.poolOrder(requestedPool, accounts.fallback)) {
-			const pool = accounts.pools[poolId];
-			if (pool === undefined) {
-				continue;
+			const selection = this.selectInFamily(poolId, accounts, usage);
+			if (selection !== undefined) {
+				return selection;
 			}
-			// A family is only left once every sibling in it is cooling.
-			const healthy = pool.slots.filter((slot) => this.isHealthy(poolId, slot.id));
-			if (healthy.length === 0) {
-				continue;
-			}
-
-			const pinned = this.sticky.get(poolId);
-			const sticky = healthy.find((slot) => slot.id === pinned);
-			if (sticky !== undefined) {
-				return {
-					poolId,
-					slot: sticky,
-					reason: "sticky",
-					remainingPercent: usage?.remainingPercent(poolId, sticky.id),
-				};
-			}
-
-			const skipped = this.advanced.get(poolId);
-			const preferred = skipped === undefined ? healthy : healthy.filter((slot) => slot.id !== skipped);
-			const candidates = preferred.length > 0 ? preferred : healthy;
-			this.advanced.delete(poolId);
-
-			const chosen = pool.strategy === "quota-first" ? this.chooseByQuota(poolId, candidates, usage) : undefined;
-			const selection = chosen ?? {
-				poolId,
-				slot: pool.strategy === "sticky" ? candidates[0] : this.rotate(poolId, candidates),
-				reason: "round-robin" as const,
-				remainingPercent: undefined,
-			};
-			this.pin(poolId, selection.slot.id);
-			return selection;
 		}
 		return undefined;
 	}

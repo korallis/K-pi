@@ -280,11 +280,18 @@ export function registerAccounts(pi: ExtensionAPI, dependencies: AccountsDepende
 			const accounts = await resolved.store.read();
 			// Hot path: the cache is read synchronously and never refreshed here,
 			// so no provider call stands between a turn and its headers.
-			active = balancer.select(provider, accounts, usage);
+			//
+			// Family-scoped on purpose. A request built for one provider may only
+			// carry a slot from that provider, so a fallback family's credential can
+			// never be attached to it. Crossing families is the failover path's job,
+			// and only after the model has actually been re-pointed.
+			active = balancer.selectInFamily(provider, accounts, usage);
 			activeModel = context.model?.id;
 			// The route is only real once a slot is chosen, so publish here.
 			await publishWidget(context, accounts);
-			if (active === undefined) return;
+			if (active === undefined || active.poolId !== provider) {
+				return;
+			}
 			const credential = (await resolved.store.readSecrets())[`${active.poolId}/${active.slot.id}`];
 			const token =
 				credential?.type === "oauth"
@@ -327,24 +334,36 @@ export function registerAccounts(pi: ExtensionAPI, dependencies: AccountsDepende
 				await publishWidget(context, accounts);
 				return;
 			}
-			const job = await readActiveJob(context.cwd);
-			if (job !== undefined) {
-				await appendEvent(job.eventsPath, {
-					ts: resolved.now().toISOString(),
-					type: "accounts.failover",
-					job_id: job.jobId,
-					round: typeof job.state.round === "number" ? job.state.round : 0,
-					node: typeof job.state.node === "string" ? job.state.node : "accounts",
-					from: `${plan.from.poolId}/${plan.from.slot.id}`,
-					to: `${plan.to.poolId}/${plan.to.slot.id}`,
-				});
-			}
-			// A same-family sibling keeps the request's exact model and thinking
-			// level, so no model change is proposed at all.
-			active = { poolId: plan.to.poolId, slot: plan.to.slot };
-			if (!plan.sameFamily && plan.model !== undefined) {
+			// A same-family sibling speaks the same catalog, so the request keeps its
+			// exact model and thinking level and the route may move immediately.
+			//
+			// Crossing families may only be recorded once the model has actually been
+			// re-pointed: without a mapped equivalent, or if the harness refuses the
+			// change, the route must stay where it is rather than name a slot whose
+			// credential this provider would never accept.
+			let moved = false;
+			if (plan.sameFamily) {
+				active = { poolId: plan.to.poolId, slot: plan.to.slot };
+				moved = true;
+			} else if (plan.model !== undefined && (await pi.setModel(plan.model))) {
+				active = { poolId: plan.to.poolId, slot: plan.to.slot };
 				activeModel = plan.model.id;
-				await pi.setModel(plan.model);
+				moved = true;
+			}
+
+			if (moved) {
+				const job = await readActiveJob(context.cwd);
+				if (job !== undefined) {
+					await appendEvent(job.eventsPath, {
+						ts: resolved.now().toISOString(),
+						type: "accounts.failover",
+						job_id: job.jobId,
+						round: typeof job.state.round === "number" ? job.state.round : 0,
+						node: typeof job.state.node === "string" ? job.state.node : "accounts",
+						from: `${plan.from.poolId}/${plan.from.slot.id}`,
+						to: `${plan.to.poolId}/${plan.to.slot.id}`,
+					});
+				}
 			}
 			await publishWidget(context, accounts);
 		});

@@ -257,7 +257,10 @@ function anthropicModel(id = "claude-opus-4-6") {
 }
 
 /** Captures the registered provider hooks, exactly as the harness calls them. */
-async function routingHarness(readerPercent: number | undefined = 42): Promise<RoutingHarness> {
+async function routingHarness(
+	readerPercent: number | undefined = 42,
+	setModelResult = true,
+): Promise<RoutingHarness> {
 	const directory = await mkdtemp(join(tmpdir(), "k-pi-routing-"));
 	const store = new AccountsStore(directory);
 	const commands = new Map<string, CommandHandler>();
@@ -274,7 +277,7 @@ async function routingHarness(readerPercent: number | undefined = 42): Promise<R
 		},
 		async setModel(model: { provider: string; id: string }) {
 			setModelCalls.push(`${model.provider}/${model.id}`);
-			return true;
+			return setModelResult;
 		},
 	};
 	registerAccounts(pi as unknown as Parameters<typeof registerAccounts>[0], {
@@ -612,5 +615,103 @@ test("an injected reader cannot corrupt selection or rendering with unusable num
 		} finally {
 			await rm(subject.directory, { recursive: true, force: true });
 		}
+	}
+});
+
+test("an unavailable fallback model never substitutes another provider's credential", async () => {
+	const subject = await routingHarness();
+	try {
+		await subject.command("login anthropic home", subject.context);
+		await subject.command("login xai grok", subject.context);
+
+		// The catalog offers no xai equivalent, so there is nothing to re-point to.
+		const available = [anthropicModel()];
+		const headers: Record<string, string> = {};
+		await subject.hooks.get("before_provider_headers")!(
+			{ type: "before_provider_headers", headers },
+			subject.hookContext(anthropicModel(), available),
+		);
+		assert.equal(headers.authorization, "Bearer access-home");
+
+		await subject.hooks.get("after_provider_response")!(
+			{ type: "after_provider_response", status: 429, headers: {} },
+			subject.hookContext(anthropicModel(), available),
+		);
+
+		assert.deepEqual(subject.setModelCalls, [], "no mapped model means no model change");
+		assert.doesNotMatch(subject.status.at(-1) ?? "", /ROUTE {3}xai/u, "the route must not claim a foreign family");
+
+		// The next anthropic request has no healthy sibling, so it carries no token
+		// at all rather than the xai credential.
+		const retry: Record<string, string> = {};
+		await subject.hooks.get("before_provider_headers")!(
+			{ type: "before_provider_headers", headers: retry },
+			subject.hookContext(anthropicModel(), available),
+		);
+		assert.equal(retry.authorization, undefined, "a foreign credential must never reach an anthropic request");
+	} finally {
+		await rm(subject.directory, { recursive: true, force: true });
+	}
+});
+
+test("a rejected setModel leaves no mismatched active route or token", async () => {
+	const subject = await routingHarness(42, false);
+	try {
+		await subject.command("login anthropic home", subject.context);
+		await subject.command("login xai grok", subject.context);
+
+		const available = [anthropicModel(), { provider: "xai", id: "grok-5", name: "grok-5" }];
+		await subject.hooks.get("before_provider_headers")!(
+			{ type: "before_provider_headers", headers: {} },
+			subject.hookContext(anthropicModel(), available),
+		);
+		await subject.hooks.get("after_provider_response")!(
+			{ type: "after_provider_response", status: 429, headers: {} },
+			subject.hookContext(anthropicModel(), available),
+		);
+
+		assert.deepEqual(subject.setModelCalls, ["xai/grok-5"], "the move was attempted");
+		const rejected = subject.status.at(-1) ?? "";
+		assert.doesNotMatch(rejected, /ROUTE {3}xai/u, "a refused model change must not move the route");
+		assert.match(rejected, /ROUTE {3}anthropic\/claude-opus-4-6 {2}via home/u);
+
+		const retry: Record<string, string> = {};
+		await subject.hooks.get("before_provider_headers")!(
+			{ type: "before_provider_headers", headers: retry },
+			subject.hookContext(anthropicModel(), available),
+		);
+		assert.equal(retry.authorization, undefined, "no xai token may be attached to an anthropic request");
+	} finally {
+		await rm(subject.directory, { recursive: true, force: true });
+	}
+});
+
+test("the header hook only ever attaches a slot from the request's own family", async () => {
+	const subject = await routingHarness();
+	try {
+		await subject.command("login anthropic home", subject.context);
+		await subject.command("login xai grok", subject.context);
+
+		for (const [provider, expected] of [
+			["anthropic", "Bearer access-home"],
+			["xai", "Bearer access-grok"],
+		] as const) {
+			const headers: Record<string, string> = {};
+			await subject.hooks.get("before_provider_headers")!(
+				{ type: "before_provider_headers", headers },
+				subject.hookContext({ provider, id: `${provider}-model` }),
+			);
+			assert.equal(headers.authorization, expected, provider);
+		}
+
+		// A provider with no configured pool gets nothing, never a chain neighbour.
+		const unconfigured: Record<string, string> = {};
+		await subject.hooks.get("before_provider_headers")!(
+			{ type: "before_provider_headers", headers: unconfigured },
+			subject.hookContext({ provider: "zai", id: "glm" }),
+		);
+		assert.equal(unconfigured.authorization, undefined);
+	} finally {
+		await rm(subject.directory, { recursive: true, force: true });
 	}
 });
