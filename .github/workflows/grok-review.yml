@@ -5,6 +5,16 @@
 # receive repository write credentials. The model gets the diff as inert prompt
 # data and no tools: no shell, file writes, MCP, push, or autofix.
 #
+# Trust boundary:
+#   - Copilot CLI is installed before any repository checkout, with an empty
+#     npmrc, so a PR .npmrc cannot redirect the install.
+#   - Base is checked out for trusted gate scripts; head is checked out only as
+#     a read-only diff source in a sibling worktree.
+#   - The validator runs from base when present. Head is used solely to introduce
+#     the script on the landing PR that adds it.
+#   - Inference clears GITHUB_TOKEN/GH_TOKEN so the write-capable job token never
+#     reaches the model or the PR diff prompt.
+#
 # Hosted Ubuntu is deliberate. AI review does not need the Mac mini, must not
 # occupy the hard-gate queue, and must not leave model state on a persistent
 # self-hosted runner.
@@ -60,28 +70,68 @@ jobs:
               ;;
           esac
 
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: 0
-          persist-credentials: false
-
+      # Toolchain and Copilot install happen before any repository checkout so a
+      # PR-controlled .npmrc or package tree cannot influence the CLI install.
       - uses: actions/setup-node@v7
         with:
           node-version: 22.19.0
           package-manager-cache: false
 
       - name: Install pinned Copilot CLI
-        run: npm install --global @github/copilot@1.0.82 --ignore-scripts --no-audit --fund=false
+        env:
+          HOME: ${{ runner.temp }}/npm-home
+          NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/empty-npmrc
+          NPM_CONFIG_GLOBALCONFIG: ${{ runner.temp }}/empty-npmrc
+          npm_config_cache: ${{ runner.temp }}/npm-cache
+        run: |
+          mkdir -p "$HOME" "$npm_config_cache"
+          : > "$NPM_CONFIG_USERCONFIG"
+          npm install --global @github/copilot@1.0.82 --ignore-scripts --no-audit --fund=false
+
+      - name: Checkout base for trusted gate scripts
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          fetch-depth: 0
+          path: trusted
+          persist-credentials: false
+
+      - name: Checkout head for diff source only
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          path: untrusted
+          persist-credentials: false
 
       - name: Prepare bounded review input
         run: |
-          git diff --find-renames --no-ext-diff --no-textconv "$BASE_SHA...$HEAD_SHA" -- . > "$RUNNER_TEMP/pr.diff"
-          git diff --name-only -z "$BASE_SHA...$HEAD_SHA" -- . > "$RUNNER_TEMP/changed-paths"
+          # Bring BASE_SHA into the head clone without network credentials. The
+          # base tip is not always an ancestor of HEAD once the base branch moves,
+          # so the three-dot diff must see both commits explicitly.
+          if ! git -C untrusted cat-file -e "$BASE_SHA^{commit}" 2>/dev/null; then
+            git -C untrusted fetch --no-tags "$GITHUB_WORKSPACE/trusted" "$BASE_SHA"
+          fi
+          git -C untrusted cat-file -e "$BASE_SHA^{commit}"
+          git -C untrusted cat-file -e "$HEAD_SHA^{commit}"
+
+          git -C untrusted diff --find-renames --no-ext-diff --no-textconv "$BASE_SHA...$HEAD_SHA" -- . > "$RUNNER_TEMP/pr.diff"
+          git -C untrusted diff --name-only -z "$BASE_SHA...$HEAD_SHA" -- . > "$RUNNER_TEMP/changed-paths"
 
           bytes=$(wc -c < "$RUNNER_TEMP/pr.diff" | tr -d ' ')
           if [ "$bytes" -gt 250000 ]; then
             echo "::error::PR diff is $bytes bytes; Grok review fails closed above 250000 bytes."
+            exit 1
+          fi
+
+          # Prefer the base copy of the validator (trusted TCB). The head copy is
+          # only for the landing PR that introduces the script onto the base.
+          if [ -f trusted/scripts/validate-grok-review.mjs ]; then
+            cp trusted/scripts/validate-grok-review.mjs "$RUNNER_TEMP/validate-grok-review.mjs"
+          elif [ -f untrusted/scripts/validate-grok-review.mjs ]; then
+            cp untrusted/scripts/validate-grok-review.mjs "$RUNNER_TEMP/validate-grok-review.mjs"
+          else
+            echo "::error::scripts/validate-grok-review.mjs is missing on base and head."
             exit 1
           fi
 
@@ -134,7 +184,7 @@ jobs:
         if: steps.inference.outcome == 'success'
         continue-on-error: true
         run: |
-          node scripts/validate-grok-review.mjs \
+          node "$RUNNER_TEMP/validate-grok-review.mjs" \
             "$RUNNER_TEMP/grok-review.raw" \
             "$RUNNER_TEMP/changed-paths" \
             "$RUNNER_TEMP/grok-review.json"
