@@ -199,7 +199,7 @@ Each AC is written so a later agent can turn it into a check. IDs are stable.
 
 - **AC-11.1** Extensions do not pass a `models` array when touching official ids `anthropic`, `openai`, `openai-codex`, `xai`, `zai`, `zai-coding-cn`, `kimi-coding`.
 - **AC-11.2** Cursor provider implements `refreshModels` and a short fallback list only for pre-sync emptiness.
-- **AC-11.3** README documents `pi update --models` as the operator command for official refresh.
+- **AC-11.3** README documents `kpi update --models` as the operator command for official refresh. There is no `pi` bin (AC-01.2), so no operator command is spelled `pi …`.
 
 ### US-12 — Anthropic extra-usage warning
 
@@ -280,7 +280,7 @@ Reference files: `visual/omp-statusbar-codemod.jpg`, `visual/omp-statusbar-colla
 
 **Story.** As an operator, I type `/k-mode add a healthcheck and verify it` and get feature-playbook steps that cannot skip graph gates.
 
-- **AC-19.1** First todo is “read Principles” (21 upstream + 4 graph principles in `kstack.md`).
+- **AC-19.1** The first todo names the four graph principles in `kstack.md` §6, which are always in force, plus only the principle skills whose frontmatter `description` matches the current node. No fixed principle count is asserted, and no todo list opens by reading the whole principle index.
 - **AC-19.2** Matched playbook name is stored on `task.json.playbook`.
 - **AC-19.3** Ship todo cannot complete unless `verdict.json.approved == true` and evidence is fresh.
 - **AC-19.4** Skipped steps remain listed with `skip: <reason>`.
@@ -356,7 +356,7 @@ Source: https://github.com/alirezarezvani/claude-skills/blob/main/engineering/mi
 - **AC-26.1** Official pool ids only: `zai` (global, `ZAI_API_KEY`), `zai-coding-cn` (`ZAI_CODING_CN_API_KEY`), `kimi-coding` (`KIMI_API_KEY`).
 - **AC-26.2** `/accounts login zai` and `/accounts login kimi-coding` add slots without freezing catalogs.
 - **AC-26.3** Same-family failover on 429/402/403-quota. z.ai default cool-off uses the 5-hour window when reset is unknown.
-- **AC-26.4** Model ids stay `zai/<official>`, `kimi-coding/<official>`. New GLM or Kimi coding models appear via `pi update --models`.
+- **AC-26.4** Model ids stay `zai/<official>`, `kimi-coding/<official>`. New GLM or Kimi coding models appear via `kpi update --models`.
 - **AC-26.5** Do not hand-roll `api.z.ai/api/coding/paas/v4` in models.json. Use Pi’s built-in `zai` path (z.ai bans unofficial SDK use of the coding plan).
 - **AC-26.6** Kimi Coding Plan is `kimi-coding`, not Moonshot Open Platform (`moonshot` / `api.moonshot.ai`). Pay-per-token Moonshot is out of v1.
 - **AC-26.7** Footer shows `(sub)` for these slots. No runtime dep on `pi-kimi-coder`, `pi-moonshot`, or `@czottmann/pi-zai-api`.

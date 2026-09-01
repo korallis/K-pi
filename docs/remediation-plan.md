@@ -11,13 +11,14 @@ IDs: `RP-##`. Stories and ACs: `PRD.md`. Normative contracts: `spec.md`, `../UPS
 ## Execution rules
 
 1. Read the package's listed sources before editing. Reuse the existing module and test patterns.
-2. One writer owns a file. Do not parallelize packages that name the same source file.
-3. A package owns only its listed gap IDs. If another gap appears, add it to the research register and assign one owner before editing.
-4. Run only the package's scoped tests while packages are in flight. RP-19 runs the full product gates once.
-5. Use injected clocks, fetches, process launchers, RPC peers, and temporary HOME/repository roots. No cloud keys, model downloads, real sleeps, or production services in tests.
-6. Tests must exercise observable behavior. A source-text assertion is insufficient unless the source text itself is the contract, such as forbidden dependency or packaged-resource inventory.
-7. Update the owning product docs in the same package as behavior. Do not defer contract drift to RP-19.
-8. Do not push, deploy, publish, create a PR, or add a runtime dependency as part of this plan. Nothing in this repository is published; there is no publish payload to prove.
+2. **One writer owns a file.** This is the only real constraint on concurrency. Dependency-ready packages run in parallel; two packages that name the same source file do not.
+3. Work in dependency waves, not single file. Any set of packages whose dependencies are all complete may run at once, subject to rule 2 and the shared-file list in `Execution waves` below. Sequential execution is a fallback for a single operator, not the contract.
+4. A package owns only its listed gap IDs. If another gap appears, add it to the research register and assign one owner before editing.
+5. Run only the package's scoped `Verification` block while packages are in flight — a full suite mid-wave reports siblings' half-landed edits. `npm run check && npm test && npm run test:kpi` runs once before a pull request. RP-19 runs the whole product proof.
+6. Use injected clocks, fetches, process launchers, RPC peers, and temporary HOME/repository roots. No cloud keys, model downloads, real sleeps, or production services in tests.
+7. Tests must exercise observable behavior. A source-text assertion is insufficient unless the source text itself is the contract, such as forbidden dependency or packaged-resource inventory.
+8. Update the owning product docs in the same package as behavior. Do not defer contract drift to RP-19.
+9. Do not push, deploy, publish, or add a runtime dependency as part of a package, and never mark a package done by opening a pull request. Nothing in this repository is published; there is no publish payload to prove. Delivery and CI configuration are governed separately from this queue.
 
 ## Constraints not requiring a product decision
 
@@ -135,7 +136,7 @@ node --test --experimental-strip-types test/docs-routing.test.ts
 
 ### Tests
 
-- Representative live payloads validate; one targeted mutation per schema fails.
+- Representative live payloads validate; for each schema, one deliberately invalid variant is rejected with a located error.
 - Research/bus events round-trip through schema validation, redaction, append, and hash-chain verification.
 - Secret canaries never appear in the stored JSONL.
 - ~~`npm pack --dry-run --json` inventory matches the allowlist.~~ **Superseded by RP-01A** (dist resource inventory instead of a pack inventory).
@@ -999,24 +1000,39 @@ node scripts/verify-product.mjs --json .kpi/remediation-proof.json
 - M-06: actual visible assistant reply is below 800 characters.
 - M-07: all repository gates and built-harness checks pass.
 
+### Feature acceptance hand-off
+
+RP-19 proves the product is built, traceable, and green. It does not decide whether a real user would accept each feature. That is [`uat.md`](uat.md): one row per story US-01–US-30 plus the seven PRD metrics, run against the built binary **after** this package closes and the gates above pass. RP-19 wires the evidence path (`.kpi/uat/<UAT-ID>/`) and the roll-up into `.kpi/remediation-proof.json`; it does not run the rows.
+
 ### DoD
 
 - [ ] Every AC, required contract, metric, gap, and RP has executable traceability
 - [ ] The built `kpi` binary starts from a clean HOME and scratch repository with zero diagnostics and no install step
 - [ ] M-01–M-07 proof report is green and secret-free
 - [ ] No historical checkbox was used as evidence
+- [ ] The `docs/uat.md` evidence path and roll-up exist and are wired, and every row's owning RP is closed so UAT can begin
 
 ---
 
-## Suggested execution batches
+## Execution waves
 
-Sequential execution is the default. RP-01A is a hard barrier: nothing from RP-02 onward may start before it lands, and it may not be parallelized with anything, because it moves every source path. After it, if separate worktrees and one-writer ownership are available, only these logical groups can overlap:
+RP-01A was a hard barrier and it has landed. From here the only constraints are the dependency map above and one writer per file: any set of packages whose dependencies are complete may run concurrently.
 
-- After RP-01A: RP-02, RP-03, RP-06, and RP-12.
-- After RP-07 and RP-05: RP-08 and RP-09.
-- After RP-11: RP-13 and RP-15.
+| Wave | Concurrent packages | Primary ownership |
+|---|---|---|
+| 1 | RP-02, RP-03, RP-06, RP-12 | `extensions/policy.ts` + `templates/policy.json` · `extensions/graph/{schema,engine,stop}.ts` · `extensions/accounts/{store,balancer,widget}.ts` + `accounts/usage/*` · `extensions/kg/{store,index}.ts` |
+| 2 | RP-04, RP-07 | RP-04 re-owns `graph/stop.ts` and `graph/engine.ts`, so it never overlaps RP-03 |
+| 3 | RP-05, RP-08, RP-09 | RP-05 exclusively owns `extensions/gated-loop.ts` and `graphs/*.json` for this wave |
+| 4 | RP-10 | RP-05 and RP-08 must be merged before wave 5 |
+| 5 | RP-11 | Re-owns `extensions/gated-loop.ts`; serialize against everything |
+| 6 | RP-13, RP-15 | `extensions/bus/*` · `extensions/minimalist.ts` + `skills/minimalist/` |
+| 7 | RP-14, RP-16 | RP-14 takes the reviewer path in `gated-loop.ts`; RP-16 takes `kstack/**` and the `STEPS` table in `kstack/mode.ts` |
+| 8 | RP-17, RP-18 | RP-18 re-owns `accounts/widget.ts`, `control-plane.ts`, `status-line/*`, `renderers.ts` |
+| 9 | RP-19 | Full product proof, run once |
 
-Serialize any packages that touch `extensions/index.ts`, `extensions/gated-loop.ts`, `extensions/accounts/index.ts`, a `package.json`, or generated K-stack output. From RP-02 onward, a source path written `extensions/…`, `graphs/…`, `prompts/…`, `schemas/…`, `skills/…`, `templates/…`, `themes/…`, or `kstack/…` is relative to `packages/coding-agent/src/kpi/`, where RP-01A relocated the K-π runtime; `test/…` and `fixtures/…` stay at the repository root. Merge and run the owning scoped checks before the next dependent package.
+Serialize any packages that touch `extensions/index.ts`, `extensions/gated-loop.ts`, `extensions/accounts/index.ts`, a `package.json`, or generated K-stack output. A wave's registration edits to `extensions/index.ts` land as one integration commit owned by one agent. Merge a wave and run its owning scoped checks before the next dependent wave starts.
+
+From RP-02 onward, a source path written `extensions/…`, `graphs/…`, `prompts/…`, `schemas/…`, `skills/…`, `templates/…`, `themes/…`, or `kstack/…` is relative to `packages/coding-agent/src/kpi/`, where RP-01A relocated the K-π runtime; `test/…` and `fixtures/…` stay at the repository root.
 
 ## Definition of done for the whole product
 
@@ -1029,3 +1045,4 @@ All of:
 5. Fixtures run against that binary cover gated, autopilot, policy, accounts, local providers, research, Dune, KG, bus/reviewer, K-stack, footer, and both boards.
 6. M-01–M-07 are true in `.kpi/remediation-proof.json`.
 7. Docs match the built behavior; historical plan/roadmap remain clearly non-authoritative.
+8. Every row of [`uat.md`](uat.md) — US-01 through US-30 — passes against the built binary, with evidence a human can read, and M-01–M-07 pass alongside them. The product is finished at this line and not before.

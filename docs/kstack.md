@@ -20,9 +20,9 @@ Upstream says “fork it, make it yours.” We do. We never install those repos 
 
 ## 1. Why it exists here
 
-pstack is Lauren Tan’s (@poteto) skill pack: 21 principles, ~22 playbooks, ~23 workflow skills. `/poteto-mode` matches a task to a playbook, copies the steps into a todo list, and fires other skills as those steps need them.
+K-stack vendors the MIT-licensed Cursor `pstack` plugin: a set of engineering principles, playbooks, and workflow skills. Attribution lives in the root `NOTICE` and in `kstack/UPSTREAM.md`, which is a licence obligation and stays. Upstream's `/poteto-mode` matches a task to a playbook, copies the steps into a todo list, and fires other skills as those steps need them; ours is `/k-mode`.
 
-That is the missing middle of k-pi: our graph owns order and gates; K-stack owns *how an engineer thinks inside a node*.
+That is the missing middle of k-pi: our graph owns order and gates; the vendored skills supply node-local engineering technique. They are a library, not an authority — where a vendored skill contradicts `spec.md`, `PRD.md`, or `AGENTS.md`, ours wins and the vendored text is overlay-patched rather than obeyed.
 
 ```
 operator
@@ -115,18 +115,20 @@ New upstream files land in `generated/` via the copy step. If they contain forbi
 
 ### Runtime
 
-`kstack/generated/` is the **sole runtime truth**. Pi loads that tree and nothing else — not `upstream/`, not `overlay/`, not a hand-written skill parked elsewhere in the repo. Where two versions of a rule exist, the generated one is the rule.
+`kstack/generated/` is the **sole runtime truth for K-stack**. Pi loads that tree for K-stack content and nothing else — not `upstream/`, not `overlay/`, not a hand-written K-stack skill parked elsewhere in the repo. Where two versions of a K-stack rule exist, the generated one is the rule.
 
-Everything we add reaches the runtime by being generated:
+K-π's own first-party skills under `packages/coding-agent/src/kpi/skills/` (`concise-output`, `context-pack`, `conventional-commit`, `isolated-review`, `minimalist`, `quality-gates`, `spec-first`, `tdd-cycle`) are a separate, deliberate tree. They are not K-stack, they are not generated, and this section does not ask for them to be moved or deleted.
 
-- First-party principles, playbooks, and agent guidance are overlay-owned inputs. They are not a second runtime tree standing beside `generated/`.
-- A behaviour that lives only in a hand-maintained file or a hard-coded table in k-pi source is not part of K-stack. Move it into the overlay so sync emits it, or delete it.
+Everything we add *to K-stack* reaches the runtime by being generated:
+
+- First-party K-stack principles, playbooks, and agent guidance are overlay-owned inputs. They are not a second K-stack runtime tree standing beside `generated/`.
+- A K-stack behaviour that lives only in a hand-maintained file or a hard-coded table in k-pi source is not part of K-stack. Move it into the overlay so sync emits it, or delete it.
 - Overlay additions must be Pi-loadable once generated: valid frontmatter, unique names, support files carried with them.
 - Editing `generated/` by hand is not a change. The next sync overwrites it and `--check` fails on it first.
 
-Operators never see `upstream/`. The published package vendors `generated/` + `overlay/` + `UPSTREAM.md`. Fetch happens in maintainer/CI, not when a user runs `/k-mode`.
+Operators never see `upstream/`. The built `dist` carries `generated/` + `overlay/` + `UPSTREAM.md`; nothing here is published to a registry. Fetch happens in maintainer/CI, not when a user runs `/k-mode`.
 
-Do not use a git submodule of `cursor/plugins` inside the installable package. Fetch is a sync-time network call.
+Do not use a git submodule of `cursor/plugins` inside this repository. Fetch is a sync-time network call.
 
 ---
 
@@ -139,11 +141,11 @@ Do not use a git submodule of `cursor/plugins` inside the installable package. F
 | `/k-mode off` | Clear sticky flag. |
 | `/how` `/why` `/teach` `/recall` | Understanding skills. Read-only. |
 | `/architect` | Isolated design node. Writes design notes, not production code. |
-| `/arena` | N local isolated attempts, same brief, graft the best. Models from the panel list. Cap N ≤ 3. |
+| `/arena` | N local isolated attempts, same brief, graft the best. Models from the panel list. Cap N = 2, the same `maxConcurrency` every other fan-out obeys (AC-20.4). |
 | `/swarm` | Coverage fan-out. Cap 2 concurrent (k-pi `maxConcurrency`). Local only. |
 | `/interrogate` | Isolated multi-model review → `verdict.json` shape. |
 | `/tdd` | Same contract as k-pi `tdd-cycle` skill. |
-| `/no-comments` | Comment-strip pass. |
+| `/no-comments` | Comment-strip pass over the current diff. Deletes comments that restate the code; keeps comments a contract, an AC, or a named constraint requires. |
 | `/unslop` | Strip AI tells from user-facing prose. |
 | `/figure-it-out` | Author a one-off playbook when none match; store under `.kpi/kstack/playbooks/`. |
 | `/show-me-your-work` | Append decisions to `.kpi/runs/<job>/decisions.tsv`. |
@@ -248,7 +250,7 @@ An upstream skill that matches no keep, rewrite, or drop rule is the `NEEDS_HUMA
 
 ## 6. Principles
 
-Keep the 21 upstream principles as `kstack/skills/principle-*`.
+Carry every upstream principle that survives the §5 keep/rewrite/drop rules as `kstack/skills/principle-*`. The set is whatever the pinned sync emits; no count is normative, so a routine `--pin` cannot falsify this document or an AC.
 
 **Override** `never-block-on-the-human`:
 
@@ -263,7 +265,7 @@ Keep the 21 upstream principles as `kstack/skills/principle-*`.
 | proof-or-stop | No DONE without HEAD-bound receipts. LLM “tests passed” is not evidence. |
 | executable-ac-or-gated | Autopilot playbooks refuse to start unless `ac.quality == executable`. |
 
-Every `/k-mode` todo list starts with: **read Principles** (upstream index + these four).
+The four graph principles above are always in force. Beyond them, a `/k-mode` todo list loads only the principle skills whose frontmatter `description` matches the current node — the same description-matched dispatch every other skill uses (`spec.md` §Context, "skills on demand"). There is no blanket principle read, and no todo list opens by reading the whole index.
 
 ---
 
@@ -290,7 +292,7 @@ When only `/k-mode` is used (no `/kpi` job):
 See `agents-bus.md`. `/swarm` and `/arena` call `spawn_background` + `communicate`. No `subagent_type`.
 
 - `maxConcurrency = 2`
-- arena panel length ≤ 2 in v1
+- arena panel length = 2 in v1, matching `maxConcurrency` and AC-20.4
 - every worker is a background `kpi --mode rpc` session
 - models from K-π pools only
 - parent reads contract files, not worker transcripts
