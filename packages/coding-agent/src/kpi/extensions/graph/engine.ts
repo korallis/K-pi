@@ -866,26 +866,41 @@ export class GraphEngine {
 			}
 			this.countRound();
 
-			try {
-				results.push(...(await Promise.all(batch.map((node) => this.executeWithRetries(node)))));
-			} catch (error) {
-				if (error instanceof TransientRetriesExhaustedError) {
-					// A spent retry allowance is a budget outcome, not a crash: the run
-					// reaches the durable product terminal and the node it stalled on
-					// stays unresolved for a resume.
-					const conflict = this.commitResults(results, executed);
-					if (conflict !== undefined) {
-						return this.fail(conflict, this.runState.active);
-					}
-					this.runState.active = activeNodes
-						.filter((node) => !executed.includes(node))
-						.map((node) => node.id);
-					return this.exhaust({ limit: "maxTransientRetries", reason: error.message }, [error.nodeId]);
+			// Settled, not fail-fast. A sibling that finished has already had its
+			// side effects, so discarding its result would make a resumed run repeat
+			// them; it is committed exactly once here and never reruns.
+			const settled = await Promise.allSettled(batch.map((node) => this.executeWithRetries(node)));
+			const rejected: { node: GraphNode; error: unknown }[] = [];
+			for (const [index, outcome] of settled.entries()) {
+				const node = batch[index];
+				if (outcome.status === "fulfilled") {
+					results.push(outcome.value);
+					executed.push(node);
+					continue;
 				}
-				const message = error instanceof Error ? error.message : String(error);
-				return this.fail(message, batch.map((node) => node.id));
+				rejected.push({ node, error: outcome.reason });
+				this.runState.nodes[node.id].error =
+					outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason);
 			}
-			executed.push(...batch);
+
+			if (rejected.length > 0) {
+				const conflict = this.commitResults(results, executed);
+				if (conflict !== undefined) {
+					return this.fail(conflict, this.runState.active);
+				}
+				this.runState.active = activeNodes.filter((node) => !executed.includes(node)).map((node) => node.id);
+				// Deterministic when several siblings reject: batch order decides,
+				// and every rejection is already recorded on its own node.
+				const first = rejected[0].error;
+				if (first instanceof TransientRetriesExhaustedError) {
+					// A spent retry allowance is a budget outcome, not a crash.
+					return this.exhaust({ limit: "maxTransientRetries", reason: first.message }, [first.nodeId]);
+				}
+				return this.fail(
+					first instanceof Error ? first.message : String(first),
+					rejected.map((entry) => entry.node.id),
+				);
+			}
 			this.runState.budget.batches += 1;
 		}
 

@@ -61,16 +61,18 @@ export default function kPi(pi: ExtensionAPI): void {
 		registerCursorProvider(pi);
 		// Local pools discover live against the origin their own slot persisted.
 		registerLocalProviders(pi, {
-			resolveBaseUrl: async (poolId: LocalProviderId) => {
-				const store = new AccountsStore();
-				const slots = (await store.read()).pools[poolId]?.slots ?? [];
-				const local = slots.find((slot) => slot.kind === "local");
-				return local?.baseUrl;
+			resolveSlots: async (poolId: LocalProviderId) => {
+				const slots = (await new AccountsStore().read()).pools[poolId]?.slots ?? [];
+				return slots.flatMap((slot) =>
+					slot.kind === "local" && slot.baseUrl !== undefined
+						? [{ slotId: slot.id, baseUrl: slot.baseUrl, secretRef: slot.secretRef }]
+						: [],
+				);
 			},
-			resolveToken: async (poolId: LocalProviderId) => {
+			resolveToken: async (poolId: LocalProviderId, slotId: string) => {
 				const store = new AccountsStore();
-				const slots = (await store.read()).pools[poolId]?.slots ?? [];
-				const reference = slots.find((slot) => slot.kind === "local")?.secretRef;
+				const slot = (await store.read()).pools[poolId]?.slots.find((candidate) => candidate.id === slotId);
+				const reference = slot?.kind === "local" ? slot.secretRef : undefined;
 				if (reference === undefined) return undefined;
 				const credential = (await store.readSecrets())[reference];
 				return credential?.type === "api_key"

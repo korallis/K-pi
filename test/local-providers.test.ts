@@ -88,7 +88,7 @@ test("AC-27.1 the llama pool maps to Pi's own llama.cpp provider and is never re
 				registered.push(id);
 			},
 		} as unknown as ExtensionAPI,
-		{ resolveBaseUrl: async () => undefined },
+		{ resolveSlots: async () => [] },
 	);
 	assert.deepEqual(registered, ["ollama", "lmstudio", "local-openai"]);
 	assert.equal(registered.includes("llama"), false, "llama stays Pi-owned");
@@ -390,7 +390,7 @@ test("a live catalog is stored and restored offline, and never replaced by a gue
 	const agentDirectory = await mkdtemp(join(tmpdir(), "kpi-local-cache-"));
 	const stub = await stubServer({ "/v1/models": { body: { data: [{ id: "qwen3:8b" }] } } });
 	const dependencies = {
-		resolveBaseUrl: async () => `${stub.origin}/v1`,
+		resolveSlots: async () => [{ slotId: "default", baseUrl: `${stub.origin}/v1` }],
 		agentDirectory,
 	};
 	try {
@@ -410,11 +410,17 @@ test("a live catalog is stored and restored offline, and never replaced by a gue
 		);
 		assert.equal(await readFile(storedLocalModelsPath("ollama", agentDirectory), "utf8"), stored);
 
-		// An unreachable server keeps the catalog rather than emptying it.
+		// The same server, now unreachable: the catalog for that origin survives.
 		const unreachable = await refreshLocalModels(
 			"ollama",
 			{ allowNetwork: true },
-			{ ...dependencies, resolveBaseUrl: async () => "http://127.0.0.1:1/v1", timeoutMs: 100 },
+			{
+				...dependencies,
+				timeoutMs: 100,
+				fetchImpl: async () => {
+					throw Object.assign(new Error("socket hang up"), { code: "ECONNRESET" });
+				},
+			},
 		);
 		assert.deepEqual(
 			unreachable.map((entry) => entry.id),
@@ -423,9 +429,18 @@ test("a live catalog is stored and restored offline, and never replaced by a gue
 		);
 		assert.equal(await readFile(storedLocalModelsPath("ollama", agentDirectory), "utf8"), stored);
 
+		// A slot the operator has repointed drops the old origin's catalog rather
+		// than sending its models to a host they were never discovered on.
+		const repointed = await refreshLocalModels(
+			"ollama",
+			{ allowNetwork: false },
+			{ ...dependencies, resolveSlots: async () => [{ slotId: "default", baseUrl: "http://127.0.0.1:9/v1" }] },
+		);
+		assert.deepEqual(repointed, [], "a stale origin is never rebound to a different server");
+
 		// An unconfigured pool never discovers and never stores.
 		assert.deepEqual(
-			await refreshLocalModels("lmstudio", { allowNetwork: true }, { ...dependencies, resolveBaseUrl: async () => undefined }),
+			await refreshLocalModels("lmstudio", { allowNetwork: true }, { ...dependencies, resolveSlots: async () => [] }),
 			[],
 		);
 		assert.equal(readStoredLocalModels("lmstudio", agentDirectory), undefined);
@@ -439,7 +454,10 @@ test("a stored local catalog is rehydrated through current defaults and never fr
 	const agentDirectory = await mkdtemp(join(tmpdir(), "kpi-local-rehydrate-"));
 	const stub = await stubServer({ "/v1/models": { body: { data: [{ id: "qwen3:8b", name: "Qwen 3" }] } } });
 	try {
-		await refreshLocalModels("ollama", { allowNetwork: true }, { resolveBaseUrl: async () => `${stub.origin}/v1`, agentDirectory });
+		await refreshLocalModels("ollama", { allowNetwork: true }, {
+			resolveSlots: async () => [{ slotId: "default", baseUrl: `${stub.origin}/v1` }],
+			agentDirectory,
+		});
 
 		const [rehydrated] = readStoredLocalModels("ollama", agentDirectory) ?? [];
 		assert.equal(rehydrated.id, "qwen3:8b");
@@ -454,7 +472,7 @@ test("a stored local catalog is rehydrated through current defaults and never fr
 					registered.push({ id, models: config.models });
 				},
 			} as unknown as ExtensionAPI,
-			{ resolveBaseUrl: async () => undefined, agentDirectory },
+			{ resolveSlots: async () => [], agentDirectory },
 		);
 		const ollama = registered.find((entry) => entry.id === "ollama");
 		assert.deepEqual(

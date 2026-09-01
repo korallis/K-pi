@@ -454,6 +454,22 @@ export function registerAccounts(pi: ExtensionAPI, dependencies: AccountsDepende
 			// never be attached to it. Crossing families is the failover path's job,
 			// and only after the model has actually been re-pointed.
 			active = balancer.selectInFamily(provider, accounts, usage);
+			// A local pool may hold several servers. The model carries the origin it
+			// was discovered on, so the slot that serves this request is the one
+			// pinned to that origin, not whichever the rotation happened to pick.
+			if (isLocalPool(provider)) {
+				const origin = context.model?.baseUrl;
+				const pinned = (accounts.pools[provider]?.slots ?? []).find(
+					(slot) => slot.kind === "local" && slot.baseUrl === origin,
+				);
+				if (pinned !== undefined) {
+					active = { poolId: provider, slot: pinned };
+				} else if (origin !== undefined) {
+					// The request names an origin no configured slot owns. Attaching a
+					// credential, or claiming a route, would be a silent redirect.
+					active = undefined;
+				}
+			}
 			activeModel = context.model?.id;
 			// The route is only real once a slot is chosen, so publish here.
 			await publishWidget(context, accounts);
@@ -461,18 +477,26 @@ export function registerAccounts(pi: ExtensionAPI, dependencies: AccountsDepende
 				return;
 			}
 			// A local slot carries no credential unless the operator referenced one:
-			// a placeholder token would be a secret K-π invented.
+			// a placeholder token would be a secret K-π invented, so the header is
+			// nulled rather than left for the client's construction key to fill.
 			const secretName =
 				active.slot.kind === "local" ? active.slot.secretRef : `${active.poolId}/${active.slot.id}`;
-			if (secretName === undefined) return;
-			const credential = (await resolved.store.readSecrets())[secretName];
+			const credential = secretName === undefined ? undefined : (await resolved.store.readSecrets())[secretName];
 			const token =
 				credential?.type === "oauth"
 					? credential.access
 					: credential?.type === "api_key"
 						? credential.key
 						: undefined;
-			if (token !== undefined) event.headers.authorization = `Bearer ${token}`;
+			if (token !== undefined) {
+				event.headers.authorization = `Bearer ${token}`;
+			} else if (active.slot.kind === "local") {
+				// A local server the operator gave no credential is sent none. The
+				// provider's `apiKey` exists only so the client can be constructed;
+				// nulling the header keeps it off the wire instead of inventing a
+				// bearer this server never asked for.
+				event.headers.authorization = null;
+			}
 		});
 		pi.on("after_provider_response", async (event, context) => {
 			if (active === undefined) return;

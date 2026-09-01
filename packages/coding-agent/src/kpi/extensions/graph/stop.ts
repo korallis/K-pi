@@ -134,6 +134,15 @@ const TRANSPORT_CODES: Record<string, true> = {
 	UND_ERR_SOCKET: true,
 };
 
+/** The operator's, or the run's, own decision to stop. */
+function statesAbort(shape: FailureShape): boolean {
+	return (
+		shape.name === "AbortError" ||
+		ABORT_CODES[shape.code] === true ||
+		/\babort(?:ed)?\b|\bcancell?ed\b/iu.test(shape.message)
+	);
+}
+
 /**
  * Classifies a thrown provider failure. Only a transport fault, a 429, or a
  * timeout may be retried; an operator abort is a decision, and a validation or
@@ -198,12 +207,9 @@ export function classifyTransientFailure(error: unknown): TransientReason | unde
 	}
 
 	// Otherwise an abort is the operator's, or the run's, own decision. Checked
-	// before transport because an aborted request also looks like a socket fault.
-	if (
-		shape.name === "AbortError" ||
-		ABORT_CODES[shape.code] === true ||
-		/\babort(?:ed)?\b|\bcancell?ed\b/iu.test(shape.message)
-	) {
+	// before transport because an aborted request also looks like a socket fault,
+	// and one level down as well: a wrapped cancellation is still a cancellation.
+	if (statesAbort(shape) || (cause !== undefined && statesAbort(cause))) {
 		return undefined;
 	}
 

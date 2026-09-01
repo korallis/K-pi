@@ -706,3 +706,176 @@ test("a timeout delivered as an abort retries, a plain operator abort does not",
 		}
 	}
 });
+
+test("a sibling that finished is committed once and never reruns after a raised-cap resume", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "kpi-sibling-"));
+	// One node stalls on transient failures, the other succeeds. The counter is
+	// the side effect: a rerun would show up as a second call.
+	const sideEffects: string[] = [];
+	let stallAttempts = 0;
+	const factory: GraphAgentSessionFactory = async (options) => ({
+		session: {
+			sessionId: "sibling",
+			async prompt(prompt: string) {
+				const node = prompt.split("\n", 1)[0];
+				if (node === "stalls") {
+					stallAttempts += 1;
+					if (stallAttempts <= 4) {
+						throw Object.assign(new Error("socket hang up"), { code: "ECONNRESET" });
+					}
+				}
+				sideEffects.push(node);
+			},
+			getActiveToolNames: () => [...(options.tools ?? [])],
+			dispose() {},
+		},
+	});
+	const graph: GraphDefinition = {
+		schemaVersion: 2,
+		id: "sibling-batch",
+		entry: "fan",
+		nodes: [
+			{ id: "fan", type: "set" as const, assignments: { fanned: true } },
+			{
+				id: "stalls",
+				type: "agent" as const,
+				prompt: "stalls",
+				context: { mode: "isolated" as const },
+				tools: ["read"],
+				readOnly: true,
+			},
+			{
+				id: "succeeds",
+				type: "agent" as const,
+				prompt: "succeeds",
+				context: { mode: "isolated" as const },
+				tools: ["read"],
+				readOnly: true,
+			},
+		],
+		edges: [
+			{ from: "fan", to: "stalls" },
+			{ from: "fan", to: "succeeds" },
+		],
+		limits: { maxSteps: 20, maxNodeRuns: 9, maxConcurrency: 2, maxCostUsd: 10, timeoutMs: 600_000 },
+		policy: {
+			allowNonInteractive: true,
+			allowNonInteractiveMutations: false,
+			confirmProjectGraph: false,
+			confirmMutatingNodes: false,
+		},
+	};
+
+	try {
+		const engine = new GraphEngine(graph, {
+			projectRoot: directory,
+			jobId: "sibling-job",
+			createAgentSession: factory,
+			retryBaseDelayMs: 5,
+			sleep: async () => {},
+		});
+		await engine.runSuperstep();
+		const stopped = await engine.runSuperstep();
+		engine.dispose();
+
+		assert.equal(stopped.status, "exhausted");
+		assert.equal(stopped.terminal?.limit, "maxTransientRetries");
+		assert.deepEqual(sideEffects, ["succeeds"], "the sibling ran exactly once");
+		assert.equal(stopped.nodes.succeeds.status, "completed", "a finished sibling is committed, not discarded");
+		assert.equal(stopped.nodes.stalls.status, "exhausted");
+		assert.deepEqual(stopped.active, ["stalls"], "only the stalled node is left to do");
+
+		// Raised cap: the resume finishes the stalled node and leaves the sibling
+		// alone, so its side effect is still recorded exactly once.
+		const restored = await GraphEngine.restore(graph, {
+			projectRoot: directory,
+			jobId: "sibling-job",
+			createAgentSession: factory,
+			retryBaseDelayMs: 5,
+			limits: { maxTransientRetries: 4 },
+			sleep: async () => {},
+		});
+		const finished = await restored.runUntilPause();
+		restored.dispose();
+
+		assert.equal(finished.status, "completed");
+		assert.deepEqual(sideEffects, ["succeeds", "stalls"], "the sibling was never rerun");
+		assert.equal(finished.nodes.succeeds.runs, 1, "and its run was counted exactly once");
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("a wrapped operator cancellation is not retried, a wrapped timeout is", async () => {
+	const cases = [
+		{
+			name: "abort one level down",
+			error: () =>
+				Object.assign(new Error("fetch failed"), {
+					cause: Object.assign(new Error("This operation was aborted"), { name: "AbortError" }),
+				}),
+			retried: false,
+		},
+		{
+			name: "abort one level down with an outer transport code",
+			error: () =>
+				Object.assign(new Error("request failed"), {
+					code: "ECONNRESET",
+					cause: Object.assign(new Error("cancelled"), { name: "AbortError" }),
+				}),
+			retried: false,
+		},
+		{
+			name: "wrapped abort that states a timeout",
+			error: () =>
+				Object.assign(new Error("fetch failed"), {
+					cause: Object.assign(new Error("aborted"), { name: "AbortError", code: "UND_ERR_HEADERS_TIMEOUT" }),
+				}),
+			retried: true,
+		},
+	];
+
+	for (const scenario of cases) {
+		const directory = await mkdtemp(join(tmpdir(), "kpi-wrapped-abort-"));
+		try {
+			const slept: number[] = [];
+			let attempts = 0;
+			const factory: GraphAgentSessionFactory = async () => ({
+				session: {
+					sessionId: "wrapped",
+					async prompt() {
+						attempts += 1;
+						if (attempts === 1) {
+							throw scenario.error();
+						}
+					},
+					getActiveToolNames: () => ["read"],
+					dispose() {},
+				},
+			});
+			const engine = new GraphEngine(loopingGraph("wrapped", { maxSteps: 1 }), {
+				projectRoot: directory,
+				jobId: "wrapped-job",
+				createAgentSession: factory,
+				retryBaseDelayMs: 5,
+				sleep: async (ms) => {
+					slept.push(ms);
+				},
+			});
+
+			if (scenario.retried) {
+				await engine.runSuperstep();
+				assert.equal(attempts, 2, `${scenario.name}: retried`);
+				assert.deepEqual(slept, [5], `${scenario.name}: one backoff`);
+			} else {
+				await assert.rejects(engine.runSuperstep(), Error, scenario.name);
+				assert.equal(attempts, 1, `${scenario.name}: not retried`);
+				assert.deepEqual(slept, [], `${scenario.name}: no backoff`);
+				assert.equal(engine.state.status, "failed");
+			}
+			engine.dispose();
+		} finally {
+			await rm(directory, { recursive: true, force: true });
+		}
+	}
+});
