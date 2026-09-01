@@ -515,7 +515,7 @@ const INVENTORY_PRIORITY =
  * }} input
  */
 export function buildReviewInventory(input) {
-	const maxBytes = input.maxBytes ?? 20_000;
+	const maxBytes = input.maxBytes ?? 16_000;
 	const statusByPath = input.statusByPath ?? new Map();
 	const lines = input.rows
 		.map((row) => {
@@ -559,7 +559,20 @@ export function buildReviewInventory(input) {
 	for (const line of priority) pushLine(line);
 	for (const line of rest) pushLine(line);
 
-	const text = [...header, ...body, `omitted:${omitted}`, ...footer, ""].join("\n");
+	let text = [...header, ...body, `omitted:${omitted}`, ...footer, ""].join("\n");
+	// Hard cap: never hand the runner a blob over budget (argv-safe remainder).
+	while (Buffer.byteLength(text, "utf8") > maxBytes && body.length > 0) {
+		body.pop();
+		omitted += 1;
+		text = [...header, ...body, `omitted:${omitted}`, ...footer, ""].join("\n");
+	}
+	if (Buffer.byteLength(text, "utf8") > maxBytes) {
+		// Headers alone exceed budget — keep a minimal stub that still names the format.
+		text = [...header, "omitted:all", ...footer, ""].join("\n");
+		if (Buffer.byteLength(text, "utf8") > maxBytes) {
+			throw new Error(`inventory header exceeds maxBytes ${maxBytes}`);
+		}
+	}
 	return { text, lineCount: body.length, omitted, bytes: Buffer.byteLength(text, "utf8") };
 }
 
@@ -734,7 +747,7 @@ export function selectGrokReviewInput({
 	const inventory = buildReviewInventory({
 		statusByPath,
 		rows: classified.rows,
-		maxBytes: 20_000,
+		maxBytes: 16_000,
 	});
 	meta.inventory = {
 		bytes: inventory.bytes,

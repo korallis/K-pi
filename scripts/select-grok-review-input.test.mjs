@@ -346,11 +346,11 @@ test("buildReviewInventory keeps lockfile replacements visible under budget", ()
 		["package-lock.json", "A"],
 		["src/a.ts", "M"],
 	]);
-	const inv = buildReviewInventory({ rows, statusByPath, maxBytes: 20_000 });
+	const inv = buildReviewInventory({ rows, statusByPath, maxBytes: 16_000 });
 	assert.match(inv.text, /A\tpackage-lock\.json\texclude\tcovered-artifact/);
 	assert.match(inv.text, /D\tpnpm-lock\.yaml\texclude\tcovered-artifact/);
 	assert.match(inv.text, /Do NOT assert that a path is absent/);
-	assert.ok(inv.bytes <= 20_000);
+	assert.ok(inv.bytes <= 16_000);
 	// No file contents injected
 	assert.equal(inv.text.includes("node_modules"), false);
 	assert.equal(/\n[AMDR?]\t[^\t]+\t(include|exclude)\t/.test(inv.text), true);

@@ -323,9 +323,11 @@ export async function runChunkedGrokReview(options, hooks = {}) {
 	let inventoryText = "";
 	if (options.inventoryPath) {
 		inventoryText = readFileSync(options.inventoryPath, "utf8");
-		if (Buffer.byteLength(inventoryText, "utf8") > INVENTORY_PROMPT_MAX_BYTES) {
+		const invBytes = Buffer.byteLength(inventoryText, "utf8");
+		if (invBytes > INVENTORY_PROMPT_MAX_BYTES) {
+			// Fail closed: select must emit a budgeted inventory. Oversized means a bug.
 			throw new Error(
-				`inventory exceeds ${INVENTORY_PROMPT_MAX_BYTES} bytes; refuse to inject unbounded context`,
+				`inventory exceeds ${INVENTORY_PROMPT_MAX_BYTES} bytes (got ${invBytes}); refuse to inject unbounded context`,
 			);
 		}
 	}
