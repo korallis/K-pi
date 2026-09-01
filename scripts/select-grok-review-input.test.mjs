@@ -3,27 +3,44 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+	ARCHITECTURE_PIN_COMMIT,
+	ARCHITECTURE_PIN_TAG,
+	CANONICAL_UPSTREAM_REPOSITORY,
 	classifyReviewPaths,
 	coveredArtifactRule,
 	isFirstPartyPath,
 	isUpstreamOwnedPath,
 	parseUpstreamPin,
+	resolvePinSource,
 } from "./select-grok-review-input.mjs";
 
-const PIN = "b79e4cc834970cca69daebffab7df1da7d1e52c4";
+const PIN = ARCHITECTURE_PIN_COMMIT;
 const HEAD = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const EVIL = "cccccccccccccccccccccccccccccccccccccccc";
 
-test("parseUpstreamPin requires honest pin shape", () => {
-	const pin = parseUpstreamPin(
-		JSON.stringify({
-			repository: "https://github.com/earendil-works/pi.git",
-			tag: "v0.84.4",
+function pinJson(overrides = {}) {
+	return `${JSON.stringify(
+		{
+			repository: CANONICAL_UPSTREAM_REPOSITORY,
+			tag: ARCHITECTURE_PIN_TAG,
 			commit: PIN,
-		}),
-	);
+			...overrides,
+		},
+		null,
+		2,
+	)}\n`;
+}
+
+test("parseUpstreamPin requires honest pin shape and canonical repository", () => {
+	const pin = parseUpstreamPin(pinJson());
 	assert.equal(pin.commit, PIN);
+	assert.equal(pin.repository, CANONICAL_UPSTREAM_REPOSITORY);
 	assert.throws(() => parseUpstreamPin("{}"), /commit/);
 	assert.throws(() => parseUpstreamPin("{"), /JSON/);
+	assert.throws(
+		() => parseUpstreamPin(pinJson({ repository: "https://evil.example/pi.git" })),
+		/repository must be/,
+	);
 });
 
 test("ownership helpers follow UPSTREAM.md", () => {
@@ -120,4 +137,68 @@ test("classification is deterministic for the same inputs", () => {
 		resolveBlob: (rev, path) => blobs.get(`${rev}:${path}`) ?? null,
 	};
 	assert.deepEqual(classifyReviewPaths(input), classifyReviewPaths(input));
+});
+
+test("base pin always wins over a hostile head pin", () => {
+	const base = pinJson();
+	const evilHead = pinJson({ commit: EVIL, tag: "v0.0.0-evil" });
+	const resolved = resolvePinSource({ basePinText: base, headPinText: evilHead });
+	assert.equal(resolved.source, "base");
+	assert.equal(resolved.pin.commit, PIN);
+	assert.notEqual(resolved.pin.commit, EVIL);
+});
+
+test("head pin change cannot alter exclusion when base pin exists", () => {
+	const base = pinJson();
+	const evilHead = pinJson({ commit: EVIL, tag: "v9.9.9" });
+	const resolved = resolvePinSource({ basePinText: base, headPinText: evilHead });
+
+	// Malicious packages blob matches only the evil commit, not the trusted base pin.
+	const blobs = new Map([
+		[`${PIN}:packages/ai/src/index.ts`, "trusted-upstream"],
+		[`${EVIL}:packages/ai/src/index.ts`, "malicious"],
+		[`${HEAD}:packages/ai/src/index.ts`, "malicious"],
+	]);
+
+	const withBasePin = classifyReviewPaths({
+		paths: ["packages/ai/src/index.ts"],
+		pinCommit: resolved.pin.commit,
+		headSha: HEAD,
+		pinObjectPresent: true,
+		resolveBlob: (rev, path) => blobs.get(`${rev}:${path}`) ?? null,
+	});
+	assert.equal(withBasePin.rows[0].decision, "include");
+	assert.equal(withBasePin.rows[0].reason, "patched-upstream");
+
+	// Control: if evil pin were used, the same blob would look "identical" and be excluded.
+	const withEvilPin = classifyReviewPaths({
+		paths: ["packages/ai/src/index.ts"],
+		pinCommit: EVIL,
+		headSha: HEAD,
+		pinObjectPresent: true,
+		resolveBlob: (rev, path) => blobs.get(`${rev}:${path}`) ?? null,
+	});
+	assert.equal(withEvilPin.rows[0].decision, "exclude");
+	assert.equal(withEvilPin.rows[0].reason, "byte-identical-to-pin");
+});
+
+test("bootstrap head pin only accepts the architecture pin", () => {
+	const ok = resolvePinSource({ basePinText: null, headPinText: pinJson() });
+	assert.equal(ok.source, "head-bootstrap");
+	assert.equal(ok.pin.commit, ARCHITECTURE_PIN_COMMIT);
+	assert.equal(ok.pin.tag, ARCHITECTURE_PIN_TAG);
+
+	assert.throws(
+		() => resolvePinSource({ headPinText: pinJson({ commit: EVIL }) }),
+		/architecture pin/,
+	);
+	assert.throws(
+		() => resolvePinSource({ headPinText: pinJson({ tag: "v0.0.1" }) }),
+		/architecture pin/,
+	);
+	assert.throws(
+		() => resolvePinSource({ headPinText: pinJson({ repository: "https://evil.example/pi.git" }) }),
+		/repository must be/,
+	);
+	assert.throws(() => resolvePinSource({}), /missing on base and head/);
 });

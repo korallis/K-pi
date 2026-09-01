@@ -146,24 +146,34 @@ jobs:
             fi
           done
 
-          # upstream.json pin must be readable; prefer head (PR tip) then base.
-          if [ -f untrusted/upstream.json ]; then
-            pin_path="$GITHUB_WORKSPACE/untrusted/upstream.json"
-          elif [ -f trusted/upstream.json ]; then
-            pin_path="$GITHUB_WORKSPACE/trusted/upstream.json"
+          # Pin trust: base/trusted upstream.json always wins when present. A PR
+          # must not retarget the pin to a commit it carries in order to exclude
+          # packages/** as "byte-identical-to-pin". Head pin is bootstrap-only
+          # (base has no pin) and is validated to the architecture pin inside
+          # select-grok-review-input.mjs.
+          pin_base_args=()
+          pin_head_args=()
+          if [ -f trusted/upstream.json ]; then
+            pin_base_args=(--pin-base "$GITHUB_WORKSPACE/trusted/upstream.json")
+            pin_commit=$(node -e 'const p=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); if(!/^[0-9a-f]{40}$/i.test(p.commit||"")) process.exit(2); process.stdout.write(String(p.commit).toLowerCase())' "$GITHUB_WORKSPACE/trusted/upstream.json") || {
+              echo "::error::trusted upstream.json commit is missing or malformed."
+              exit 1
+            }
+          elif [ -f untrusted/upstream.json ]; then
+            pin_head_args=(--pin-head "$GITHUB_WORKSPACE/untrusted/upstream.json")
+            pin_commit=$(node -e 'const p=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); if(!/^[0-9a-f]{40}$/i.test(p.commit||"")) process.exit(2); process.stdout.write(String(p.commit).toLowerCase())' "$GITHUB_WORKSPACE/untrusted/upstream.json") || {
+              echo "::error::head upstream.json commit is missing or malformed."
+              exit 1
+            }
           else
             echo "::error::upstream.json missing on base and head; cannot prove fork provenance."
             exit 1
           fi
 
-          pin_commit=$(node -e 'const p=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); if(!/^[0-9a-f]{40}$/i.test(p.commit||"")) process.exit(2); process.stdout.write(String(p.commit).toLowerCase())' "$pin_path") || {
-            echo "::error::upstream.json commit is missing or malformed."
-            exit 1
-          }
-
           # Pin objects must be local before byte-identity proofs. Prefer objects
           # already in the head clone; otherwise import from the base clone only
-          # (no credentials, no upstream network).
+          # (no credentials, no upstream network). Never take pin *identity*
+          # from head when base has a pin — only the object bytes for that SHA.
           if ! git -C untrusted cat-file -e "${pin_commit}^{commit}" 2>/dev/null; then
             if git -C trusted cat-file -e "${pin_commit}^{commit}" 2>/dev/null; then
               git -C untrusted fetch --no-tags "$GITHUB_WORKSPACE/trusted" "$pin_commit"
@@ -178,12 +188,14 @@ jobs:
             --repo "$GITHUB_WORKSPACE/untrusted" \
             --base "$BASE_SHA" \
             --head "$HEAD_SHA" \
-            --pin "$pin_path" \
+            "${pin_base_args[@]}" \
+            "${pin_head_args[@]}" \
             --out-diff "$RUNNER_TEMP/pr.diff" \
             --out-paths "$RUNNER_TEMP/changed-paths" \
             --out-meta "$RUNNER_TEMP/grok-input-meta.json"
 
           jq -c '{selectedDiffBytes,fullDiffBytes,counts,pin}' "$RUNNER_TEMP/grok-input-meta.json"
+
 
       - name: Run concurrent chunked Grok review
         id: inference

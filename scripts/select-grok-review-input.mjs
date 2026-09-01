@@ -4,19 +4,22 @@
  * Reduce the PR diff for the required Grok gate at the fork-import boundary.
  *
  * Provenance (fail closed):
- *   - Read `upstream.json` pin (commit) and UPSTREAM.md ownership rules.
+ *   - The pin is taken from base/trusted `upstream.json` whenever it exists. A
+ *     PR cannot retarget the pin to a commit it ships in order to smuggle
+ *     packages/** blobs past Grok as "byte-identical-to-pin".
+ *   - Head pin is allowed only for the one-time bootstrap when base has no pin,
+ *     and only if it matches the canonical Pi repository + architecture pin.
  *   - Paths under upstream-owned trees whose HEAD blob is byte-identical to the
- *     pinned commit are excluded: integrity is already proven by
- *     `npm run upstream:check` (CI offline + scheduled drift).
+ *     trusted pin commit are excluded (paired with `npm run upstream:check`).
  *   - Paths covered by a deterministic trusted check (lockfile, K-stack
  *     generated/, model provider data) are excluded only with that coverage.
  *   - First-party K-π paths and any patched-upstream path always stay in.
- *   - Anything that cannot be proven safe to exclude stays in (or fails closed
- *     when the pin object itself is missing).
+ *   - Missing pin object or unproven ownership fails closed / stays included.
  *
  * Usage:
  *   node scripts/select-grok-review-input.mjs \
- *     --repo <git-dir> --base <sha> --head <sha> --pin <upstream.json> \
+ *     --repo <git-dir> --base <sha> --head <sha> \
+ *     [--pin-base <upstream.json>] [--pin-head <upstream.json>] \
  *     --out-diff <path> --out-paths <path> --out-meta <path>
  */
 
@@ -26,6 +29,17 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const COMMIT_RE = /^[0-9a-f]{40}$/i;
+
+/** Canonical upstream repository URL recorded in UPSTREAM.md / upstream.json. */
+export const CANONICAL_UPSTREAM_REPOSITORY = "https://github.com/earendil-works/pi.git";
+
+/**
+ * Architecture landing pin. Bootstrap (base has no upstream.json) may only
+ * introduce this exact pin from head — never an attacker-chosen commit.
+ */
+export const ARCHITECTURE_PIN_COMMIT = "b79e4cc834970cca69daebffab7df1da7d1e52c4";
+export const ARCHITECTURE_PIN_TAG = "v0.84.4";
+
 
 /** First-party K-π ownership (UPSTREAM.md §4 + fork CI/docs). Always reviewed. */
 export const FIRST_PARTY_PREFIXES = Object.freeze([
@@ -86,6 +100,29 @@ export function coveredArtifactRule(path) {
 }
 
 /**
+ * Normalize repository URLs for equality (trailing slash / .git already present).
+ * @param {string} repository
+ */
+export function normalizeUpstreamRepository(repository) {
+	const trimmed = repository.trim().replace(/\/+$/u, "");
+	return trimmed.endsWith(".git") ? trimmed : `${trimmed}.git`;
+}
+
+/**
+ * @param {string} repository
+ */
+export function assertCanonicalUpstreamRepository(repository) {
+	const normalized = normalizeUpstreamRepository(repository);
+	const expected = normalizeUpstreamRepository(CANONICAL_UPSTREAM_REPOSITORY);
+	if (normalized !== expected) {
+		throw new Error(
+			`upstream.json repository must be ${CANONICAL_UPSTREAM_REPOSITORY} (got ${repository})`,
+		);
+	}
+	return normalized;
+}
+
+/**
  * @param {string} pinText
  * @returns {{ commit: string, tag: string, repository: string, version?: string }}
  */
@@ -103,8 +140,51 @@ export function parseUpstreamPin(pinText) {
 	if (!COMMIT_RE.test(commit)) throw new Error("upstream.json commit must be a 40-char hex sha");
 	if (!tag) throw new Error("upstream.json tag is required");
 	if (!repository) throw new Error("upstream.json repository is required");
-	return { commit, tag, repository, version: typeof pin.version === "string" ? pin.version : undefined };
+	assertCanonicalUpstreamRepository(repository);
+	return {
+		commit,
+		tag,
+		repository: normalizeUpstreamRepository(repository),
+		version: typeof pin.version === "string" ? pin.version : undefined,
+	};
 }
+
+/**
+ * Choose the pin used for byte-identity proofs.
+ *
+ * Trust rule: base pin always wins when present. Head pin is bootstrap-only and
+ * must match the recorded architecture pin + canonical repository.
+ *
+ * @param {{ basePinText?: string | null, headPinText?: string | null }} input
+ * @returns {{ source: "base" | "head-bootstrap", pin: ReturnType<typeof parseUpstreamPin>, pinText: string }}
+ */
+export function resolvePinSource({ basePinText = null, headPinText = null } = {}) {
+	const baseText = typeof basePinText === "string" && basePinText.trim() ? basePinText : null;
+	const headText = typeof headPinText === "string" && headPinText.trim() ? headPinText : null;
+
+	if (baseText) {
+		const pin = parseUpstreamPin(baseText);
+		return { source: "base", pin, pinText: baseText };
+	}
+
+	if (headText) {
+		const pin = parseUpstreamPin(headText);
+		if (pin.commit !== ARCHITECTURE_PIN_COMMIT) {
+			throw new Error(
+				`bootstrap head pin commit must be architecture pin ${ARCHITECTURE_PIN_COMMIT} (got ${pin.commit})`,
+			);
+		}
+		if (pin.tag !== ARCHITECTURE_PIN_TAG) {
+			throw new Error(
+				`bootstrap head pin tag must be architecture pin ${ARCHITECTURE_PIN_TAG} (got ${pin.tag})`,
+			);
+		}
+		return { source: "head-bootstrap", pin, pinText: headText };
+	}
+
+	throw new Error("upstream.json missing on base and head; cannot prove fork provenance");
+}
+
 
 /**
  * @param {string} repo
@@ -231,23 +311,46 @@ export function classifyReviewPaths(input) {
 
 /**
  * Build the reduced unified diff + path list from a full git range.
+ * Prefer pinBasePath (trusted base). pinHeadPath is bootstrap-only via resolvePinSource.
+ * Legacy pinPath is treated as an already-resolved trusted pin file.
  */
 export function selectGrokReviewInput({
 	repo,
 	baseSha,
 	headSha,
-	pinPath,
+	pinBasePath = null,
+	pinHeadPath = null,
+	pinPath = null,
 	outDiff,
 	outPaths,
 	outMeta,
 }) {
-	const pin = parseUpstreamPin(readFileSync(pinPath, "utf8"));
+	const readOptional = (path) => {
+		if (!path) return null;
+		try {
+			return readFileSync(path, "utf8");
+		} catch (error) {
+			if (error && error.code === "ENOENT") return null;
+			throw error;
+		}
+	};
+
+	// Legacy single --pin is treated as an already-resolved trusted pin path.
+	const resolved = pinPath
+		? { source: "base", pin: parseUpstreamPin(readFileSync(pinPath, "utf8")), pinText: readFileSync(pinPath, "utf8") }
+		: resolvePinSource({
+				basePinText: readOptional(pinBasePath),
+				headPinText: readOptional(pinHeadPath),
+			});
+	const pin = resolved.pin;
+
 	const pinPresent = git(repo, ["cat-file", "-e", `${pin.commit}^{commit}`], { allowFail: true }) !== null;
 	if (!pinPresent) {
 		throw new Error(
 			`pinned commit ${pin.commit} missing from ${repo}; fetch the pin before Grok review input selection`,
 		);
 	}
+
 
 	const nameOnly = git(repo, ["diff", "--name-only", "-z", `${baseSha}...${headSha}`, "--", "."]);
 	const paths = nameOnly ? nameOnly.split("\0").filter(Boolean) : [];
@@ -317,6 +420,7 @@ export function selectGrokReviewInput({
 			tag: pin.tag,
 			repository: pin.repository,
 			version: pin.version ?? null,
+			source: resolved.source,
 		},
 		baseSha,
 		headSha,
@@ -334,6 +438,7 @@ export function selectGrokReviewInput({
 		})),
 	};
 
+
 	// Absolute safety ceiling on the *selected* review input (after provenance).
 	// Latency is further bounded by concurrent chunking in run-chunked-grok-review.
 	const MAX_SELECTED_BYTES = 2_000_000;
@@ -350,7 +455,11 @@ export function selectGrokReviewInput({
 }
 
 function parseArgs(argv) {
-	const opts = {};
+	const opts = {
+		pinPath: null,
+		pinBasePath: null,
+		pinHeadPath: null,
+	};
 	for (let i = 0; i < argv.length; i++) {
 		const arg = argv[i];
 		const next = () => {
@@ -371,6 +480,12 @@ function parseArgs(argv) {
 			case "--pin":
 				opts.pinPath = next();
 				break;
+			case "--pin-base":
+				opts.pinBasePath = next();
+				break;
+			case "--pin-head":
+				opts.pinHeadPath = next();
+				break;
 			case "--out-diff":
 				opts.outDiff = next();
 				break;
@@ -384,16 +499,22 @@ function parseArgs(argv) {
 				throw new Error(`unknown argument: ${arg}`);
 		}
 	}
-	for (const key of ["repo", "baseSha", "headSha", "pinPath", "outDiff", "outPaths", "outMeta"]) {
+	for (const key of ["repo", "baseSha", "headSha", "outDiff", "outPaths", "outMeta"]) {
 		if (!opts[key]) throw new Error(`missing required --${key}`);
 	}
+	if (!opts.pinPath && !opts.pinBasePath && !opts.pinHeadPath) {
+		throw new Error("missing required --pin-base/--pin-head (or legacy --pin)");
+	}
 	opts.repo = resolve(opts.repo);
-	opts.pinPath = resolve(opts.pinPath);
+	if (opts.pinPath) opts.pinPath = resolve(opts.pinPath);
+	if (opts.pinBasePath) opts.pinBasePath = resolve(opts.pinBasePath);
+	if (opts.pinHeadPath) opts.pinHeadPath = resolve(opts.pinHeadPath);
 	opts.outDiff = resolve(opts.outDiff);
 	opts.outPaths = resolve(opts.outPaths);
 	opts.outMeta = resolve(opts.outMeta);
 	return opts;
 }
+
 
 function main() {
 	const opts = parseArgs(process.argv.slice(2));
