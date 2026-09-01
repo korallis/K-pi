@@ -4,7 +4,7 @@
 
 **How agents use this file.** Pick the lowest incomplete package whose dependencies are complete. Implement only that package. Run its scoped verification. Check its DoD only after the observable result passes. Do not use historical `[x]` boxes as proof.
 
-**Ordering.** IDs sort as written: `RP-00`, `RP-01`, `RP-01A`, `RP-02`, … `RP-19`. RP-00 through RP-12 are complete, so **`RP-13` is the current lowest incomplete package**.
+**Ordering.** IDs sort as written: `RP-00`, `RP-01`, `RP-01A`, `RP-02`, … `RP-19`. RP-00 through RP-13 and RP-15 are complete, so **`RP-14` is the current lowest incomplete package**.
 
 IDs: `RP-##`. Stories and ACs: `PRD.md`. Normative contracts: `spec.md`, `../UPSTREAM.md`, and focused product docs. Research and gap IDs: [`remediation-research.md`](remediation-research.md).
 
@@ -57,8 +57,8 @@ RP-00
           └─ RP-12
 
 RP-05 + RP-10 → RP-11
-RP-01A + RP-11 → RP-13  ← current
-RP-05 + RP-13 → RP-14
+RP-01A + RP-11 → RP-13
+RP-05 + RP-13 → RP-14  ← current
 RP-05 + RP-11 → RP-15
 RP-08 + RP-10 + RP-13 + RP-15 → RP-16 → RP-17
 RP-05 + RP-07 + RP-10 + RP-12 + RP-13 + RP-16 → RP-18
@@ -722,9 +722,9 @@ node --test --experimental-strip-types test/bus.test.ts test/append-log.test.ts 
 
 ### DoD
 
-- [ ] Worker protocol matches the forked harness base (Pi `0.84.4`)
-- [ ] Tool isolation, completion, cancellation, leases, and logs are enforced
-- [ ] Q-04 remains in-process only
+- [x] Worker protocol matches the forked harness base (Pi `0.84.4`)
+- [x] Tool isolation, completion, cancellation, leases, and logs are enforced
+- [x] Q-04 remains in-process only
 
 ---
 
