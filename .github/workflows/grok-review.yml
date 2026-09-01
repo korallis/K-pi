@@ -38,7 +38,7 @@ jobs:
   review:
     name: Grok review
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
     if: github.event.pull_request.draft == false
     env:
       GIT_CONFIG_GLOBAL: /dev/null
@@ -171,7 +171,7 @@ jobs:
           copilot \
             --prompt "$(cat "$RUNNER_TEMP/review-prompt.txt")" \
             --model "$GROK_REVIEW_MODEL" \
-            --effort xhigh \
+            --effort high \
             --max-ai-credits 30 \
             --no-ask-user \
             --no-custom-instructions \
