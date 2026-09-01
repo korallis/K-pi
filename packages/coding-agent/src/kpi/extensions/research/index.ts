@@ -103,8 +103,29 @@ export function registerResearchTools(pi: ExtensionAPI): void {
 				if (!outcome.ok) {
 					throw new Error(`Exa research call failed: ${outcome.class}`);
 				}
-				await session.addExternalResults("exa", outcome.value);
-				return { content: [{ type: "text", text: summarize(outcome.value) }], details: { results: outcome.value } };
+				// HTTP 200 can still carry per-URL failures. Only the URLs Exa actually
+				// fetched become citations; the rest are bounded diagnostics.
+				await session.addExternalResults("exa", outcome.value.results);
+				// Diagnostics keep their room: a partial failure the operator cannot see
+				// is worse than a shorter excerpt, so the citations are clamped to what
+				// is left rather than the other way round.
+				const diagnostics = clampField(
+					outcome.value.failures
+						.map(
+							(failure) =>
+								`- unavailable ${failure.url}${failure.error === undefined ? "" : ` (${failure.error})`}`,
+						)
+						.join("\n"),
+					MAX_TOOL_OUTPUT_CHARACTERS,
+				);
+				const room = Math.max(0, MAX_TOOL_OUTPUT_CHARACTERS - diagnostics.length - 1);
+				const text = [clampField(summarize(outcome.value.results), room), diagnostics]
+					.filter((part) => part.length > 0)
+					.join("\n");
+				return {
+					content: [{ type: "text", text }],
+					details: { results: outcome.value.results, failures: outcome.value.failures },
+				};
 			},
 		}),
 	);
