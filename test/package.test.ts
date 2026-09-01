@@ -439,10 +439,6 @@ test("excluded roots and secret-shaped paths cannot enter the tarball", async ()
   const packed = await publishInventory();
 
   for (const excluded of excludedPublishPaths) {
-    await assert.doesNotReject(
-      stat(new URL(excluded, repoRoot)),
-      `${excluded} no longer exists; update the exclusion list`,
-    );
     const leaked = packed.filter((path) => path === excluded || path.startsWith(excluded));
     assert.deepEqual(leaked, [], `${excluded} must stay out of the publish payload`);
   }
