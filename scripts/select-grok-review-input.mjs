@@ -502,7 +502,7 @@ export function classifyReviewPaths(input) {
  * Default inventory budget. Complete path list + codes must fit; overflow fails closed.
  * Sized so a monorepo-scale PR inventory + reduced chunk still clears argv (~100 KiB).
  */
-export const DEFAULT_INVENTORY_MAX_BYTES = 48_000;
+export const DEFAULT_INVENTORY_MAX_BYTES = 64_000;
 
 /**
  * Encode a dense stable code for dictionary index n (0-based):
@@ -617,8 +617,9 @@ export function buildReviewInventory(input) {
 		const rCode = codeFor(reasonKeys, reasonCode, row.reasonKey);
 		const plen = sharedPrefixLen(prevPath, row.path);
 		const suffix = row.path.slice(plen);
-		// status SP prefixLen SP suffix TAB dCode rCode  — no reason/decision text in body
-		bodyLines.push(`${row.status} ${plen} ${suffix}\t${dCode}${rCode}`);
+		// Compact body: status + base36(prefixLen) + "|" + suffix + TAB + dCode + rCode
+		// path = prev[0:prefixLen] + suffix; paths sorted. No decision/reason text in body.
+		bodyLines.push(`${row.status}${plen.toString(36)}|${suffix}\t${dCode}${rCode}`);
 		prevPath = row.path;
 	}
 
@@ -628,11 +629,10 @@ export function buildReviewInventory(input) {
 		"complete:1",
 		`rows:${sorted.length}`,
 		"status:A=add,M=modify,D=delete,R=rename,C=copy,?=unknown",
-		"format:status SP prefixLen SP suffix TAB dCode rCode  (path = prev[0:prefixLen]+suffix; sorted)",
-		"This inventory lists every changed path and provenance decision for the PR. It is complete.",
-		"Do NOT assert that a path is absent from the PR solely because it is missing from THIS chunk.",
-		"Consult this inventory for cross-file presence (e.g. lockfile replacements). Local defect review of THIS chunk stays strict.",
-		"Do NOT invent file contents for inventory-only paths.",
+		"row:status + base36(prefixLen) + | + suffix + TAB + dCode + rCode; path=prev[0:prefixLen]+suffix (sorted)",
+		"Complete PR path inventory with dictionary-coded provenance. No file contents.",
+		"Do NOT assert a path is absent from the PR solely because it is missing from THIS chunk.",
+		"Use for cross-file presence (e.g. lockfile replacements). Chunk-local defect review stays strict.",
 	];
 	for (const key of decisionKeys) {
 		header.push(`d:${decisionCode.get(key)}=${key}`);
@@ -710,10 +710,10 @@ export function parseReviewInventory(text) {
 		if (tab < 0) throw new Error(`inventory body missing tab: ${line}`);
 		const left = line.slice(0, tab);
 		const codes = line.slice(tab + 1);
-		const m = /^([AMDRC?]) (\d+) (.*)$/u.exec(left);
+		const m = /^([AMDRC?])([0-9a-z]+)\|(.*)$/u.exec(left);
 		if (!m) throw new Error(`inventory body bad left: ${left}`);
 		const status = m[1];
-		const plen = Number.parseInt(m[2], 10);
+		const plen = Number.parseInt(m[2], 36);
 		const suffix = m[3];
 		if (plen > prevPath.length) throw new Error("prefixLen exceeds previous path");
 		const path = prevPath.slice(0, plen) + suffix;

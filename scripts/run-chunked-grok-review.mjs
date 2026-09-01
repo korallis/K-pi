@@ -310,7 +310,7 @@ export function buildPrompt(chunkText, inventoryText = "") {
 }
 
 /** Hard ceiling for complete inventory inside each prompt (argv remainder). */
-export const INVENTORY_PROMPT_MAX_BYTES = 48_000;
+export const INVENTORY_PROMPT_MAX_BYTES = 64_000;
 
 /** Bytes reserved for preamble/epilogue/safety when sizing chunks around inventory. */
 const PROMPT_FRAMING_RESERVE_BYTES = 6_000;

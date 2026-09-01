@@ -242,7 +242,7 @@ jobs:
             --out-meta "$RUNNER_TEMP/grok-review-meta.json" \
             --work-dir "$RUNNER_TEMP/chunked-review" \
             --effort high \
-            --max-chunk-bytes 48000 \
+            --max-chunk-bytes 32000 \
             --max-concurrency 20 \
             --chunk-timeout-sec 720 \
             --max-ai-credits 50
