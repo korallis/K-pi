@@ -393,158 +393,161 @@ function restoreEnv(name: string, value: string | undefined): void {
 }
 
 describe("architecture proof isolation", { concurrency: false }, () => {
-test("the built harness serves the K-π built-in and its resources to an untrusted project", async () => {
-	await requireBuiltHarness();
+	test("the built harness serves the K-π built-in and its resources to an untrusted project", async () => {
+		await requireBuiltHarness();
 
-	const previousPackageDir = process.env.PI_PACKAGE_DIR;
-	const previousHome = process.env.HOME;
-	const previousUserProfile = process.env.USERPROFILE;
-	const sandbox = await mkdtemp(join(tmpdir(), "kpi-architecture-proof-"));
+		const previousPackageDir = process.env.PI_PACKAGE_DIR;
+		const previousHome = process.env.HOME;
+		const previousUserProfile = process.env.USERPROFILE;
+		const sandbox = await mkdtemp(join(tmpdir(), "kpi-architecture-proof-"));
 
-	try {
-		const packageDir = join(sandbox, "harness");
-		const cwd = join(sandbox, "project");
-		const agentDir = join(sandbox, "agent");
-		await mkdir(packageDir);
-		await mkdir(cwd);
-		await mkdir(agentDir);
-		// Only dist/ is staged, so the harness resolves its resources from build output
-		// instead of silently falling back to the source tree it was compiled from.
-		await symlink(distDir, join(packageDir, "dist"), "dir");
+		try {
+			const packageDir = join(sandbox, "harness");
+			const cwd = join(sandbox, "project");
+			const agentDir = join(sandbox, "agent");
+			await mkdir(packageDir);
+			await mkdir(cwd);
+			await mkdir(agentDir);
+			// Only dist/ is staged, so the harness resolves its resources from build output
+			// instead of silently falling back to the source tree it was compiled from.
+			await symlink(distDir, join(packageDir, "dist"), "dir");
 
-		process.env.PI_PACKAGE_DIR = packageDir;
-		// An empty HOME keeps machine-global skills, prompts and themes out of the proof.
-		process.env.HOME = sandbox;
-		process.env.USERPROFILE = sandbox;
+			process.env.PI_PACKAGE_DIR = packageDir;
+			// An empty HOME keeps machine-global skills, prompts and themes out of the proof.
+			process.env.HOME = sandbox;
+			process.env.USERPROFILE = sandbox;
 
-		const shippedResources = join(packageDir, "dist", "kpi");
-		const { getKpiResourceDir } = await importBuilt<{ getKpiResourceDir: () => string }>("config.js");
-		assert.equal(getKpiResourceDir(), shippedResources, "the built harness must serve K-π resources out of dist/kpi");
+			const shippedResources = join(packageDir, "dist", "kpi");
+			const { getKpiResourceDir } = await importBuilt<{ getKpiResourceDir: () => string }>("config.js");
+			assert.equal(
+				getKpiResourceDir(),
+				shippedResources,
+				"the built harness must serve K-π resources out of dist/kpi",
+			);
 
-		const { builtInExtensions } = await importBuilt<{ builtInExtensions: InlineExtensionFactory[] }>(
-			"extensions/index.js",
-		);
-		const { DefaultResourceLoader } = await importBuilt<{
-			DefaultResourceLoader: new (options: {
-				cwd: string;
-				agentDir: string;
-				extensionFactories: InlineExtensionFactory[];
-			}) => BuiltResourceLoader;
-		}>("core/resource-loader.js");
-		const { ExtensionRunner } = await importBuilt<{
-			ExtensionRunner: new (extensions: LoadedExtension[], runtime: unknown, cwd: string) => BuiltExtensionRunner;
-		}>("core/extensions/runner.js");
+			const { builtInExtensions } = await importBuilt<{ builtInExtensions: InlineExtensionFactory[] }>(
+				"extensions/index.js",
+			);
+			const { DefaultResourceLoader } = await importBuilt<{
+				DefaultResourceLoader: new (options: {
+					cwd: string;
+					agentDir: string;
+					extensionFactories: InlineExtensionFactory[];
+				}) => BuiltResourceLoader;
+			}>("core/resource-loader.js");
+			const { ExtensionRunner } = await importBuilt<{
+				ExtensionRunner: new (extensions: LoadedExtension[], runtime: unknown, cwd: string) => BuiltExtensionRunner;
+			}>("core/extensions/runner.js");
 
-		let trustDecisions = 0;
-		const loader = new DefaultResourceLoader({ cwd, agentDir, extensionFactories: builtInExtensions });
-		await loader.reload({
-			resolveProjectTrust: async () => {
-				trustDecisions += 1;
-				return false;
-			},
-		});
-		assert.equal(trustDecisions, 1, "the proof must pass through the untrusted-project gate");
+			let trustDecisions = 0;
+			const loader = new DefaultResourceLoader({ cwd, agentDir, extensionFactories: builtInExtensions });
+			await loader.reload({
+				resolveProjectTrust: async () => {
+					trustDecisions += 1;
+					return false;
+				},
+			});
+			assert.equal(trustDecisions, 1, "the proof must pass through the untrusted-project gate");
 
-		const { extensions, errors, runtime } = loader.getExtensions();
-		assert.deepEqual(errors, [], "the built-in extension set must load without errors or conflicts");
-		assert.deepEqual(
-			extensions.filter((extension) => !extension.path.startsWith("<inline:")).map((extension) => extension.path),
-			[],
-			"K-π must reach an untrusted project without an installed package",
-		);
+			const { extensions, errors, runtime } = loader.getExtensions();
+			assert.deepEqual(errors, [], "the built-in extension set must load without errors or conflicts");
+			assert.deepEqual(
+				extensions.filter((extension) => !extension.path.startsWith("<inline:")).map((extension) => extension.path),
+				[],
+				"K-π must reach an untrusted project without an installed package",
+			);
 
-		const kpi = extensions.find((extension) => extension.path === "<inline:k-pi>");
-		assert.ok(
-			kpi,
-			`the K-π built-in is not loaded; got ${extensions.map((extension) => extension.path).join(", ") || "nothing"}`,
-		);
-		for (const command of ["kpi", "accounts", "k-mode", "setup-kstack"]) {
-			assert.ok(kpi.commands.has(command), `/${command} is not registered by the K-π built-in`);
-		}
+			const kpi = extensions.find((extension) => extension.path === "<inline:k-pi>");
+			assert.ok(
+				kpi,
+				`the K-π built-in is not loaded; got ${extensions.map((extension) => extension.path).join(", ") || "nothing"}`,
+			);
+			for (const command of ["kpi", "accounts", "k-mode", "setup-kstack"]) {
+				assert.ok(kpi.commands.has(command), `/${command} is not registered by the K-π built-in`);
+			}
 
-		const runner = new ExtensionRunner(extensions, runtime, cwd);
-		const discovered = await runner.emitResourcesDiscover(cwd, "startup");
+			const runner = new ExtensionRunner(extensions, runtime, cwd);
+			const discovered = await runner.emitResourcesDiscover(cwd, "startup");
 
-		for (const [kind, entries] of [
-			["skill", discovered.skillPaths],
-			["prompt", discovered.promptPaths],
-			["theme", discovered.themePaths],
-		] as const) {
-			assert.ok(entries.length > 0, `the K-π built-in discovered no ${kind} paths`);
-			for (const entry of entries) {
-				assert.equal(entry.extensionPath, "<inline:k-pi>", `${entry.path} did not come from the K-π built-in`);
-				assert.ok(
-					entry.path.startsWith(`${shippedResources}${sep}`),
-					`${entry.path} is not served out of the built resource tree`,
+			for (const [kind, entries] of [
+				["skill", discovered.skillPaths],
+				["prompt", discovered.promptPaths],
+				["theme", discovered.themePaths],
+			] as const) {
+				assert.ok(entries.length > 0, `the K-π built-in discovered no ${kind} paths`);
+				for (const entry of entries) {
+					assert.equal(entry.extensionPath, "<inline:k-pi>", `${entry.path} did not come from the K-π built-in`);
+					assert.ok(
+						entry.path.startsWith(`${shippedResources}${sep}`),
+						`${entry.path} is not served out of the built resource tree`,
+					);
+				}
+			}
+
+			const asExtensionPaths = (entries: DiscoveredResourcePath[]): ExtensionResourcePath[] =>
+				entries.map((entry) => ({
+					path: entry.path,
+					metadata: {
+						source: `extension:${entry.extensionPath.replace(/[<>]/g, "")}`,
+						scope: "temporary",
+						origin: "top-level",
+					},
+				}));
+			loader.extendResources({
+				skillPaths: asExtensionPaths(discovered.skillPaths),
+				promptPaths: asExtensionPaths(discovered.promptPaths),
+				themePaths: asExtensionPaths(discovered.themePaths),
+			});
+
+			const skills = loader.getSkills();
+			const prompts = loader.getPrompts();
+			const themes = loader.getThemes();
+
+			for (const [kind, diagnostics] of [
+				["skill", skills.diagnostics],
+				["prompt", prompts.diagnostics],
+				["theme", themes.diagnostics],
+			] as const) {
+				assert.deepEqual(
+					diagnostics.map(({ type, message, path }) => `${type}: ${message} (${path ?? "no path"})`),
+					[],
+					`the shipped K-π ${kind} tree must load without diagnostics`,
 				);
 			}
-		}
 
-		const asExtensionPaths = (entries: DiscoveredResourcePath[]): ExtensionResourcePath[] =>
-			entries.map((entry) => ({
-				path: entry.path,
-				metadata: {
-					source: `extension:${entry.extensionPath.replace(/[<>]/g, "")}`,
-					scope: "temporary",
-					origin: "top-level",
-				},
-			}));
-		loader.extendResources({
-			skillPaths: asExtensionPaths(discovered.skillPaths),
-			promptPaths: asExtensionPaths(discovered.promptPaths),
-			themePaths: asExtensionPaths(discovered.themePaths),
-		});
-
-		const skills = loader.getSkills();
-		const prompts = loader.getPrompts();
-		const themes = loader.getThemes();
-
-		for (const [kind, diagnostics] of [
-			["skill", skills.diagnostics],
-			["prompt", prompts.diagnostics],
-			["theme", themes.diagnostics],
-		] as const) {
-			assert.deepEqual(
-				diagnostics.map(({ type, message, path }) => `${type}: ${message} (${path ?? "no path"})`),
-				[],
-				`the shipped K-π ${kind} tree must load without diagnostics`,
+			const skillNames = new Set(skills.skills.map((skill) => skill.name));
+			for (const name of [
+				"concise-output",
+				"context-pack",
+				"conventional-commit",
+				"isolated-review",
+				"minimalist",
+				"quality-gates",
+				"spec-first",
+				"tdd-cycle",
+			]) {
+				assert.ok(skillNames.has(name), `the ${name} skill never reached the loop`);
+			}
+			const generatedSkills = join(shippedResources, "kstack", "generated", "skills");
+			assert.ok(
+				skills.skills.some((skill) => skill.filePath.startsWith(`${generatedSkills}${sep}`)),
+				"K-stack generated skills never reached the loop",
 			);
-		}
 
-		const skillNames = new Set(skills.skills.map((skill) => skill.name));
-		for (const name of [
-			"concise-output",
-			"context-pack",
-			"conventional-commit",
-			"isolated-review",
-			"minimalist",
-			"quality-gates",
-			"spec-first",
-			"tdd-cycle",
-		]) {
-			assert.ok(skillNames.has(name), `the ${name} skill never reached the loop`);
-		}
-		const generatedSkills = join(shippedResources, "kstack", "generated", "skills");
-		assert.ok(
-			skills.skills.some((skill) => skill.filePath.startsWith(`${generatedSkills}${sep}`)),
-			"K-stack generated skills never reached the loop",
-		);
+			const promptNames = new Set(prompts.prompts.map((prompt) => prompt.name));
+			for (const name of ["implement", "plan", "review", "ship", "specify", "verify"]) {
+				assert.ok(promptNames.has(name), `the ${name} prompt never reached the loop`);
+			}
 
-		const promptNames = new Set(prompts.prompts.map((prompt) => prompt.name));
-		for (const name of ["implement", "plan", "review", "ship", "specify", "verify"]) {
-			assert.ok(promptNames.has(name), `the ${name} prompt never reached the loop`);
+			const themeNames = new Set(themes.themes.map((theme) => theme.name));
+			for (const name of ["loop-amber", "protocol-blue"]) {
+				assert.ok(themeNames.has(name), `the ${name} theme never reached the loop`);
+			}
+		} finally {
+			restoreEnv("PI_PACKAGE_DIR", previousPackageDir);
+			restoreEnv("HOME", previousHome);
+			restoreEnv("USERPROFILE", previousUserProfile);
+			await rm(sandbox, { recursive: true, force: true });
 		}
-
-		const themeNames = new Set(themes.themes.map((theme) => theme.name));
-		for (const name of ["loop-amber", "protocol-blue"]) {
-			assert.ok(themeNames.has(name), `the ${name} theme never reached the loop`);
-		}
-	} finally {
-		restoreEnv("PI_PACKAGE_DIR", previousPackageDir);
-		restoreEnv("HOME", previousHome);
-		restoreEnv("USERPROFILE", previousUserProfile);
-		await rm(sandbox, { recursive: true, force: true });
-	}
+	});
 });
-});
-

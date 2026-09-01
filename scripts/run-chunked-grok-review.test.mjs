@@ -382,25 +382,26 @@ test("budget defaults stay latency-bound under argv ceiling", () => {
 test("inventory makes lockfile replacement visible in every chunk prompt without file contents", async () => {
 	const dir = mkdtempSync(join(tmpdir(), "kpi-inv-"));
 	try {
+		const { buildReviewInventory } = await import("./select-grok-review-input.mjs");
 		const diff = fileDiff("a.ts", ["change"]);
 		const diffPath = join(dir, "pr.diff");
 		const pathsPath = join(dir, "changed");
 		const invPath = join(dir, "inv.txt");
 		writeFileSync(diffPath, diff);
 		writeFileSync(pathsPath, "a.ts\0");
-		writeFileSync(
-			invPath,
-			[
-				"TRUSTED_PR_INVENTORY",
-				"BEGIN_INVENTORY",
-				"A\tpackage-lock.json\texclude\tcovered-artifact:check",
-				"D\tpnpm-lock.yaml\texclude\tcovered-artifact:check",
-				"M\ta.ts\tinclude\tfirst-party",
-				"omitted:0",
-				"END_INVENTORY",
-				"",
-			].join("\n"),
-		);
+		const inv = buildReviewInventory({
+			rows: [
+				{ path: "package-lock.json", decision: "exclude", reason: "covered-artifact", check: "check" },
+				{ path: "pnpm-lock.yaml", decision: "exclude", reason: "covered-artifact", check: "check" },
+				{ path: "a.ts", decision: "include", reason: "first-party" },
+			],
+			statusByPath: new Map([
+				["package-lock.json", "A"],
+				["pnpm-lock.yaml", "D"],
+				["a.ts", "M"],
+			]),
+		});
+		writeFileSync(invPath, inv.text);
 		let sawInventory = false;
 		await runChunkedGrokReview(
 			{
@@ -421,8 +422,12 @@ test("inventory makes lockfile replacement visible in every chunk prompt without
 			{
 				runCommand: async (spec) => {
 					assert.match(spec.prompt, /TRUSTED_PR_INVENTORY/);
-					assert.match(spec.prompt, /A\tpackage-lock\.json/);
-					assert.match(spec.prompt, /D\tpnpm-lock\.yaml/);
+					assert.match(spec.prompt, /^complete:1$/m);
+					assert.match(spec.prompt, /package-lock\.json/);
+					// Front-coded body may split "pnpm-lock.yaml" after shared "p" with package-lock.json.
+					assert.match(spec.prompt, /npm-lock\.yaml|pnpm-lock\.yaml/);
+					assert.match(spec.prompt, /covered-artifact:check/);
+					assert.equal(/^omitted:/m.test(spec.prompt), false);
 					assert.equal(spec.prompt.includes("node_modules"), false);
 					assert.ok(Buffer.byteLength(spec.prompt, "utf8") <= PROMPT_ARGV_TEST_CEILING_BYTES);
 					sawInventory = true;

@@ -498,15 +498,68 @@ export function classifyReviewPaths(input) {
 
 
 
-/** Paths that must always appear in the trusted inventory (cross-chunk context). */
-const INVENTORY_PRIORITY =
-	/^(package-lock\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml|yarn\.lock|package\.json)$/;
+/**
+ * Default inventory budget. Complete path list + codes must fit; overflow fails closed.
+ * Sized so a monorepo-scale PR inventory + reduced chunk still clears argv (~100 KiB).
+ */
+export const DEFAULT_INVENTORY_MAX_BYTES = 48_000;
 
 /**
- * Compact trusted inventory for every Grok chunk prompt.
- * Lines: `<status>\t<path>\t<decision>\t<reason>` — no file contents.
- * Priority package-manager paths and provenance exclusions always stay when the
- * byte budget is tight; other rows fill remaining space in path order.
+ * Encode a dense stable code for dictionary index n (0-based):
+ * 0..35 → one base36 char; 36+ → two base36 chars.
+ * @param {number} n
+ */
+export function inventoryCode(n) {
+	if (!Number.isInteger(n) || n < 0) throw new Error("inventoryCode index must be a non-negative integer");
+	if (n < 36) return n.toString(36);
+	// two-byte codes: 36..1295
+	if (n >= 36 * 36) throw new Error(`inventoryCode index ${n} exceeds two-byte base36 space`);
+	const hi = Math.floor(n / 36);
+	const lo = n % 36;
+	return hi.toString(36) + lo.toString(36);
+}
+
+/**
+ * @param {string} code
+ */
+export function inventoryCodeIndex(code) {
+	if (typeof code !== "string" || !/^[0-9a-z]{1,2}$/u.test(code)) {
+		throw new Error(`invalid inventory code ${JSON.stringify(code)}`);
+	}
+	if (code.length === 1) return Number.parseInt(code, 36);
+	return Number.parseInt(code[0], 36) * 36 + Number.parseInt(code[1], 36);
+}
+
+/**
+ * Shared-prefix length between two strings (UTF-16 code units; paths are ASCII).
+ * @param {string} a
+ * @param {string} b
+ */
+function sharedPrefixLen(a, b) {
+	const n = Math.min(a.length, b.length);
+	let i = 0;
+	while (i < n && a.charCodeAt(i) === b.charCodeAt(i)) i += 1;
+	return i;
+}
+
+/**
+ * Compact, complete trusted inventory for every Grok chunk prompt.
+ *
+ * Format (no file contents):
+ *   TRUSTED_PR_INVENTORY
+ *   v:1
+ *   complete:1
+ *   rows:<N>
+ *   status:A=add,M=modify,D=delete,R=rename,C=copy,?=unknown
+ *   d:<code>=include|exclude   (decision dictionary)
+ *   r:<code>=<reason>          (reason dictionary; may include check suffix)
+ *   BEGIN
+ *   <status> <prefixLen> <suffix>\t<d-code><r-code>
+ *   END
+ *
+ * Paths are front-coded against the previous full path (sorted). Every input
+ * path appears exactly once. Decision/reason strings are dictionary-coded.
+ * Never omits paths; throws if the complete inventory exceeds maxBytes.
  *
  * @param {{
  *   statusByPath?: Map<string, string>,
@@ -515,70 +568,183 @@ const INVENTORY_PRIORITY =
  * }} input
  */
 export function buildReviewInventory(input) {
-	const maxBytes = input.maxBytes ?? 16_000;
-	const statusByPath = input.statusByPath ?? new Map();
-	const lines = input.rows
-		.map((row) => {
-			const status = statusByPath.get(row.path) ?? "?";
-			const reason = row.check ? `${row.reason}:${row.check}` : row.reason;
-			return `${status}\t${row.path}\t${row.decision}\t${reason}`;
-		})
-		.sort((a, b) => a.split("\t")[1].localeCompare(b.split("\t")[1]));
-
-	// Three tiers so package-manager replacements survive bulk exclude noise:
-	// 1) lockfile / package.json  2) other excludes  3) includes
-	const critical = [];
-	const excludes = [];
-	const rest = [];
-	for (const line of lines) {
-		const path = line.split("\t")[1];
-		if (INVENTORY_PRIORITY.test(path)) critical.push(line);
-		else if (line.includes("\texclude\t")) excludes.push(line);
-		else rest.push(line);
+	const maxBytes = input.maxBytes ?? DEFAULT_INVENTORY_MAX_BYTES;
+	if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) {
+		throw new Error("maxBytes must be a positive integer");
 	}
-	const priority = [...critical, ...excludes];
+	const statusByPath = input.statusByPath ?? new Map();
+	const rowsIn = Array.isArray(input.rows) ? input.rows : [];
+
+	/** @type {Map<string, { path: string, decision: string, reasonKey: string, status: string }>} */
+	const byPath = new Map();
+	for (const row of rowsIn) {
+		if (!row || typeof row.path !== "string" || !row.path) {
+			throw new Error("inventory row missing path");
+		}
+		if (byPath.has(row.path)) {
+			throw new Error(`duplicate inventory path ${row.path}`);
+		}
+		const decision = row.decision === "exclude" ? "exclude" : "include";
+		const reasonKey = row.check ? `${row.reason}:${row.check}` : String(row.reason ?? "");
+		const status = statusByPath.get(row.path) ?? "?";
+		byPath.set(row.path, { path: row.path, decision, reasonKey, status });
+	}
+
+	const sorted = [...byPath.values()].sort((a, b) => a.path.localeCompare(b.path));
+
+	/** @type {string[]} */
+	const decisionKeys = [];
+	/** @type {Map<string, string>} */
+	const decisionCode = new Map();
+	/** @type {string[]} */
+	const reasonKeys = [];
+	/** @type {Map<string, string>} */
+	const reasonCode = new Map();
+
+	const codeFor = (/** @type {string[]} */ keys, /** @type {Map<string, string>} */ map, key) => {
+		let c = map.get(key);
+		if (c !== undefined) return c;
+		c = inventoryCode(keys.length);
+		keys.push(key);
+		map.set(key, c);
+		return c;
+	};
+
+	const bodyLines = [];
+	let prevPath = "";
+	for (const row of sorted) {
+		const dCode = codeFor(decisionKeys, decisionCode, row.decision);
+		const rCode = codeFor(reasonKeys, reasonCode, row.reasonKey);
+		const plen = sharedPrefixLen(prevPath, row.path);
+		const suffix = row.path.slice(plen);
+		// status SP prefixLen SP suffix TAB dCode rCode  — no reason/decision text in body
+		bodyLines.push(`${row.status} ${plen} ${suffix}\t${dCode}${rCode}`);
+		prevPath = row.path;
+	}
 
 	const header = [
 		"TRUSTED_PR_INVENTORY",
-		"format: status<TAB>path<TAB>decision<TAB>reason",
-		"status: A add, M modify, D delete, R rename/copy, ? unknown",
-		"This inventory lists every changed path and provenance decision for the PR.",
+		"v:1",
+		"complete:1",
+		`rows:${sorted.length}`,
+		"status:A=add,M=modify,D=delete,R=rename,C=copy,?=unknown",
+		"format:status SP prefixLen SP suffix TAB dCode rCode  (path = prev[0:prefixLen]+suffix; sorted)",
+		"This inventory lists every changed path and provenance decision for the PR. It is complete.",
 		"Do NOT assert that a path is absent from the PR solely because it is missing from THIS chunk.",
 		"Consult this inventory for cross-file presence (e.g. lockfile replacements). Local defect review of THIS chunk stays strict.",
-		"BEGIN_INVENTORY",
+		"Do NOT invent file contents for inventory-only paths.",
 	];
-	const footer = ["END_INVENTORY"];
+	for (const key of decisionKeys) {
+		header.push(`d:${decisionCode.get(key)}=${key}`);
+	}
+	for (const key of reasonKeys) {
+		header.push(`r:${reasonCode.get(key)}=${key}`);
+	}
+	header.push("BEGIN");
 
-	/** @type {string[]} */
-	const body = [];
-	let omitted = 0;
-	const pushLine = (line) => {
-		const trial = [...header, ...body, line, `omitted:${omitted}`, ...footer].join("\n");
-		if (Buffer.byteLength(trial, "utf8") > maxBytes) {
-			omitted += 1;
-			return false;
-		}
-		body.push(line);
-		return true;
+	const footer = ["END", ""];
+	const text = [...header, ...bodyLines, ...footer].join("\n");
+	const bytes = Buffer.byteLength(text, "utf8");
+	if (bytes > maxBytes) {
+		throw new Error(
+			`complete review inventory is ${bytes} bytes for ${sorted.length} paths; fails closed above maxBytes ${maxBytes}`,
+		);
+	}
+
+	return {
+		text,
+		lineCount: bodyLines.length,
+		omitted: 0,
+		bytes,
+		complete: true,
+		dictionary: {
+			decision: Object.fromEntries(decisionKeys.map((k) => [decisionCode.get(k), k])),
+			reason: Object.fromEntries(reasonKeys.map((k) => [reasonCode.get(k), k])),
+		},
 	};
-	for (const line of priority) pushLine(line);
-	for (const line of rest) pushLine(line);
+}
 
-	let text = [...header, ...body, `omitted:${omitted}`, ...footer, ""].join("\n");
-	// Hard cap: never hand the runner a blob over budget (argv-safe remainder).
-	while (Buffer.byteLength(text, "utf8") > maxBytes && body.length > 0) {
-		body.pop();
-		omitted += 1;
-		text = [...header, ...body, `omitted:${omitted}`, ...footer, ""].join("\n");
-	}
-	if (Buffer.byteLength(text, "utf8") > maxBytes) {
-		// Headers alone exceed budget — keep a minimal stub that still names the format.
-		text = [...header, "omitted:all", ...footer, ""].join("\n");
-		if (Buffer.byteLength(text, "utf8") > maxBytes) {
-			throw new Error(`inventory header exceeds maxBytes ${maxBytes}`);
+/**
+ * Parse a complete inventory back to rows (test / tooling round-trip).
+ * @param {string} text
+ */
+export function parseReviewInventory(text) {
+	const lines = text.split("\n");
+	if (lines[0] !== "TRUSTED_PR_INVENTORY") throw new Error("missing TRUSTED_PR_INVENTORY header");
+	/** @type {Map<string, string>} */
+	const decisions = new Map();
+	/** @type {Map<string, string>} */
+	const reasons = new Map();
+	let complete = false;
+	let expectedRows = null;
+	let begin = -1;
+	let end = -1;
+	for (let i = 0; i < lines.length; i++) {
+		const line = lines[i];
+		if (line === "complete:1") complete = true;
+		if (line.startsWith("rows:")) expectedRows = Number.parseInt(line.slice(5), 10);
+		if (line.startsWith("d:") && line.includes("=")) {
+			const eq = line.indexOf("=");
+			decisions.set(line.slice(2, eq), line.slice(eq + 1));
+		}
+		if (line.startsWith("r:") && line.includes("=")) {
+			const eq = line.indexOf("=");
+			reasons.set(line.slice(2, eq), line.slice(eq + 1));
+		}
+		if (line === "BEGIN") begin = i + 1;
+		if (line === "END") {
+			end = i;
+			break;
 		}
 	}
-	return { text, lineCount: body.length, omitted, bytes: Buffer.byteLength(text, "utf8") };
+	if (!complete) throw new Error("inventory is not marked complete");
+	if (begin < 0 || end < 0) throw new Error("inventory missing BEGIN/END");
+
+	/** @type {Array<{ path: string, status: string, decision: string, reason: string }>} */
+	const rows = [];
+	let prevPath = "";
+	for (let i = begin; i < end; i++) {
+		const line = lines[i];
+		if (!line) continue;
+		const tab = line.indexOf("\t");
+		if (tab < 0) throw new Error(`inventory body missing tab: ${line}`);
+		const left = line.slice(0, tab);
+		const codes = line.slice(tab + 1);
+		const m = /^([AMDRC?]) (\d+) (.*)$/u.exec(left);
+		if (!m) throw new Error(`inventory body bad left: ${left}`);
+		const status = m[1];
+		const plen = Number.parseInt(m[2], 10);
+		const suffix = m[3];
+		if (plen > prevPath.length) throw new Error("prefixLen exceeds previous path");
+		const path = prevPath.slice(0, plen) + suffix;
+		prevPath = path;
+		// codes = dCode + rCode; d is always 1 char (i/e via dictionary codes 0..); codes may be 2-4 chars total
+		// decision codes are assigned first (few); reason second. Parse greedily: try 1 then 2 for d.
+		let dCode = "";
+		let rCode = "";
+		if (decisions.has(codes[0]) && reasons.has(codes.slice(1))) {
+			dCode = codes[0];
+			rCode = codes.slice(1);
+		} else if (codes.length >= 2 && decisions.has(codes.slice(0, 2)) && reasons.has(codes.slice(2))) {
+			dCode = codes.slice(0, 2);
+			rCode = codes.slice(2);
+		} else if (decisions.has(codes[0])) {
+			// reason may be empty string key with code
+			dCode = codes[0];
+			rCode = codes.slice(1);
+		} else {
+			throw new Error(`cannot split decision/reason codes from ${codes}`);
+		}
+		const decision = decisions.get(dCode);
+		const reason = reasons.get(rCode);
+		if (decision === undefined) throw new Error(`unknown decision code ${dCode}`);
+		if (reason === undefined) throw new Error(`unknown reason code ${rCode}`);
+		rows.push({ path, status, decision, reason });
+	}
+	if (expectedRows !== null && rows.length !== expectedRows) {
+		throw new Error(`rows header ${expectedRows} != body ${rows.length}`);
+	}
+	return { complete: true, rows, decisions, reasons };
 }
 
 export function selectGrokReviewInput({
@@ -752,12 +918,13 @@ export function selectGrokReviewInput({
 	const inventory = buildReviewInventory({
 		statusByPath,
 		rows: classified.rows,
-		maxBytes: 16_000,
+		maxBytes: DEFAULT_INVENTORY_MAX_BYTES,
 	});
 	meta.inventory = {
 		bytes: inventory.bytes,
 		lineCount: inventory.lineCount,
-		omitted: inventory.omitted,
+		omitted: 0,
+		complete: true,
 	};
 
 	writeFileSync(outDiff, diffText);
