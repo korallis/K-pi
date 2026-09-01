@@ -36,6 +36,7 @@ const ASSEMBLED = {
 	registryCredential: ["NPM", "TOKEN"].join("_"),
 	npmPublish: ["npm", "publish"].join(" "),
 	registryHost: ["registry", "npmjs", "org"].join("."),
+	cursorApiKey: ["CURSOR", "API_KEY"].join("_"),
 };
 
 function cleanManifest() {
@@ -47,16 +48,27 @@ function cleanManifest() {
 }
 
 /**
- * Builds a temp repository. `workflows` and `scripts` are name → contents; the
- * shipped `check.yml` is the baseline gate unless `omitCheckWorkflow` is set.
+ * Builds a temp repository. workflows and scripts are name → contents; the
+ * shipped check and Grok workflows are the baseline unless their omit flags
+ * are set.
  */
-function fixture(t, { workflows = {}, scripts = {}, manifest = cleanManifest(), omitCheckWorkflow = false } = {}) {
+function fixture(
+	t,
+	{
+		workflows = {},
+		scripts = {},
+		manifest = cleanManifest(),
+		omitCheckWorkflow = false,
+		omitGrokWorkflow = false,
+	} = {},
+) {
 	const root = mkdtempSync(join(tmpdir(), "kpi-ci-contract-"));
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 	writeFileSync(join(root, "package.json"), `${JSON.stringify(manifest, null, 2)}\n`);
 	const workflowDirectory = join(root, ".github", "workflows");
 	mkdirSync(workflowDirectory, { recursive: true });
 	if (!omitCheckWorkflow) copyFileSync(workflowPath("check.yml"), join(workflowDirectory, "check.yml"));
+	if (!omitGrokWorkflow) copyFileSync(workflowPath("grok-review.yml"), join(workflowDirectory, "grok-review.yml"));
 	for (const [name, contents] of Object.entries(workflows)) {
 		writeFileSync(join(workflowDirectory, name), contents);
 	}
@@ -88,22 +100,21 @@ ${extraStep}      - run: ${command}
 `;
 }
 
-/** The reviewed Cursor pipeline: write token, autofix push, PR comments. */
-function cursorWorkflow({ extraStep = "" } = {}) {
-	return `name: cursor-review
+/** The reviewed Grok gate: read-only inference plus one PR comment. */
+function grokWorkflow({ extraStep = "", permissions = "      contents: read\n      pull-requests: write\n" } = {}) {
+	return `name: grok-review
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
 jobs:
-  pipeline:
-    runs-on: [self-hosted, macOS]
+  review:
+    runs-on: ubuntu-latest
     permissions:
-      contents: write
-      pull-requests: write
-    steps:
+${permissions}    steps:
       - uses: actions/checkout@v7
-      - run: gh pr comment "$PR_NUMBER" --body-file /tmp/report.md
-${extraStep}      - run: git push origin "HEAD:refs/heads/$HEAD_REF"
+        with:
+          persist-credentials: false
+${extraStep}      - run: gh api repos/example/repo/issues/1/comments --method POST
 `;
 }
 
@@ -133,8 +144,21 @@ test("auto-merge may queue a merge and hold the write permissions it needs", (t)
 	assert.deepEqual(inspectForkIntegrity(root), []);
 });
 
-test("the Cursor pipeline may push its autofix commit with contents/pull-requests write", (t) => {
-	assert.deepEqual(inspectForkIntegrity(fixture(t, { workflows: { "cursor-review.yml": cursorWorkflow() } })), []);
+test("the Grok gate may post its read-only PR result", (t) => {
+	assert.deepEqual(inspectForkIntegrity(fixture(t, { workflows: { "grok-review.yml": grokWorkflow() } })), []);
+});
+
+test("the Grok gate may not gain contents write", (t) => {
+	const root = fixture(t, {
+		workflows: {
+			"grok-review.yml": grokWorkflow({
+				permissions: "      contents: write\n      pull-requests: write\n",
+			}),
+		},
+	});
+	assert.deepEqual(inspectForkIntegrity(root), [
+		'.github/workflows/grok-review.yml: forbidden write permission "contents: write"',
+	]);
 });
 
 test("a merge that does not wait for checks is rejected", (t) => {
@@ -200,24 +224,24 @@ test("release automation is rejected inside an approved workflow", (t) => {
 	assert.deepEqual(inspectForkIntegrity(root), [".github/workflows/auto-merge.yml: forbidden release automation"]);
 });
 
-test("gh release commands are rejected inside an approved workflow", (t) => {
+test("GitHub release commands are rejected inside the Grok gate", (t) => {
 	const root = fixture(t, {
-		workflows: { "cursor-review.yml": cursorWorkflow({ extraStep: "      - run: gh release edit v1 --draft=false\n" }) },
+		workflows: { "grok-review.yml": grokWorkflow({ extraStep: "      - run: gh release edit v1 --draft=false\n" }) },
 	});
 	assert.deepEqual(inspectForkIntegrity(root), [
-		".github/workflows/cursor-review.yml: forbidden GitHub release automation",
+		".github/workflows/grok-review.yml: forbidden GitHub release automation",
 	]);
 });
 
-test("registry credentials are rejected inside an approved workflow", (t) => {
+test("registry credentials are rejected inside the Grok gate", (t) => {
 	const root = fixture(t, {
 		workflows: {
-			"cursor-review.yml": cursorWorkflow({
-				extraStep: `      - run: echo "${ASSEMBLED.registryCredential} unused"\n`,
+			"grok-review.yml": grokWorkflow({
+				extraStep: '      - run: echo "' + ASSEMBLED.registryCredential + ' unused"\n',
 			}),
 		},
 	});
-	assert.deepEqual(inspectForkIntegrity(root), [".github/workflows/cursor-review.yml: forbidden registry credential"]);
+	assert.deepEqual(inspectForkIntegrity(root), [".github/workflows/grok-review.yml: forbidden registry credential"]);
 });
 
 test("a registry publish target is rejected inside an approved workflow", (t) => {
@@ -261,19 +285,53 @@ jobs:
 	assert.deepEqual(inspectForkIntegrity(fixture(t, { workflows: { "mirror.yml": workflow } })), []);
 });
 
-test("pushing is rejected outside the Cursor pipeline", (t) => {
+test("pushing is rejected from every workflow", (t) => {
 	const root = fixture(t, {
 		workflows: { "nightly.yml": readOnlyWorkflow("    steps:\n      - run: git push origin HEAD:refs/heads/main\n") },
 	});
 	assert.deepEqual(inspectForkIntegrity(root), [".github/workflows/nightly.yml: forbidden workflow that pushes"]);
 });
 
-test("the push exemption does not let the Cursor pipeline rewrite history", (t) => {
+test("the Grok gate may neither push nor rewrite history", (t) => {
 	const root = fixture(t, {
-		workflows: { "cursor-review.yml": cursorWorkflow({ extraStep: "      - run: git rebase origin/main\n" }) },
+		workflows: {
+			"grok-review.yml": grokWorkflow({
+				extraStep: "      - run: git push origin HEAD\n      - run: git rebase origin/main\n",
+			}),
+		},
 	});
 	assert.deepEqual(inspectForkIntegrity(root), [
-		".github/workflows/cursor-review.yml: forbidden workflow that rewrites history",
+		".github/workflows/grok-review.yml: forbidden workflow that pushes",
+		".github/workflows/grok-review.yml: forbidden workflow that rewrites history",
+	]);
+});
+
+test("the obsolete Cursor workflow path is rejected", (t) => {
+	const root = fixture(t, { workflows: { "cursor-review.yml": readOnlyWorkflow("    steps:\n      - run: echo old\n") } });
+	assert.deepEqual(inspectForkIntegrity(root), [
+		".github/workflows/cursor-review.yml: obsolete Cursor review workflow must not exist",
+	]);
+});
+
+test("obsolete Cursor credentials are rejected in workflows", (t) => {
+	const root = fixture(t, {
+		workflows: {
+			"nightly.yml": readOnlyWorkflow(
+				'    steps:\n      - run: echo "' + ASSEMBLED.cursorApiKey + ' is obsolete"\n',
+			),
+		},
+	});
+	assert.deepEqual(inspectForkIntegrity(root), [".github/workflows/nightly.yml: forbidden obsolete Cursor credential"]);
+});
+
+test("CI workflows may not depend on 1Password at runtime", (t) => {
+	const root = fixture(t, {
+		workflows: {
+			"nightly.yml": readOnlyWorkflow("    steps:\n      - run: op read secret-reference\n"),
+		},
+	});
+	assert.deepEqual(inspectForkIntegrity(root), [
+		".github/workflows/nightly.yml: forbidden runtime 1Password dependency",
 	]);
 });
 
@@ -288,6 +346,12 @@ test("publish machinery is rejected in root scripts", (t) => {
 test("losing the gate workflow is a violation", (t) => {
 	assert.deepEqual(inspectForkIntegrity(fixture(t, { omitCheckWorkflow: true })), [
 		".github/workflows/check.yml: required gate workflow is missing (nothing runs the gates above)",
+	]);
+});
+
+test("losing the Grok gate workflow is a violation", (t) => {
+	assert.deepEqual(inspectForkIntegrity(fixture(t, { omitGrokWorkflow: true })), [
+		".github/workflows/grok-review.yml: required gate workflow is missing (nothing runs the gates above)",
 	]);
 });
 
@@ -322,5 +386,5 @@ test("the CLI exits 1 and names the violation and the reviewed exemptions", (t) 
 	assert.match(result.stderr, /fork integrity check failed:/);
 	assert.match(result.stderr, /auto-merge\.yml: forbidden merge that does not wait for checks/);
 	assert.match(result.stderr, /auto-merge\.yml: asks GitHub to merge only after required checks pass/);
-	assert.match(result.stderr, /cursor-review\.yml: reviewed Cursor pipeline/);
+	assert.match(result.stderr, /grok-review\.yml: posts one read-only Grok review result/);
 });
