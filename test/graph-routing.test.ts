@@ -4,7 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { GraphEngine, loadNamedGraph, validateGraphDefinition } from "../packages/coding-agent/src/kpi/extensions/graph/engine.ts";
+import {
+	GraphEngine,
+	loadNamedGraph,
+	validateGraphDefinition,
+} from "../packages/coding-agent/src/kpi/extensions/graph/engine.ts";
 import type {
 	GraphDefinition,
 	GraphEdge,

@@ -625,11 +625,11 @@ test("a forged or mismatched ship marker is ignored and never skips shipping", a
 			document.status = "RUNNING";
 			await writeFile(join(runDirectory, "state.json"), `${JSON.stringify(document, null, 2)}\n`);
 			await replay.command(jobId, replay.context);
-		assert.deepEqual(
-			replay.notifications.filter((message) => message.includes("failed")),
-			[],
-			"the replay itself must not fail",
-		);
+			assert.deepEqual(
+				replay.notifications.filter((message) => message.includes("failed")),
+				[],
+				"the replay itself must not fail",
+			);
 
 			assert.equal(replayExecuted.includes("ship"), false, `${forgery.name}: no second commit attempt`);
 			assert.equal(await git(directory, "rev-parse", "HEAD"), shipped, `${forgery.name}: HEAD is untouched`);

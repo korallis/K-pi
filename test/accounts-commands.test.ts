@@ -78,7 +78,12 @@ async function harness(confirm = true): Promise<Harness> {
 		const headers: Record<string, string> = {};
 		await hooks.get("before_provider_headers")!(
 			{ type: "before_provider_headers", headers, requestId: "request-1" },
-			{ cwd: directory, model: { provider, id: `${provider}-model` }, ui, modelRegistry: { getAvailable: () => [] } },
+			{
+				cwd: directory,
+				model: { provider, id: `${provider}-model` },
+				ui,
+				modelRegistry: { getAvailable: () => [] },
+			},
 		);
 		return headers.authorization ?? "";
 	};
@@ -473,11 +478,7 @@ test("a malformed official credential is skipped without a partial import", asyn
 		await subject.hooks.get("session_start")!({ type: "session_start" }, subject.context as never);
 
 		const document = await new AccountsStore(subject.directory).read();
-		assert.deepEqual(
-			Object.keys(document.pools),
-			["openai-codex"],
-			"only the routable credential became a slot",
-		);
+		assert.deepEqual(Object.keys(document.pools), ["openai-codex"], "only the routable credential became a slot");
 		assert.deepEqual(Object.keys(await subject.store.readSecrets()), ["openai-codex/default"]);
 		assert.equal(await subject.route("openai-codex"), "Bearer usable-codex-key");
 	} finally {

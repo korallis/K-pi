@@ -603,10 +603,7 @@ test("docs pointers redirect and restate nothing", async () => {
 	for (const [surface, target] of Object.entries(pointerSurfaces)) {
 		const source = await documentLines(surface);
 		const body = source.filter((line) => line.trim() !== "");
-		assert.ok(
-			body.length <= 12,
-			`${surface} is a pointer, not a copy, but carries ${body.length} non-empty lines`,
-		);
+		assert.ok(body.length <= 12, `${surface} is a pointer, not a copy, but carries ${body.length} non-empty lines`);
 
 		const found = await pointersTo(surface, target.slice(target.lastIndexOf("/") + 1));
 		const landed = found.map((pointer) => pointer.resolved);
@@ -650,7 +647,10 @@ test("feature acceptance is routed from the contract and the final package, and 
 		finalPackage.some((line) => line.includes(acceptanceBasename)),
 		`RP-19 must hand off to ${featureAcceptance}; nothing else runs after it`,
 	);
-	const productDoD = sectionLines(await documentLines(activePlan), /^##\s+Definition of done for the whole product\s*$/u);
+	const productDoD = sectionLines(
+		await documentLines(activePlan),
+		/^##\s+Definition of done for the whole product\s*$/u,
+	);
 	assert.ok(
 		productDoD.some((line) => line.includes(acceptanceBasename)),
 		`the whole-product definition of done must require ${featureAcceptance}`,
@@ -670,8 +670,15 @@ test("feature acceptance is routed from the contract and the final package, and 
 
 	const misrouted = (await pointersTo(featureAcceptance, planBasename))
 		.filter((pointer) => pointer.resolved !== activePlan)
-		.map((pointer) => `${featureAcceptance}:${pointer.line}: "${pointer.raw}" resolves to ${pointer.resolved ?? "nothing"}`);
-	assert.deepEqual(misrouted, [], `every ${planBasename} pointer in ${featureAcceptance} must resolve to ${activePlan}`);
+		.map(
+			(pointer) =>
+				`${featureAcceptance}:${pointer.line}: "${pointer.raw}" resolves to ${pointer.resolved ?? "nothing"}`,
+		);
+	assert.deepEqual(
+		misrouted,
+		[],
+		`every ${planBasename} pointer in ${featureAcceptance} must resolve to ${activePlan}`,
+	);
 });
 
 test("every product story has exactly one acceptance row owned by a real package", async () => {

@@ -4,7 +4,7 @@
 
 **How agents use this file.** Pick the lowest incomplete package whose dependencies are complete. Implement only that package. Run its scoped verification. Check its DoD only after the observable result passes. Do not use historical `[x]` boxes as proof.
 
-**Ordering.** IDs sort as written: `RP-00`, `RP-01`, `RP-01A`, `RP-02`, … `RP-19`. RP-00, RP-01, and the RP-01A architecture reset are complete, so **`RP-02` is the current lowest incomplete package**.
+**Ordering.** IDs sort as written: `RP-00`, `RP-01`, `RP-01A`, `RP-02`, … `RP-19`. RP-00 through RP-08 and RP-12 are complete, so **`RP-09` is the current lowest incomplete package**.
 
 IDs: `RP-##`. Stories and ACs: `PRD.md`. Normative contracts: `spec.md`, `../UPSTREAM.md`, and focused product docs. Research and gap IDs: [`remediation-research.md`](remediation-research.md).
 
@@ -50,10 +50,10 @@ All three gates are `CLOSED` by recorded human decision. The `Selected decision`
 RP-00
   └─ RP-01
       └─ RP-01A  ← completed architecture reset; gates everything below
-          ├─ RP-02  ← current ──┐
+          ├─ RP-02 ──┐
           ├─ RP-03 → RP-04 ───────┼→ RP-05
           ├─ RP-06 → RP-07 → RP-08
-          │             └→ RP-09 → RP-10
+          │             └→ RP-09  ← current → RP-10
           └─ RP-12
 
 RP-05 + RP-10 → RP-11
@@ -254,8 +254,8 @@ node --test --experimental-strip-types test/policy.test.ts
 
 ### DoD
 
-- [ ] AC-13.2–AC-13.4 pass through the live hook boundary
-- [ ] Existing AC-13.1 denials still pass
+- [x] AC-13.2–AC-13.4 pass through the live hook boundary
+- [x] Existing AC-13.1 denials still pass
 
 ---
 
@@ -294,9 +294,9 @@ node --test --experimental-strip-types test/graph-engine.test.ts test/stop.test.
 
 ### DoD
 
-- [ ] Every configured cap is enforced
-- [ ] Wide supersteps are bounded, not rejected
-- [ ] Exhaustion is a durable product state
+- [x] Every configured cap is enforced
+- [x] Wide supersteps are bounded, not rejected
+- [x] Exhaustion is a durable product state
 
 ---
 
@@ -334,9 +334,9 @@ node --test --experimental-strip-types test/stop.test.ts test/resume.test.ts tes
 
 ### DoD
 
-- [ ] Failing-AC and fingerprint no-progress rules both work
-- [ ] Retry is bounded, same-round, and backoff-driven
-- [ ] Resume restores every stop-safety field
+- [x] Failing-AC and fingerprint no-progress rules both work
+- [x] Retry is bounded, same-round, and backoff-driven
+- [x] Resume restores every stop-safety field
 
 ---
 
@@ -374,9 +374,9 @@ node --test --experimental-strip-types test/gated-loop.test.ts test/autopilot.te
 
 ### DoD
 
-- [ ] Shipped graphs match the normative conditional contract
-- [ ] Release is evidence-derived
-- [ ] Ship replay is a durable no-op
+- [x] Shipped graphs match the normative conditional contract
+- [x] Release is evidence-derived
+- [x] Ship replay is a durable no-op
 
 ---
 
@@ -419,9 +419,9 @@ node --test --experimental-strip-types test/accounts.test.ts test/accounts-routi
 
 ### DoD
 
-- [ ] Quota-first and percentages use one live cache contract
-- [ ] M-05 passes through the integrated selection path
-- [ ] Stickiness releases only on the named transitions
+- [x] Quota-first and percentages use one live cache contract
+- [x] M-05 passes through the integrated selection path
+- [x] Stickiness releases only on the named transitions
 
 ---
 
@@ -462,9 +462,9 @@ node --test --experimental-strip-types test/accounts.test.ts test/accounts-comma
 
 ### DoD
 
-- [ ] Account and pool command surface matches `spec.md`
-- [ ] Official catalogs remain Pi-owned
-- [ ] Provider notices and classifier boundary are correct
+- [x] Account and pool command surface matches `spec.md`
+- [x] Official catalogs remain Pi-owned
+- [x] Provider notices and classifier boundary are correct
 
 ---
 
@@ -507,9 +507,9 @@ node --test --experimental-strip-types test/local-providers.test.ts test/provide
 
 ### DoD
 
-- [ ] AC-27.1–AC-27.8 have executable coverage
-- [ ] Native llama.cpp remains Pi-owned
-- [ ] Local discovery is live, bounded, stored, and no-cloud
+- [x] AC-27.1–AC-27.8 have executable coverage
+- [x] Native llama.cpp remains Pi-owned
+- [x] Local discovery is live, bounded, stored, and no-cloud
 
 ---
 
@@ -677,9 +677,9 @@ node --test --experimental-strip-types test/kg.test.ts test/harness.test.ts
 
 ### DoD
 
-- [ ] KG authoritative lifecycle is complete and crash-safe
-- [ ] One-writer boundary is executable
-- [ ] `kg-claim` is loadable without custom resource code
+- [x] KG authoritative lifecycle is complete and crash-safe
+- [x] One-writer boundary is executable
+- [x] `kg-claim` is loadable without custom resource code
 
 ---
 

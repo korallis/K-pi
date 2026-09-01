@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { createServer, type Server } from "node:http";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -15,8 +15,8 @@ import {
 	type AccountsDocument,
 	AccountsStore,
 	isLocalPool,
-	poolIdForProvider,
 	type PoolId,
+	poolIdForProvider,
 	providerIdForPool,
 } from "../packages/coding-agent/src/kpi/extensions/accounts/store.ts";
 import { renderAccountsWidget } from "../packages/coding-agent/src/kpi/extensions/accounts/widget.ts";
@@ -24,7 +24,6 @@ import {
 	DEFAULT_LOCAL_BASE_URLS,
 	discoverLocalModels,
 	LOCAL_PROVIDER_IDS,
-	type LocalProviderId,
 	readStoredLocalModels,
 	refreshLocalModels,
 	registerLocalProviders,
@@ -63,7 +62,10 @@ async function stubServer(routes: Record<string, { status?: number; body: unknow
 	};
 }
 
-function localAccounts(pools: AccountsDocument["pools"], fallback: PoolId[] = [...DEFAULT_FALLBACK_CHAIN]): AccountsDocument {
+function localAccounts(
+	pools: AccountsDocument["pools"],
+	fallback: PoolId[] = [...DEFAULT_FALLBACK_CHAIN],
+): AccountsDocument {
 	return { version: 1, pools, fallback, stickiness: "session-until-exhausted" };
 }
 
@@ -137,7 +139,12 @@ test("AC-27.2 an empty catalog is a valid answer and a malformed identity entry 
 		await empty.close();
 	}
 
-	for (const body of [{ data: [{ name: "no id" }] }, { data: [{ id: 7 }] }, { data: [{ id: "" }] }, { data: "nope" }]) {
+	for (const body of [
+		{ data: [{ name: "no id" }] },
+		{ data: [{ id: 7 }] },
+		{ data: [{ id: "" }] },
+		{ data: "nope" },
+	]) {
 		const malformed = await stubServer({ "/v1/models": { body } });
 		try {
 			assert.equal(
@@ -163,7 +170,11 @@ test("AC-27.2 Ollama falls back to /api/tags only when the v1 list is unavailabl
 			models?.map((entry) => entry.id),
 			["qwen3:8b"],
 		);
-		assert.deepEqual(withV1.requests.map((request) => request.path), ["/v1/models"], "no fallback request");
+		assert.deepEqual(
+			withV1.requests.map((request) => request.path),
+			["/v1/models"],
+			"no fallback request",
+		);
 	} finally {
 		await withV1.close();
 	}
@@ -195,7 +206,10 @@ test("AC-27.2 Ollama falls back to /api/tags only when the v1 list is unavailabl
 	});
 	try {
 		assert.equal(await discoverLocalModels("lmstudio", { baseUrl: `${other.origin}/v1` }), undefined);
-		assert.deepEqual(other.requests.map((request) => request.path), ["/v1/models"]);
+		assert.deepEqual(
+			other.requests.map((request) => request.path),
+			["/v1/models"],
+		);
 	} finally {
 		await other.close();
 	}
@@ -226,10 +240,7 @@ test("AC-27.3 a local slot persists its base URL, needs no credential, and store
 		assert.equal(await store.localBaseUrl("ollama", "default"), "http://127.0.0.1:11434/v1");
 
 		// A local slot without its origin, or a cloud pool, is refused.
-		await assert.rejects(
-			store.putLocalSlot("ollama", { id: "bad", kind: "local" }),
-			/needs a base URL/u,
-		);
+		await assert.rejects(store.putLocalSlot("ollama", { id: "bad", kind: "local" }), /needs a base URL/u);
 		await assert.rejects(
 			store.putLocalSlot("ollama", { id: "bad", kind: "local", baseUrl: "not a url" }),
 			/invalid base URL/u,
@@ -260,11 +271,7 @@ test("AC-27.4 an unreachable local server cools the slot and only a local succes
 	assert.equal(acrossLocal?.poolId, "lmstudio", "the next local family answers");
 
 	balancer.markCooling("lmstudio", "studio", 60_000);
-	assert.equal(
-		balancer.select("ollama", document),
-		undefined,
-		"a local run never escapes to a cloud seat on its own",
-	);
+	assert.equal(balancer.select("ollama", document), undefined, "a local run never escapes to a cloud seat on its own");
 });
 
 test("AC-27.5 local pools are outside the default chain and enter it only when the operator says so", () => {
@@ -440,7 +447,11 @@ test("a live catalog is stored and restored offline, and never replaced by a gue
 
 		// An unconfigured pool never discovers and never stores.
 		assert.deepEqual(
-			await refreshLocalModels("lmstudio", { allowNetwork: true }, { ...dependencies, resolveSlots: async () => [] }),
+			await refreshLocalModels(
+				"lmstudio",
+				{ allowNetwork: true },
+				{ ...dependencies, resolveSlots: async () => [] },
+			),
 			[],
 		);
 		assert.equal(readStoredLocalModels("lmstudio", agentDirectory), undefined);
@@ -454,10 +465,14 @@ test("a stored local catalog is rehydrated through current defaults and never fr
 	const agentDirectory = await mkdtemp(join(tmpdir(), "kpi-local-rehydrate-"));
 	const stub = await stubServer({ "/v1/models": { body: { data: [{ id: "qwen3:8b", name: "Qwen 3" }] } } });
 	try {
-		await refreshLocalModels("ollama", { allowNetwork: true }, {
-			resolveSlots: async () => [{ slotId: "default", baseUrl: `${stub.origin}/v1` }],
-			agentDirectory,
-		});
+		await refreshLocalModels(
+			"ollama",
+			{ allowNetwork: true },
+			{
+				resolveSlots: async () => [{ slotId: "default", baseUrl: `${stub.origin}/v1` }],
+				agentDirectory,
+			},
+		);
 
 		const [rehydrated] = readStoredLocalModels("ollama", agentDirectory) ?? [];
 		assert.equal(rehydrated.id, "qwen3:8b");

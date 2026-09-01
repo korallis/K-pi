@@ -265,12 +265,7 @@ test("an injected cost source crosses maxCostUsd without sleeps", async () => {
 	try {
 		let reads = 0;
 		const engine = new GraphEngine(
-			graph(
-				"cost-cap",
-				[{ id: "spend", type: "set", assignments: { spent: true } }],
-				[],
-				{ maxCostUsd: 5 },
-			),
+			graph("cost-cap", [{ id: "spend", type: "set", assignments: { spent: true } }], [], { maxCostUsd: 5 }),
 			{
 				projectRoot,
 				jobId: "cost-job",
@@ -731,7 +726,10 @@ test("a third transient failure ends the run as EXHAUSTED without a third sleep"
 
 test("a non-transient failure is never retried", async () => {
 	const cases: Array<{ name: string; error: () => unknown }> = [
-		{ name: "operator abort", error: () => Object.assign(new Error("The operation was aborted"), { name: "AbortError" }) },
+		{
+			name: "operator abort",
+			error: () => Object.assign(new Error("The operation was aborted"), { name: "AbortError" }),
+		},
 		{ name: "validation", error: () => new Error("agent node implement produced an unusable answer") },
 		{ name: "http 500", error: () => Object.assign(new Error("Internal Server Error"), { status: 500 }) },
 	];

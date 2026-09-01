@@ -412,7 +412,11 @@ export class AccountsStore {
 				if (pool.slots.some((slot) => slot.id === "default")) {
 					continue;
 				}
-				pool.slots.push({ id: "default", kind: credential.type === "oauth" ? "oauth" : "api_key", label: "default" });
+				pool.slots.push({
+					id: "default",
+					kind: credential.type === "oauth" ? "oauth" : "api_key",
+					label: "default",
+				});
 				document.pools[providerId] = pool;
 				secrets[secretKey(providerId, "default")] = credential;
 				imported.push(`${providerId}/default`);

@@ -1,5 +1,4 @@
 import {
-	BUDGET_LIMIT_NAMES,
 	type BudgetLimitName,
 	type GraphBudgetLimits,
 	type GraphBudgetOverrides,

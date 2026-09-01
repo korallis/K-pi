@@ -10,23 +10,23 @@ import { SessionManager } from "../../../core/session-manager.ts";
 import { appendEvent } from "../append-log.ts";
 import { atomicWrite } from "../run-store.ts";
 import {
-	batchReadyNodes,
 	type BudgetExhaustion,
+	batchReadyNodes,
 	findExhaustedNodeLimit,
 	findExhaustedRunLimit,
 	isBudgetState,
-	resolveGraphBudgetLimits,
 	type RunBudgetReading,
+	resolveGraphBudgetLimits,
 } from "./budget.ts";
 import { type JsonSchema, validateJsonSchema } from "./json-schema.ts";
 import {
 	type AgentGraphNode,
+	GRAPH_ROUTED_TERMINALS,
 	type GraphBudgetLimits,
 	type GraphBudgetOverrides,
 	type GraphDefinition,
 	type GraphEdge,
 	type GraphNode,
-	GRAPH_ROUTED_TERMINALS,
 	type GraphRoutedTerminal,
 	type GraphRunState,
 	type GraphTerminalState,
@@ -35,12 +35,7 @@ import {
 	type JsonValue,
 	type TerminalGraphNode,
 } from "./schema.ts";
-import {
-	classifyTransientFailure,
-	DEFAULT_RETRY_BASE_MS,
-	type Sleeper,
-	type TransientReason,
-} from "./stop.ts";
+import { classifyTransientFailure, DEFAULT_RETRY_BASE_MS, type Sleeper, type TransientReason } from "./stop.ts";
 
 const READ_ONLY_TOOLS = new Set(["read", "grep", "find", "ls"]);
 const FORBIDDEN_PATH_PARTS = new Set(["__proto__", "prototype", "constructor"]);
@@ -171,9 +166,7 @@ function validateNode(value: unknown, index: number): asserts value is GraphNode
 
 	if (value.type === "terminal") {
 		if (!GRAPH_ROUTED_TERMINALS.includes(value.status as GraphRoutedTerminal)) {
-			throw new Error(
-				`terminal node ${value.id}.status must be one of ${GRAPH_ROUTED_TERMINALS.join(" | ")}`,
-			);
+			throw new Error(`terminal node ${value.id}.status must be one of ${GRAPH_ROUTED_TERMINALS.join(" | ")}`);
 		}
 		assertString(value.reason, `terminal node ${value.id}.reason`);
 		return;
@@ -580,9 +573,7 @@ export class GraphEngine {
 	private writeCheckpoint(): Promise<void> {
 		const name = `checkpoint-${String(this.runState.superstep).padStart(6, "0")}.json`;
 		const snapshot = `${JSON.stringify(this.runState, null, 2)}\n`;
-		const write = this.checkpointWrites.then(() =>
-			atomicWrite(join(this.checkpointDirectory(), name), snapshot),
-		);
+		const write = this.checkpointWrites.then(() => atomicWrite(join(this.checkpointDirectory(), name), snapshot));
 		this.checkpointWrites = write.catch(() => undefined);
 		return write;
 	}
@@ -845,10 +836,7 @@ export class GraphEngine {
 	 * terminal event leaves the engine. `active` is preserved so a run resumed
 	 * under raised caps still knows what it owed.
 	 */
-	private async exhaust(
-		exhaustion: BudgetExhaustion,
-		nodeIds: readonly string[],
-	): Promise<Readonly<GraphRunState>> {
+	private async exhaust(exhaustion: BudgetExhaustion, nodeIds: readonly string[]): Promise<Readonly<GraphRunState>> {
 		this.runState.status = "exhausted";
 		for (const nodeId of nodeIds) {
 			this.runState.nodes[nodeId].status = "exhausted";

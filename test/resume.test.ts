@@ -359,7 +359,7 @@ test("a kill during a transient backoff resumes with the allowance already spent
 			async prompt() {
 				throw Object.assign(new Error("socket hang up"), { code: "ECONNRESET" });
 			},
-		getActiveToolNames: () => ["read"],
+			getActiveToolNames: () => ["read"],
 			dispose() {},
 		},
 	});

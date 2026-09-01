@@ -257,10 +257,7 @@ function anthropicModel(id = "claude-opus-4-6") {
 }
 
 /** Captures the registered provider hooks, exactly as the harness calls them. */
-async function routingHarness(
-	readerPercent: number | undefined = 42,
-	setModelResult = true,
-): Promise<RoutingHarness> {
+async function routingHarness(readerPercent: number | undefined = 42, setModelResult = true): Promise<RoutingHarness> {
 	const directory = await mkdtemp(join(tmpdir(), "k-pi-routing-"));
 	const store = new AccountsStore(directory);
 	const commands = new Map<string, CommandHandler>();
@@ -373,7 +370,8 @@ test("the widget follows the route from unknown, to selected, to parsed usage, t
 		// 3. A successful response's own headers land in the cache and are shown.
 		await subject.hooks.get("after_provider_response")!(
 			{
-				type: "after_provider_response", requestId: "request-2",
+				type: "after_provider_response",
+				requestId: "request-2",
 				status: 200,
 				headers: {
 					"anthropic-ratelimit-unified-limit": "1000",
@@ -477,11 +475,7 @@ test("login and logout republish the widget", async () => {
 		assert.match(subject.status.at(-1) ?? "", /ROUTE {3}anthropic\/claude-opus-4-6 {2}via home/u);
 
 		await subject.command("logout anthropic/home", subject.context);
-		assert.equal(
-			subject.status.at(-1),
-			undefined,
-			"removing the last slot clears the widget and its stale route",
-		);
+		assert.equal(subject.status.at(-1), undefined, "removing the last slot clears the widget and its stale route");
 	} finally {
 		await rm(subject.directory, { recursive: true, force: true });
 	}
@@ -497,7 +491,10 @@ test("M-05 through the live hooks: an exhausted slot is never selected in 100 re
 		const afterResponse = subject.hooks.get("after_provider_response")!;
 		const route = async (): Promise<string> => {
 			const headers: Record<string, string> = {};
-			await beforeHeaders({ type: "before_provider_headers", headers, requestId: "request-5" }, subject.hookContext());
+			await beforeHeaders(
+				{ type: "before_provider_headers", headers, requestId: "request-5" },
+				subject.hookContext(),
+			);
 			return headers.authorization ?? "";
 		};
 
@@ -616,8 +613,7 @@ test("an injected reader cannot corrupt selection or rendering with unusable num
 			await subject.hooks.get("session_start")!({ type: "session_start" }, subject.context as never);
 
 			const rendered = subject.status.at(-1) ?? "";
-			const expected =
-				percent === -5 ? "0%" : percent === 900 ? "100%" : percent === 42.4 ? "42%" : "?%";
+			const expected = percent === -5 ? "0%" : percent === 900 ? "100%" : percent === 42.4 ? "42%" : "?%";
 			assert.match(rendered, new RegExp(`default ${expected.replace("?", "\\?")}`, "u"), `percent ${percent}`);
 			assert.doesNotMatch(rendered, /NaN|Infinity|-\d/u, `percent ${percent} leaked into the widget`);
 		} finally {

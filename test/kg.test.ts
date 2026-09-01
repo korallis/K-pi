@@ -4,10 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-
-import { loadSkillsFromDir } from "../packages/coding-agent/src/core/skills.ts";
 import type { ToolCallEvent } from "../packages/coding-agent/src/core/extensions/types.ts";
-import { evaluateToolCall, type PolicyConfig } from "../packages/coding-agent/src/kpi/extensions/policy.ts";
+import { loadSkillsFromDir } from "../packages/coding-agent/src/core/skills.ts";
 import type { KnowledgeGraphPatch } from "../packages/coding-agent/src/kpi/extensions/kg/schema.ts";
 import {
 	isAuthoritativeKnowledgeGraphPath,
@@ -16,6 +14,7 @@ import {
 	knowledgeGraphPaths,
 	SNAPSHOT_COMPLETE_MARKER,
 } from "../packages/coding-agent/src/kpi/extensions/kg/store.ts";
+import { evaluateToolCall, type PolicyConfig } from "../packages/coding-agent/src/kpi/extensions/policy.ts";
 
 const observedAt = new Date(0).toISOString();
 
@@ -66,9 +65,7 @@ test("node, edge, and source round-trips validate and bump revisions", async () 
 		assert.equal(first.source?.rev, 1);
 		assert.equal(first.node?.rev, 1);
 
-		const second = await controlPlane.accept(
-			await controlPlane.propose({ node: { ...claim, status: "verified" } }),
-		);
+		const second = await controlPlane.accept(await controlPlane.propose({ node: { ...claim, status: "verified" } }));
 		assert.equal(second.node?.rev, 2, "a second acceptance of the same id must bump the revision");
 
 		const other = await controlPlane.accept(

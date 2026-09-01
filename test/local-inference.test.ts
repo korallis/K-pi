@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { createServer, type Server } from "node:http";
 import { mkdtemp, rm } from "node:fs/promises";
+import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -8,8 +8,8 @@ import test from "node:test";
 import type { Context, Model } from "@earendil-works/pi-ai";
 import { openAICompletionsApi } from "../packages/ai/src/api/openai-completions.lazy.ts";
 import type { ExtensionAPI, ProviderModelConfig } from "../packages/coding-agent/src/core/extensions/types.ts";
-import { AccountsStore } from "../packages/coding-agent/src/kpi/extensions/accounts/store.ts";
 import { registerAccounts } from "../packages/coding-agent/src/kpi/extensions/accounts/index.ts";
+import { AccountsStore } from "../packages/coding-agent/src/kpi/extensions/accounts/store.ts";
 import {
 	type LocalProviderId,
 	refreshLocalModels,
@@ -196,9 +196,7 @@ async function runInference(
 	try {
 		const stream = openAICompletionsApi().stream(model, promptContext(), { apiKey, headers });
 		const message = await stream.result();
-		const text = message.content
-			.flatMap((block) => (block.type === "text" ? [block.text] : []))
-			.join("");
+		const text = message.content.flatMap((block) => (block.type === "text" ? [block.text] : [])).join("");
 		return { text, urls };
 	} finally {
 		globalThis.fetch = realFetch;

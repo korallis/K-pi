@@ -190,10 +190,7 @@ test("a canonical fingerprint ignores key order and nothing else", () => {
 		canonicalFingerprint({ approved: false, blocking: ["b", "a"] }),
 		"a reordered array is different content",
 	);
-	assert.notEqual(
-		canonicalFingerprint({ approved: false }),
-		canonicalFingerprint({ approved: true }),
-	);
+	assert.notEqual(canonicalFingerprint({ approved: false }), canonicalFingerprint({ approved: true }));
 	assert.match(canonicalFingerprint({}), /^sha256:[0-9a-f]{64}$/u);
 });
 
@@ -313,7 +310,9 @@ test("transient classification retries only transport, 429, and timeout", () => 
 	// Explicit timeout evidence is read before the abort check, because a fetch
 	// deadline normally arrives as an AbortError that says it was aborted.
 	assert.equal(
-		classifyTransientFailure(Object.assign(new Error("The operation was aborted due to timeout"), { name: "AbortError" })),
+		classifyTransientFailure(
+			Object.assign(new Error("The operation was aborted due to timeout"), { name: "AbortError" }),
+		),
 		"timeout",
 	);
 	assert.equal(

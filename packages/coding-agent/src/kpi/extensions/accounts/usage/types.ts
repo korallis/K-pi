@@ -42,9 +42,7 @@ export interface UsageView {
  * on the refresh path, never while a request is being built. Returning
  * `undefined` leaves the slot unknown.
  */
-export type UsageReader = (
-	request: UsageReaderRequest,
-) => Promise<UsageReading | undefined> | UsageReading | undefined;
+export type UsageReader = (request: UsageReaderRequest) => Promise<UsageReading | undefined> | UsageReading | undefined;
 
 export interface UsageReaderRequest {
 	poolId: PoolId;

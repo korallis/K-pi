@@ -465,10 +465,7 @@ test("a non-conventional job-marked commit is rejected", async () => {
 		await git(directory, "add", "-A");
 		await git(directory, "commit", "-m", "shipped it\n\nKPI-Job: job-e");
 
-		await assert.rejects(
-			findJobCommit(directory, "job-e", previousHead),
-			/not Conventional Commits: shipped it/u,
-		);
+		await assert.rejects(findJobCommit(directory, "job-e", previousHead), /not Conventional Commits: shipped it/u);
 	} finally {
 		await rm(directory, { recursive: true, force: true });
 	}

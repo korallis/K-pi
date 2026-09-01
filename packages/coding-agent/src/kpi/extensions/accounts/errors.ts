@@ -46,11 +46,7 @@ function parsedReset(failure: ProviderFailure, now: number): number | undefined 
 	return undefined;
 }
 
-function classify(
-	failure: ProviderBodyFailure,
-	quotaText: string,
-	now: number,
-): CooldownClassification | undefined {
+function classify(failure: ProviderBodyFailure, quotaText: string, now: number): CooldownClassification | undefined {
 	const quotaShaped = failure.status === 403 && QUOTA_TOKENS.test(quotaText);
 	if (failure.status !== 429 && failure.status !== 402 && !quotaShaped) return undefined;
 	return {
@@ -69,7 +65,13 @@ export function classifyProviderFailure(
 	failure: ProviderFailure,
 	now = Date.now(),
 ): CooldownClassification | undefined {
-	return classify(failure, Object.values(failure.headers ?? {}).filter(Boolean).join(" "), now);
+	return classify(
+		failure,
+		Object.values(failure.headers ?? {})
+			.filter(Boolean)
+			.join(" "),
+		now,
+	);
 }
 
 /**

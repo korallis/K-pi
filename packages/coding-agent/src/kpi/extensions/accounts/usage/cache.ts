@@ -1,5 +1,5 @@
 import type { PoolId } from "../store.ts";
-import { readUsageHeaders, type ResponseHeaders } from "./headers.ts";
+import { type ResponseHeaders, readUsageHeaders } from "./headers.ts";
 import type { UsageReader, UsageReading, UsageSnapshot, UsageSource, UsageView } from "./types.ts";
 
 export interface UsageCacheOptions {

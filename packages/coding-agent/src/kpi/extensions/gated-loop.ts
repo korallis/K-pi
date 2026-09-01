@@ -474,7 +474,7 @@ function reviewApproved(state: Readonly<GraphRunState>): boolean {
 	return isJsonObject(review) && review.approved === true;
 }
 
-function reviewStatus(state: Readonly<GraphRunState>): string | undefined {
+function _reviewStatus(state: Readonly<GraphRunState>): string | undefined {
 	const review = state.values.review;
 	return isJsonObject(review) && typeof review.status === "string" ? review.status : undefined;
 }
@@ -743,8 +743,7 @@ function loopFacts(
 				evidence = undefined;
 			}
 			const testPassed = evidence !== undefined && evidencePasses(task, evidence);
-			const evidenceHead =
-				isJsonObject(evidence) && typeof evidence.head === "string" ? evidence.head : undefined;
+			const evidenceHead = isJsonObject(evidence) && typeof evidence.head === "string" ? evidence.head : undefined;
 			const fresh = evidenceHead !== undefined && evidenceHead === (await gitHead(projectRoot));
 
 			boundsReason = undefined;

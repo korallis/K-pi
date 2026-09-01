@@ -8,7 +8,7 @@ import { kModeState } from "../kstack/mode.ts";
 
 import { appendEvent, type JsonValue } from "./append-log.ts";
 import { type LoopDependencies, type LoopOutcome, parseLoopInvocation, resumeLoop, runLoop } from "./gated-loop.ts";
-import { atomicWrite, readActiveJob, type RunState } from "./run-store.ts";
+import { atomicWrite, type RunState, readActiveJob } from "./run-store.ts";
 import { autoWrapState } from "./settings.ts";
 
 const STAGES = [

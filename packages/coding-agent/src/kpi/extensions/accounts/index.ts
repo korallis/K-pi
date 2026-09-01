@@ -1,18 +1,17 @@
 import type { AuthEvent, AuthPrompt, Credential, ProviderAuthInteraction } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionCommandContext } from "../../../core/extensions/types.ts";
 import { appendEvent } from "../append-log.ts";
+import { DEFAULT_LOCAL_BASE_URLS, type LocalProviderId } from "../local/providers.ts";
 import { readActiveJob } from "../run-store.ts";
 import { AccountBalancer, type SelectedSlot } from "./balancer.ts";
 import { classifyProviderFailure } from "./errors.ts";
-
-import { DEFAULT_LOCAL_BASE_URLS, type LocalProviderId } from "../local/providers.ts";
 import {
 	type AccountsDocument,
 	AccountsStore,
 	isLocalPool,
 	isPoolId,
-	poolIdForProvider,
 	type PoolId,
+	poolIdForProvider,
 } from "./store.ts";
 import { UsageCache } from "./usage/cache.ts";
 import type { UsageReader } from "./usage/types.ts";
@@ -240,10 +239,7 @@ async function loginAccount(
 	if (isLocalPool(providerName)) {
 		// REQ-SL-01: a local slot is credential-free and persists its own origin.
 		const fallbackUrl = DEFAULT_LOCAL_BASE_URLS[providerName as LocalProviderId];
-		const answer = await context.ui.input(
-			`Base URL for ${providerName}`,
-			fallbackUrl ?? "http://127.0.0.1:8000/v1",
-		);
+		const answer = await context.ui.input(`Base URL for ${providerName}`, fallbackUrl ?? "http://127.0.0.1:8000/v1");
 		const baseUrl = (answer ?? "").trim().length > 0 ? (answer as string).trim() : fallbackUrl;
 		if (baseUrl === undefined || baseUrl.length === 0) {
 			throw new Error(`${providerName} needs a base URL`);
@@ -466,7 +462,6 @@ export function registerAccounts(pi: ExtensionAPI, dependencies: AccountsDepende
 		}
 	};
 
-
 	const configuredSlots = (accounts: AccountsDocument): { poolId: PoolId; slotId: string }[] =>
 		Object.entries(accounts.pools).flatMap(([poolId, pool]) =>
 			(pool?.slots ?? []).map((slot) => ({ poolId: poolId as PoolId, slotId: slot.id })),
@@ -552,8 +547,7 @@ export function registerAccounts(pi: ExtensionAPI, dependencies: AccountsDepende
 			// A local slot carries no credential unless the operator referenced one:
 			// a placeholder token would be a secret K-π invented, so the header is
 			// nulled rather than left for the client's construction key to fill.
-			const secretName =
-				active.slot.kind === "local" ? active.slot.secretRef : `${active.poolId}/${active.slot.id}`;
+			const secretName = active.slot.kind === "local" ? active.slot.secretRef : `${active.poolId}/${active.slot.id}`;
 			const credential = secretName === undefined ? undefined : (await resolved.store.readSecrets())[secretName];
 			const token =
 				credential?.type === "oauth"

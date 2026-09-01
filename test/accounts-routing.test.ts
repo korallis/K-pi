@@ -19,7 +19,10 @@ function model(provider: PoolId, id: string): Model<any> {
 	return { provider, id, name: id } as unknown as Model<any>;
 }
 
-function pool(strategy: AccountsDocument["pools"][PoolId] extends undefined ? never : "quota-first" | "round-robin" | "sticky", ...slotIds: string[]) {
+function pool(
+	strategy: AccountsDocument["pools"][PoolId] extends undefined ? never : "quota-first" | "round-robin" | "sticky",
+	...slotIds: string[]
+) {
 	return {
 		strategy,
 		slots: slotIds.map((id) => ({ id, kind: "oauth" as const, label: id })),
@@ -172,7 +175,12 @@ test("cross-family fallback begins only after the whole family cools and follows
 	assert.equal(lastSibling?.slot.id, "C");
 
 	balancer.markCooling("anthropic", "C", NOW + 60_000);
-	const plan = balancer.planFailover({ poolId: "anthropic", slot: { id: "C", kind: "oauth" } }, document, available, source);
+	const plan = balancer.planFailover(
+		{ poolId: "anthropic", slot: { id: "C", kind: "oauth" } },
+		document,
+		available,
+		source,
+	);
 
 	assert.equal(plan?.sameFamily, false);
 	assert.equal(plan?.to.poolId, "openai-codex", "the next configured pool in the default chain");
@@ -274,7 +282,10 @@ test("headers without a documented limit family leave a slot unknown", () => {
 
 	// A limit with no remaining, or a zero limit, is ignored rather than guessed.
 	assert.equal(usage.recordHeaders("zai", "default", { "x-ratelimit-limit": "100" }), undefined);
-	assert.equal(usage.recordHeaders("zai", "default", { "x-ratelimit-limit": "0", "x-ratelimit-remaining": "0" }), undefined);
+	assert.equal(
+		usage.recordHeaders("zai", "default", { "x-ratelimit-limit": "0", "x-ratelimit-remaining": "0" }),
+		undefined,
+	);
 	assert.equal(usage.remainingPercent("zai", "default"), undefined);
 });
 

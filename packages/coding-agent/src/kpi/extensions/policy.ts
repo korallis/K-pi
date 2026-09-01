@@ -10,7 +10,7 @@ import { type ExtensionAPI, isToolCallEventType, type ToolCallEvent } from "../.
 
 import { isJsonObject } from "./graph/schema.ts";
 import { isAuthoritativeKnowledgeGraphPath } from "./kg/store.ts";
-import { readActiveJob, type RunState, type Task, writeAllowForTask } from "./run-store.ts";
+import { type RunState, readActiveJob, type Task, writeAllowForTask } from "./run-store.ts";
 
 const execFile = promisify(execFileCallback);
 

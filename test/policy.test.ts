@@ -13,9 +13,9 @@ import {
 	type DiffStatReader,
 	ensurePolicyFile,
 	evaluateToolCall,
-	parseDiffStat,
 	type PolicyConfig,
 	type PolicyRegistrationOptions,
+	parseDiffStat,
 	readGitDiffStat,
 	registerPolicy,
 	resolveActivePolicyState,
@@ -274,10 +274,16 @@ test("a shell command that names a reserved path is denied, never confirmed", as
 	}
 
 	// A proposal written through the shell is still just a proposal.
-	assert.equal((await evaluateToolCall(bash('echo "{}" > .kpi/kg/inbox/patch.json'), { active, cwd, policy })).kind, "confirm");
+	assert.equal(
+		(await evaluateToolCall(bash('echo "{}" > .kpi/kg/inbox/patch.json'), { active, cwd, policy })).kind,
+		"confirm",
+	);
 	// A declared quality gate cannot launder a reserved target.
 	const gateActive: ActivePolicyState = { ...active, qualityGates: ["npm test > .kpi/kg/nodes.jsonl"] };
-	assert.equal((await evaluateToolCall(bash("npm test > .kpi/kg/nodes.jsonl"), { active: gateActive, cwd, policy })).kind, "deny");
+	assert.equal(
+		(await evaluateToolCall(bash("npm test > .kpi/kg/nodes.jsonl"), { active: gateActive, cwd, policy })).kind,
+		"deny",
+	);
 });
 
 test("only the reserved run artifact names are protected", async () => {
@@ -670,7 +676,7 @@ test("bash cannot write outside write_allow, whatever shape the write takes", as
 		{ command: "mv src/a.ts ../a.ts", allowed: false },
 		{ command: "install -m 0644 src/a.ts /usr/local/share/a.ts", allowed: false },
 		{ command: "sh -c 'echo x > /tmp/nested.txt'", allowed: false },
-		{ command: "bash -c \"cat <<EOF > /tmp/heredoc.txt\\nbody\\nEOF\"", allowed: false },
+		{ command: 'bash -c "cat <<EOF > /tmp/heredoc.txt\\nbody\\nEOF"', allowed: false },
 		{ command: "( echo x > /tmp/subshell.txt )", allowed: false },
 	];
 

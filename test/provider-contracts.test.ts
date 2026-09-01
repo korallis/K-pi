@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 
 import type { RefreshModelsContext } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "../packages/coding-agent/src/core/extensions/types.ts";
-
+import { getApiKey, login, refreshToken } from "../packages/coding-agent/src/kpi/extensions/cursor/oauth.ts";
 import {
 	CURSOR_FALLBACK_MODELS,
 	readStoredCursorModels,
@@ -15,7 +15,6 @@ import {
 	registerCursorProvider,
 	storedCursorModelsPath,
 } from "../packages/coding-agent/src/kpi/extensions/cursor/provider.ts";
-import { getApiKey, login, refreshToken } from "../packages/coding-agent/src/kpi/extensions/cursor/oauth.ts";
 
 /**
  * Ids Pi owns. REQ-PR-01: K-π must never hand any of these a `models` array,
@@ -225,8 +224,13 @@ test("an offline or empty refresh returns the stored catalog and never overwrite
 		process.env.HOME = directory;
 
 		// A live sync stores a catalog.
-		const live = new Response(JSON.stringify({ data: [{ id: "cursor-live", name: "Cursor Live" }] }), { status: 200 });
-		await refreshCursorModels({ allowNetwork: true, signal: new AbortController().signal } as RefreshModelsContext, async () => live);
+		const live = new Response(JSON.stringify({ data: [{ id: "cursor-live", name: "Cursor Live" }] }), {
+			status: 200,
+		});
+		await refreshCursorModels(
+			{ allowNetwork: true, signal: new AbortController().signal } as RefreshModelsContext,
+			async () => live,
+		);
 		const stored = await readFile(storedCursorModelsPath(directory), "utf8");
 		assert.match(stored, /cursor-live/u);
 
@@ -313,7 +317,10 @@ test("the catalog cache creates its directory and is written atomically", async 
 		process.env.HOME = directory;
 
 		const live = new Response(JSON.stringify({ data: [{ id: "cursor-live" }] }), { status: 200 });
-		await refreshCursorModels({ allowNetwork: true, signal: new AbortController().signal } as RefreshModelsContext, async () => live);
+		await refreshCursorModels(
+			{ allowNetwork: true, signal: new AbortController().signal } as RefreshModelsContext,
+			async () => live,
+		);
 
 		assert.match(await readFile(storedCursorModelsPath(directory), "utf8"), /cursor-live/u);
 		assert.deepEqual(
