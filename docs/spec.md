@@ -116,8 +116,9 @@ specs/
 | `/verify` | Run gates → `evidence.json` |
 | `/ship` | Gated confirm or no-op if already `DONE` |
 | `/accounts` | Slot overlay |
-| `/accounts login <provider>` | Add slot. Providers: anthropic, openai, openai-codex, xai, zai, zai-coding-cn, kimi-coding, cursor, llama, ollama, lmstudio, local-openai, exa, perplexity. |
-| `/accounts logout <slot>` | Drop slot |
+| `/accounts login <pool>` | Add a model slot. Pools: anthropic, openai, openai-codex, xai, zai, zai-coding-cn, kimi-coding, cursor, llama, ollama, lmstudio, local-openai. |
+| `/accounts login exa\|perplexity` | Store a research credential. Research targets are not pools: no slot, no routing, no fallback-chain entry. See `research.md`. |
+| `/accounts logout <slot>` | Drop slot. `/accounts logout exa\|perplexity` clears that research credential. |
 | `/accounts next` | Force sibling |
 | `/accounts pin <slot>` | Stick session |
 | `/pool strategy <provider> <name>` | |
@@ -141,17 +142,17 @@ Prompt templates expand via official slash-template mechanism (`prompts/*.md`). 
 | `task.json` | ac-compiler / control plane | Contract |
 | `context.md` | control plane at start | Frozen pack |
 | `candidate.json` | implementer via contract | Semantic payload only |
-| `evidence.json` | tester | HEAD-bound receipts |
-| `verdict.json` | reviewer only | PASS/REVISE/BLOCKED |
+| `evidence.json` | tester, via `write_contract` | HEAD-bound receipts |
+| `verdict.json` | reviewer only, via `write_contract` | PASS/REVISE/BLOCKED |
 | `state.json` | graph engine | Progress |
 | `events.jsonl` | append-log | Hash chain |
-| `research.md` / `research.json` | specify/plan research node | Sources + notes. Required before implement. |
+| `research.md` / `research.json` | specify/plan research node | Mode, network state, sources + notes. Required before implement. |
 | `stack.json` | plan | Dune modules. Frozen before implement. |
 | `fingerprints.json` | control plane | SHA-256 of canonical JSON |
 
 **REQ-RS-02** Atomic write: `foo.tmp` → fsync → rename to `foo` in the same directory.
 
-**REQ-RS-03** One writer per file. Graph workers do not write `state.json` or `kg/*.jsonl`.
+**REQ-RS-03** One writer per file. Graph workers do not write `state.json` or `kg/*.jsonl`. A read-only role publishes its own run-contract file through `write_contract` (REQ-RS-06); that capability is not a general write tool and does not make the role a writer.
 
 ### SCH-task
 
@@ -217,6 +218,34 @@ Reviewer `response.schema` MUST require `approved`, `blockingIssues`, `evidence`
 
 Stale if `head` ≠ current `git rev-parse HEAD`.
 
+### SCH-research
+
+```json
+{
+  "job_id": "2026-08-31-healthcheck",
+  "task_hash": "sha256:…",
+  "mode": "auto",
+  "network": {
+    "state": "no-network",
+    "origin": "engine",
+    "reason": "exa and perplexity each failed their bounded attempts",
+    "failures": [
+      { "service": "exa", "class": "http_429", "at": "2026-08-31T14:02:10.004Z" },
+      { "service": "perplexity", "class": "timeout", "at": "2026-08-31T14:02:41.118Z" }
+    ]
+  },
+  "sources": [
+    { "kind": "local", "ref": "src/health.ts:22", "title": "existing healthcheck handler", "service": null, "observed_at": "2026-08-31T14:03:02.900Z" }
+  ]
+}
+```
+
+`mode` enum: `exa | perplexity | auto | local`.  
+`network.state` enum: `online | no-network`.  
+`network.origin` enum: `operator | engine`, present only when `state` is `no-network`.  
+`failures[].class` enum: `http_402 | http_429 | http_5xx | timeout | abort | unavailable`.  
+`sources[].kind` enum: `external | local`. An `external` `ref` is an absolute HTTP(S) URL this job actually fetched; a `local` `ref` is a repository-relative `path` or `path:line`.
+
 ### SCH-event
 
 ```json
@@ -237,6 +266,10 @@ Stale if `head` ≠ current `git rev-parse HEAD`.
 
 **REQ-RS-05** Redact tokens, cookies, passwords, `sk-`, `oat01-`, bearer values from events.
 
+**REQ-RS-06** `write_contract` is a dedicated capability, not `write` or `edit`. It is pinned at spawn to one agent id, one `job_id`, one role, and one declared contract path — `verdict.json` for the reviewer, `evidence.json` for the tester. It schema-validates the payload against `SCH-verdict` or `SCH-evidence` before touching disk, then performs the atomic write of REQ-RS-02. Any other path, any other role, any other job, or a payload that fails validation is denied and recorded; a denied call is role failure, never approval. Holding `write_contract` grants no product-file mutation and does not consume the single-writer worker slot.
+
+**REQ-RS-07** Online research success requires at least two distinct external sources, counted by canonical origin after deduplication. A healthy configured service that answers with fewer ends the node `NEEDS_HUMAN`; it is never downgraded to local research. Only bounded, recorded failure of every configured service permits `network.origin: "engine"`, which requires a non-empty `network.reason` and one `network.failures[]` entry per attempt. `no-network` is a research state and is never written to a stop-state field.
+
 ## 6. Modes and stop states
 
 `mode` on the job is `gated | autopilot`.
@@ -256,7 +289,7 @@ Autopilot load rule:
 | `EXHAUSTED` | maxRounds / maxCostUsd / timeoutMs / maxNodeRuns |
 | `NO_PROGRESS` | Repeated output_fingerprint or same failing AC ids two rounds |
 | `UNSAFE` | Write outside bounds, policy deny, secret-shaped path |
-| `NEEDS_HUMAN` | AC changed, untestable review issue, risk left repo-local |
+| `NEEDS_HUMAN` | AC changed, untestable review issue, risk left repo-local, or a healthy research service that supplies fewer than two distinct external sources |
 
 Default caps: `maxRounds=3`, `maxCostUsd=5`, `timeoutMs=1800000`, `maxConcurrency=2`.
 
@@ -315,12 +348,14 @@ only if all evidence flags are true. Engine evaluates this as data, not as model
 | specify | read, grep, find, ls | true |
 | plan | read, grep, find, ls | true |
 | implement | read, grep, find, ls, bash, edit, write | false |
-| test | read, bash (quality_gates + AC commands only) | false but command-allowlisted |
+| test | read, bash (quality_gates + AC commands only), `write_contract` → `evidence.json` | read-only for product files; bash command-allowlisted |
 | bounds | set | n/a |
-| review | read, grep, find, ls | true |
+| review | read, grep, find, ls, `write_contract` → `verdict.json` | read-only for product files |
 | human | none | n/a |
 | release.set | set | n/a |
 | ship | bash: `git add` `git commit` on job branch only | false |
+
+Neither `test` nor `review` receives `write` or `edit`. `write_contract` (REQ-RS-06) is their only mutation path and reaches exactly one declared file.
 
 ## 8. Graph engine (ours)
 
@@ -413,6 +448,8 @@ Implement in `extensions/status-line/`. Visual contract: `visual-targets.md`. Re
 
 **REQ-SB-07** Do not import oh-my-pi, pi-status-bar, pi-vitals, pi-powerline-footer.
 
+**REQ-SB-08** A `local` active slot renders one cost cell `(local) $0`. Not `(sub)`, not an estimated dollar figure, and never both cells. Local slots carry no quota, so no percentage is rendered for them.
+
 Default render (unicode):
 
 ```
@@ -449,11 +486,12 @@ Accounts widget:
 ```
 ACCOUNTS
   ANTH  ● <slot>  <pct>%  <window>   <slot>  <pct>% cd <eta>
+  LOCAL ● <slot>  (local) $0  <base-url>
   …
 ROUTE   <provider>/<model>  via <slot>
 ```
 
-Per-slot percentages. No unlabeled aggregate as the only number.
+Per-slot percentages. No unlabeled aggregate as the only number. A `local` slot has no quota: show its base URL and health instead of a percentage.
 
 `/kpi status` uses `ctx.ui.custom` overlay. Data from files.
 
@@ -492,6 +530,7 @@ Deny if:
 - command matches deny list
 - write path outside active job `write_allow`
 - path looks like `.env`, `id_rsa`, `auth.json`, `accounts.secrets.json`
+- a `write_contract` call whose target is not the declared contract path for that agent, job, and role, or whose payload fails `SCH-verdict` / `SCH-evidence`
 
 Allowlisted reads (`ls`, `git status`, `git diff`, `git log`, test commands from `quality_gates`) do not confirm.
 
@@ -524,11 +563,18 @@ Allowlisted reads (`ls`, `git status`, `git diff`, `git log`, test commands from
 
 Pool ids: `anthropic | openai | openai-codex | xai | zai | zai-coding-cn | kimi-coding | cursor | llama | ollama | lmstudio | local-openai`.
 
-Local pools use official llama.cpp (`LLAMA_BASE_URL`) or first-party `refreshModels` on `/v1/models`. They are not on the default cloud fallback chain. Footer `(local)`, cost zero.  
-Strategy: `quota-first | round-robin | sticky`.  
-Slot kind: `oauth | api_key`.
+`exa` and `perplexity` are **not** pool ids. They are research credential targets (`research.md`): never in `pools`, never in `fallback`, never an argument to `/pool strategy` or `/pool chain`, and never a `registerProvider` call. A research key never changes which model answers a turn and never grants provider-native web search.
 
-Secrets in `~/.pi/agent/accounts.secrets.json` keyed by `pool/slot`. Never log them.
+Strategy: `quota-first | round-robin | sticky`.  
+Slot kind: `oauth | api_key | local`.
+
+**REQ-SL-01** A `local` slot is credential-free. It persists the `baseUrl` it was configured with, and every request routed to that slot stays on that origin — no silent cloud proxy. It MAY carry an optional `secretRef` when the local server wants a token. An absent `secretRef` is valid; never write a placeholder or dummy secret to satisfy the schema.
+
+**REQ-SL-02** `local` slots are outside the default cloud fallback chain. They enter routing only through `/pool chain …,<pool>` or an explicit pin. They have no quota: the accounts widget shows no percentage for them (§11) and the footer cost cell is `(local) $0` (REQ-SB-08).
+
+Local pools use official llama.cpp (`LLAMA_BASE_URL`) or first-party `refreshModels` on `/v1/models`. An unreachable server cools that slot; failover stays inside the local family first.
+
+Secrets in `~/.pi/agent/accounts.secrets.json` keyed by `pool/slot`. Never log them. A `local` slot with no `secretRef` has no entry here.
 
 Official `~/.pi/agent/auth.json` primary credential is imported as slot `default` if present.
 
@@ -538,7 +584,7 @@ Official `~/.pi/agent/auth.json` primary credential is imported as slot `default
 
 Credential injection: `before_provider_headers` sets `Authorization` from the selected slot for that provider family.
 
-Detection: `after_provider_response` inspects `event.status` and headers/`retry-after`. Classifier in `accounts/errors.ts` treats 429, 402, and quota-shaped 403 plus body tokens `usage limit`, `rate_limit`, `quota` as cooldown events.
+Detection: the global `after_provider_response` hook carries status and headers only, never a response body. Classifier in `accounts/errors.ts` treats 429, 402, and quota-shaped 403, together with `retry-after` and reset headers, as cooldown events at that layer. Body tokens such as `usage limit`, `rate_limit`, and `quota` may be classified only inside a custom fetch client that owns and safely consumes that body. Global classification never depends on body inspection.
 
 Cooldown: parsed reset timestamp if present, else 5 hours. Slot is skipped while cooling.
 
@@ -622,7 +668,7 @@ No preamble. No restating the task. No ASCII board.
 | NFR-01 | Secrets never in git or events |
 | NFR-02 | accounts.json and secrets 0600 |
 | NFR-03 | TypeScript strict |
-| NFR-04 | Tests for balancer, classifier, atomic write, AC compiler, hash chain |
+| NFR-04 | Tests for balancer, classifier, atomic write, AC compiler, hash chain, `write_contract` path pinning, research network state |
 | NFR-05 | Loads on `@earendil-works/pi-coding-agent` `>=0.84.0`. CI pin `0.84.4`. |
 | NFR-06 | Board render does not call a model |
 | NFR-07 | TUI required fields (US-25) present. Pixel match is not required. |

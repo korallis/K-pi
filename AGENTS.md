@@ -1,17 +1,25 @@
 # AGENTS.md
 
+> **AUTHORITY — ACTIVE QUEUE: `docs/remediation-plan.md`.** That file is the sole active work queue and the only completion authority. Start at **RP-00**, then take the lowest incomplete `RP-##` whose dependencies are complete, and check a DoD box only from that package's own scoped evidence.
+>
+> **Historical baseline only.** `docs/roadmap.md` and `docs/implementation-plan.md` are a build record. Their `[x]` checkboxes are not completion evidence and never authorize skipping a package.
+>
+> **Paths.** Every path in this file is repository-root-relative. `AGENTS.md` and `docs/AGENTS.md` are mirrored copies of one contract, as are `START-HERE.md` and `docs/START-HERE.md`; if copies disagree, the repository-root copy wins.
+
 This directory is the source of truth for **k-pi**, a first-party Pi coding-agent package.
 
 Read in this order before writing code:
 
-1. `START-HERE.md` then `BUILD-PROMPT.md`
-2. `PRD.md` — stories US-01–US-30
-3. `spec.md` — architecture, file contracts, schemas, APIs
-4. `visual-targets.md` + `visual/*.jpg`
-5. `kstack.md` + `model-ladder.md`
-6. `research.md` + `dune-architecture.md`
-7. `minimalist.md` + `agents-bus.md`
-8. Historical baseline: `roadmap.md` then `implementation-plan.md`. Active queue: `remediation-research.md` then `remediation-plan.md` (RP-00 first).
+1. `START-HERE.md` then `docs/BUILD-PROMPT.md`
+2. `docs/PRD.md` — stories US-01–US-30
+3. `docs/spec.md` — architecture, file contracts, schemas, APIs
+4. `docs/visual-targets.md` + `docs/visual/*.jpg`
+5. `docs/kstack.md` + `docs/model-ladder.md`
+6. `docs/research.md` + `docs/dune-architecture.md`
+7. `docs/minimalist.md` + `docs/agents-bus.md`
+8. `docs/roadmap.md` then `docs/implementation-plan.md` — historical baseline only; their checkboxes are a build record, not completion evidence
+9. `docs/remediation-research.md`
+10. `docs/remediation-plan.md` — active queue, RP-00 first
 
 Do not invent requirements that are not in those files. If a story and the spec disagree, stop and flag `NEEDS_HUMAN`. If a check is missing from an AC, the AC is not executable — do not pretend it is.
 
@@ -22,22 +30,22 @@ k-pi is a Pi package we own. A user gives a **task** or a **frozen plan**. The p
 ## Hard rules for agents building this repo
 
 - First-party code only. No runtime dependency on oh-my-pi, atomic, pi-multi-account, pi-multi-pass, pi-graph, pi-cursor-oauth, pi-code, cursor pstack, open-pstack, or pi-pstack.
-- K-stack is a vendored overlay on Cursor pstack. Commands: `/setup-kstack`, `/k-mode`. No Cursor Cloud agents. Models only from the k-pi pool. Edit `kstack/overlay/`, never `kstack/upstream/` or by-hand `kstack/generated/`. Refresh with `pnpm kstack:sync`. See `kstack.md` §2.
+- K-stack is a vendored overlay on Cursor pstack. Commands: `/setup-kstack`, `/k-mode`. No Cursor Cloud agents. Models only from the k-pi pool. Edit `kstack/overlay/`, never `kstack/upstream/` or by-hand `kstack/generated/`. Refresh with `pnpm kstack:sync`. See `docs/kstack.md` §2.
 - Official Pi APIs only: extensions, skills, prompt templates, themes, packages, `registerProvider`, `refreshModels`, OAuth `{login,refreshToken,getApiKey}`, events (`before_provider_headers`, `after_provider_response`, `tool_call`, …).
 - Never `registerProvider("anthropic"|"openai"|"openai-codex"|"xai"|"zai"|"zai-coding-cn"|"kimi-coding", { models: [...] })`. That freezes the official catalog.
 - Cursor is not built-in. Register `cursor` ourselves with `refreshModels`.
 - z.ai and Kimi Coding are official Pi key providers (`zai`, `zai-coding-cn`, `kimi-coding`). Do not install `pi-kimi-coder`, `pi-moonshot`, or community z.ai packages.
 - Local: official llama.cpp (`LLAMA_BASE_URL`) plus first-party `refreshModels` for Ollama / LM Studio / OpenAI-compat. No `pi-ollama` community packages. No frozen local model lists.
-- Exa and Perplexity research are optional and first-party REST integrations. See `research.md`. No runtime SDK or community research package. Specify/plan cannot finish without `research.md`.
-- Plan writes `stack.json` (dune modules). Implement stays inside the current module. Vertical slices by default. See `dune-architecture.md`.
+- Exa and Perplexity research are optional and first-party REST integrations. See `docs/research.md`. No runtime SDK or community research package. Specify/plan cannot finish without the run's `research.md` artifact.
+- Plan writes `stack.json` (dune modules). Implement stays inside the current module. Vertical slices by default. See `docs/dune-architecture.md`.
 - Implementer never writes `verdict.json` or `release.approved`.
-- No Cursor-style subagents. Workers are background Pi sessions. They talk only via `communicate` (`sendUserMessage` / RPC prompt). One writer at a time. `claim_path` before edits. See `agents-bus.md`.
+- No Cursor-style subagents. Workers are background Pi sessions. They talk only via `communicate` (`sendUserMessage` / RPC prompt). One writer at a time. `claim_path` before edits. See `docs/agents-bus.md`.
 - Bare non-slash text with no active job is gated `/kpi` + sticky `/k-mode`. Commands are never auto-wrapped. `/kpi off` disables wrap.
-- Implementer walks the minimalist ladder and records `candidate.json.ladder` before writing files. See `minimalist.md`.
+- Implementer walks the minimalist ladder and records `candidate.json.ladder` before writing files. See `docs/minimalist.md`.
 - Autopilot never push, deploy, force-push, `rm -rf`, production migrate, or add runtime dependencies.
 - Anthropic subscription login must show the extra-usage warning once per new slot before OAuth starts.
 - Answers in this repo’s own agent sessions stay short. Paths and commands, not essays.
-- Footer brand is `K-π`, never bare `π`. Status bar copies Oh My Pi’s segment order. Loop overlay copies the Avid boards. See `visual-targets.md` and https://x.com/av1dlive/status/2092622516544270781.
+- Footer brand is `K-π`, never bare `π`. Status bar copies Oh My Pi’s segment order. Loop overlay copies the Avid boards. See `docs/visual-targets.md` and https://x.com/av1dlive/status/2092622516544270781.
 
 ## Quality gates for this repo
 
@@ -49,7 +57,7 @@ pnpm lint
 pnpm typecheck
 ```
 
-Plus the slice's own AC in `remediation-plan.md`. Store command output in the slice's evidence, not in chat.
+Plus the slice's own AC and scoped verification in `docs/remediation-plan.md`. Store command output in the slice's evidence, not in chat.
 
 ## Stack (this repo)
 

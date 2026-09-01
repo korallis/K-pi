@@ -33,13 +33,13 @@ IDs: `RP-##`. Stories and ACs: `PRD.md`. Normative contracts: `spec.md` and focu
 
 ## `NEEDS_HUMAN` gates
 
-Recommendations below are non-authoritative. RP-00 cannot complete while any gate is `OPEN`; document precedence must not select an option.
+All three gates are `CLOSED` by recorded human decision. The `Selected decision` cell is the authoritative product behavior, and the `Aligned normative files` cell names where that behavior is written. The `Blocks` column is dependency history: those packages were blocked until the gate closed and are released by the recorded decision. Document precedence never selects an option. A newly discovered contract conflict opens a new `OPEN` gate, blocks its dependent packages, and closes only the same way: an explicit human decision recorded here with the deciding human, date, selected option, and aligned normative files.
 
-| ID | Status | Decision required | Recommended option | Blocks |
-|---|---|---|---|---|
-| NH-01 | OPEN | Reconcile AC-27.6 local footer semantics with `spec.md`'s `oauth | api_key` slot-kind enum. | Add a credential-free `local` slot kind. | RP-01, RP-08, RP-18 |
-| NH-02 | OPEN | Reconcile local completion after provider exhaustion with AC-29.2's two-external-source rule unless `no-network` is set. | Permit engine-set effective `no-network` only after bounded, recorded provider failures. | RP-01, RP-09, RP-10, RP-18 |
-| NH-03 | OPEN | Reconcile reviewer/tester write denial with the requirement that the reviewer publish `verdict.json`. | Add a schema-validating capability restricted to the declared run-contract file. | RP-01, RP-13, RP-14, RP-18 |
+| ID | Status | Decided by | Decided on | Decision required | Selected decision | Aligned normative files | Blocks |
+|---|---|---|---|---|---|---|---|
+| NH-01 | CLOSED | korallis | 2026-09-01 | Reconcile AC-27.6 local footer semantics with `spec.md`'s `oauth \| api_key` slot-kind enum. | Add credential-free `Slot.kind = local`. A local slot persists its configured base URL, may reference an optional credential without storing a dummy secret, renders exactly one cost cell as `(local) $0`, shows no quota percentage, and stays outside the default cloud chain. | `docs/spec.md` (§13 `Slot.kind` plus REQ-SL-01/REQ-SL-02; §11 REQ-SB-08 cost cell and accounts widget), `docs/PRD.md` (AC-06.4, AC-15.10, AC-27.3, AC-27.5, AC-27.6), `docs/visual-targets.md` (§1 `cost`/`usage` segments; §3 acceptance checks) | RP-01, RP-08, RP-18 |
+| NH-02 | CLOSED | korallis | 2026-09-01 | Reconcile local completion after provider exhaustion with AC-29.2's two-external-source rule unless `no-network` is set. | A successful online Exa or Perplexity run must cite at least two distinct external sources. After bounded, recorded failures of every configured service, the engine sets effective `no-network` and the planning model researches repository and frozen local sources with normal read and search tools, citing local files only; no external URL is ever fabricated. A healthy online service that still supplies fewer than two distinct sources ends `NEEDS_HUMAN`. | `docs/research.md` (planning default, effective no-network, local research), `docs/PRD.md` (AC-28.5, AC-29.2, AC-29.3, AC-29.6, AC-29.7), `docs/spec.md` (§5 `SCH-research` and REQ-RS-07; §6 `NEEDS_HUMAN` stop-state row), `docs/visual-targets.md` (§2 Board A research state; §3 acceptance checks) | RP-01, RP-09, RP-10, RP-18 |
+| NH-03 | CLOSED | korallis | 2026-09-01 | Reconcile reviewer/tester write denial with the requirement that the reviewer publish `verdict.json`. | Reviewer and tester keep no general `write` or `edit` tool. A dedicated `write_contract` capability is pinned to the spawned agent, job, role, and declared contract path, schema-validates the verdict or evidence payload, then performs an atomic write. Every other path is denied. | `docs/agents-bus.md` (`write_contract`, same-tree rule, forbidden list), `docs/spec.md` (§5 run-store writer column and REQ-RS-06; §7 node tool policy; §12 policy deny; NFR-04), `docs/PRD.md` (AC-02.4, AC-04.3, AC-08.4, AC-23.9) | RP-01, RP-13, RP-14, RP-18 |
 
 ## Dependency map
 
@@ -81,7 +81,7 @@ RP-02…RP-18 → RP-19
 
 - Add historical supersession banners to `roadmap.md` and `implementation-plan.md`. Preserve their remaining bodies and checkboxes.
 - Route `AGENTS.md`, `docs/AGENTS.md`, `START-HERE.md`, `docs/START-HERE.md`, `docs/BUILD-PROMPT.md`, `docs/README.md`, and the PRD companion list to this file.
-- For NH-01 through NH-03, stop and present the conflicting clauses and concrete options to a human. Record each exact human decision in this gate table and the affected normative documents. Never resolve a gate by document precedence.
+- NH-01 through NH-03 are closed by the recorded decisions of `korallis` on `2026-09-01`. Write each recorded decision into the gate table above and into that gate's aligned normative documents. Never resolve a gate by document precedence; a newly discovered conflict opens a new `OPEN` gate instead.
 - Apply only corrections that do not choose between conflicting product behaviors: compatible Exa/Perplexity research-target separation; primary API constraints for Exa's 10,000-character cap and status/header-only global response hooks; explicit current-module execution state; K-stack runtime authority; resume/US-22/US-23 historical trace.
 - Create `test/docs-routing.test.ts` to validate active-plan routing, gap-owner uniqueness, and the decision-gate block.
 
@@ -101,10 +101,10 @@ node --test --experimental-strip-types test/docs-routing.test.ts
 
 ### DoD
 
-- [ ] One active queue; historical completion authority revoked
-- [ ] NH-01 through NH-03 have explicit human decisions and aligned normative contracts
-- [ ] Non-gated contract and primary-API corrections are internally consistent
-- [ ] Gap-owner, dependency, and decision-gate checks pass
+- [x] One active queue; historical completion authority revoked
+- [x] NH-01 through NH-03 have explicit human decisions and aligned normative contracts
+- [x] Non-gated contract and primary-API corrections are internally consistent
+- [x] Gap-owner, dependency, and decision-gate checks pass
 
 ---
 

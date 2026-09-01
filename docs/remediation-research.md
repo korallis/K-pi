@@ -2,7 +2,7 @@
 
 **Observed:** 2026-09-01  
 **Tested Pi baseline:** `@earendil-works/pi-coding-agent@0.84.4`  
-**Purpose:** Evidence, non-choice corrections, and open human decision gates for [`remediation-plan.md`](remediation-plan.md). This document does not authorize implementation order; the plan does.
+**Purpose:** Evidence, non-choice corrections, and the recorded human decision gates for [`docs/remediation-plan.md`](remediation-plan.md). This document does not authorize implementation order; the plan does.
 
 ## Method
 
@@ -51,13 +51,13 @@ These constraints are compatible scope choices or corrections forced by primary 
 
 ## `NEEDS_HUMAN` decision gates
 
-The following conflicts are intentionally unresolved. A recommendation is not authorization. RP-00 must stop at each open gate, obtain a human decision, record that decision in the normative documents, and only then allow dependent remediation work to begin. Document precedence must not choose an option.
+These conflicts were resolved only by explicit human decision, never by document precedence. All three gates are `CLOSED`: `korallis` decided each one on `2026-09-01`. The `Selected decision` cell is the authoritative product behavior, the `Aligned normative files` cell names where that behavior is written, and the `Blocks` column is dependency history — those packages were blocked until closure and the recorded decisions release them. Any newly discovered contradiction adds a new `OPEN` gate that blocks its dependents until a human closes it the same way.
 
-| ID | Conflicting contracts | Human decision required | Recommended option | Blocks |
-|---|---|---|---|---|
-| NH-01 | AC-27.6 requires local slots to render `(local)` at `$0`, while `spec.md` restricts `Slot.kind` to `oauth | api_key`. | Decide whether local providers are represented as account slots and, if so, their schema kind. | Add `local` to `Slot.kind`; keep local slots credential-free and out of the default cloud chain. | RP-01, RP-08, RP-18 |
-| NH-02 | AC-28.5 and `research.md` require local completion after all online providers fail, while AC-29.2 requires at least two external sources whenever a key exists unless the job is flagged `no-network`. | Decide who may set `no-network` after provider exhaustion and whether that fallback satisfies AC-29.2. | Let the engine set effective `no-network` only after bounded provider failures, with a recorded reason and failure events; otherwise end `NEEDS_HUMAN`. | RP-01, RP-09, RP-10, RP-18 |
-| NH-03 | `agents-bus.md` denies reviewer/tester write tools but also requires the reviewer to write `verdict.json`. | Decide how a read-only reviewer may publish its run-contract result without gaining product-file mutation access. | Add a schema-validating `write_contract` capability restricted to the role's declared run-contract file. | RP-01, RP-13, RP-14, RP-18 |
+| ID | Status | Decided by | Decided on | Conflicting contracts | Human decision required | Selected decision | Aligned normative files | Blocks |
+|---|---|---|---|---|---|---|---|---|
+| NH-01 | CLOSED | korallis | 2026-09-01 | AC-27.6 requires local slots to render `(local)` at `$0`, while `spec.md` restricts `Slot.kind` to `oauth \| api_key`. | Decide whether local providers are represented as account slots and, if so, their schema kind. | Add credential-free `Slot.kind = local`. A local slot persists its configured base URL, may reference an optional credential without storing a dummy secret, renders exactly one cost cell as `(local) $0`, shows no quota percentage, and stays outside the default cloud chain. | `docs/spec.md` (§13 `Slot.kind` plus REQ-SL-01/REQ-SL-02; §11 REQ-SB-08 cost cell and accounts widget), `docs/PRD.md` (AC-06.4, AC-15.10, AC-27.3, AC-27.5, AC-27.6), `docs/visual-targets.md` (§1 `cost`/`usage` segments; §3 acceptance checks) | RP-01, RP-08, RP-18 |
+| NH-02 | CLOSED | korallis | 2026-09-01 | AC-28.5 and `research.md` require local completion after all online providers fail, while AC-29.2 requires at least two external sources whenever a key exists unless the job is flagged `no-network`. | Decide who may set `no-network` after provider exhaustion and whether that fallback satisfies AC-29.2. | A successful online Exa or Perplexity run must cite at least two distinct external sources. After bounded, recorded failures of every configured service, the engine sets effective `no-network` and the planning model researches repository and frozen local sources with normal read and search tools, citing local files only; no external URL is ever fabricated. A healthy online service that still supplies fewer than two distinct sources ends `NEEDS_HUMAN`. | `docs/research.md` (planning default, effective no-network, local research), `docs/PRD.md` (AC-28.5, AC-29.2, AC-29.3, AC-29.6, AC-29.7), `docs/spec.md` (§5 `SCH-research` and REQ-RS-07; §6 `NEEDS_HUMAN` stop-state row), `docs/visual-targets.md` (§2 Board A research state; §3 acceptance checks) | RP-01, RP-09, RP-10, RP-18 |
+| NH-03 | CLOSED | korallis | 2026-09-01 | `agents-bus.md` denies reviewer/tester write tools but also requires the reviewer to write `verdict.json`. | Decide how a read-only reviewer may publish its run-contract result without gaining product-file mutation access. | Reviewer and tester keep no general `write` or `edit` tool. A dedicated `write_contract` capability is pinned to the spawned agent, job, role, and declared contract path, schema-validates the verdict or evidence payload, then performs an atomic write. Every other path is denied. | `docs/agents-bus.md` (`write_contract`, same-tree rule, forbidden list), `docs/spec.md` (§5 run-store writer column and REQ-RS-06; §7 node tool policy; §12 policy deny; NFR-04), `docs/PRD.md` (AC-02.4, AC-04.3, AC-08.4, AC-23.9) | RP-01, RP-13, RP-14, RP-18 |
 
 ## Plan-document strategy research
 
@@ -242,7 +242,7 @@ The `Owner` column is authoritative and must remain one-to-one with the plan.
 | Gap | Confirmed defect | Owner |
 |---|---|---|
 | DOC-01 | Checked roadmap and implementation plan still claim active completion. | RP-00 |
-| DOC-02 | NH-01 through NH-03 capture the unresolved behavioral contract conflicts. RP-00 also owns compatible namespace clarifications plus primary-API and historical-trace corrections for research targets, Exa limits, response hooks, Dune execution state, and K-stack runtime source. | RP-00 |
+| DOC-02 | NH-01 through NH-03 captured the behavioral contract conflicts. All three are `CLOSED` by the decisions `korallis` recorded on `2026-09-01`, and each selected decision must land in that gate's aligned normative files. RP-00 also owns compatible namespace clarifications plus primary-API and historical-trace corrections for research targets, Exa limits, response hooks, Dune execution state, and K-stack runtime source. | RP-00 |
 | PKG-01 | No installed, packed, diagnostic-free resource proof; generated skill warnings ship. | RP-19 |
 | STORE-01 | Task/evidence/verdict/event schemas drift from live payloads. | RP-01 |
 | STORE-02 | Research/bus event types and redaction/normalized-payload boundaries are incomplete. | RP-01 |
@@ -309,4 +309,4 @@ Do not create remediation work for:
 
 ## Risk boundary
 
-RP-00 has three open human decisions: NH-01 through NH-03. Until those decisions are recorded, their recommendations are non-authoritative and every listed dependent package is blocked. Vendor behavior that can vary remains isolated behind injected fetch/RPC fixtures and bounded failure contracts. Any newly discovered PRD/specification contradiction must add another explicit `NEEDS_HUMAN` gate; implementation must never resolve it by document precedence.
+RP-00's three human decision gates, NH-01 through NH-03, are `CLOSED`: `korallis` recorded each decision on `2026-09-01`, so the selected options are authoritative and every listed dependent package is released. Vendor behavior that can vary remains isolated behind injected fetch/RPC fixtures and bounded failure contracts. Any newly discovered PRD/specification contradiction must add another explicit `NEEDS_HUMAN` gate and block its dependents until a human closes it; implementation must never resolve it by document precedence.

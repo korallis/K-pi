@@ -37,7 +37,7 @@ Default delivery is a **vertical slice**, not a horizontal layer.
 A slice is one user-visible capability cut through its own folder: interface → data → behaviour → tests. Auth login is one slice. “Write every API, then every screen” is not.
 
 - Plan names slices. `modules[]` are slices.
-- One implement round ships one slice (or a frozen list). It does not ship “all controllers.”
+- One implement round ships the one slice named by `task.json.current_module_id`. It does not ship “all controllers.”
 - A slice may touch UI, API, and storage **inside its folder**.
 - Shared code is extracted only after a second slice needs it.
 - Horizontal work needs `delivery: "horizontal"` plus a reason, or a `no-stack` playbook.
@@ -80,6 +80,26 @@ An implement node that writes behaviour into an existing unrelated folder, inste
 
 `folder` is required. `allowed_paths` must be that folder plus its test twin. `claim_path` outside those globs is `UNSAFE`.
 
+## Mandatory stack and current slice
+
+The stack is a precondition, not a convenience. Implement reads a frozen contract; it never guesses one.
+
+- Plan writes `stack.json`. The control plane freezes it before implement.
+- Implement with no `stack.json`, or with a `stack.json` older than the current `task.json`, is `UNSAFE`. The node stops before its first write. There is no default shape and no on-the-fly regeneration.
+- `task.json.current_module_id` is required for implement and must equal exactly one `stack.json.modules[].id`.
+- Position is not identity. `modules[0]` is never the current slice — not as a default, not as a fallback after a failed lookup. A missing, empty, or unmatched `current_module_id` is `UNSAFE`.
+- One implement round owns one `current_module_id`. Advancing to the next slice is a plan edit that re-freezes the contract, not an implementer decision.
+- Implement bounds and `claim_path` read the module named by `current_module_id` — its `folder`, `interface`, and `allowed_paths` — never the union of every module.
+
+`task.json` fragment:
+
+```json
+{
+  "job_id": "2026-09-01-healthcheck",
+  "current_module_id": "auth"
+}
+```
+
 ## Plan checklist
 
 - [ ] every new capability has its own folder
@@ -91,5 +111,6 @@ An implement node that writes behaviour into an existing unrelated folder, inste
 - [ ] research.md names the stack versions
 - [ ] `delivery` is `vertical` unless a reason is recorded
 - [ ] the next implement round is one slice, not one layer
+- [ ] the current slice is named in `task.json.current_module_id`, never inferred from `modules[0]`
 
 Exempt playbooks: `no-stack` (typo, unslop, comment-strip).
