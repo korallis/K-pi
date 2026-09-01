@@ -375,6 +375,7 @@ export class GraphEngine {
 				graph.limits,
 				options.limits ?? initialState.budget.limits,
 			);
+			this.rearmIfAffordable();
 		}
 
 		if (this.runState.graphId !== graph.id || this.runState.jobId !== options.jobId) {
@@ -388,6 +389,30 @@ export class GraphEngine {
 
 	get limits(): Readonly<GraphBudgetLimits> {
 		return this.runState.budget.limits;
+	}
+
+	/**
+	 * An exhausted run is durable, not permanent. Restoring one whose run-wide
+	 * caps no longer bind re-arms exactly the nodes it never finished; the
+	 * terminal record goes with the status so a stale `EXHAUSTED` can never be
+	 * reported as the new outcome. Caps that still bind leave the run stopped, so
+	 * a resume never silently re-runs work the budget already refused.
+	 */
+	private rearmIfAffordable(): void {
+		if (this.runState.status !== "exhausted" || this.runState.active.length === 0) {
+			return;
+		}
+		if (findExhaustedRunLimit(this.runState.budget.limits, this.readBudget()) !== undefined) {
+			return;
+		}
+		this.runState.status = "running";
+		delete this.runState.terminal;
+		for (const nodeId of this.runState.active) {
+			const nodeState = this.runState.nodes[nodeId];
+			if (nodeState.status === "exhausted") {
+				nodeState.status = "pending";
+			}
+		}
 	}
 
 	private runDirectory(): string {
@@ -670,59 +695,84 @@ export class GraphEngine {
 			return this.runState;
 		}
 
-		for (const node of activeNodes) {
-			const nodeState = this.runState.nodes[node.id];
-			nodeState.runs += 1;
-			nodeState.status = "running";
-			delete nodeState.error;
-		}
-		this.countRound();
-
+		// Bookkeeping happens per batch, immediately around the work it describes.
+		// Counting a whole superstep up front and then stopping between batches
+		// would leave a checkpoint claiming runs for nodes that never started, and
+		// a resume would repeat the side effects of the batches that did.
 		const results: NodeResult[] = [];
+		const executed: GraphNode[] = [];
 		for (const [index, batch] of batchReadyNodes(activeNodes, limits.maxConcurrency).entries()) {
 			if (index > 0) {
 				const batchExhaustion = findExhaustedRunLimit(limits, this.readBudget());
 				if (batchExhaustion !== undefined) {
-					// A superstep commits its writes together, so batches that already
-					// ran are discarded instead of half-committed.
-					return this.exhaust(
-						batchExhaustion,
-						activeNodes.map((node) => node.id),
-					);
+					const pending = activeNodes.filter((node) => !executed.includes(node)).map((node) => node.id);
+					// The batches that ran keep their work: their side effects already
+					// happened, so the checkpoint records them as completed and leaves
+					// only the untouched nodes for the resume.
+					const conflict = this.commitResults(results, executed);
+					if (conflict !== undefined) {
+						return this.fail(conflict, this.runState.active);
+					}
+					this.runState.active = pending;
+					return this.exhaust(batchExhaustion, pending);
 				}
 			}
+
+			for (const node of batch) {
+				const nodeState = this.runState.nodes[node.id];
+				nodeState.runs += 1;
+				nodeState.status = "running";
+				delete nodeState.error;
+			}
+			this.countRound();
+
 			try {
 				results.push(...(await Promise.all(batch.map((node) => this.executeNode(node)))));
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
-				return this.fail(message, this.runState.active);
+				return this.fail(message, batch.map((node) => node.id));
 			}
+			executed.push(...batch);
 			this.runState.budget.batches += 1;
 		}
 
+		const conflict = this.commitResults(results, executed);
+		if (conflict !== undefined) {
+			return this.fail(conflict, this.runState.active);
+		}
+		this.readBudget();
+		this.runState.active = this.nextNodes(
+			executed.map((node) => node.id),
+			this.runState.values,
+		);
+		this.runState.status = this.runState.active.length === 0 ? "completed" : "running";
+		this.runState.superstep += 1;
+		await this.writeCheckpoint();
+		return this.runState;
+	}
+
+	/**
+	 * Applies the batches' assignments and marks their nodes completed. Returns a
+	 * message instead when two nodes wrote the same state path, which is a graph
+	 * defect rather than a budget outcome.
+	 */
+	private commitResults(results: readonly NodeResult[], executed: readonly GraphNode[]): string | undefined {
 		const seenPaths = new Set<string>();
 		const values = structuredClone(this.runState.values);
 		for (const result of results) {
 			for (const [path, value] of Object.entries(result.assignments)) {
 				if (seenPaths.has(path)) {
-					return this.fail(`multiple nodes wrote state path ${path} in one superstep`, this.runState.active);
+					return `multiple nodes wrote state path ${path} in one superstep`;
 				}
 				seenPaths.add(path);
 				setStatePath(values, path, value);
 			}
 		}
-
-		const completedNodeIds = activeNodes.map((node) => node.id);
-		for (const nodeId of completedNodeIds) {
-			this.runState.nodes[nodeId].status = "completed";
-		}
-		this.readBudget();
 		this.runState.values = values;
-		this.runState.active = this.nextNodes(completedNodeIds, values);
-		this.runState.status = this.runState.active.length === 0 ? "completed" : "running";
-		this.runState.superstep += 1;
-		await this.writeCheckpoint();
-		return this.runState;
+		for (const node of executed) {
+			this.runState.nodes[node.id].status = "completed";
+		}
+		return undefined;
 	}
 
 	/** A round is one more run of the busiest node in the graph. */

@@ -15,6 +15,7 @@ import { type GraphRunState, isJsonObject } from "./graph/schema.ts";
 import {
 	createStopState,
 	DEFAULT_MAX_ROUNDS,
+	MAX_TRANSIENT_RETRIES,
 	type StopState,
 	type TerminalStatus,
 	transitionStopState,
@@ -233,7 +234,7 @@ function stageFor(node: string): string {
 function stateDocument(
 	task: Task,
 	state: Readonly<GraphRunState>,
-	round: number,
+	stop: StopState,
 	terminalStatus?: TerminalStatus,
 	reason?: string,
 ): Record<string, unknown> {
@@ -241,8 +242,8 @@ function stateDocument(
 	return {
 		job_id: task.job_id,
 		mode: task.mode,
-		round,
-		maxRounds: state.budget.limits.maxRounds,
+		round: stop.round,
+		maxRounds: stop.maxRounds,
 		stage: stageFor(node),
 		node,
 		passed: isJsonObject(state.values.test) ? state.values.test.passed : undefined,
@@ -268,6 +269,13 @@ function stateDocument(
 		graph_round: state.budget.round,
 		batches: state.budget.batches,
 		exhausted_limit: state.terminal?.limit,
+		// Stop-safety state. A resume that lost any of these would re-approve work
+		// it already rejected, or retry past its budget.
+		evidence_fingerprints: [...stop.evidenceFingerprints],
+		output_fingerprints: [...stop.outputFingerprints],
+		failing_ac_sets: [...stop.failingAcSets],
+		retries: stop.retries,
+		retry_delays_ms: [...stop.retryDelaysMs],
 	};
 }
 
@@ -275,14 +283,38 @@ async function writeState(
 	runDirectory: string,
 	task: Task,
 	state: Readonly<GraphRunState>,
-	round: number,
+	stop: StopState,
 	terminalStatus?: TerminalStatus,
 	reason?: string,
 ): Promise<void> {
 	await atomicWrite(
 		join(runDirectory, "state.json"),
-		`${JSON.stringify(stateDocument(task, state, round, terminalStatus, reason), null, 2)}\n`,
+		`${JSON.stringify(stateDocument(task, state, stop, terminalStatus, reason), null, 2)}\n`,
 	);
+}
+
+function stringArray(value: unknown): string[] {
+	return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+/**
+ * Rebuilds the stop state a resumed job left behind. Every field matters: a run
+ * that lost its fingerprints would re-accept output it already called stuck, and
+ * one that lost its retry counter would retry past its budget.
+ */
+export function restoreStopState(document: Record<string, unknown>, maxRounds: number): StopState {
+	const retries = typeof document.retries === "number" && Number.isInteger(document.retries) ? document.retries : 0;
+	return {
+		...createStopState(maxRounds),
+		round: typeof document.round === "number" ? document.round : 0,
+		evidenceFingerprints: stringArray(document.evidence_fingerprints),
+		outputFingerprints: stringArray(document.output_fingerprints),
+		failingAcSets: stringArray(document.failing_ac_sets),
+		retries: Math.max(0, Math.min(MAX_TRANSIENT_RETRIES, retries)),
+		retryDelaysMs: Array.isArray(document.retry_delays_ms)
+			? document.retry_delays_ms.filter((item): item is number => typeof item === "number" && Number.isFinite(item))
+			: [],
+	};
 }
 
 async function gitHead(projectRoot: string): Promise<string | undefined> {
@@ -351,6 +383,26 @@ function changedPaths(before: ReadonlyMap<string, string>, after: ReadonlyMap<st
 async function evidenceFingerprint(runDirectory: string): Promise<string> {
 	const content = await readFile(join(runDirectory, "evidence.json"));
 	return `sha256:${createHash("sha256").update(content).digest("hex")}`;
+}
+
+/**
+ * The acceptance criteria the latest evidence reports as failing. Order does not
+ * matter: the stop reducer canonicalizes the set, so the same failures found in
+ * a different order are the same set.
+ */
+async function failingAcIds(runDirectory: string): Promise<string[]> {
+	let evidence: unknown;
+	try {
+		evidence = JSON.parse(await readFile(join(runDirectory, "evidence.json"), "utf8"));
+	} catch {
+		return [];
+	}
+	if (!isJsonObject(evidence) || !Array.isArray(evidence.ac_results)) {
+		return [];
+	}
+	return evidence.ac_results.flatMap((result) =>
+		isJsonObject(result) && typeof result.id === "string" && result.passed !== true ? [result.id] : [],
+	);
 }
 
 function reviewFingerprint(state: Readonly<GraphRunState>): string | undefined {
@@ -547,6 +599,7 @@ async function driveUntilPause(
 				passed: reviewApproved(state),
 				evidenceFingerprint: await evidenceFingerprint(jobDirectory),
 				outputFingerprint,
+				failingAcIds: await failingAcIds(jobDirectory),
 			});
 			if (currentStopState.status === "NO_PROGRESS" || currentStopState.status === "EXHAUSTED") {
 				return {
@@ -555,12 +608,12 @@ async function driveUntilPause(
 					terminalStatus: currentStopState.status,
 					reason:
 						currentStopState.status === "NO_PROGRESS"
-							? "review output fingerprint repeated"
+							? "the same acceptance criteria failed in two rounds"
 							: "maximum verifier rounds exhausted",
 				};
 			}
 		}
-		await writeState(jobDirectory, task, state, currentStopState.round);
+		await writeState(jobDirectory, task, state, currentStopState);
 		await onStateChange?.();
 	}
 	return { state, stopState: currentStopState };
@@ -587,7 +640,7 @@ async function writeTerminalState(
 			reason: result.reason,
 		});
 	}
-	await writeState(jobDirectory, task, result.state, result.stopState.round, status, result.reason);
+	await writeState(jobDirectory, task, result.state, result.stopState, status, result.reason);
 }
 
 export async function verifyShippedCommit(projectRoot: string, previousHead: string | undefined): Promise<string> {
@@ -644,11 +697,7 @@ export async function resumeLoop(
 	>;
 	const baseline = new Map(Object.entries(baselineSource));
 	const eventsPath = join(jobDirectory, "events.jsonl");
-	const storedRound = typeof stateDocument.round === "number" ? stateDocument.round : 0;
-	const stopState: StopState = {
-		...createStopState(engine.limits.maxRounds),
-		round: storedRound,
-	};
+	const stopState = restoreStopState(stateDocument, engine.limits.maxRounds);
 	try {
 		let result = await driveUntilPause(
 			engine,
@@ -695,7 +744,7 @@ export async function resumeLoop(
 		}
 		const previousHead = (await readFile(join(jobDirectory, "previous-head.txt"), "utf8")).trim() || undefined;
 		await verifyShippedCommit(ctx.cwd, previousHead);
-		await writeState(jobDirectory, task, result.state, result.stopState.round, "DONE");
+		await writeState(jobDirectory, task, result.state, result.stopState, "DONE");
 		await dependencies.onStateChange?.();
 		return { jobId, status: "DONE", graphState: result.state };
 	} finally {
@@ -796,7 +845,7 @@ export async function runLoop(
 
 	try {
 		let stopState = createStopState(engine.limits.maxRounds);
-		await writeState(job.directory, task, engine.state, stopState.round);
+		await writeState(job.directory, task, engine.state, stopState);
 		await dependencies.onStateChange?.();
 		let result = await driveUntilPause(
 			engine,
@@ -882,7 +931,7 @@ export async function runLoop(
 			await writeTerminalState(job.directory, job.eventsPath, task, blocked);
 			throw error;
 		}
-		await writeState(job.directory, task, state, result.stopState.round, "DONE");
+		await writeState(job.directory, task, state, result.stopState, "DONE");
 		await dependencies.onStateChange?.();
 		return { jobId: job.jobId, status: "DONE", graphState: state };
 	} finally {
