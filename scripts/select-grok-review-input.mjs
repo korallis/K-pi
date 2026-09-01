@@ -9,11 +9,14 @@
  *     packages/** blobs past Grok as "byte-identical-to-pin".
  *   - Head pin is allowed only for the one-time bootstrap when base has no pin,
  *     and only if it matches the canonical Pi repository + architecture pin.
+ *   - Fixed relocation map: legacy first-party roots (extensions/, graphs/, …)
+ *     → packages/coding-agent/src/kpi/…. Byte-identical moves are excluded;
+ *     modified moves keep only the new path; missing counterpart stays included.
  *   - Paths under upstream-owned trees whose HEAD blob is byte-identical to the
  *     trusted pin commit are excluded (paired with `npm run upstream:check`).
  *   - Paths covered by a deterministic trusted check (lockfile, K-stack
  *     generated/, model provider data) are excluded only with that coverage.
- *   - First-party K-π paths and any patched-upstream path always stay in.
+ *   - Remaining first-party K-π paths and patched-upstream paths always stay in.
  *   - Missing pin object or unproven ownership fails closed / stays included.
  *
  * Usage:
@@ -25,7 +28,7 @@
 
 import { execFileSync } from "node:child_process";
 import { readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const COMMIT_RE = /^[0-9a-f]{40}$/i;
@@ -40,8 +43,7 @@ export const CANONICAL_UPSTREAM_REPOSITORY = "https://github.com/earendil-works/
 export const ARCHITECTURE_PIN_COMMIT = "b79e4cc834970cca69daebffab7df1da7d1e52c4";
 export const ARCHITECTURE_PIN_TAG = "v0.84.4";
 
-
-/** First-party K-π ownership (UPSTREAM.md §4 + fork CI/docs). Always reviewed. */
+/** First-party K-π ownership. Reviewed unless relocation- or check-proven. */
 export const FIRST_PARTY_PREFIXES = Object.freeze([
 	".github/",
 	"scripts/",
@@ -52,13 +54,34 @@ export const FIRST_PARTY_PREFIXES = Object.freeze([
 	"fixtures/",
 	"kstack/",
 	"extensions/",
+	"graphs/",
+	"prompts/",
 	"schemas/",
+	"skills/",
+	"templates/",
+	"themes/",
 	"packages/coding-agent/src/kpi/",
 ]);
 
 /**
+ * Deterministic legacy → kpi relocation prefixes (RP-01A tree move). No arbitrary
+ * path mapping: only these fixed pairs participate in move provenance.
+ * @type {ReadonlyArray<readonly [string, string]>}
+ */
+export const RELOCATION_PREFIX_PAIRS = Object.freeze([
+	["extensions/", "packages/coding-agent/src/kpi/extensions/"],
+	["graphs/", "packages/coding-agent/src/kpi/graphs/"],
+	["prompts/", "packages/coding-agent/src/kpi/prompts/"],
+	["schemas/", "packages/coding-agent/src/kpi/schemas/"],
+	["skills/", "packages/coding-agent/src/kpi/skills/"],
+	["templates/", "packages/coding-agent/src/kpi/templates/"],
+	["themes/", "packages/coding-agent/src/kpi/themes/"],
+	["kstack/", "packages/coding-agent/src/kpi/kstack/"],
+]);
+
+/**
  * Paths excluded only when a named deterministic trusted check covers them.
- * The Grok gate never invents coverage — the pairing is explicit.
+ * @type {ReadonlyArray<{ id: string, check: string, match: (path: string) => boolean }>}
  */
 export const COVERED_ARTIFACT_RULES = Object.freeze([
 	{
@@ -81,17 +104,13 @@ export const COVERED_ARTIFACT_RULES = Object.freeze([
 	},
 ]);
 
-/**
- * Upstream-owned trees (UPSTREAM.md §4 "Everything else under packages/").
- * Byte-identity to the pin is the only way to exclude these from Grok.
- */
 export function isUpstreamOwnedPath(path) {
 	if (path.startsWith("packages/coding-agent/src/kpi/")) return false;
 	return path.startsWith("packages/");
 }
 
 export function isFirstPartyPath(path) {
-	if (!path.includes("/")) return true; // repo-root files
+	if (!path.includes("/")) return true;
 	return FIRST_PARTY_PREFIXES.some((prefix) => path.startsWith(prefix));
 }
 
@@ -100,17 +119,43 @@ export function coveredArtifactRule(path) {
 }
 
 /**
- * Normalize repository URLs for equality (trailing slash / .git already present).
- * @param {string} repository
+ * @param {string} path
+ * @returns {{ direction: "legacy-to-kpi" | "kpi-to-legacy", counterpart: string } | null}
  */
+export function mapRelocationCounterpart(path) {
+	for (const [legacy, kpi] of RELOCATION_PREFIX_PAIRS) {
+		if (path.startsWith(legacy)) {
+			return { direction: "legacy-to-kpi", counterpart: `${kpi}${path.slice(legacy.length)}` };
+		}
+		if (path.startsWith(kpi)) {
+			return { direction: "kpi-to-legacy", counterpart: `${legacy}${path.slice(kpi.length)}` };
+		}
+	}
+	return null;
+}
+
+/**
+ * True only when old→new is exactly one fixed relocation-prefix pair (same relative tail).
+ * @param {string} oldPath
+ * @param {string} newPath
+ */
+export function isFixedRelocationPair(oldPath, newPath) {
+	for (const [legacy, kpi] of RELOCATION_PREFIX_PAIRS) {
+		if (oldPath.startsWith(legacy) && newPath.startsWith(kpi)) {
+			return oldPath.slice(legacy.length) === newPath.slice(kpi.length);
+		}
+		if (oldPath.startsWith(kpi) && newPath.startsWith(legacy)) {
+			return oldPath.slice(kpi.length) === newPath.slice(legacy.length);
+		}
+	}
+	return false;
+}
+
 export function normalizeUpstreamRepository(repository) {
 	const trimmed = repository.trim().replace(/\/+$/u, "");
 	return trimmed.endsWith(".git") ? trimmed : `${trimmed}.git`;
 }
 
-/**
- * @param {string} repository
- */
 export function assertCanonicalUpstreamRepository(repository) {
 	const normalized = normalizeUpstreamRepository(repository);
 	const expected = normalizeUpstreamRepository(CANONICAL_UPSTREAM_REPOSITORY);
@@ -122,10 +167,6 @@ export function assertCanonicalUpstreamRepository(repository) {
 	return normalized;
 }
 
-/**
- * @param {string} pinText
- * @returns {{ commit: string, tag: string, repository: string, version?: string }}
- */
 export function parseUpstreamPin(pinText) {
 	let pin;
 	try {
@@ -150,13 +191,8 @@ export function parseUpstreamPin(pinText) {
 }
 
 /**
- * Choose the pin used for byte-identity proofs.
- *
  * Trust rule: base pin always wins when present. Head pin is bootstrap-only and
  * must match the recorded architecture pin + canonical repository.
- *
- * @param {{ basePinText?: string | null, headPinText?: string | null }} input
- * @returns {{ source: "base" | "head-bootstrap", pin: ReturnType<typeof parseUpstreamPin>, pinText: string }}
  */
 export function resolvePinSource({ basePinText = null, headPinText = null } = {}) {
 	const baseText = typeof basePinText === "string" && basePinText.trim() ? basePinText : null;
@@ -185,12 +221,6 @@ export function resolvePinSource({ basePinText = null, headPinText = null } = {}
 	throw new Error("upstream.json missing on base and head; cannot prove fork provenance");
 }
 
-
-/**
- * @param {string} repo
- * @param {string[]} args
- * @param {{ allowFail?: boolean }} [opts]
- */
 function git(repo, args, { allowFail = false } = {}) {
 	try {
 		return execFileSync("git", ["-C", repo, ...args], {
@@ -206,34 +236,156 @@ function git(repo, args, { allowFail = false } = {}) {
 }
 
 function blobId(repo, rev, path) {
-	// rev-parse <rev>:<path> → blob sha when the path exists at rev.
 	const out = git(repo, ["rev-parse", "--verify", "--quiet", `${rev}:${path}`], { allowFail: true });
 	return out || null;
 }
 
 /**
- * Classify every changed path for Grok review input reduction.
- *
- * @param {{
- *   paths: string[],
- *   pinCommit: string,
- *   headSha: string,
- *   resolveBlob: (rev: string, path: string) => string | null,
- *   pinObjectPresent: boolean,
- * }} input
+ * Parse `git diff --name-status -z` into paths + rename pairs.
+ * @param {string} nameStatus
  */
+export function parseNameStatus(nameStatus) {
+	const tokens = nameStatus ? nameStatus.split("\0").filter(Boolean) : [];
+	/** @type {string[]} */
+	const paths = [];
+	/** @type {Array<{ oldPath: string, newPath: string }>} */
+	const renamePairs = [];
+	const pathSet = new Set();
+	const addPath = (path) => {
+		if (!path || pathSet.has(path)) return;
+		pathSet.add(path);
+		paths.push(path);
+	};
+
+	for (let i = 0; i < tokens.length; ) {
+		const status = tokens[i++];
+		if (!status) break;
+		const code = status[0];
+		if ((code === "R" || code === "C") && i + 1 < tokens.length) {
+			const oldPath = tokens[i++];
+			const newPath = tokens[i++];
+			addPath(oldPath);
+			addPath(newPath);
+			renamePairs.push({ oldPath, newPath });
+			continue;
+		}
+		if (i < tokens.length) addPath(tokens[i++]);
+	}
+	return { paths, renamePairs };
+}
+
+/**
+ * Classify relocation pairs before generic first-party inclusion.
+ */
+export function classifyRelocationProvenance(input) {
+	/** @type {Map<string, { path: string, decision: string, reason: string, counterpart?: string }>} */
+	const decisions = new Map();
+	const consumed = new Set();
+	const pathSet = new Set(input.paths);
+
+	/** @type {Array<{ legacy: string, kpi: string }>} */
+	const pairs = [];
+	const seen = new Set();
+
+	const addPair = (legacy, kpi) => {
+		const key = `${legacy}\0${kpi}`;
+		if (seen.has(key)) return;
+		if (!isFixedRelocationPair(legacy, kpi)) return;
+		seen.add(key);
+		pairs.push({ legacy, kpi });
+	};
+
+	for (const pair of input.renamePairs ?? []) {
+		if (!isFixedRelocationPair(pair.oldPath, pair.newPath)) continue;
+		const legacy = pair.oldPath.startsWith("packages/coding-agent/src/kpi/") ? pair.newPath : pair.oldPath;
+		const kpi = pair.oldPath.startsWith("packages/coding-agent/src/kpi/") ? pair.oldPath : pair.newPath;
+		addPair(legacy, kpi);
+	}
+
+	for (const path of input.paths) {
+		const mapped = mapRelocationCounterpart(path);
+		if (!mapped) continue;
+		if (mapped.direction === "legacy-to-kpi") addPair(path, mapped.counterpart);
+		else addPair(mapped.counterpart, path);
+	}
+
+	for (const { legacy, kpi } of pairs) {
+		const baseLegacy = input.resolveBlob(input.baseSha, legacy);
+		const headKpi = input.resolveBlob(input.headSha, kpi);
+		const headLegacy = input.resolveBlob(input.headSha, legacy);
+		const baseKpi = input.resolveBlob(input.baseSha, kpi);
+
+		const sourceBlob = baseLegacy ?? headLegacy;
+		const destBlob = headKpi ?? baseKpi;
+
+		if (!sourceBlob || !destBlob) {
+			for (const path of [legacy, kpi]) {
+				if (!pathSet.has(path) || decisions.has(path)) continue;
+				decisions.set(path, {
+					path,
+					decision: "include",
+					reason: "relocation-missing-counterpart",
+					counterpart: path === legacy ? kpi : legacy,
+				});
+				consumed.add(path);
+			}
+			continue;
+		}
+
+		if (sourceBlob === destBlob) {
+			for (const path of [legacy, kpi]) {
+				if (!pathSet.has(path)) continue;
+				decisions.set(path, {
+					path,
+					decision: "exclude",
+					reason: "relocation-identical",
+					counterpart: path === legacy ? kpi : legacy,
+				});
+				consumed.add(path);
+			}
+			continue;
+		}
+
+		// Modified relocation: review kpi path only; drop legacy source side.
+		if (pathSet.has(kpi)) {
+			decisions.set(kpi, {
+				path: kpi,
+				decision: "include",
+				reason: "relocation-modified",
+				counterpart: legacy,
+			});
+			consumed.add(kpi);
+		}
+		if (pathSet.has(legacy)) {
+			decisions.set(legacy, {
+				path: legacy,
+				decision: "exclude",
+				reason: "relocation-source-side",
+				counterpart: kpi,
+			});
+			consumed.add(legacy);
+		}
+	}
+
+	return { decisions, consumed };
+}
+
 export function classifyReviewPaths(input) {
 	if (!input.pinObjectPresent) {
 		throw new Error(
 			`pinned upstream commit ${input.pinCommit} is not present in the git object store; cannot prove byte-identity`,
 		);
 	}
+	if (!input.baseSha) {
+		throw new Error("baseSha is required for relocation provenance");
+	}
 
-	/** @type {Array<{ path: string, decision: string, reason: string, check?: string }>} */
 	const rows = [];
 	const include = [];
 	const exclude = [];
 
+	// Covered artifacts win over relocation so generated/lockfile stays check-gated.
+	const uncoveredPaths = [];
 	for (const path of input.paths) {
 		const covered = coveredArtifactRule(path);
 		if (covered) {
@@ -248,6 +400,25 @@ export function classifyReviewPaths(input) {
 			exclude.push(row);
 			continue;
 		}
+		uncoveredPaths.push(path);
+	}
+
+	const relocation = classifyRelocationProvenance({
+		paths: uncoveredPaths,
+		baseSha: input.baseSha,
+		headSha: input.headSha,
+		resolveBlob: input.resolveBlob,
+		renamePairs: input.renamePairs,
+	});
+
+	for (const path of uncoveredPaths) {
+		if (relocation.consumed.has(path)) {
+			const row = relocation.decisions.get(path);
+			rows.push(row);
+			if (row.decision === "exclude") exclude.push(row);
+			else include.push(row);
+			continue;
+		}
 
 		if (isFirstPartyPath(path)) {
 			const row = { path, decision: "include", reason: "first-party" };
@@ -257,7 +428,6 @@ export function classifyReviewPaths(input) {
 		}
 
 		if (!isUpstreamOwnedPath(path)) {
-			// Not first-party, not packages/ — keep (fail closed on unknown ownership).
 			const row = { path, decision: "include", reason: "unproven-ownership" };
 			rows.push(row);
 			include.push(row);
@@ -293,14 +463,12 @@ export function classifyReviewPaths(input) {
 		}
 
 		if (!headBlob && pinBlob) {
-			// Deleted relative to pin while still in the PR path list (rename/delete).
 			const row = { path, decision: "include", reason: "upstream-delete-or-rename" };
 			rows.push(row);
 			include.push(row);
 			continue;
 		}
 
-		// Present on head but not on pin: fork-added under packages/ (or path drift).
 		const row = { path, decision: "include", reason: "not-in-pin" };
 		rows.push(row);
 		include.push(row);
@@ -309,11 +477,7 @@ export function classifyReviewPaths(input) {
 	return { rows, include, exclude };
 }
 
-/**
- * Build the reduced unified diff + path list from a full git range.
- * Prefer pinBasePath (trusted base). pinHeadPath is bootstrap-only via resolvePinSource.
- * Legacy pinPath is treated as an already-resolved trusted pin file.
- */
+
 export function selectGrokReviewInput({
 	repo,
 	baseSha,
@@ -335,9 +499,12 @@ export function selectGrokReviewInput({
 		}
 	};
 
-	// Legacy single --pin is treated as an already-resolved trusted pin path.
 	const resolved = pinPath
-		? { source: "base", pin: parseUpstreamPin(readFileSync(pinPath, "utf8")), pinText: readFileSync(pinPath, "utf8") }
+		? {
+				source: "base",
+				pin: parseUpstreamPin(readFileSync(pinPath, "utf8")),
+				pinText: readFileSync(pinPath, "utf8"),
+			}
 		: resolvePinSource({
 				basePinText: readOptional(pinBasePath),
 				headPinText: readOptional(pinHeadPath),
@@ -351,22 +518,32 @@ export function selectGrokReviewInput({
 		);
 	}
 
-
-	const nameOnly = git(repo, ["diff", "--name-only", "-z", `${baseSha}...${headSha}`, "--", "."]);
-	const paths = nameOnly ? nameOnly.split("\0").filter(Boolean) : [];
+	const nameStatus = git(repo, [
+		"diff",
+		"--name-status",
+		"-z",
+		"--find-renames",
+		`${baseSha}...${headSha}`,
+		"--",
+		".",
+	]);
+	const { paths, renamePairs } = parseNameStatus(nameStatus);
 
 	const classified = classifyReviewPaths({
 		paths,
 		pinCommit: pin.commit,
+		baseSha,
 		headSha,
 		pinObjectPresent: true,
+		renamePairs,
 		resolveBlob: (rev, path) => blobId(repo, rev, path),
 	});
 
 	const includePaths = classified.include.map((row) => row.path);
 	let diffText = "";
 	if (includePaths.length > 0) {
-		// Batch pathspecs to stay under ARG_MAX.
+		// Batch pathspecs to stay under ARG_MAX. Modified relocations include only
+		// the kpi destination path (legacy source side already excluded).
 		const batchSize = 200;
 		const parts = [];
 		for (let i = 0; i < includePaths.length; i += batchSize) {
@@ -387,6 +564,8 @@ export function selectGrokReviewInput({
 		if (diffText && !diffText.endsWith("\n")) diffText += "\n";
 	}
 
+
+
 	const fullDiff = git(repo, [
 		"diff",
 		"--find-renames",
@@ -399,18 +578,29 @@ export function selectGrokReviewInput({
 	const fullBytes = Buffer.byteLength(fullDiff, "utf8");
 	const selectedBytes = Buffer.byteLength(diffText, "utf8");
 
-
 	const counts = {
 		changedPaths: paths.length,
 		included: includePaths.length,
 		excluded: classified.exclude.length,
 		byteIdenticalToPin: classified.exclude.filter((r) => r.reason === "byte-identical-to-pin").length,
 		coveredArtifact: classified.exclude.filter((r) => r.reason === "covered-artifact").length,
+		relocationIdentical: classified.exclude.filter((r) => r.reason === "relocation-identical").length,
+		relocationSourceSide: classified.exclude.filter((r) => r.reason === "relocation-source-side").length,
+		relocationModified: classified.include.filter((r) => r.reason === "relocation-modified").length,
+		relocationMissingCounterpart: classified.include.filter((r) => r.reason === "relocation-missing-counterpart")
+			.length,
 		firstParty: classified.include.filter((r) => r.reason === "first-party").length,
 		patchedUpstream: classified.include.filter((r) => r.reason === "patched-upstream").length,
 		notInPin: classified.include.filter((r) => r.reason === "not-in-pin").length,
 		otherIncluded: classified.include.filter(
-			(r) => !["first-party", "patched-upstream", "not-in-pin"].includes(r.reason),
+			(r) =>
+				![
+					"first-party",
+					"patched-upstream",
+					"not-in-pin",
+					"relocation-modified",
+					"relocation-missing-counterpart",
+				].includes(r.reason),
 		).length,
 	};
 
@@ -431,16 +621,15 @@ export function selectGrokReviewInput({
 			path: r.path,
 			reason: r.reason,
 			check: r.check ?? null,
+			counterpart: r.counterpart ?? null,
 		})),
 		includedSample: classified.include.slice(0, 32).map((r) => ({
 			path: r.path,
 			reason: r.reason,
+			counterpart: r.counterpart ?? null,
 		})),
 	};
 
-
-	// Absolute safety ceiling on the *selected* review input (after provenance).
-	// Latency is further bounded by concurrent chunking in run-chunked-grok-review.
 	const MAX_SELECTED_BYTES = 2_000_000;
 	if (selectedBytes > MAX_SELECTED_BYTES) {
 		throw new Error(
@@ -515,12 +704,11 @@ function parseArgs(argv) {
 	return opts;
 }
 
-
 function main() {
 	const opts = parseArgs(process.argv.slice(2));
 	const meta = selectGrokReviewInput(opts);
 	console.log(
-		`grok review input: selected=${meta.selectedDiffBytes}/${meta.fullDiffBytes} bytes paths=${meta.counts.included}/${meta.counts.changedPaths} pin=${meta.pin.tag}@${meta.pin.commit.slice(0, 12)}`,
+		`grok review input: selected=${meta.selectedDiffBytes}/${meta.fullDiffBytes} bytes paths=${meta.counts.included}/${meta.counts.changedPaths} pin=${meta.pin.tag}@${meta.pin.commit.slice(0, 12)} relocIdent=${meta.counts.relocationIdentical} relocMod=${meta.counts.relocationModified}`,
 	);
 }
 

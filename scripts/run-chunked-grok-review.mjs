@@ -17,16 +17,18 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
 	DEFAULT_MAX_CHUNK_BYTES,
+	adaptiveMaxChunkBytes,
 	partitionUnifiedDiff,
 	writeDiffChunks,
 } from "./partition-pr-diff.mjs";
 import { normalizeGrokReview, unionGrokFindings } from "./validate-grok-review.mjs";
 
-export const DEFAULT_MAX_CONCURRENCY = 6;
+export const DEFAULT_MAX_CONCURRENCY = 8;
 /** Per-chunk wall timeout so a hung call fails closed inside the 15m job. */
-export const DEFAULT_CHUNK_TIMEOUT_SEC = 420;
-export const DEFAULT_MAX_AI_CREDITS = 30;
+export const DEFAULT_CHUNK_TIMEOUT_SEC = 480;
+export const DEFAULT_MAX_AI_CREDITS = 40;
 export const REQUIRED_EFFORT = "high";
+
 
 const PROMPT_PREAMBLE = `You are the required K-π pull-request reviewer. Review only defects introduced by the supplied diff chunk.
 
@@ -254,17 +256,21 @@ export async function runChunkedGrokReview(options, hooks = {}) {
 	const changedPaths = readFileSync(options.changedPathsPath, "utf8").split("\0").filter(Boolean);
 	mkdirSync(options.workDir, { recursive: true });
 
-	const chunks = partitionUnifiedDiff(diffText, { maxChunkBytes: options.maxChunkBytes });
-	writeDiffChunks(diffText, join(options.workDir, "chunks"), {
-		maxChunkBytes: options.maxChunkBytes,
+	const selectedBytes = Buffer.byteLength(diffText, "utf8");
+	const maxChunkBytes = adaptiveMaxChunkBytes(selectedBytes, {
+		floor: options.maxChunkBytes,
+		waveSlots: options.maxConcurrency,
 	});
+	const chunks = partitionUnifiedDiff(diffText, { maxChunkBytes });
+	writeDiffChunks(diffText, join(options.workDir, "chunks"), { maxChunkBytes });
+
 
 	if (chunks.length === 0) {
 		const meta = {
 			model: options.model,
 			effort: options.effort,
 			chunkCount: 0,
-			maxChunkBytes: options.maxChunkBytes,
+			maxChunkBytes: maxChunkBytes,
 			maxConcurrency: options.maxConcurrency,
 			chunkTimeoutSec: options.chunkTimeoutSec,
 			chunks: [],
@@ -339,7 +345,7 @@ export async function runChunkedGrokReview(options, hooks = {}) {
 			model: options.model,
 			effort: options.effort,
 			chunkCount: chunks.length,
-			maxChunkBytes: options.maxChunkBytes,
+			maxChunkBytes: maxChunkBytes,
 			maxConcurrency: options.maxConcurrency,
 			chunkTimeoutSec: options.chunkTimeoutSec,
 			durationMs: Date.now() - startedAll,
@@ -367,7 +373,7 @@ export async function runChunkedGrokReview(options, hooks = {}) {
 		model: options.model,
 		effort: options.effort,
 		chunkCount: chunks.length,
-		maxChunkBytes: options.maxChunkBytes,
+		maxChunkBytes: maxChunkBytes,
 		maxConcurrency: options.maxConcurrency,
 		chunkTimeoutSec: options.chunkTimeoutSec,
 		durationMs: Date.now() - startedAll,

@@ -83,7 +83,7 @@ jobs:
 
       # Toolchain and Copilot install happen before any repository checkout so a
       # PR-controlled .npmrc or package tree cannot influence the CLI install.
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 22.19.0
           package-manager-cache: false
@@ -101,7 +101,7 @@ jobs:
           npm install --global @github/copilot@1.0.82 --ignore-scripts --no-audit --fund=false
 
       - name: Checkout base for trusted gate scripts
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ github.event.pull_request.base.sha }}
           fetch-depth: 0
@@ -109,12 +109,13 @@ jobs:
           persist-credentials: false
 
       - name: Checkout head for diff source only
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
           path: untrusted
           persist-credentials: false
+
 
       - name: Prepare bounded review input
         run: |
@@ -216,10 +217,10 @@ jobs:
             --out-meta "$RUNNER_TEMP/grok-review-meta.json" \
             --work-dir "$RUNNER_TEMP/chunked-review" \
             --effort high \
-            --max-chunk-bytes 96000 \
-            --max-concurrency 6 \
-            --chunk-timeout-sec 420 \
-            --max-ai-credits 30
+            --max-chunk-bytes 200000 \
+            --max-concurrency 8 \
+            --chunk-timeout-sec 480 \
+            --max-ai-credits 40
           status=$?
           set -e
           # Always surface model/chunk meta for the sticky comment, including fail-closed runs.

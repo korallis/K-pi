@@ -13,8 +13,40 @@
 import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-/** Default soft cap per concurrent Grok prompt. */
-export const DEFAULT_MAX_CHUNK_BYTES = 96_000;
+/** Default soft floor per concurrent Grok prompt. */
+export const DEFAULT_MAX_CHUNK_BYTES = 200_000;
+
+/** Hard ceiling so one pathologically large file cannot explode a prompt. */
+export const HARD_MAX_CHUNK_BYTES = 400_000;
+
+/**
+ * Choose a chunk byte cap so selected review input fits roughly one concurrent
+ * wave (`ceil(selected / waveSlots)`), never below the floor or above hard max.
+ * Provenance reduction owns *what* is reviewed; this only bounds latency.
+ *
+ * @param {number} selectedBytes
+ * @param {{ floor?: number, hardMax?: number, waveSlots?: number }} [opts]
+ */
+export function adaptiveMaxChunkBytes(
+	selectedBytes,
+	{ floor = DEFAULT_MAX_CHUNK_BYTES, hardMax = HARD_MAX_CHUNK_BYTES, waveSlots = 8 } = {},
+) {
+	if (!Number.isSafeInteger(selectedBytes) || selectedBytes < 0) {
+		throw new Error("selectedBytes must be a non-negative integer");
+	}
+	if (!Number.isSafeInteger(waveSlots) || waveSlots < 1) {
+		throw new Error("waveSlots must be a positive integer");
+	}
+	if (!Number.isSafeInteger(floor) || floor < 1) {
+		throw new Error("floor must be a positive integer");
+	}
+	if (!Number.isSafeInteger(hardMax) || hardMax < floor) {
+		throw new Error("hardMax must be an integer >= floor");
+	}
+	const perSlot = Math.ceil(selectedBytes / waveSlots);
+	return Math.min(hardMax, Math.max(floor, perSlot));
+}
+
 
 
 /**

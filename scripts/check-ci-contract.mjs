@@ -177,6 +177,15 @@ const FORBIDDEN_GITHUB_PATHS = [
 
 const FORBIDDEN_WORKFLOW_NAME = /(publish|release|announce|npm-audit|issue|triage|label|stale|approve|contributor|binaries)/i;
 
+/**
+ * Third-party `uses:` refs on self-hosted runners must be full 40-char commit
+ * SHAs. Floating tags (`@v7`, `@main`) are mutable and fail closed here.
+ * Local actions (`./…`) and `docker://` images are out of scope.
+ */
+const ACTION_USES_LINE = /^[ \t]*-?[ \t]*uses:[ \t]*([^\s#]+)/gm;
+const PINNED_THIRD_PARTY_ACTION = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:\/[^@\s]+)?@[0-9a-f]{40}$/;
+
+
 function toPosix(path) {
 	return sep === "/" ? path : path.split(sep).join("/");
 }
@@ -292,6 +301,21 @@ function checkWritePermissions(context, relativePath, contents, allowed) {
 	}
 }
 
+function checkThirdPartyActionPins(context, relativePath, contents) {
+	if (!relativePath.startsWith(".github/workflows/")) return;
+	for (const match of contents.matchAll(ACTION_USES_LINE)) {
+		const ref = match[1];
+		if (ref.startsWith("./") || ref.startsWith("docker://")) continue;
+		if (!PINNED_THIRD_PARTY_ACTION.test(ref)) {
+			context.violation(
+				relativePath,
+				`third-party action must be pinned to a full commit SHA (got ${ref})`,
+			);
+		}
+	}
+}
+
+
 function checkGithub(context) {
 	const githubDirectory = join(context.root, ".github");
 	for (const obsolete of OBSOLETE_WORKFLOWS) {
@@ -315,6 +339,8 @@ function checkGithub(context) {
 		const contents = scan(context, path, FORBIDDEN_IN_WORKFLOWS, exemption?.rules);
 		if (exemption?.rules.has("gh-pr-merge")) checkMergeWaitsForChecks(context, relativePath, contents);
 		checkWritePermissions(context, relativePath, contents, exemption?.writePermissions);
+		checkThirdPartyActionPins(context, relativePath, contents);
+
 	}
 }
 

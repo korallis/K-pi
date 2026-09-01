@@ -111,12 +111,13 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
 ${permissions}    steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
 ${extraStep}      - run: gh api repos/example/repo/issues/1/comments --method POST
 `;
 }
+
 
 const readOnlyWorkflow = (body) => `name: nightly
 on:
@@ -160,6 +161,33 @@ test("the Grok gate may not gain contents write", (t) => {
 		'.github/workflows/grok-review.yml: forbidden write permission "contents: write"',
 	]);
 });
+
+test("floating third-party action tags fail closed", (t) => {
+	const root = fixture(t, {
+		workflows: {
+			"nightly.yml": readOnlyWorkflow(`    steps:
+      - uses: actions/checkout@v7
+      - run: echo ok
+`),
+		},
+	});
+	assert.deepEqual(inspectForkIntegrity(root), [
+		".github/workflows/nightly.yml: third-party action must be pinned to a full commit SHA (got actions/checkout@v7)",
+	]);
+});
+
+test("pinned third-party action SHAs with version comments are accepted", (t) => {
+	const root = fixture(t, {
+		workflows: {
+			"nightly.yml": readOnlyWorkflow(`    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - run: echo ok
+`),
+		},
+	});
+	assert.deepEqual(inspectForkIntegrity(root), []);
+});
+
 
 test("a merge that does not wait for checks is rejected", (t) => {
 	const root = fixture(t, { workflows: { "auto-merge.yml": autoMergeWorkflow('gh pr merge --merge "$PR_URL"') } });
@@ -217,7 +245,7 @@ test("release automation is rejected inside an approved workflow", (t) => {
 	const root = fixture(t, {
 		workflows: {
 			"auto-merge.yml": autoMergeWorkflow('gh pr merge --auto --merge "$PR_URL"', {
-				extraStep: "      - uses: softprops/action-gh-release@v2\n",
+				extraStep: "      - uses: softprops/action-gh-release@0000000000000000000000000000000000000001\n",
 			}),
 		},
 	});

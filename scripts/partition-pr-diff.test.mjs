@@ -7,6 +7,8 @@ import { join } from "node:path";
 import { test } from "node:test";
 import {
 	DEFAULT_MAX_CHUNK_BYTES,
+	HARD_MAX_CHUNK_BYTES,
+	adaptiveMaxChunkBytes,
 	partitionUnifiedDiff,
 	splitDiffFileSections,
 	writeDiffChunks,
@@ -16,8 +18,7 @@ function fileDiff(path, bodyLines) {
 	const body = bodyLines.map((line) => `+${line}`).join("\n");
 	return [
 		`diff --git a/${path} b/${path}`,
-		`index 1111111..2222222 100644`,
-		`--- a/${path}`,
+		`--- /dev/null`,
 		`+++ b/${path}`,
 		`@@ -0,0 +1,${bodyLines.length} @@`,
 		body,
@@ -50,7 +51,6 @@ test("packs files greedily under the byte cap", () => {
 	assert.deepEqual(two[0].paths, ["a.ts"]);
 	assert.deepEqual(two[1].paths, ["b.ts"]);
 });
-
 
 test("oversized single file becomes its own chunk", () => {
 	const big = fileDiff("big.ts", ["z".repeat(200)]);
@@ -86,7 +86,14 @@ test("writeDiffChunks emits stable names and a manifest", () => {
 	}
 });
 
-test("default chunk cap stays latency-oriented", () => {
-	assert.equal(DEFAULT_MAX_CHUNK_BYTES, 96_000);
+test("default chunk floor stays latency-oriented", () => {
+	assert.equal(DEFAULT_MAX_CHUNK_BYTES, 200_000);
+	assert.equal(HARD_MAX_CHUNK_BYTES, 400_000);
 });
 
+test("adaptive packing fits selected bytes into one concurrent wave", () => {
+	assert.equal(adaptiveMaxChunkBytes(1_600_000, { waveSlots: 8 }), 200_000);
+	assert.equal(adaptiveMaxChunkBytes(1_800_000, { waveSlots: 8 }), 225_000);
+	assert.equal(adaptiveMaxChunkBytes(100_000, { waveSlots: 8 }), 200_000);
+	assert.equal(adaptiveMaxChunkBytes(5_000_000, { waveSlots: 8 }), HARD_MAX_CHUNK_BYTES);
+});
