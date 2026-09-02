@@ -113,6 +113,298 @@ function toolNames(body) {
 	return names;
 }
 
+
+function extractJobId(blob) {
+	const m = /\bJob:\s*([a-z0-9]+(?:-[a-z0-9]+)*)\b/i.exec(blob);
+	return m ? m[1] : "uat-job";
+}
+
+function flattenContent(content) {
+	if (typeof content === "string") return [content];
+	if (!Array.isArray(content)) {
+		if (content && typeof content === "object") {
+			const parts = [];
+			if (typeof content.text === "string") parts.push(content.text);
+			if (typeof content.content === "string") parts.push(content.content);
+			if (typeof content.stdout === "string") parts.push(content.stdout);
+			if (typeof content.output === "string") parts.push(content.output);
+			return parts;
+		}
+		return [];
+	}
+	const out = [];
+	for (const c of content) {
+		if (typeof c === "string") out.push(c);
+		else if (c && typeof c === "object") {
+			if (typeof c.text === "string") out.push(c.text);
+			if (typeof c.content === "string") out.push(c.content);
+			if (typeof c.stdout === "string") out.push(c.stdout);
+			if (c.type === "text" && typeof c.text === "string") out.push(c.text);
+			// nested details from agent tools
+			if (c.details && typeof c.details === "object") {
+				if (typeof c.details.stdout === "string") out.push(c.details.stdout);
+				if (typeof c.details.output === "string") out.push(c.details.output);
+			}
+		}
+	}
+	return out;
+}
+
+function toolResultTexts(body) {
+	const out = [];
+	for (const msg of body?.messages ?? []) {
+		const role = String(msg?.role ?? "");
+		if (role === "tool" || role === "toolResult" || role === "function") {
+			out.push(...flattenContent(msg.content));
+			if (typeof msg.output === "string") out.push(msg.output);
+			if (typeof msg.stdout === "string") out.push(msg.stdout);
+			if (msg.details) out.push(...flattenContent(msg.details));
+		}
+		// some clients embed tool results as user messages
+		if (role === "user") {
+			const texts = flattenContent(msg.content);
+			for (const text of texts) {
+				if (/exit code|stdout|rev-parse|[0-9a-f]{40}/i.test(text)) out.push(text);
+			}
+		}
+	}
+	return out;
+}
+
+function findSha(texts) {
+	for (const t of texts) {
+		const s = String(t ?? "");
+		// Prefer a lone 40-hex line (git rev-parse HEAD).
+		for (const line of s.split(/\r?\n/)) {
+			const trimmed = line.trim();
+			if (/^[0-9a-f]{40}$/i.test(trimmed)) return trimmed.toLowerCase();
+		}
+		const m = /\b([0-9a-f]{40})\b/i.exec(s);
+		if (m) return m[1].toLowerCase();
+	}
+	return null;
+}
+
+function lastAssistantHadToolCalls(body) {
+	const msgs = body?.messages ?? [];
+	for (let i = msgs.length - 1; i >= 0; i--) {
+		const m = msgs[i];
+		if (m?.role === "assistant") {
+			return Boolean(m.tool_calls?.length || (Array.isArray(m.content) && m.content.some((c) => c?.type === "tool_call")));
+		}
+	}
+	return false;
+}
+
+function hasToolResult(body) {
+	return (body?.messages ?? []).some((m) => {
+		const role = String(m?.role ?? "");
+		return role === "tool" || role === "toolResult" || role === "function";
+	}) || toolResultTexts(body).length > 0;
+}
+
+/**
+ * Drive a minimal happy-path coding loop against fixtures that already contain
+ * a green healthcheck. Uses only the request transcript (no filesystem).
+ */
+function dynamicLoopTurns(body) {
+	const blob = promptBlob(body);
+	const tools = toolNames(body);
+	const jobId = extractJobId(blob);
+	const texts = toolResultTexts(body);
+	const sha = findSha(texts);
+
+	// Reviewer worker: must publish via write_contract
+	if (
+		tools.has("write_contract") ||
+		/write_contract/i.test(blob) ||
+		/isolated-review skill/i.test(blob) ||
+		/Publish the verdict only/i.test(blob)
+	) {
+		if (!hasToolResult(body) || !lastAssistantHadToolCalls(body)) {
+			const fingerprint =
+				"sha256:" +
+				createHash("sha256")
+					.update(`verdict-${jobId}-${sha || "seed"}`)
+					.digest("hex");
+			const verdict = {
+				status: "PASS",
+				approved: true,
+				blockingIssues: [],
+				nonBlockingIssues: [],
+				evidence: ["npm test exits 0", "acceptance criteria covered by fixture"],
+				round: 0,
+				output_fingerprint: fingerprint,
+			};
+			return [
+				{
+					tool_calls: [
+						{
+							name: "write_contract",
+							arguments: { path: "verdict.json", content: verdict },
+						},
+					],
+					finish_reason: "tool_calls",
+				},
+			];
+		}
+		return [{ content: "verdict published", finish_reason: "stop" }];
+	}
+
+	// Ship node: one empty commit with KPI-Job trailer (policy allows standalone git commit after release)
+	if (/conventional-commit skill/i.test(blob) || (/KPI-Job:/i.test(blob) && /Create exactly one approved commit/i.test(blob))) {
+		if (!hasToolResult(body)) {
+			const subject = "feat: healthcheck endpoint";
+			const trailer = `KPI-Job: ${jobId}`;
+			const command = `git commit --allow-empty -m ${JSON.stringify(subject)} -m ${JSON.stringify(trailer)}`;
+			return [
+				{
+					tool_calls: [{ name: "bash", arguments: { command } }],
+					finish_reason: "tool_calls",
+				},
+			];
+		}
+		return [{ content: "shipped", finish_reason: "stop" }];
+	}
+
+	
+		// Test node: gather head + npm test then emit evidence JSON (finite)
+	if (/evidence\.schema\.json/i.test(blob) || /quality-gates skill/i.test(blob) || /Return only JSON matching evidence/i.test(blob)) {
+		const assistantToolTurns = (body?.messages ?? []).filter(
+			(m) => m?.role === "assistant" && (m.tool_calls?.length || (Array.isArray(m.content) && m.content.some((c) => c?.type === "tool_call"))),
+		).length;
+		if (assistantToolTurns === 0) {
+			return [
+				{
+					tool_calls: [{ name: "bash", arguments: { command: "git rev-parse HEAD" } }],
+					finish_reason: "tool_calls",
+				},
+			];
+		}
+		if (assistantToolTurns === 1) {
+			return [
+				{
+					tool_calls: [{ name: "bash", arguments: { command: "npm test" } }],
+					finish_reason: "tool_calls",
+				},
+			];
+		}
+		const head = sha || "0".repeat(40);
+		const blobTexts = texts.join("\n");
+		const failed =
+			/✖/.test(blobTexts) ||
+			/ERR_ASSERTION/.test(blobTexts) ||
+			/\bfail\s+[1-9]/.test(blobTexts) ||
+			/not ok\b/i.test(blobTexts);
+		const passed = /✔/.test(blobTexts) || /\bpass\s+[1-9]/.test(blobTexts);
+		const testExit = failed ? 1 : passed ? 0 : 0;
+		const ac_results = ["AC-01", "AC-02", "AC-03", "AC-04", "AC-05"].map((id) => ({
+			id,
+			passed: testExit === 0,
+		}));
+		const evidence = {
+			head,
+			commands: [
+				{ cmd: "git rev-parse HEAD", exit: sha ? 0 : 1, excerpt: sha || "unavailable" },
+				{ cmd: "npm test", exit: testExit, excerpt: testExit === 0 ? "ok" : "failed" },
+			],
+			ac_results,
+		};
+		return [{ content: JSON.stringify(evidence), finish_reason: "stop" }];
+	}
+
+// Implement: candidate.json + green /health under write bounds
+	if (
+		/tdd-cycle skill/i.test(blob) ||
+		/Implement only the current stack/i.test(blob) ||
+		(tools.has("write") && /candidate\.json/i.test(blob))
+	) {
+		const wroteCandidate = texts.some((t) => /candidate\.json/i.test(t));
+		const wroteServer = texts.some((t) => /server\.js/i.test(t) && /Successfully wrote|wrote/i.test(t));
+		const denied = texts.some((t) => /Policy denied/i.test(t));
+		if (tools.has("write") && !wroteCandidate && !denied) {
+			const candidate = {
+				ladder: "minimum-code",
+				used: "node:http createServer handleRequest for GET /health",
+				skipped: "frameworks routers and extra modules",
+			};
+			return [
+				{
+					tool_calls: [
+						{
+							name: "write",
+							arguments: {
+								path: `.kpi/runs/${jobId}/candidate.json`,
+								content: JSON.stringify(candidate, null, 2) + "\n",
+							},
+						},
+					],
+					finish_reason: "tool_calls",
+				},
+			];
+		}
+		if (tools.has("write") && wroteCandidate && !wroteServer && !denied) {
+			const server = `import { createServer } from "node:http";
+
+export function handleRequest(request, response) {
+  const url = new URL(request.url ?? "/", "http://127.0.0.1");
+  if (request.method === "GET" && url.pathname === "/health") {
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ status: "ok" }));
+    return;
+  }
+  response.writeHead(404, { "content-type": "application/json" });
+  response.end(JSON.stringify({ error: "not_found" }));
+}
+
+export function createApp() {
+  return createServer(handleRequest);
+}
+`;
+			return [
+				{
+					tool_calls: [
+						{
+							name: "write",
+							arguments: {
+								path: "src/health/server.js",
+								content: server,
+							},
+						},
+					],
+					finish_reason: "tool_calls",
+				},
+			];
+		}
+		return [
+			{
+				content:
+					"Implemented GET /health returning {status:\"ok\"} under src/health/server.js and recorded the ladder decision.",
+				finish_reason: "stop",
+			},
+		];
+	}
+
+// Plan / specify / ac-compiler / plan-check
+	if (
+		/Check the frozen task contract/i.test(blob) ||
+		/Produce an implementation plan/i.test(blob) ||
+		/specification/i.test(blob) ||
+		/stack\.json/i.test(blob)
+	) {
+		return [
+			{
+				content:
+					"Plan: keep existing healthcheck modules under src/health/** and test/health/**; run npm test; never push.",
+				finish_reason: "stop",
+			},
+		];
+	}
+
+	return [{ content: "loop-agent default", finish_reason: "stop" }];
+}
+
+
 function matchScene(body) {
 	const blob = promptBlob(body);
 	const tools = toolNames(body);
@@ -338,6 +630,12 @@ async function handleChat(req, res) {
 	const { scene, matched_node } = matchScene(body);
 	const tools = [...toolNames(body)];
 	const authHash = hashToken(req.headers.authorization);
+	let effective = scene;
+	if (scene?.dynamic === "loop-agent") {
+		effective = { ...scene, turns: dynamicLoopTurns(body) };
+	}
+	const msgRoles = (body?.messages ?? []).map((m) => m?.role);
+	const toolTexts = toolResultTexts(body).map((s) => String(s).slice(0, 120));
 	logRequest({
 		at: new Date().toISOString(),
 		matched_node,
@@ -345,9 +643,13 @@ async function handleChat(req, res) {
 		tools,
 		prompt_sha256: sha256(promptBlob(body)),
 		auth_token_sha256: authHash,
-		response_status: scene.status && scene.status >= 400 ? scene.status : 200,
+		response_status: effective.status && effective.status >= 400 ? effective.status : 200,
+		dynamic: scene?.dynamic || null,
+		msg_roles: msgRoles,
+		tool_text_samples: toolTexts.slice(0, 4),
+		has_tool_result: hasToolResult(body),
 	});
-	streamCompletion(res, body, scene, { matched_node });
+	streamCompletion(res, body, effective, { matched_node });
 }
 
 function createStubServer() {

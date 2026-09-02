@@ -294,6 +294,10 @@ function pinAgentDir(agentDir, baseUrl) {
 		join(agentDir, "local-openai-models.json"),
 		`${JSON.stringify([{ id: "uat-stub", name: "uat-stub", baseUrl }], null, 2)}\n`,
 	);
+	writeFileSync(
+		join(agentDir, "auth.json"),
+		`${JSON.stringify({ "local-openai": { type: "api_key", key: "uat-local-no-op" } }, null, 2)}\n`,
+	);
 }
 
 function runRpcPrompt({ env, cwd, message, modelLog, timeoutMs = 45_000 }) {

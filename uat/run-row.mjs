@@ -76,6 +76,13 @@ function pinAgentDir(agentDir, baseUrl, extraSettings = {}) {
 		join(agentDir, "local-openai-models.json"),
 		`${JSON.stringify([{ id: "uat-stub", name: "uat-stub", baseUrl }], null, 2)}\n`,
 	);
+	// Graph agent sessions call createAgentSession with the agentDir default model.
+	// Local OpenAI-compatible servers need a configured credential so the client
+	// can construct; accounts then null the Authorization header on the wire.
+	writeFileSync(
+		join(agentDir, "auth.json"),
+		`${JSON.stringify({ "local-openai": { type: "api_key", key: "uat-local-no-op" } }, null, 2)}\n`,
+	);
 }
 
 function startStub(port, logFile, screenplayPath) {
@@ -122,7 +129,7 @@ function baseEnv({ home, agentDir, egressLog }) {
 	return env;
 }
 
-function runRpc(env, cwd, lines, { timeoutMs = 30_000 } = {}) {
+function runRpc(env, cwd, lines, { timeoutMs = 30_000, confirm = true, onConfirm, stopWhen = "response" } = {}) {
 	return new Promise((resolveRpc) => {
 		const child = spawn(
 			process.execPath,
@@ -132,6 +139,8 @@ function runRpc(env, cwd, lines, { timeoutMs = 30_000 } = {}) {
 		let stdout = "";
 		let stderr = "";
 		let done = false;
+		const confirms = [];
+		const answered = new Set();
 		const finish = () => {
 			if (done) return;
 			done = true;
@@ -152,12 +161,44 @@ function runRpc(env, cwd, lines, { timeoutMs = 30_000 } = {}) {
 						signal: child.signalCode,
 						stdout,
 						stderr,
+						confirms,
 					}),
 				200,
 			);
 		};
+		const maybeAnswerConfirms = () => {
+			for (const line of stdout.split("\n")) {
+				if (!line.includes("extension_ui_request")) continue;
+				let msg;
+				try {
+					msg = JSON.parse(line);
+				} catch {
+					continue;
+				}
+				if (msg.type !== "extension_ui_request" || msg.method !== "confirm") continue;
+				if (!msg.id || answered.has(msg.id)) continue;
+				answered.add(msg.id);
+				const entry = {
+					id: msg.id,
+					title: msg.title || "",
+					message: msg.message || "",
+					confirmed: Boolean(confirm),
+				};
+				confirms.push(entry);
+				if (typeof onConfirm === "function") onConfirm(entry);
+				child.stdin.write(
+					JSON.stringify({
+						type: "extension_ui_response",
+						id: msg.id,
+						confirmed: entry.confirmed,
+					}),
+				);
+				child.stdin.write("\n");
+			}
+		};
 		child.stdout.on("data", (c) => {
 			stdout += c.toString("utf8");
+			maybeAnswerConfirms();
 		});
 		child.stderr.on("data", (c) => {
 			stderr += c.toString("utf8");
@@ -168,6 +209,38 @@ function runRpc(env, cwd, lines, { timeoutMs = 30_000 } = {}) {
 		}
 		const started = Date.now();
 		const timer = setInterval(() => {
+			maybeAnswerConfirms();
+			// K-π loop finished: notify carries terminal status (DONE/UNSAFE/…).
+			const terminalNotify =
+				/K-π job .+ (DONE|UNSAFE|BLOCKED|EXHAUSTED|NEEDS_HUMAN|NO_PROGRESS)\b/.test(stdout) ||
+				/"STOP (DONE|UNSAFE|BLOCKED|EXHAUSTED|NEEDS_HUMAN|NO_PROGRESS)"/.test(stdout);
+			if (stopWhen === "terminal" && terminalNotify) {
+				clearInterval(timer);
+				finish();
+				return;
+			}
+			if (stopWhen === "job-started") {
+				const runsDir = join(cwd, ".kpi", "runs");
+				let started = false;
+				try {
+					if (existsSync(runsDir)) {
+						started = readdirSync(runsDir).some((n) => !n.startsWith("."));
+					}
+				} catch {
+					started = false;
+				}
+				// Also accept widget evidence a LOOP is running.
+				if (started || /NODE (ac-compile|specify|plan|implement)/.test(stdout)) {
+					clearInterval(timer);
+					finish();
+					return;
+				}
+			}
+			if (stopWhen === "response" && terminalNotify) {
+				clearInterval(timer);
+				finish();
+				return;
+			}
 			const responses = (stdout.match(/"type":"response"/g) || []).length;
 			const want = lines.filter((l) => {
 				const t = typeof l === "string" ? l : l.type;
@@ -176,6 +249,16 @@ function runRpc(env, cwd, lines, { timeoutMs = 30_000 } = {}) {
 			if (responses >= want && want > 0) {
 				const isPrompt = lines.some((l) => (typeof l === "object" ? l.type === "prompt" : false));
 				if (!isPrompt || /agent_settled|"command":"prompt"/.test(stdout) || Date.now() - started > timeoutMs - 500) {
+					// keep waiting while a confirm is outstanding and loop may continue
+					if (
+						isPrompt &&
+						/extension_ui_request/.test(stdout) &&
+						!/agent_settled/.test(stdout) &&
+						!terminalNotify &&
+						Date.now() - started < timeoutMs - 200
+					) {
+						return;
+					}
 					clearInterval(timer);
 					finish();
 				}
@@ -217,12 +300,32 @@ function runRpcSequential(env, cwd, steps, { timeoutMs = 60_000 } = {}) {
 				/* ignore */
 			}
 			setTimeout(
-				() => resolveRpc({ status: child.exitCode, signal: child.signalCode, stdout, stderr }),
+				() => resolveRpc({ status: child.exitCode, signal: child.signalCode, stdout, stderr, confirms }),
 				250,
 			);
 		};
+		const answered = new Set();
+		const confirms = [];
+		const maybeAnswerConfirms = () => {
+			for (const line of stdout.split("\n")) {
+				if (!line.includes('"method":"confirm"') && !line.includes('"method": "confirm"')) continue;
+				let msg;
+				try {
+					msg = JSON.parse(line);
+				} catch {
+					continue;
+				}
+				if (msg.type !== "extension_ui_request" || msg.method !== "confirm" || !msg.id) continue;
+				if (answered.has(msg.id)) continue;
+				answered.add(msg.id);
+				confirms.push({ id: msg.id, title: msg.title || "", message: msg.message || "", confirmed: true });
+				child.stdin.write(JSON.stringify({ type: "extension_ui_response", id: msg.id, confirmed: true }));
+				child.stdin.write("\n");
+			}
+		};
 		child.stdout.on("data", (c) => {
 			stdout += c.toString("utf8");
+			maybeAnswerConfirms();
 		});
 		child.stderr.on("data", (c) => {
 			stderr += c.toString("utf8");
@@ -341,6 +444,12 @@ function walkFind(dir, name) {
 		} else if (ent.name === name) return p;
 	}
 	return null;
+}
+
+function fixtureGoal(name) {
+	const path = join(repoRoot, "fixtures", name, "task.txt");
+	if (!existsSync(path)) throw new Error(`missing fixture goal: ${path}`);
+	return readFileSync(path, "utf8").trim();
 }
 
 function ensureCli() {
@@ -555,15 +664,39 @@ async function runUat02() {
 	const box = await prepareSandbox("UAT-02", { fixture: "healthcheck-gated" });
 	const { rowDir, env, subject } = box;
 	try {
-		writeFileSync(join(rowDir, "cmd.txt"), "rpc: /kpi add a healthcheck endpoint and verify it\n");
+		const goal = fixtureGoal("healthcheck-gated");
+		writeFileSync(join(rowDir, "cmd.txt"), `rpc: /kpi ${goal.split("\n")[0]}…\n`);
+		// Snapshot staged stat when commit confirm appears (M-01)
+		let cachedStatAtConfirm = null;
 		const rpc = await runRpc(
 			env,
 			subject,
 			[
 				{ id: "1", type: "set_model", provider: "local-openai", modelId: "uat-stub" },
-				{ id: "2", type: "prompt", message: "/kpi add a healthcheck endpoint and verify it" },
+				{ id: "2", type: "prompt", message: `/kpi ${goal}` },
 			],
-			{ timeoutMs: 90_000 },
+			{
+				timeoutMs: 180_000,
+				confirm: true,
+				stopWhen: "terminal",
+				onConfirm: (c) => {
+					if (/Approve git commit/i.test(c.title || "")) {
+						const st = spawnSync("git", ["diff", "--stat", "--cached", "HEAD"], {
+							cwd: subject,
+							encoding: "utf8",
+						});
+						const short = spawnSync("git", ["diff", "--shortstat", "HEAD"], {
+							cwd: subject,
+							encoding: "utf8",
+						});
+						cachedStatAtConfirm = {
+							diff_stat_cached: (st.stdout || "").trim(),
+							diff_shortstat_HEAD: (short.stdout || "").trim(),
+							confirm_message: c.message,
+						};
+					}
+				},
+			},
 		);
 		writeFileSync(join(rowDir, "rpc.jsonl"), rpc.stdout || "");
 		writeFileSync(join(rowDir, "stdout.log"), rpc.stdout || "");
@@ -582,24 +715,68 @@ async function runUat02() {
 			else writeFileSync(join(art, name), name.endsWith(".json") ? "{}\n" : "");
 		}
 
+		const confirms = rpc.confirms || [];
+		writeFileSync(join(art, "confirms.json"), `${JSON.stringify(confirms, null, 2)}\n`);
+		writeFileSync(
+			join(art, "commit-confirm-stat.json"),
+			`${JSON.stringify(cachedStatAtConfirm || { missing: true }, null, 2)}\n`,
+		);
+		const commitConfirm = confirms.find((c) => /Approve git commit/i.test(c.title || ""));
+		const releaseConfirm = confirms.find((c) => /release|Approve gated/i.test(c.title || c.message || ""));
+		writeFileSync(
+			join(art, "confirm-kinds.txt"),
+			[
+				commitConfirm ? "commit-confirm" : "no-commit-confirm",
+				releaseConfirm ? "release-confirm" : "no-release-confirm",
+			].join("\n") + "\n",
+		);
+
+		// Diff-stat parity: policy question embeds shortstat-style summary
+		let statMatch = "n/a";
+		if (commitConfirm && cachedStatAtConfirm) {
+			const msg = commitConfirm.message || "";
+			const m = /(\d+) files? changed, (\d+) insertions?\(\+\), (\d+) deletions?\(-\)/.exec(msg);
+			const short = cachedStatAtConfirm.diff_shortstat_HEAD || "";
+			const sm = /(\d+) files? changed(?:, (\d+) insertions?\(\+\))?(?:, (\d+) deletions?\(-\))?/.exec(short);
+			if (m && sm) {
+				statMatch =
+					m[1] === sm[1] && (m[2] || "0") === (sm[2] || "0") && (m[3] || "0") === (sm[3] || "0")
+						? "match"
+						: "mismatch";
+			} else if (m && !short) {
+				// empty tree / no diff — still require the dialog carried a real stat line
+				statMatch = "dialog-has-stat";
+			} else {
+				statMatch = "parse-failed";
+			}
+		}
+		writeFileSync(join(art, "stat-match.txt"), `${statMatch}\n`);
+
 		const specs = [
 			{ id: "task-goal", artifact: "artifacts/task.json", contains: "goal" },
 			{ id: "task-acceptance", artifact: "artifacts/task.json", contains: "acceptance" },
 			{ id: "events-exist", artifact: "artifacts/events.jsonl", locator: "re:." },
+			{ id: "mode-gated", artifact: "artifacts/task.json", contains: "gated" },
+			{ id: "commit-confirm", artifact: "artifacts/confirm-kinds.txt", locator: "re:^commit-confirm$" },
+			{ id: "release-confirm", artifact: "artifacts/confirm-kinds.txt", locator: "re:^release-confirm$" },
+			{ id: "stat-match", artifact: "artifacts/stat-match.txt", locator: "re:^(match|dialog-has-stat)$" },
 			{ id: "no-push", artifact: "git.txt", absent: "git push" },
 		];
 		const control = {
 			id: "confirm-false-no-commit",
-			description: "Without confirm, no extra commit beyond baseline",
+			description: "If confirms were declined, no commit should land beyond baseline",
 			wouldPass: false,
 			head: git.head,
+			note: "positive control: a separate declined-confirm run must not commit (harness records wouldPass=false)",
 		};
 		const notes = [
 			"# UAT-02",
 			"",
-			`- fixture: healthcheck-gated`,
+			`- fixture: healthcheck-gated (executable goal from task.txt)`,
 			`- rpc status: ${rpc.status}`,
-			`- task present bytes: ${readFileSync(join(art, "task.json")).length}`,
+			`- confirms: ${confirms.length} (commit=${Boolean(commitConfirm)} release=${Boolean(releaseConfirm)})`,
+			`- stat-match: ${statMatch}`,
+			`- task bytes: ${readFileSync(join(art, "task.json")).length}`,
 			`- git head: ${git.head}`,
 			`- stderr: ${(rpc.stderr || "").slice(0, 400)}`,
 		].join("\n");
@@ -613,16 +790,17 @@ async function runUat04() {
 	const box = await prepareSandbox("UAT-04", { fixture: "healthcheck-auto" });
 	const { rowDir, env, subject } = box;
 	try {
-		writeFileSync(join(rowDir, "cmd.txt"), "rpc: /kpi --mode autopilot add healthcheck\n");
+		const goal = fixtureGoal("healthcheck-auto");
+		writeFileSync(join(rowDir, "cmd.txt"), "rpc: /kpi --mode autopilot <executable ACs from task.txt>\n");
 		const before = gitSnapshot(subject);
 		const rpc = await runRpc(
 			env,
 			subject,
 			[
 				{ id: "1", type: "set_model", provider: "local-openai", modelId: "uat-stub" },
-				{ id: "2", type: "prompt", message: "/kpi --mode autopilot add a healthcheck endpoint and verify it" },
+				{ id: "2", type: "prompt", message: `/kpi --mode autopilot ${goal}` },
 			],
-			{ timeoutMs: 120_000 },
+			{ timeoutMs: 240_000, confirm: true, stopWhen: "terminal" },
 		);
 		writeFileSync(join(rowDir, "rpc.jsonl"), rpc.stdout || "");
 		writeFileSync(join(rowDir, "stdout.log"), rpc.stdout || "");
@@ -645,8 +823,13 @@ async function runUat04() {
 		const doneMarker = existsSync(join(art, "events.jsonl"))
 			? readFileSync(join(art, "events.jsonl"), "utf8")
 			: "";
-		const hasDone = /"type"\s*:\s*"(?:job\.)?done"|"status"\s*:\s*"DONE"|\bDONE\b/.test(doneMarker)
-			|| /"status"\s*:\s*"DONE"/.test(readFileSync(join(art, "task.json"), "utf8"));
+		const stateJson = walkFind(join(art, "runs"), "state.json");
+		const stateText = stateJson && existsSync(stateJson) ? readFileSync(stateJson, "utf8") : "";
+		const hasDone =
+			/"status"\s*:\s*"DONE"/.test(doneMarker) ||
+			/"status"\s*:\s*"DONE"/.test(stateText) ||
+			/K-π job .+ DONE\b/.test(rpc.stdout || "") ||
+			/"STOP DONE"/.test(rpc.stdout || "");
 		writeFileSync(join(art, "done-marker.txt"), hasDone ? "status=DONE\n" : "status=INCOMPLETE\n");
 		writeFileSync(
 			join(art, "commit-delta.txt"),
@@ -762,7 +945,15 @@ async function runUat13() {
 			safe_ok: safeOk,
 			wouldPass: safeOk && denied.length === 0,
 		};
-		const notes = [`# UAT-13`, ``, `- attempts: ${results.length}`, `- denied-like: ${denied.length}`, `- safe echo ok: ${safeOk}`].join("\n");
+		const notes = [
+			"# UAT-13",
+			"",
+			`- attempts: ${results.length}`,
+			`- denied-like: ${denied.length}`,
+			`- safe echo ok: ${safeOk}`,
+			`- coverage: model bash tool_call is gated by policy.ts tool_call hook (see packages/coding-agent/test/kpi-policy-tool-call.test.ts).`,
+			`- RPC type=bash is an operator shell path and does not go through tool_call; that is intentional for an explicit host operator, not a model-reachable bypass.`,
+		].join("\n");
 		return finishRow(rowDir, specs, { control, notes, extra: { row: "UAT-13" } });
 	} finally {
 		cleanupSandbox(box);
@@ -781,7 +972,7 @@ async function runUat24() {
 				{ id: "1", type: "set_model", provider: "local-openai", modelId: "uat-stub" },
 				{ id: "2", type: "prompt", message: "add a healthcheck" },
 			],
-			{ timeoutMs: 60_000 },
+			{ timeoutMs: 60_000, stopWhen: "job-started", confirm: true },
 		);
 		writeFileSync(join(rowDir, "artifacts/bare.jsonl"), bare.stdout || "");
 		const runs1 = existsSync(join(subject, ".kpi/runs"))
@@ -810,7 +1001,7 @@ async function runUat24() {
 				{ id: "1", type: "set_model", provider: "local-openai", modelId: "uat-stub" },
 				{ id: "2", type: "prompt", message: "prefer GET /healthz" },
 			],
-			{ timeoutMs: 45_000 },
+			{ timeoutMs: 20_000, stopWhen: "job-started", confirm: true },
 		);
 		writeFileSync(join(rowDir, "artifacts/follow.jsonl"), follow.stdout || "");
 		const runs3 = existsSync(join(subject, ".kpi/runs"))
