@@ -385,17 +385,45 @@ export function createApp() {
 		];
 	}
 
-// Plan / specify / ac-compiler / plan-check
+// Plan: engine response contract requires JSON matching stack.schema.json.
+	// The graph engine writes stack.json; assistant text is the only source.
 	if (
 		/Check the frozen task contract/i.test(blob) ||
 		/Produce an implementation plan/i.test(blob) ||
-		/specification/i.test(blob) ||
-		/stack\.json/i.test(blob)
+		/stack\.schema\.json/i.test(blob) ||
+		(/stack\.json/i.test(blob) && /Return only JSON matching/i.test(blob))
 	) {
+		const stack = {
+			version: 1,
+			shape: "dune",
+			delivery: "vertical",
+			root: "src",
+			scaffold_first: true,
+			current_module_id: "health",
+			modules: [
+				{
+					id: "health",
+					purpose: "HTTP healthcheck endpoint returning {status:\"ok\"} and its tests",
+					folder: "src/health",
+					interface: "src/health/server.js",
+					allowed_paths: ["src/health/**", "test/health/**"],
+					depends_on: [],
+				},
+			],
+		};
+		return [
+			{
+				content: JSON.stringify(stack),
+				finish_reason: "stop",
+			},
+		];
+	}
+	// Specify / ac-compiler prose (no stack response contract)
+	if (/specification/i.test(blob) || /acceptance criteria/i.test(blob)) {
 		return [
 			{
 				content:
-					"Plan: keep existing healthcheck modules under src/health/** and test/health/**; run npm test; never push.",
+					"Spec: GET /health returns {status:\"ok\"}; npm test green; writes only src/health/** and test/health/**.",
 				finish_reason: "stop",
 			},
 		];
