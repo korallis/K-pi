@@ -1,0 +1,6 @@
+{
+  "case": "dune-top-level-layer",
+  "outcome": "unsafe",
+  "reason": "Layer folder api cannot be a top-level module",
+  "note": "The module is otherwise well formed: folder matches id, interface is inside it and allowed_paths cover the folder and its test twin. Being directly under the declared root is what makes a layer folder the map instead of a detail inside a feature."
+}

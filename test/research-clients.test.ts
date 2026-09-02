@@ -233,16 +233,33 @@ test("Perplexity sends hard token bounds and never a qualitative context size", 
 });
 
 test("both clients forward the abort signal and classify failures by status and transport", async () => {
+	// The caller's cancellation is honoured alongside the client's own deadline, so
+	// the request carries a signal that answers to both rather than the caller's
+	// object itself.
 	const controller = new AbortController();
 	const { fetch: fetchImpl, calls } = capturing(() => new Response(exaBody([]), { status: 200 }));
 	await exaSearch("q", KEY_CANARY, { signal: controller.signal, fetch: fetchImpl });
-	assert.equal(calls[0].signal, controller.signal, "Exa forwards the caller's signal");
+	assert.ok(calls[0].signal instanceof AbortSignal, "Exa sends a signal");
+	assert.equal(calls[0].signal?.aborted, false);
 
 	const { fetch: pplxFetch, calls: pplxCalls } = capturing(
 		() => new Response(JSON.stringify({ results: [] }), { status: 200 }),
 	);
 	await perplexitySearch("q", KEY_CANARY, { signal: controller.signal, fetch: pplxFetch });
-	assert.equal(pplxCalls[0].signal, controller.signal, "Perplexity forwards the caller's signal");
+	assert.ok(pplxCalls[0].signal instanceof AbortSignal, "Perplexity sends a signal");
+
+	// Aborting the caller's own controller aborts the request that is in flight.
+	const live = new AbortController();
+	let observed: AbortSignal | undefined;
+	const holdingFetch: typeof fetch = (_input, init) =>
+		new Promise((_resolve, reject) => {
+			observed = init?.signal ?? undefined;
+			init?.signal?.addEventListener("abort", () => reject(new Error("aborted by caller")));
+		});
+	const inFlight = exaSearch("q", KEY_CANARY, { signal: live.signal, fetch: holdingFetch });
+	live.abort();
+	await assert.rejects(inFlight);
+	assert.equal(observed?.aborted, true, "the caller's abort reached the request");
 
 	// Status decides, whatever the envelope claims.
 	for (const status of [402, 429, 500, 503, 422]) {

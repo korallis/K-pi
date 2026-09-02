@@ -176,28 +176,48 @@ function openAuthUrl(pi: ExtensionAPI, url: string): void {
 	void pi.exec(command.name, command.args).catch(() => undefined);
 }
 
+/**
+ * Acquires the credential the pool's provider actually offers, rather than
+ * assuming every official pool is a subscription. Subscription OAuth wins
+ * wherever it exists — a provider declaring both, such as `kimi-coding`, is a
+ * subscription seat first — and a key-only provider such as `zai` is asked for
+ * its key instead of being refused. The key prompt is titled with the
+ * provider's own `apiKey.name`, so the operator reads the label the provider
+ * definition ships. An empty answer cancels exactly like a dismissed OAuth
+ * prompt: no slot, no secret.
+ */
 async function loginWithOfficialProvider(
 	providerId: PoolId,
 	_slotId: string,
 	context: ExtensionCommandContext,
 	showAuthUrl: (url: string) => void,
 ): Promise<Credential> {
-	const oauth = context.modelRegistry.getProvider(providerId)?.auth.oauth;
-	if (oauth === undefined) {
-		throw new Error(`Provider ${providerId} does not offer subscription OAuth`);
+	const auth = context.modelRegistry.getProvider(providerId)?.auth;
+	if (auth?.oauth !== undefined) {
+		const signal = context.signal ?? new AbortController().signal;
+		const interaction: ProviderAuthInteraction = {
+			signal,
+			prompt: (prompt) => answerAuthPrompt(prompt, context),
+			notify: (event) => {
+				if (event.type === "auth_url") {
+					showAuthUrl(event.url);
+				}
+				context.ui.notify(authEventMessage(event), "info");
+			},
+		};
+		return auth.oauth.login(interaction);
 	}
-	const signal = context.signal ?? new AbortController().signal;
-	const interaction: ProviderAuthInteraction = {
-		signal,
-		prompt: (prompt) => answerAuthPrompt(prompt, context),
-		notify: (event) => {
-			if (event.type === "auth_url") {
-				showAuthUrl(event.url);
-			}
-			context.ui.notify(authEventMessage(event), "info");
-		},
-	};
-	return oauth.login(interaction);
+	if (auth?.apiKey !== undefined) {
+		const answer = await context.ui.input(auth.apiKey.name, "Paste the key, or Enter to cancel", {
+			signal: context.signal,
+		});
+		const key = (answer ?? "").trim();
+		if (key.length === 0) {
+			throw new LoginCancelledError();
+		}
+		return { type: "api_key", key };
+	}
+	throw new Error(`Provider ${providerId} offers neither subscription OAuth nor an API key`);
 }
 
 function accountLines(document: AccountsDocument): string[] {

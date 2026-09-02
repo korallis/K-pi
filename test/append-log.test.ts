@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -9,6 +9,7 @@ import {
 	type EventInput,
 	FIRST_HASH,
 	ForbiddenEventPayloadError,
+	inspectChain,
 	verifyChain,
 } from "../packages/coding-agent/src/kpi/extensions/append-log.ts";
 import { type JsonSchema, validateJsonSchema } from "../packages/coding-agent/src/kpi/extensions/graph/json-schema.ts";
@@ -197,6 +198,8 @@ test("concurrent appends to one log keep a single verifiable chain", async () =>
 					job_id: "race-job",
 					round: 0,
 					node: `writer-${index}`,
+					tool: "write",
+					decision: "allow",
 				}),
 			),
 		);
@@ -231,6 +234,8 @@ test("a rejected payload never blocks a concurrent writer", async () => {
 				job_id: "reject-job",
 				round: 0,
 				node: "first",
+				tool: "write",
+				decision: "allow",
 			}),
 			// A forbidden payload: it must fail without leaving the lock held.
 			appendEvent(path, {
@@ -239,6 +244,8 @@ test("a rejected payload never blocks a concurrent writer", async () => {
 				job_id: "reject-job",
 				round: 0,
 				node: "second",
+				tool: "write",
+				decision: "allow",
 				authorization: "Bearer sk-ant-api03-example-secret",
 			} as unknown as EventInput),
 			appendEvent(path, {
@@ -247,6 +254,8 @@ test("a rejected payload never blocks a concurrent writer", async () => {
 				job_id: "reject-job",
 				round: 0,
 				node: "third",
+				tool: "write",
+				decision: "allow",
 			}),
 		]);
 
@@ -307,4 +316,123 @@ test("buildReviewVerdictEventFields keeps counts only", () => {
 		fingerprint: "sha256:" + "c".repeat(64),
 	});
 	assert.equal(buildReviewVerdictEventFields({ status: "PASS" }), undefined);
+});
+
+// ---------------------------------------------------------------------------
+// B1: the canonical form is RFC 8785, and a user can verify a chain
+// ---------------------------------------------------------------------------
+
+test("the canonical form matches RFC 8785 for keys, numbers, and escapes", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "kpi-append-jcs-"));
+	const path = join(directory, "events.jsonl");
+	try {
+		// Written out of order, with a non-ASCII key and a number, so the line on
+		// disk shows exactly which serialization was hashed.
+		await appendEvent(path, {
+			ts: "2026-09-02T00:00:00.000Z",
+			type: "tool.request",
+			job_id: "jcs-job",
+			round: 10,
+			node: "café",
+			tool: "write",
+			decision: "allow",
+			path: "src/ünicode/日本.ts",
+		} as unknown as EventInput);
+		const line = (await readFile(path, "utf8")).split("\n")[0];
+
+		// §3.2.3 object keys sort by UTF-16 code unit, which is JavaScript's own
+		// string order: every ASCII key precedes none here, so the order is total.
+		const keys = [...line.matchAll(/"([^"]+)":/gu)].map((match) => match[1]);
+		assert.deepEqual(
+			keys.filter((key) => !key.startsWith("src")),
+			[...keys.filter((key) => !key.startsWith("src"))].sort(),
+			"keys are emitted in code-unit order",
+		);
+		// §3.2.2.2 numbers use ECMAScript number-to-string: no exponent, no ".0".
+		assert.match(line, /"round":10/u, "an integer is serialized as ECMAScript would");
+		// §3.2.2.1 strings keep every character that JSON need not escape, so
+		// non-ASCII is literal rather than \\u-escaped.
+		assert.match(line, /"node":"café"/u, "non-ASCII is not escaped");
+		assert.match(line, /"path":"src\/ünicode\/日本\.ts"/u);
+		assert.doesNotMatch(line, /\\\\u00e9/iu, "no redundant unicode escaping");
+		assert.equal(await verifyChain(path), true);
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("an unpaired surrogate is an error, not something to escape", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "kpi-append-surrogate-"));
+	const path = join(directory, "events.jsonl");
+	try {
+		// RFC 8785 §3.2.2.2 makes a lone surrogate an error. JSON.stringify would
+		// happily escape it, and two implementations disagreeing about that would
+		// hash the same input differently.
+		await assert.rejects(
+			appendEvent(path, {
+				ts: "2026-09-02T00:00:00.000Z",
+				type: "tool.request",
+				job_id: "surrogate-job",
+				round: 0,
+				node: "writer",
+				tool: "write",
+				decision: "allow",
+				path: `src/a\uD800b.ts`,
+			} as unknown as EventInput),
+			/unpaired surrogate/u,
+		);
+		assert.equal(await stat(path).catch(() => undefined), undefined, "nothing was written");
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("inspectChain names the first broken line and what is wrong with it", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "kpi-append-inspect-"));
+	const path = join(directory, "events.jsonl");
+	try {
+		for (const index of [0, 1, 2]) {
+			await appendEvent(path, {
+				ts: new Date(1_700_000_000_000 + index).toISOString(),
+				type: "tool.request",
+				job_id: "inspect-job",
+				round: 0,
+				node: `writer-${index}`,
+				tool: "write",
+				decision: "allow",
+			});
+		}
+		const clean = await inspectChain(path);
+		assert.deepEqual(clean, { ok: true, path, records: 3 });
+
+		// One byte of content changed: the record no longer hashes to its own hash.
+		const lines = (await readFile(path, "utf8")).split("\n").filter((line) => line.length > 0);
+		const tampered = [...lines];
+		tampered[1] = tampered[1].replace('"writer-1"', '"writer-x"');
+		const tamperedPath = join(directory, "tampered.jsonl");
+		await writeFile(tamperedPath, `${tampered.join("\n")}\n`);
+		const broken = await inspectChain(tamperedPath);
+		assert.equal(broken.ok, false);
+		assert.equal(broken.line, 2, "the second line is named");
+		assert.equal(broken.records, 1, "one record verified before it");
+		assert.match(broken.reason ?? "", /record_hash does not match the record's own bytes/u);
+
+		// A dropped record breaks the link rather than the hash.
+		const droppedPath = join(directory, "dropped.jsonl");
+		await writeFile(droppedPath, `${[lines[0], lines[2]].join("\n")}\n`);
+		const dropped = await inspectChain(droppedPath);
+		assert.equal(dropped.ok, false);
+		assert.equal(dropped.line, 2);
+		assert.match(dropped.reason ?? "", /prev_hash does not chain to the previous record/u);
+
+		const missing = await inspectChain(join(directory, "absent.jsonl"));
+		assert.deepEqual(missing, {
+			ok: false,
+			path: join(directory, "absent.jsonl"),
+			records: 0,
+			reason: "no event log at this path",
+		});
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
 });

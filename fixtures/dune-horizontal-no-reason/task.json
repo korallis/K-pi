@@ -1,0 +1,40 @@
+{
+  "job_id": "2026-09-02-dune-horizontal-no-reason",
+  "mode": "gated",
+  "goal": "Stage all the endpoints for checkout and catalog before either set of screens",
+  "nongoals": [
+    "auth"
+  ],
+  "acceptance": [
+    {
+      "id": "AC-01",
+      "statement": "the staged endpoints answer 200 and npm test exits 0",
+      "required": true,
+      "check": {
+        "kind": "command",
+        "cmd": "npm test",
+        "expect": {
+          "exit": 0
+        }
+      },
+      "bounds": {
+        "write_allow": [
+          "src/checkout/**",
+          "src/catalog/**",
+          "test/checkout/**",
+          "test/catalog/**"
+        ]
+      }
+    }
+  ],
+  "constraints": [
+    "no new runtime dependency"
+  ],
+  "quality_gates": [
+    "npm test"
+  ],
+  "ac": {
+    "quality": "executable"
+  },
+  "current_module_id": "checkout"
+}

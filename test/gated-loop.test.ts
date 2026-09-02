@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import type { ExtensionCommandContext } from "../packages/coding-agent/src/core/extensions/types.ts";
-
+import { researchCellFromDocument } from "../packages/coding-agent/src/kpi/extensions/board.ts";
 import type { BusDependencies } from "../packages/coding-agent/src/kpi/extensions/bus/spawn.ts";
 import { registerControlPlane } from "../packages/coding-agent/src/kpi/extensions/control-plane.ts";
 import {
@@ -855,6 +855,52 @@ test("a no-stack playbook needs no map", async () => {
 		>;
 		assert.notEqual(state.status, "UNSAFE", `an exempt playbook must not be blocked: ${String(state.reason)}`);
 		assert.ok(executed.includes("implement"), "an exempt playbook still implements");
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("kpi --no-network freezes the operator's offline decision onto the contract", async () => {
+	const directory = await fixture();
+	const jobId = "20260902-healthcheck-offline";
+	const executed: string[] = [];
+	try {
+		const harness = commandHarness(directory, loopSessions(directory, executed, { jobId }), jobId, []);
+		// Keys are present and healthy: the only reason this job stays offline is
+		// that the operator said so on the command line.
+		process.env.EXA_API_KEY = "exa-offline-control";
+		try {
+			await harness.commands.get("kpi")!("--no-network add a healthcheck endpoint and verify it", harness.context);
+		} finally {
+			delete process.env.EXA_API_KEY;
+		}
+
+		const runDirectory = join(directory, ".kpi", "runs", jobId);
+		const task = JSON.parse(await readFile(join(runDirectory, "task.json"), "utf8")) as {
+			research_network?: string;
+			goal: string;
+		};
+		// On the validated contract, so a resumed job in a fresh process stays offline.
+		assert.equal(task.research_network, "offline");
+		assert.equal(task.goal, "add a healthcheck endpoint and verify it", "the flag is not part of the goal");
+
+		const research = JSON.parse(await readFile(join(runDirectory, "research.json"), "utf8")) as {
+			mode: string;
+			network: { state: string; origin?: string; reason?: string; failures: { service?: string }[] };
+			sources: { kind: string; ref: string }[];
+		};
+		assert.equal(research.network.state, "no-network");
+		assert.equal(research.network.origin, "operator", "the operator owns this decision, not the engine");
+		assert.equal(research.network.reason, "operator requested no-network");
+		assert.deepEqual(research.network.failures, [], "an operator decision is not a recorded failure");
+		assert.equal(research.mode, "local");
+		assert.ok(research.sources.length > 0, "the repository was still researched");
+		for (const source of research.sources) {
+			assert.equal(source.kind, "local");
+			assert.doesNotMatch(source.ref, /^https?:/u, "no external URL was recorded");
+		}
+		// The board cell an operator sees for that state.
+		assert.deepEqual(researchCellFromDocument(research), { cell: "RESEARCH local · no-network operator" });
 	} finally {
 		await rm(directory, { recursive: true, force: true });
 	}

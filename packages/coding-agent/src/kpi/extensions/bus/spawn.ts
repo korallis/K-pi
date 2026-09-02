@@ -118,6 +118,21 @@ export function createWorkerAdmission(limits: { maxWorkers?: number; maxWriters?
 }
 
 /**
+ * Maps an admission refusal onto its reason code. Matched on the message the
+ * table itself raises, so the codes and the caps cannot drift apart.
+ */
+export function admissionDenialReason(error: unknown): "worker-limit" | "writer-live" | "admission-held" {
+	const message = error instanceof Error ? error.message : String(error);
+	if (message.startsWith("A writer worker is already live")) {
+		return "writer-live";
+	}
+	if (message.startsWith("admission key already held")) {
+		return "admission-held";
+	}
+	return "worker-limit";
+}
+
+/**
  * Default process-wide admission. Production buses share this. Tests MUST inject
  * `createWorkerAdmission()` so parallel harnesses do not contend.
  */
@@ -274,6 +289,40 @@ export class BackgroundBus {
 		await this.appendBus({ ts, type: "agent.spawned", job_id: this.jobId, ...payload });
 	}
 
+	/**
+	 * Records a refusal by the bus.
+	 *
+	 * A cap that only ever appears as a thrown string in one process's tool result
+	 * cannot be audited after the fact, so the refusal joins the job's own
+	 * hash-chained log and the bus transcript. The capability id is deliberately
+	 * absent: it is the bearer that would have authorised the work, and a refusal
+	 * is the last place it should be published.
+	 */
+	async logDenied(payload: {
+		reason: "worker-limit" | "writer-live" | "admission-held" | "claim-held" | "role-tool";
+		role?: WorkerRole;
+		agent_id?: string;
+		key?: string;
+		holder?: string;
+		limit?: number;
+	}): Promise<void> {
+		const ts = this.now().toISOString();
+		await appendEvent(this.eventsPath, {
+			ts,
+			type: "agent.denied",
+			job_id: this.jobId,
+			round: 0,
+			node: "bus",
+			reason: payload.reason,
+			...(payload.role === undefined ? {} : { role: payload.role }),
+			...(payload.agent_id === undefined ? {} : { agent_id: payload.agent_id }),
+			...(payload.key === undefined ? {} : { key: payload.key }),
+			...(payload.holder === undefined ? {} : { holder: payload.holder }),
+			...(payload.limit === undefined ? {} : { limit: payload.limit }),
+		});
+		await this.appendBus({ ts, type: "agent.denied", job_id: this.jobId, ...payload });
+	}
+
 	private async logMessage(payload: {
 		agent_id: string;
 		role: WorkerRole;
@@ -376,10 +425,22 @@ export class BackgroundBus {
 			const isWriter = isWriterToolSet(tools);
 
 			const agentId = `${options.role}-${(this.dependencies.newAgentSuffix ?? randomUUID)()}`;
-			const releaseAdmission = await this.admission.acquire({
-				key: `${this.jobId}:${agentId}`,
-				isWriter,
-			});
+			let releaseAdmission: () => void;
+			try {
+				releaseAdmission = await this.admission.acquire({
+					key: `${this.jobId}:${agentId}`,
+					isWriter,
+				});
+			} catch (error) {
+				// The cap is unchanged; only the record of hitting it is new.
+				await this.logDenied({
+					reason: admissionDenialReason(error),
+					role: options.role,
+					agent_id: agentId,
+					limit: this.admission.counts().workers,
+				}).catch(() => undefined);
+				throw error;
+			}
 			/** True until the slot is either on a live record or explicitly returned. */
 			let admissionHeld = true;
 			const returnAdmission = (): void => {

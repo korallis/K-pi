@@ -1,3 +1,4 @@
+import { DEFAULT_EXA_BASE_URL, fetchBounded } from "./endpoints.ts";
 import { clampField, MAX_CONTENTS_URLS, MAX_FIELD_CHARACTERS, MAX_RESULTS_PER_REQUEST } from "./session.ts";
 
 /**
@@ -36,8 +37,6 @@ export class ResearchHttpError extends Error {
 		this.service = service;
 	}
 }
-
-const EXA_BASE_URL = "https://api.exa.ai";
 
 function boundedCount(value: number | undefined, fallback: number): number {
 	if (value === undefined || !Number.isFinite(value)) {
@@ -172,19 +171,31 @@ function normalize(payload: unknown): ResearchResponse {
 	return { results, failures: [...failures.values()].slice(0, MAX_CONTENTS_URLS) };
 }
 
+/** Transport options every Exa call shares. */
+export interface ExaTransportOptions {
+	/** Overridable origin; defaults to Exa's documented one. */
+	baseUrl?: string;
+	/** Per-request deadline. Omitted means the control plane's default. */
+	timeoutMs?: number;
+	signal?: AbortSignal;
+	fetch?: typeof fetch;
+}
+
 async function request(
 	path: "search" | "contents",
 	key: string,
 	body: unknown,
-	signal?: AbortSignal,
-	fetchImpl: typeof fetch = fetch,
+	transport: ExaTransportOptions,
 ): Promise<ResearchResponse> {
-	const response = await fetchImpl(`${EXA_BASE_URL}/${path}`, {
-		method: "POST",
-		headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
-		body: JSON.stringify(body),
-		signal,
-	});
+	const response = await fetchBounded(
+		`${transport.baseUrl ?? DEFAULT_EXA_BASE_URL}/${path}`,
+		{
+			method: "POST",
+			headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
+			body: JSON.stringify(body),
+		},
+		{ service: "Exa", timeoutMs: transport.timeoutMs, signal: transport.signal, fetch: transport.fetch },
+	);
 	// Status first: Exa's error envelopes vary, especially on 429.
 	if (!response.ok) {
 		throw new ResearchHttpError(response.status, "Exa");
@@ -192,12 +203,10 @@ async function request(
 	return normalize(await response.json());
 }
 
-export interface ExaSearchOptions {
+export interface ExaSearchOptions extends ExaTransportOptions {
 	numResults?: number;
 	/** At most 10,000, and clamped again on the way out. */
 	maxCharacters?: number;
-	signal?: AbortSignal;
-	fetch?: typeof fetch;
 }
 
 /**
@@ -218,18 +227,15 @@ export async function exaSearch(query: string, key: string, options: ExaSearchOp
 				highlights: { numSentences: 3, highlightsPerUrl: 2, maxCharacters },
 			},
 		},
-		options.signal,
-		options.fetch,
+		options,
 	);
 	return response.results;
 }
 
-export interface ExaContentsOptions {
+export interface ExaContentsOptions extends ExaTransportOptions {
 	maxCharacters?: number;
 	/** Opt-in only: full text is never requested by default. */
 	includeText?: boolean;
-	signal?: AbortSignal;
-	fetch?: typeof fetch;
 }
 
 /**
@@ -255,7 +261,6 @@ export async function exaContents(
 			highlights: { numSentences: 3, highlightsPerUrl: 2, maxCharacters },
 			...(options.includeText === true ? { text: { maxCharacters } } : {}),
 		},
-		options.signal,
-		options.fetch,
+		options,
 	);
 }

@@ -26,6 +26,7 @@ import {
 } from "./graph/stop.ts";
 import { assertMinimalistBounds, observedChangesFromSnapshots } from "./minimalist.ts";
 import { isWriteAllowed } from "./policy.ts";
+import { resolveResearchEndpoints } from "./research/endpoints.ts";
 import { assertResearchFresh, conductResearch } from "./research/gate.ts";
 import { ResearchShortfallError, resolveResearchKeys } from "./research/session.ts";
 import { atomicWrite, createJob, readTaskForJob, type Task, writeAllowForTask } from "./run-store.ts";
@@ -58,6 +59,8 @@ export interface LoopInvocation {
 	goal: string;
 	mode: "gated" | "autopilot";
 	planPath?: string;
+	/** The operator declared this job offline for research. */
+	noNetwork?: boolean;
 }
 
 export interface LoopOutcome {
@@ -87,7 +90,20 @@ function unwrapPath(value: string): string {
 }
 
 export function parseLoopInvocation(args: string): LoopInvocation {
-	const input = args.trim();
+	let input = args.trim();
+	// A leading flag rather than another branch, so the operator's network
+	// decision composes with every existing form instead of forcing a choice
+	// between declaring offline and declaring a mode or a frozen plan.
+	let noNetwork = false;
+	const offlineFlag = /^--no-network(?=\s|$)/u.exec(input);
+	if (offlineFlag !== null) {
+		noNetwork = true;
+		input = input.slice(offlineFlag[0].length).trim();
+		if (input.length === 0) {
+			throw new Error("/kpi --no-network requires a goal");
+		}
+	}
+	const offline = noNetwork ? { noNetwork: true as const } : {};
 	if (input.startsWith("--mode")) {
 		const match = /^--mode\s+(\S+)(?:\s+([\s\S]+))?$/u.exec(input);
 		if (match === null) {
@@ -101,7 +117,7 @@ export function parseLoopInvocation(args: string): LoopInvocation {
 		if (goal.length === 0) {
 			throw new Error(`/kpi --mode ${mode} requires a goal`);
 		}
-		return { goal, mode };
+		return { goal, mode, ...offline };
 	}
 	if (input.startsWith("--until-green")) {
 		const separator = input[13];
@@ -112,7 +128,7 @@ export function parseLoopInvocation(args: string): LoopInvocation {
 		if (goal.length === 0) {
 			throw new Error("/kpi --until-green requires a goal");
 		}
-		return { goal, mode: "autopilot" };
+		return { goal, mode: "autopilot", ...offline };
 	}
 	if (input.startsWith("--plan")) {
 		const separator = input[6];
@@ -127,6 +143,7 @@ export function parseLoopInvocation(args: string): LoopInvocation {
 			goal: `Implement frozen plan from ${planPath}`,
 			mode: "gated",
 			planPath,
+			...offline,
 		};
 	}
 	if (input.startsWith("--")) {
@@ -135,7 +152,7 @@ export function parseLoopInvocation(args: string): LoopInvocation {
 	if (input.length === 0) {
 		throw new Error("/kpi requires a goal");
 	}
-	return { goal: input, mode: "gated" };
+	return { goal: input, mode: "gated", ...offline };
 }
 
 export function makeJobId(goal: string): string {
@@ -847,10 +864,17 @@ async function driveUntilPause(
 				await assertResearchFresh(jobDirectory, task);
 			} catch {
 				try {
-					// The control plane owns keys, mode, budget, cooldown and events.
+					// The control plane owns keys, mode, endpoints, budget, cooldown and
+					// events. The operator's own offline decision travels on the frozen
+					// contract, so a resumed job stays offline.
+					const settings = await readKpiSettings(projectRoot);
+					const { endpoints, timeoutMs } = resolveResearchEndpoints(settings.researchEndpoints);
 					await conductResearch(projectRoot, jobDirectory, task, {
 						keys: await resolveResearchKeys(),
-						mode: (await readKpiSettings(projectRoot)).research,
+						mode: settings.research,
+						endpoints,
+						timeoutMs,
+						operatorNoNetwork: task.research_network === "offline",
 						eventsPath: join(jobDirectory, "events.jsonl"),
 						round: currentStopState.round,
 						node: state.active[0],
@@ -1214,6 +1238,7 @@ export async function runLoop(
 		quality_gates: await qualityGates(ctx.cwd),
 		ac: { quality: compilation.quality },
 		dependency_baseline: await runtimeDependencies(ctx.cwd),
+		...(invocation.noNetwork === true ? { research_network: "offline" as const } : {}),
 		// K-mode's match is frozen here and nowhere else: name plus every ordered
 		// step (including skip reasons). Re-matching mid-run would change what the
 		// run was for; contractHash includes this freeze for the same reason.

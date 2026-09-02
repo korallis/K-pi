@@ -8,6 +8,7 @@ import { CONFIG_DIR_NAME, getKpiResourceDir } from "../../config.ts";
 
 import { type ExtensionAPI, isToolCallEventType, type ToolCallEvent } from "../../core/extensions/types.ts";
 
+import { appendEvent } from "./append-log.ts";
 import { isJsonObject } from "./graph/schema.ts";
 import { isAuthoritativeKnowledgeGraphPath } from "./kg/store.ts";
 import { type RunState, readActiveJob, type Task, writeAllowForTask } from "./run-store.ts";
@@ -589,6 +590,55 @@ export async function readPolicy(cwd: string): Promise<PolicyConfig> {
 	return policy;
 }
 
+/** The path a tool call names, for the tools that name one. */
+function requestedPath(event: ToolCallEvent): string | undefined {
+	if (isToolCallEventType("write", event) || isToolCallEventType("edit", event)) {
+		return event.input.path;
+	}
+	return undefined;
+}
+
+/**
+ * Records that a tool asked to act, and what the policy layer decided, before
+ * the tool could act.
+ *
+ * This is the ordering record: `loop.terminal` says when a run stopped, but
+ * without a request record there is nothing to compare it against, so "stopped
+ * before the first write" was previously only provable by the absence of a file.
+ * Emitted for allowed calls too - an ordering log with only the refusals in it
+ * cannot show that a write came after a decision.
+ *
+ * Best-effort by construction: a session with no active job has nowhere to write
+ * this, and a failed append must never turn into a denied tool call.
+ */
+async function recordToolRequest(
+	cwd: string,
+	event: ToolCallEvent,
+	decision: "allow" | "confirm" | "deny",
+	reason?: string,
+): Promise<void> {
+	try {
+		const job = await readActiveJob(cwd);
+		if (job === undefined) {
+			return;
+		}
+		const path = requestedPath(event);
+		await appendEvent(job.eventsPath, {
+			ts: new Date().toISOString(),
+			type: "tool.request",
+			job_id: job.jobId,
+			round: typeof job.state.round === "number" ? job.state.round : 0,
+			node: typeof job.state.node === "string" ? job.state.node : "tool",
+			tool: event.toolName,
+			decision,
+			...(path === undefined ? {} : { path }),
+			...(reason === undefined ? {} : { reason }),
+		});
+	} catch {
+		// An unrecordable attempt is a lost line, not a policy failure.
+	}
+}
+
 export function registerPolicy(pi: ExtensionAPI, options: PolicyRegistrationOptions = {}): void {
 	pi.on("session_start", async (_event, ctx) => {
 		await ensurePolicyFile(ctx.cwd);
@@ -610,11 +660,16 @@ export function registerPolicy(pi: ExtensionAPI, options: PolicyRegistrationOpti
 			readDiffStat: options.readDiffStat,
 		});
 		if (decision.kind === "allow") {
+			await recordToolRequest(ctx.cwd, event, "allow");
 			return;
 		}
 		if (decision.kind === "deny") {
+			await recordToolRequest(ctx.cwd, event, "deny", decision.reason);
 			return { block: true, reason: decision.reason };
 		}
+		// Recorded before the dialog: the attempt happened whether or not the
+		// operator ever answers.
+		await recordToolRequest(ctx.cwd, event, "confirm", decision.title);
 		// Without dialog-capable UI the harness resolves confirm to false, so an
 		// unattended session blocks the call instead of running it unapproved.
 		if (await ctx.ui.confirm(decision.title, decision.question)) {

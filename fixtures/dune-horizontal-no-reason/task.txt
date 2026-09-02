@@ -1,0 +1,1 @@
+Stage all the checkout and catalog endpoints before their screens; cmd npm test exits 0; writes only src/checkout/**, src/catalog/** and test/**

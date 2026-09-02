@@ -1,0 +1,38 @@
+{
+  "job_id": "2026-09-02-dune-second-slice-extraction",
+  "mode": "gated",
+  "goal": "Extract the shared types the plan scheduled ahead of the slices that would use them",
+  "nongoals": [
+    "billing"
+  ],
+  "acceptance": [
+    {
+      "id": "AC-01",
+      "statement": "the shared types are covered by tests and npm test exits 0",
+      "required": true,
+      "check": {
+        "kind": "command",
+        "cmd": "npm test",
+        "expect": {
+          "exit": 0
+        }
+      },
+      "bounds": {
+        "write_allow": [
+          "src/shared/**",
+          "test/shared/**"
+        ]
+      }
+    }
+  ],
+  "constraints": [
+    "no new runtime dependency"
+  ],
+  "quality_gates": [
+    "npm test"
+  ],
+  "ac": {
+    "quality": "executable"
+  },
+  "current_module_id": "shared"
+}

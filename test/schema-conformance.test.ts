@@ -147,6 +147,10 @@ function eventPayload(type: (typeof EVENT_TYPES)[number]): Record<string, unknow
 				session_path: ".kpi/runs/job/agents/reviewer-1.jsonl",
 				status: "running",
 			};
+		case "tool.request":
+			return { ...base, tool: "write", decision: "deny", path: "src/health.ts", reason: "outside write_allow" };
+		case "agent.denied":
+			return { ...base, reason: "worker-limit", role: "implementer", limit: 2 };
 		case "agent.message":
 			return {
 				...base,

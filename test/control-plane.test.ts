@@ -152,3 +152,59 @@ test("loop is an alias of the kpi command", () => {
 	const { commands } = registerFixture();
 	assert.equal(commands.get("loop"), commands.get("kpi"));
 });
+
+// ---------------------------------------------------------------------------
+// B1: the shipped verification path
+// ---------------------------------------------------------------------------
+
+test("kpi verify checks a job's event chain from the harness itself", async () => {
+	await withFixture(async (directory) => {
+		const runDirectory = await createRun(directory);
+		const notifications: string[] = [];
+		const widgets: Array<string[] | undefined> = [];
+		const { commands } = registerFixture();
+		const kpi = commands.get("kpi")!;
+
+		// A real run's log, appended through the product's own writer.
+		await kpi("stop", context(directory, notifications, widgets));
+		notifications.length = 0;
+
+		await kpi("verify", context(directory, notifications, widgets));
+		assert.equal(notifications.length, 1);
+		assert.match(notifications[0], /events\.jsonl verified: [1-9]\d* records chained/u);
+
+		// One byte of a record changed: the operator is told which line failed.
+		const eventsPath = join(runDirectory, "events.jsonl");
+		const lines = (await readFile(eventsPath, "utf8")).trimEnd().split("\n");
+		lines[0] = lines[0].replace('"operator stop"', '"operator  stop"');
+		await writeFile(eventsPath, `${lines.join("\n")}\n`);
+		notifications.length = 0;
+		await kpi("verify", context(directory, notifications, widgets));
+		assert.equal(notifications.length, 1);
+		assert.match(notifications[0], /events\.jsonl FAILED verification at line 1/u);
+		assert.match(notifications[0], /record_hash does not match/u);
+	});
+});
+
+test("kpi verify accepts a job id and refuses to eat a goal", async () => {
+	await withFixture(async (directory) => {
+		const runDirectory = await createRun(directory);
+		const jobId = runDirectory.split("/").at(-1)!;
+		const notifications: string[] = [];
+		const widgets: Array<string[] | undefined> = [];
+		const { commands } = registerFixture();
+
+		await commands.get("kpi")!(`verify ${jobId}`, context(directory, notifications, widgets));
+		assert.match(notifications.at(-1) ?? "", /verified|FAILED verification/u);
+
+		// A goal that happens to start with the word is still a goal: the loop is
+		// what must run, not the verifier.
+		notifications.length = 0;
+		await commands.get("kpi")!("verify the healthcheck endpoint works", context(directory, notifications, widgets));
+		assert.doesNotMatch(
+			notifications.join("\n"),
+			/records chained|FAILED verification/u,
+			"a multi-word goal was not swallowed by the verify subcommand",
+		);
+	});
+});

@@ -1,9 +1,16 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import type { EventRecord } from "../packages/coding-agent/src/kpi/extensions/append-log.ts";
+import {
+	appendSystemInstalled,
+	ensureAppendSystemInstalled,
+	installAppendSystemCommand,
+	shippedAppendSystemPath,
+} from "../packages/coding-agent/src/kpi/extensions/append-system.ts";
 import { formatEventEntry, formatVerdictReply } from "../packages/coding-agent/src/kpi/extensions/renderers.ts";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
@@ -121,4 +128,77 @@ test("concise-output skill and APPEND_SYSTEM require short user-visible answers"
 	assert.match(skill, /Do not narrate routine work/i);
 	assert.match(append, /Keep user-visible answers short/i);
 	assert.match(append, /Do not narrate routine work or reproduce the control board/i);
+});
+
+/**
+ * A command context whose only capability is answering the replace dialog: the
+ * install path must not need a session, a model, or a job.
+ */
+function commandContext(agentDirectory: string, approve: boolean): Parameters<typeof installAppendSystemCommand>[0] {
+	return {
+		cwd: agentDirectory,
+		hasUI: true,
+		mode: "json",
+		ui: {
+			confirm: async () => approve,
+			notify: () => undefined,
+		},
+	} as unknown as Parameters<typeof installAppendSystemCommand>[0];
+}
+
+// ---------------------------------------------------------------------------
+// B11: the brevity prompt is installed by the product, not by hand
+// ---------------------------------------------------------------------------
+
+test("a fresh agent directory gets the shipped APPEND_SYSTEM on first run", async () => {
+	const home = await mkdtemp(join(tmpdir(), "kpi-append-system-"));
+	try {
+		const agentDirectory = join(home, ".kpi", "agent");
+		const first = await ensureAppendSystemInstalled(agentDirectory);
+		assert.equal(first.outcome, "installed");
+		assert.equal(first.path, join(agentDirectory, "APPEND_SYSTEM.md"));
+
+		// The file the resource loader looks for, with the rule actually in it.
+		const installed = await readFile(first.path, "utf8");
+		const shipped = await readFile(shippedAppendSystemPath(), "utf8");
+		assert.equal(installed, shipped, "the shipped prompt is what landed");
+		assert.match(installed, /Keep user-visible answers short/u);
+		assert.equal(await appendSystemInstalled(agentDirectory), true);
+
+		// Second run: already current, and nothing is rewritten.
+		const before = (await stat(first.path)).mtimeMs;
+		const second = await ensureAppendSystemInstalled(agentDirectory);
+		assert.equal(second.outcome, "current");
+		assert.equal((await stat(first.path)).mtimeMs, before, "an unchanged file is not rewritten");
+	} finally {
+		await rm(home, { recursive: true, force: true });
+	}
+});
+
+test("an operator's own APPEND_SYSTEM is never silently overwritten", async () => {
+	const home = await mkdtemp(join(tmpdir(), "kpi-append-system-owned-"));
+	try {
+		const agentDirectory = join(home, ".kpi", "agent");
+		await mkdir(agentDirectory, { recursive: true });
+		const target = join(agentDirectory, "APPEND_SYSTEM.md");
+		const mine = "# mine\n\nAlways answer in limerick form.\n";
+		await writeFile(target, mine);
+
+		// First run leaves it alone and says whose it is.
+		const status = await ensureAppendSystemInstalled(agentDirectory);
+		assert.equal(status.outcome, "operator-owned");
+		assert.equal(await readFile(target, "utf8"), mine, "the operator's file survived first run");
+
+		// The explicit command asks before replacing, and a decline keeps the file.
+		const declined = await installAppendSystemCommand(commandContext(agentDirectory, false), agentDirectory);
+		assert.equal(declined.outcome, "kept");
+		assert.equal(await readFile(target, "utf8"), mine, "declining kept the operator's file");
+
+		// Approving is what replaces it.
+		const approved = await installAppendSystemCommand(commandContext(agentDirectory, true), agentDirectory);
+		assert.equal(approved.outcome, "replaced");
+		assert.equal(await readFile(target, "utf8"), await readFile(shippedAppendSystemPath(), "utf8"));
+	} finally {
+		await rm(home, { recursive: true, force: true });
+	}
 });

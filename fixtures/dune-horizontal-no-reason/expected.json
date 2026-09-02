@@ -1,0 +1,6 @@
+{
+  "case": "dune-horizontal-no-reason",
+  "outcome": "unsafe",
+  "reason": "Horizontal delivery requires a reason",
+  "note": "The header is otherwise valid and both slices are well formed. Declaring horizontal delivery without delivery_reason is the plan asserting layer staging without recording why, so the map is refused before any module is read."
+}

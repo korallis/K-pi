@@ -8,6 +8,7 @@ import {
 
 import { readActiveJob, readTaskForJob } from "../run-store.ts";
 import { assertClaimInModule, canonicalProjectPath, freezeCurrentSlice, stackRequiredFor } from "../stack.ts";
+import { appendBusDenial } from "./denials.ts";
 import {
 	authorizeWorkerTool,
 	hasWorkerDescriptor,
@@ -159,11 +160,27 @@ function registerWorkerTools(pi: ExtensionAPI, options: BusRegistrationOptions):
 						throw new Error(`worker ${identity.agentId} (${identity.role}) holds no mutation tool to claim for`);
 					}
 					const key = await canonicalClaimKey(context.cwd, identity.jobId, identity.runDirectory, params.path);
-					const lease = await claimLease(
-						identity.runDirectory,
-						{ agentId: identity.agentId, pid: process.pid, key },
-						leaseDependencies,
-					);
+					let lease: Awaited<ReturnType<typeof claimLease>>;
+					try {
+						lease = await claimLease(
+							identity.runDirectory,
+							{ agentId: identity.agentId, pid: process.pid, key },
+							leaseDependencies,
+						);
+					} catch (error) {
+						// The lease rule is unchanged; only the record of hitting it is new.
+						const held = /^Path already claimed by (\S+):/u.exec(error instanceof Error ? error.message : "");
+						if (held !== null) {
+							await appendBusDenial(identity.runDirectory, identity.jobId, {
+								reason: "claim-held",
+								role: identity.role,
+								agent_id: identity.agentId,
+								key,
+								holder: held[1],
+							}).catch(() => undefined);
+						}
+						throw error;
+					}
 					const details = { path: params.path, key, agent_id: identity.agentId, at: lease.at };
 					return { content: [{ type: "text", text: `claimed ${key}` }], details };
 				},
@@ -373,13 +390,19 @@ function registerParentTools(pi: ExtensionAPI, options: BusRegistrationOptions):
 						const tools = resolveRoleTools(params.role, params.tools);
 						const wantsWriter = isWriterToolSet(tools);
 						const live = await countLiveAcrossJobs();
+						const bus = await activeBus(context.cwd);
 						if (live.workers >= MAX_LIVE_WORKERS) {
+							await bus
+								.logDenied({ reason: "worker-limit", role: params.role, limit: MAX_LIVE_WORKERS })
+								.catch(() => undefined);
 							throw new Error(`Background worker limit is ${MAX_LIVE_WORKERS}`);
 						}
 						if (wantsWriter && live.writers >= MAX_LIVE_WRITERS) {
+							await bus
+								.logDenied({ reason: "writer-live", role: params.role, limit: MAX_LIVE_WRITERS })
+								.catch(() => undefined);
 							throw new Error("A writer worker is already live");
 						}
-						const bus = await activeBus(context.cwd);
 						return bus.spawn({
 							role: params.role,
 							prompt: params.prompt,

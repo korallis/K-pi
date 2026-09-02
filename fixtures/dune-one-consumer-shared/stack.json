@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "shape": "dune",
+  "delivery": "vertical",
+  "root": "src",
+  "modules": [
+    {
+      "id": "auth",
+      "purpose": "login and sessions",
+      "folder": "src/auth",
+      "interface": "src/auth/api.ts",
+      "allowed_paths": [
+        "src/auth/**",
+        "test/auth/**"
+      ],
+      "depends_on": [
+        "shared"
+      ]
+    },
+    {
+      "id": "shared",
+      "purpose": "session and money types used across slices",
+      "folder": "src/shared",
+      "interface": "src/shared/index.ts",
+      "allowed_paths": [
+        "src/shared/**",
+        "test/shared/**"
+      ],
+      "depends_on": []
+    }
+  ],
+  "scaffold_first": true,
+  "current_module_id": "auth"
+}

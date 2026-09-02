@@ -1,0 +1,1 @@
+Ship the checkout endpoints; cmd npm test exits 0; writes only src/api/** and test/api/**

@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "shape": "dune",
+  "delivery": "vertical",
+  "root": "src",
+  "modules": [
+    {
+      "id": "api",
+      "purpose": "http endpoints for checkout",
+      "folder": "src/api",
+      "interface": "src/api/index.ts",
+      "allowed_paths": [
+        "src/api/**",
+        "test/api/**"
+      ],
+      "depends_on": []
+    }
+  ],
+  "scaffold_first": true,
+  "current_module_id": "api"
+}

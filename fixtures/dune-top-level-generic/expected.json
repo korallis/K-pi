@@ -1,0 +1,6 @@
+{
+  "case": "dune-top-level-generic",
+  "outcome": "unsafe",
+  "reason": "Generic module needs a tight purpose: utils",
+  "note": "A generic top-level home is a plan-gate failure unless the purpose is specific and the folder holds fewer than five files. The purpose here is two words, so the map is refused first; the seed also holds five files under src/utils, so tightening only the purpose moves the denial to the generic folder file budget."
+}

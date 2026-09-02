@@ -4,7 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
+	type BoardModel,
 	fitBoard,
+	RUN_FILE_NAMES,
 	renderBoard,
 	researchCellFromDocument,
 	resolveCurrentStageIndex,
@@ -462,4 +464,96 @@ test("sticky kMode alone does not light K-STACK on for an active job without fre
 			kModeState.plan = previous.plan;
 		}
 	});
+});
+
+// ---------------------------------------------------------------------------
+// B15: a narrow board folds, it does not lose information
+// ---------------------------------------------------------------------------
+
+function boardModel(overrides: Partial<BoardModel> = {}): BoardModel {
+	return {
+		jobId: "2026-09-02-healthcheck",
+		mode: "gated",
+		round: 2,
+		maxRounds: 3,
+		stage: "implement",
+		node: "implement",
+		stop: "RUNNING",
+		paused: false,
+		passed: false,
+		fingerprint: `sha256:${"a".repeat(64)}`,
+		fileLit: {
+			"task.json": true,
+			"context.md": true,
+			"candidate.json": false,
+			"evidence.json": true,
+			"verdict.json": false,
+			"events.jsonl": true,
+		},
+		contextPack: { product: true, structure: true, tech: false },
+		agents: 1,
+		busLit: true,
+		...overrides,
+	};
+}
+
+test("every width keeps the six file lamps, the current stage, and STOP", () => {
+	for (const width of [200, 120, 80, 60]) {
+		const lines = renderBoard(boardModel({ width }));
+		const text = lines.join("\n");
+		for (const name of RUN_FILE_NAMES) {
+			assert.ok(text.includes(name), `width ${width} kept the ${name} lamp`);
+		}
+		// A dark lamp must stay legible as dark, not vanish behind an ellipsis.
+		assert.ok(text.includes("○ candidate.json"), `width ${width} kept the dark candidate lamp`);
+		assert.ok(text.includes("○ verdict.json"), `width ${width} kept the dark verdict lamp`);
+		assert.ok(text.includes("04 implement CURRENT"), `width ${width} kept the current stage`);
+		assert.ok(text.includes("STOP RUNNING"), `width ${width} kept STOP`);
+		assert.ok(
+			lines.some((line) => line.startsWith("K-π")),
+			`width ${width} kept the brand`,
+		);
+		if (width < 100) {
+			for (const line of lines) {
+				assert.ok(line.length <= width, `width ${width}: "${line}" fits`);
+			}
+		}
+	}
+});
+
+test("a paused narrow board keeps the operator question and the lamps", () => {
+	const lines = renderBoard(
+		boardModel({
+			width: 60,
+			paused: true,
+			stop: "RUNNING",
+			pendingQuestion: "All quality gates and isolated review are green. Approve this change for commit?",
+		}),
+	);
+	const text = lines.join("\n");
+	assert.ok(text.includes("WAITING ON OPERATOR"), "the operator is still told they are the gate");
+	assert.ok(text.includes("HUMAN OVERSIGHT"));
+	assert.ok(text.includes("STOP STATES"));
+	for (const name of RUN_FILE_NAMES) {
+		assert.ok(text.includes(name), `the paused board kept the ${name} lamp`);
+	}
+	for (const line of lines) {
+		assert.ok(line.length <= 60, `"${line}" fits`);
+	}
+});
+
+test("folding a lamp row preserves every lamp in order", () => {
+	const row = `FILES  ${RUN_FILE_NAMES.map((name) => `● ${name}`).join("  ")}`;
+	const folded = fitBoard(["K-π board", "04 implement CURRENT", row, "STOP RUNNING"], 40);
+	const lampLines = folded.filter((line) => /[●○]/u.test(line));
+	assert.ok(lampLines.length > 1, "a 40-column terminal needs more than one lamp row");
+	const order = lampLines
+		.join("  ")
+		.split("  ")
+		.filter((token) => /^[●○] \S+$/u.test(token))
+		.map((token) => token.slice(2));
+	assert.deepEqual(order, [...RUN_FILE_NAMES], "every lamp survived, in order");
+	for (const line of folded) {
+		assert.ok(line.length <= 40, `"${line}" fits`);
+	}
 });

@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "shape": "dune",
+  "delivery": "vertical",
+  "root": "src",
+  "modules": [
+    {
+      "id": "checkout",
+      "purpose": "cart totals and checkout",
+      "folder": "src/checkout",
+      "interface": "src/checkout/api.ts",
+      "allowed_paths": [
+        "src/checkout/**",
+        "test/checkout/**"
+      ],
+      "depends_on": []
+    }
+  ],
+  "scaffold_first": true,
+  "current_module_id": "checkout"
+}

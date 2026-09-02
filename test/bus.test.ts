@@ -53,6 +53,7 @@ function parseLockOwnerForTest(contents: string): { pid: number; nonce: string }
 	return undefined;
 }
 
+import { appendBusDenial } from "../packages/coding-agent/src/kpi/extensions/bus/denials.ts";
 import {
 	resolveCliPath,
 	type WorkerLaunch,
@@ -3477,5 +3478,122 @@ test("countLiveProcesses excludes dead PIDs without reaping the table", async ()
 	} finally {
 		await harness.bus.stopAll();
 		await rm(harness.fixture.directory, { recursive: true, force: true });
+	}
+});
+
+// ---------------------------------------------------------------------------
+// B8: refusals are recorded, without publishing a capability
+// ---------------------------------------------------------------------------
+
+async function deniedRecords(fixture: JobFixture): Promise<Record<string, unknown>[]> {
+	const read = async (name: string): Promise<Record<string, unknown>[]> => {
+		try {
+			return (await readFile(join(fixture.runDirectory, name), "utf8"))
+				.split("\n")
+				.filter((line) => line.length > 0)
+				.map((line) => JSON.parse(line) as Record<string, unknown>)
+				.filter((record) => record.type === "agent.denied");
+		} catch {
+			return [];
+		}
+	};
+	return [...(await read("events.jsonl")), ...(await read("bus.jsonl"))];
+}
+
+test("the third worker is refused and the refusal is on the record", async () => {
+	const harness = await parentHarness({ fixture: await jobFixture({ jobId: "job-denied-cap" }) });
+	try {
+		await harness.bus.spawn({ role: "explorer", prompt: "one" });
+		await harness.bus.spawn({ role: "reviewer", prompt: "two" });
+		// The cap itself is unchanged: two live workers, and the third is refused.
+		await assert.rejects(harness.bus.spawn({ role: "tester", prompt: "three" }), /Background worker limit is 2/u);
+
+		const denials = await deniedRecords(harness.fixture);
+		assert.ok(denials.length >= 1, "the refusal was recorded");
+		const jobRecord = denials.find((record) => record.prev_hash !== undefined);
+		assert.ok(jobRecord, "the job's own hash-chained log carries it");
+		assert.equal(jobRecord.reason, "worker-limit");
+		assert.equal(jobRecord.role, "tester");
+		assert.equal(jobRecord.node, "bus");
+		assert.equal(await verifyChain(join(harness.fixture.runDirectory, "events.jsonl")), true);
+
+		// A refusal must not publish the bearer that would have authorised the work.
+		const serialized = JSON.stringify(denials);
+		assert.doesNotMatch(serialized, /capability/iu, "no capability field reaches a denial record");
+		// Only publishing roles are given one; whoever holds one must not see it here.
+		for (const worker of harness.workers) {
+			const capability = worker.descriptor.capabilityId;
+			if (capability === undefined) {
+				continue;
+			}
+			assert.equal(
+				serialized.includes(capability),
+				false,
+				"a live worker's capability id never reaches a denial record",
+			);
+		}
+	} finally {
+		await harness.bus.stopAll().catch(() => undefined);
+		await rm(harness.fixture.directory, { recursive: true, force: true });
+	}
+});
+
+test("a second writer is refused with its own reason code", async () => {
+	const harness = await parentHarness({ fixture: await jobFixture({ jobId: "job-denied-writer" }) });
+	try {
+		await harness.bus.spawn({ role: "implementer", prompt: "one" });
+		await assert.rejects(harness.bus.spawn({ role: "arena", prompt: "two" }), /A writer worker is already live/u);
+		const denials = await deniedRecords(harness.fixture);
+		const writerLive = denials.find((record) => record.reason === "writer-live");
+		assert.ok(writerLive, "the writer-slot refusal has its own code");
+		assert.equal(writerLive.role, "arena");
+		const before = (await deniedRecords(harness.fixture)).filter((record) => record.reason === "writer-live").length;
+		// A reviewer holding only write_contract still does not consume the slot,
+		// so it is admitted rather than refused.
+		await harness.bus.spawn({ role: "reviewer", prompt: "three" });
+		assert.equal(
+			(await deniedRecords(harness.fixture)).filter((record) => record.reason === "writer-live").length,
+			before,
+			"admitting a contract-only role recorded no new refusal",
+		);
+	} finally {
+		await harness.bus.stopAll().catch(() => undefined);
+		await rm(harness.fixture.directory, { recursive: true, force: true });
+	}
+});
+
+test("a refused path claim is recorded in the bus transcript", async () => {
+	const fixture = await jobFixture({ jobId: "job-denied-claim" });
+	try {
+		const key = "src/auth/api.ts";
+		await claimLease(fixture.runDirectory, { agentId: "implementer-a", pid: process.pid, key });
+		await assert.rejects(
+			claimLease(fixture.runDirectory, { agentId: "implementer-b", pid: process.pid, key }),
+			/Path already claimed by implementer-a/u,
+		);
+		// A worker records into bus.jsonl rather than the chained log: two processes
+		// appending to a check-then-act chain would both claim one predecessor.
+		await appendBusDenial(fixture.runDirectory, fixture.jobId, {
+			reason: "claim-held",
+			role: "implementer",
+			agent_id: "implementer-b",
+			key,
+			holder: "implementer-a",
+		});
+		const denials = await deniedRecords(fixture);
+		const held = denials.find((record) => record.reason === "claim-held");
+		assert.ok(held, "the refused claim is on the record");
+		assert.equal(held.key, key);
+		assert.equal(held.holder, "implementer-a");
+		assert.equal(held.agent_id, "implementer-b");
+		assert.doesNotMatch(JSON.stringify(denials), /capability/iu);
+		// The lease itself is untouched by the refusal.
+		const leases = JSON.parse(await readFile(join(fixture.runDirectory, "leases.json"), "utf8")) as Record<
+			string,
+			{ agent_id: string }
+		>;
+		assert.equal(leases[key].agent_id, "implementer-a");
+	} finally {
+		await rm(fixture.directory, { recursive: true, force: true });
 	}
 });

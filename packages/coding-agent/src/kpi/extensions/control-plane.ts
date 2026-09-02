@@ -6,7 +6,7 @@ import { CONFIG_DIR_NAME } from "../../config.ts";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "../../core/extensions/types.ts";
 import { kModeState } from "../kstack/mode.ts";
 
-import { appendEvent, type JsonValue } from "./append-log.ts";
+import { appendEvent, inspectChain, type JsonValue } from "./append-log.ts";
 import {
 	type BoardModel,
 	normalizeStop,
@@ -17,7 +17,7 @@ import {
 } from "./board.ts";
 import { liveWorkerCount } from "./bus/live-snapshot.ts";
 import { type LoopDependencies, type LoopOutcome, parseLoopInvocation, resumeLoop, runLoop } from "./gated-loop.ts";
-import { atomicWrite, type RunState, readActiveJob } from "./run-store.ts";
+import { atomicWrite, JOB_ID_PATTERN, type RunState, readActiveJob } from "./run-store.ts";
 import { autoWrapState } from "./settings.ts";
 import { getFooterRouteSnapshot } from "./status-line/route-snapshot.ts";
 import { formatUsage } from "./status-line/segments.ts";
@@ -321,6 +321,36 @@ async function stopJob(ctx: ExtensionCommandContext): Promise<void> {
 	ctx.ui.notify(`K-π job ${job.jobId} BLOCKED`, "warning");
 }
 
+/**
+ * Verifies a job's event log from the shipped harness.
+ *
+ * The chain exists so an operator can reconstruct an interrupted run, and a
+ * guarantee nobody can check is not a guarantee. Verification is read-only and
+ * reads no model: it recomputes each record's hash from the bytes on disk and
+ * names the first line that does not chain.
+ */
+async function verifyJobLog(args: string, ctx: ExtensionCommandContext): Promise<void> {
+	const requested = args.trim();
+	const path =
+		requested.length > 0
+			? join(ctx.cwd, CONFIG_DIR_NAME, "runs", requested, "events.jsonl")
+			: (await readActiveJob(ctx.cwd))?.eventsPath;
+	if (path === undefined) {
+		ctx.ui.notify("no active job to verify; pass a job id", "info");
+		return;
+	}
+	const report = await inspectChain(path);
+	const jobId = requested.length > 0 ? requested : (await readActiveJob(ctx.cwd))?.jobId;
+	if (report.ok) {
+		ctx.ui.notify(`events.jsonl verified: ${report.records} records chained for ${jobId ?? "this job"}`, "info");
+		return;
+	}
+	ctx.ui.notify(
+		`events.jsonl FAILED verification at line ${report.line ?? 0}: ${report.reason ?? "unknown"} (${report.records} records verified before it)`,
+		"error",
+	);
+}
+
 async function handleKpiCommand(
 	args: string,
 	ctx: ExtensionCommandContext,
@@ -338,6 +368,12 @@ async function handleKpiCommand(
 	if (command === "off") {
 		autoWrapState.enabled = false;
 		ctx.ui.notify("K-π automatic goal wrapping off", "info");
+		return;
+	}
+	// A subcommand may not swallow a goal: `verify` alone, or `verify <job-id>`,
+	// is the verifier; anything else is what the operator wants built.
+	if (command === "verify" || (command.startsWith("verify ") && JOB_ID_PATTERN.test(command.slice(7).trim()))) {
+		await verifyJobLog(command.slice("verify".length), ctx);
 		return;
 	}
 

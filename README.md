@@ -102,17 +102,29 @@ node scripts/verify-product.mjs --json .kpi/remediation-proof.json
 # WF-03: executable autopilot
 /kpi --mode autopilot add /health; check: curl -fsS localhost:3000/health
 
-# WF-04: inspect or stop
+# WF-04: inspect, stop, or audit
 /kpi status
 /kpi stop
+/kpi verify              # recompute this job's events.jsonl hash chain
 
 # WF-05: account pools
 /accounts login anthropic home
 /accounts login openai-codex work
 /accounts
+
+# WF-06: offline research
+/kpi --no-network add /health   # composes with --mode, --plan, --until-green
 ```
 
 A bare non-command goal starts gated `/kpi` with sticky K-mode when automatic wrapping is enabled. `/kpi off` restores plain harness input. `/k-mode off` disables K-mode.
+
+`/kpi verify [job-id]` recomputes the RFC 8785 canonical hash of every record in
+`.kpi/runs/<job>/events.jsonl` and names the first line that does not chain. It
+reads no model and changes nothing.
+
+`/append-system` installs K-π's concise-output system prompt at
+`~/.kpi/agent/APPEND_SYSTEM.md`. A fresh agent directory gets it on first run; an
+existing file is yours and is only replaced if you confirm.
 
 ## Accounts and billing
 

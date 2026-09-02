@@ -1,0 +1,6 @@
+{
+  "case": "dune-second-selected-module",
+  "outcome": "unsafe",
+  "reason": "stack.json names slice billing while task.json names auth",
+  "note": "Advancing the slice is a plan edit that re-freezes the contract. A disagreement between the map's selection and the contract's selection is two selected modules, not a preference, and nothing is silently rewritten."
+}

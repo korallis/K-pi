@@ -78,6 +78,9 @@
     },
     {
       "$ref": "#/$defs/agentMessage"
+    },
+    {
+      "$ref": "#/$defs/agentDenied"
     }
   ],
   "$defs": {
@@ -200,7 +203,9 @@
         "round",
         "node",
         "prev_hash",
-        "record_hash"
+        "record_hash",
+        "tool",
+        "decision"
       ],
       "properties": {
         "ts": {
@@ -223,6 +228,74 @@
         },
         "record_hash": {
           "$ref": "#/$defs/hash"
+        },
+        "tool": {
+          "$ref": "#/$defs/identifier"
+        },
+        "decision": {
+          "enum": ["allow", "confirm", "deny"]
+        },
+        "path": {
+          "$ref": "#/$defs/text"
+        },
+        "reason": {
+          "$ref": "#/$defs/text"
+        }
+      },
+      "additionalProperties": false
+    },
+    "agentDenied": {
+      "type": "object",
+      "required": [
+        "ts",
+        "type",
+        "job_id",
+        "round",
+        "node",
+        "prev_hash",
+        "record_hash",
+        "reason"
+      ],
+      "properties": {
+        "ts": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "type": {
+          "const": "agent.denied"
+        },
+        "job_id": {
+          "$ref": "#/$defs/jobId"
+        },
+        "round": {
+          "$ref": "#/$defs/round"
+        },
+        "node": {
+          "$ref": "#/$defs/node"
+        },
+        "prev_hash": {
+          "$ref": "#/$defs/hash"
+        },
+        "record_hash": {
+          "$ref": "#/$defs/hash"
+        },
+        "reason": {
+          "enum": ["worker-limit", "writer-live", "admission-held", "claim-held", "role-tool"]
+        },
+        "role": {
+          "$ref": "#/$defs/text"
+        },
+        "agent_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "key": {
+          "$ref": "#/$defs/text"
+        },
+        "holder": {
+          "$ref": "#/$defs/text"
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 0
         }
       },
       "additionalProperties": false

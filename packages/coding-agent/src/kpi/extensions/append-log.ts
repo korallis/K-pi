@@ -29,6 +29,7 @@ export const EVENT_TYPES = [
 	"research.completed",
 	"agent.spawned",
 	"agent.message",
+	"agent.denied",
 ] as const;
 
 export type EventType = (typeof EVENT_TYPES)[number];
@@ -47,7 +48,6 @@ type Event<T extends EventType, P = Record<never, never>> = EventBase & {
 
 /** Types whose whole meaning is the base envelope. */
 type BareEventType =
-	| "tool.request"
 	| "tool.result"
 	| "handoff.completed"
 	| "recovery.started"
@@ -88,6 +88,36 @@ export type EventInput =
 	| Event<"ac.refused", { quality: "executable" | "partial" | "narrative"; reason: string }>
 	| Event<"accounts.failover", { from: string; to: string; reason?: string }>
 	| Event<"loop.terminal", { status: TerminalStatus; reason?: string }>
+	| Event<
+			"tool.request",
+			{
+				/** The tool the session asked to run. */
+				tool: string;
+				/** What the policy layer decided, before the tool could act. */
+				decision: "allow" | "confirm" | "deny";
+				/** Repository-relative target, for the tools that name one. */
+				path?: string;
+				reason?: string;
+			}
+	  >
+	| Event<
+			"agent.denied",
+			{
+				/**
+				 * Why the bus refused. A code rather than prose so a grader can match
+				 * it, and never a capability id: the reason a worker was refused is
+				 * not a place to publish the bearer that would have let it through.
+				 */
+				reason: "worker-limit" | "writer-live" | "admission-held" | "claim-held" | "role-tool";
+				role?: string;
+				agent_id?: string;
+				/** Canonical claim key, for a refused path claim. */
+				key?: string;
+				/** The agent already holding the thing that was refused. */
+				holder?: string;
+				limit?: number;
+			}
+	  >
 	| Event<
 			"review.verdict",
 			{
@@ -284,8 +314,33 @@ export function sanitizeEvent(event: EventInput): { [key: string]: JsonValue } {
 	return redactJson(payload) as { [key: string]: JsonValue };
 }
 
+/**
+ * An unpaired UTF-16 surrogate, which RFC 8785 §3.2.2 makes an error rather than
+ * something to escape.
+ *
+ * `JSON.stringify` emits well-formed output for a lone surrogate by escaping it,
+ * which is valid JSON but is not the canonical form: two callers disagreeing on
+ * whether to escape or reject would compute different hashes for the same input.
+ * Refusing here is what keeps this function exactly the documented scheme.
+ */
+const LONE_SURROGATE_PATTERN = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u;
+
+/**
+ * RFC 8785 (JSON Canonicalization Scheme).
+ *
+ * Object keys are sorted by UTF-16 code unit, which is JavaScript's default
+ * string order; numbers use ECMAScript number-to-string, which is what
+ * `JSON.stringify` produces for a finite number; strings use JSON's own minimal
+ * escaping. Non-finite numbers and unpaired surrogates are errors, not values.
+ */
 function canonicalize(value: JsonValue): string {
-	if (value === null || typeof value === "boolean" || typeof value === "string") {
+	if (typeof value === "string") {
+		if (LONE_SURROGATE_PATTERN.test(value)) {
+			throw new TypeError("Events cannot contain an unpaired surrogate");
+		}
+		return JSON.stringify(value);
+	}
+	if (value === null || typeof value === "boolean") {
 		return JSON.stringify(value);
 	}
 	if (typeof value === "number") {
@@ -300,7 +355,7 @@ function canonicalize(value: JsonValue): string {
 
 	return `{${Object.keys(value)
 		.sort()
-		.map((key) => `${JSON.stringify(key)}:${canonicalize(value[key])}`)
+		.map((key) => `${canonicalize(key)}:${canonicalize(value[key])}`)
 		.join(",")}}`;
 }
 
@@ -384,39 +439,75 @@ export async function appendEvent(path: string, event: EventInput): Promise<Even
 	});
 }
 
-export async function verifyChain(path: string): Promise<boolean> {
+/**
+ * The outcome of verifying one log, in the form an operator can act on.
+ *
+ * A boolean says a log is broken; it does not say where, which is the only part
+ * that helps. `line` is 1-based so it matches what an editor shows.
+ */
+export interface ChainReport {
+	ok: boolean;
+	path: string;
+	records: number;
+	/** 1-based line of the first record that failed, when one did. */
+	line?: number;
+	reason?: string;
+}
+
+export async function inspectChain(path: string): Promise<ChainReport> {
 	let source: string;
 	try {
 		source = await readFile(path, "utf8");
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-			return false;
+			return { ok: false, path, records: 0, reason: "no event log at this path" };
 		}
 		throw error;
 	}
 
 	let expectedPreviousHash = FIRST_HASH;
-	for (const line of source.split("\n")) {
-		if (line.length === 0) {
+	let records = 0;
+	let line = 0;
+	for (const text of source.split("\n")) {
+		line += 1;
+		if (text.length === 0) {
 			continue;
 		}
-
+		let record: Record<string, JsonValue>;
 		try {
-			const record = JSON.parse(line) as Record<string, JsonValue>;
-			const { record_hash, ...recordWithoutHash } = record;
-			if (
-				typeof record_hash !== "string" ||
-				!HASH_PATTERN.test(record_hash) ||
-				recordWithoutHash.prev_hash !== expectedPreviousHash ||
-				hashRecord(recordWithoutHash) !== record_hash
-			) {
-				return false;
-			}
-			expectedPreviousHash = record_hash;
+			record = JSON.parse(text) as Record<string, JsonValue>;
 		} catch {
-			return false;
+			return { ok: false, path, records, line, reason: "record is not valid JSON" };
 		}
+		const { record_hash, ...recordWithoutHash } = record;
+		if (typeof record_hash !== "string" || !HASH_PATTERN.test(record_hash)) {
+			return { ok: false, path, records, line, reason: "record_hash is missing or malformed" };
+		}
+		if (recordWithoutHash.prev_hash !== expectedPreviousHash) {
+			return {
+				ok: false,
+				path,
+				records,
+				line,
+				reason: `prev_hash does not chain to the previous record (expected ${String(expectedPreviousHash).slice(0, 12)})`,
+			};
+		}
+		let computed: string;
+		try {
+			computed = hashRecord(recordWithoutHash);
+		} catch (error) {
+			return { ok: false, path, records, line, reason: error instanceof Error ? error.message : String(error) };
+		}
+		if (computed !== record_hash) {
+			return { ok: false, path, records, line, reason: "record_hash does not match the record's own bytes" };
+		}
+		records += 1;
+		expectedPreviousHash = record_hash;
 	}
 
-	return true;
+	return { ok: true, path, records };
+}
+
+export async function verifyChain(path: string): Promise<boolean> {
+	return (await inspectChain(path)).ok;
 }

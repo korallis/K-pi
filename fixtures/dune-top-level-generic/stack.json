@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "shape": "dune",
+  "delivery": "vertical",
+  "root": "src",
+  "modules": [
+    {
+      "id": "utils",
+      "purpose": "misc stuff",
+      "folder": "src/utils",
+      "interface": "src/utils/index.ts",
+      "allowed_paths": [
+        "src/utils/**",
+        "test/utils/**"
+      ],
+      "depends_on": []
+    }
+  ],
+  "scaffold_first": true,
+  "current_module_id": "utils"
+}

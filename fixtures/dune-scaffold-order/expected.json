@@ -1,0 +1,6 @@
+{
+  "case": "dune-scaffold-order",
+  "outcome": "unsafe",
+  "reason": "Module checkout has behaviour (src/checkout/total.ts) before its scaffold: missing src/checkout/api.ts, test/checkout/index.test.ts",
+  "note": "The map is valid and fresh, so the round reaches the scaffold check. One behaviour file in the folder with no public interface and no test twin is the order violation, and both missing scaffold paths are named."
+}

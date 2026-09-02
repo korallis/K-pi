@@ -1,0 +1,38 @@
+{
+  "job_id": "2026-09-02-dune-scaffold-order",
+  "mode": "gated",
+  "goal": "Ship the checkout totals slice whose behaviour was written before its scaffold",
+  "nongoals": [
+    "catalog"
+  ],
+  "acceptance": [
+    {
+      "id": "AC-01",
+      "statement": "total() sums the line items and npm test exits 0",
+      "required": true,
+      "check": {
+        "kind": "command",
+        "cmd": "npm test",
+        "expect": {
+          "exit": 0
+        }
+      },
+      "bounds": {
+        "write_allow": [
+          "src/checkout/**",
+          "test/checkout/**"
+        ]
+      }
+    }
+  ],
+  "constraints": [
+    "no new runtime dependency"
+  ],
+  "quality_gates": [
+    "npm test"
+  ],
+  "ac": {
+    "quality": "executable"
+  },
+  "current_module_id": "checkout"
+}

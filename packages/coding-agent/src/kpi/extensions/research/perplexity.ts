@@ -1,7 +1,9 @@
+import { DEFAULT_PERPLEXITY_BASE_URL, fetchBounded } from "./endpoints.ts";
 import { ResearchHttpError, type ResearchResult } from "./exa.ts";
 import { clampField, MAX_FIELD_CHARACTERS, MAX_RESULTS_PER_REQUEST } from "./session.ts";
 
-const PERPLEXITY_SEARCH_URL = "https://api.perplexity.ai/search";
+/** Documented Search path, joined onto whichever origin is configured. */
+const PERPLEXITY_SEARCH_PATH = "/search";
 
 /**
  * Token bounds, because they are the only hard ones Perplexity Search offers.
@@ -15,6 +17,10 @@ export interface PerplexitySearchOptions {
 	maxResults?: number;
 	maxTokens?: number;
 	maxTokensPerPage?: number;
+	/** Overridable origin; defaults to Perplexity's documented one. */
+	baseUrl?: string;
+	/** Per-request deadline. Omitted means the control plane's default. */
+	timeoutMs?: number;
 	signal?: AbortSignal;
 	fetch?: typeof fetch;
 }
@@ -68,18 +74,21 @@ export async function perplexitySearch(
 	options: PerplexitySearchOptions = {},
 ): Promise<ResearchResult[]> {
 	const maxResults = Math.max(1, Math.min(MAX_RESULTS_PER_REQUEST, Math.trunc(options.maxResults ?? 5)));
-	const response = await (options.fetch ?? fetch)(PERPLEXITY_SEARCH_URL, {
-		method: "POST",
-		headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
-		body: JSON.stringify({
-			query: clampField(query, MAX_FIELD_CHARACTERS),
-			max_results: maxResults,
-			// Hard bounds only. No `search_context_size`: it is qualitative.
-			max_tokens: Math.max(1, Math.trunc(options.maxTokens ?? DEFAULT_MAX_TOKENS)),
-			max_tokens_per_page: Math.max(1, Math.trunc(options.maxTokensPerPage ?? DEFAULT_MAX_TOKENS_PER_PAGE)),
-		}),
-		signal: options.signal,
-	});
+	const response = await fetchBounded(
+		`${options.baseUrl ?? DEFAULT_PERPLEXITY_BASE_URL}${PERPLEXITY_SEARCH_PATH}`,
+		{
+			method: "POST",
+			headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
+			body: JSON.stringify({
+				query: clampField(query, MAX_FIELD_CHARACTERS),
+				max_results: maxResults,
+				// Hard bounds only. No `search_context_size`: it is qualitative.
+				max_tokens: Math.max(1, Math.trunc(options.maxTokens ?? DEFAULT_MAX_TOKENS)),
+				max_tokens_per_page: Math.max(1, Math.trunc(options.maxTokensPerPage ?? DEFAULT_MAX_TOKENS_PER_PAGE)),
+			}),
+		},
+		{ service: "Perplexity", timeoutMs: options.timeoutMs, signal: options.signal, fetch: options.fetch },
+	);
 	// Status first, independent of envelope shape.
 	if (!response.ok) {
 		throw new ResearchHttpError(response.status, "Perplexity");

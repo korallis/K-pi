@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "shape": "dune",
+  "delivery": "vertical",
+  "root": "src",
+  "modules": [
+    {
+      "id": "auth",
+      "purpose": "login and sessions",
+      "folder": "src/auth",
+      "interface": "src/auth/api.ts",
+      "allowed_paths": [
+        "src/auth/**",
+        "test/auth/**"
+      ],
+      "depends_on": []
+    }
+  ],
+  "scaffold_first": true,
+  "task_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "current_module_id": "auth"
+}

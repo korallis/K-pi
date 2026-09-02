@@ -68,6 +68,14 @@ export interface Task {
 	limits?: GraphBudgetOverrides;
 	/** The one slice an implement round ships. Never inferred from modules[0]. */
 	current_module_id?: string;
+	/**
+	 * The operator's own network decision for this job's research.
+	 *
+	 * On the contract rather than in process state so a resumed job stays offline:
+	 * a job the operator declared offline must not quietly reach the network
+	 * because a later process forgot the flag. Absent means `auto`.
+	 */
+	research_network?: "auto" | "offline";
 }
 
 /** One step frozen into `task.json` with the selected playbook. */
@@ -123,7 +131,7 @@ export interface ActiveJob {
 	statePath: string;
 }
 
-const JOB_ID_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+export const JOB_ID_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 function assertJobId(jobId: string): void {
 	if (!JOB_ID_PATTERN.test(jobId)) {

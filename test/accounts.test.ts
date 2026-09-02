@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -10,6 +10,7 @@ import type { ExtensionCommandContext } from "../packages/coding-agent/src/core/
 import {
 	ANTHROPIC_EXTRA_USAGE_WARNING,
 	registerAccounts,
+	ZAI_PERSONAL_USE_NOTE,
 } from "../packages/coding-agent/src/kpi/extensions/accounts/index.ts";
 import { AccountsStore } from "../packages/coding-agent/src/kpi/extensions/accounts/store.ts";
 
@@ -872,6 +873,194 @@ test("a credential travels in the header its own provider reads", async () => {
 		);
 		assert.equal(oauthHeaders.authorization, "Bearer access-home", "an OAuth token stays a bearer token");
 		assert.equal(oauthHeaders["x-api-key"], undefined);
+	} finally {
+		await rm(subject.directory, { recursive: true, force: true });
+	}
+});
+
+/** Only what the login path reads off a provider: its declared auth methods. */
+interface ProviderStub {
+	auth: {
+		apiKey?: { name: string };
+		oauth?: { login(interaction: ProviderAuthInteraction): Promise<Credential> };
+	};
+}
+
+interface ProviderLoginHarness {
+	command: CommandHandler;
+	context: ExtensionCommandContext;
+	directory: string;
+	inputs: Array<{ title: string; placeholder: string | undefined }>;
+	notifications: string[];
+	sequence: string[];
+	store: AccountsStore;
+}
+
+/**
+ * `/accounts` with no injected `login`, so the extension's own dispatch runs
+ * against whatever auth the registry declares for the pool.
+ */
+async function providerLoginHarness(
+	providers: Record<string, ProviderStub>,
+	answers: Array<string | undefined>,
+): Promise<ProviderLoginHarness> {
+	const directory = await mkdtemp(join(tmpdir(), "k-pi-provider-login-"));
+	const store = new AccountsStore(directory);
+	const commands = new Map<string, CommandHandler>();
+	const inputs: Array<{ title: string; placeholder: string | undefined }> = [];
+	const notifications: string[] = [];
+	const sequence: string[] = [];
+	const pending = [...answers];
+	const pi = {
+		registerCommand(name: string, options: { handler: CommandHandler }) {
+			commands.set(name, options.handler);
+		},
+		async exec() {
+			sequence.push("open");
+			return { code: 0, stdout: "", stderr: "" };
+		},
+	};
+	registerAccounts(pi as unknown as Parameters<typeof registerAccounts>[0], { store, now: () => FIXED_TIME });
+	const context = {
+		cwd: directory,
+		hasUI: true,
+		mode: "tui",
+		modelRegistry: {
+			getProvider(id: string) {
+				return providers[id];
+			},
+		},
+		ui: {
+			async confirm() {
+				sequence.push("confirm");
+				return true;
+			},
+			async input(title: string, placeholder?: string) {
+				sequence.push("input");
+				inputs.push({ title, placeholder });
+				return pending.shift();
+			},
+			notify(message: string) {
+				sequence.push("notify");
+				notifications.push(message);
+			},
+			setStatus() {},
+		},
+	} as unknown as ExtensionCommandContext;
+	return { command: commands.get("accounts")!, context, directory, inputs, notifications, sequence, store };
+}
+
+const ZAI_PROVIDERS: Record<string, ProviderStub> = { zai: { auth: { apiKey: { name: "Z.AI API key" } } } };
+
+test("/accounts login zai notes personal use, then stores a key slot under the provider's own label", async () => {
+	const subject = await providerLoginHarness(ZAI_PROVIDERS, ["  zai-secret-key  "]);
+	try {
+		await subject.command("login zai home", subject.context);
+
+		assert.deepEqual(subject.sequence.slice(0, 2), ["notify", "input"], "the note precedes the key prompt");
+		assert.equal(subject.notifications[0], ZAI_PERSONAL_USE_NOTE);
+		assert.deepEqual(subject.inputs, [{ title: "Z.AI API key", placeholder: "Paste the key, or Enter to cancel" }]);
+
+		const slots = (await subject.store.read()).pools.zai?.slots;
+		assert.deepEqual(slots, [
+			{ id: "home", kind: "api_key", label: "home", warningAcceptedAt: FIXED_TIME.toISOString() },
+		]);
+		assert.deepEqual(await subject.store.readSecrets(), { "zai/home": { type: "api_key", key: "zai-secret-key" } });
+	} finally {
+		await rm(subject.directory, { recursive: true, force: true });
+	}
+});
+
+test("a cancelled or empty zai key prompt creates no slot and writes no secret", async () => {
+	const subject = await providerLoginHarness(ZAI_PROVIDERS, [undefined, "   "]);
+	try {
+		await subject.command("login zai home", subject.context);
+		await subject.command("login zai home", subject.context);
+
+		assert.equal(subject.inputs.length, 2, "both a dismissal and a blank answer reached the prompt");
+		assert.deepEqual((await subject.store.read()).pools, {});
+		assert.deepEqual(await subject.store.readSecrets(), {});
+		assert.deepEqual(
+			subject.notifications.filter((message) => message.includes("cancelled")),
+			["K-\u03c0 accounts: Login cancelled", "K-\u03c0 accounts: Login cancelled"],
+		);
+	} finally {
+		await rm(subject.directory, { recursive: true, force: true });
+	}
+});
+
+test("the zai key reaches the secret store and never a notification or accounts.json", async () => {
+	const subject = await providerLoginHarness(ZAI_PROVIDERS, ["zai-secret-key"]);
+	try {
+		await subject.command("login zai home", subject.context);
+
+		for (const message of subject.notifications) {
+			assert.doesNotMatch(message, /zai-secret-key/u, "no notification carries the key");
+		}
+		assert.doesNotMatch(await readFile(subject.store.accountsPath, "utf8"), /zai-secret-key/u);
+		assert.deepEqual((await subject.store.readSecrets())["zai/home"], { type: "api_key", key: "zai-secret-key" });
+	} finally {
+		await rm(subject.directory, { recursive: true, force: true });
+	}
+});
+
+test("a second /accounts login zai on the same slot does not repeat the personal-use note", async () => {
+	const subject = await providerLoginHarness(ZAI_PROVIDERS, ["first-key", "second-key"]);
+	try {
+		await subject.command("login zai home", subject.context);
+		await subject.command("login zai home", subject.context);
+
+		assert.deepEqual(
+			subject.notifications.filter((message) => message === ZAI_PERSONAL_USE_NOTE),
+			[ZAI_PERSONAL_USE_NOTE],
+		);
+		assert.equal(subject.inputs.length, 2, "the key is still asked for on the re-login");
+		assert.equal((await subject.store.read()).pools.zai?.slots.length, 1);
+		assert.deepEqual(await subject.store.readSecrets(), { "zai/home": { type: "api_key", key: "second-key" } });
+	} finally {
+		await rm(subject.directory, { recursive: true, force: true });
+	}
+});
+
+test("kimi-coding still logs in through OAuth although it also declares an API key", async () => {
+	const oauthLogins: string[] = [];
+	const subject = await providerLoginHarness(
+		{
+			"kimi-coding": {
+				auth: {
+					apiKey: { name: "Kimi API key" },
+					oauth: {
+						async login() {
+							oauthLogins.push("kimi-coding");
+							return oauthCredential("home");
+						},
+					},
+				},
+			},
+		},
+		[],
+	);
+	try {
+		await subject.command("login kimi-coding home", subject.context);
+
+		assert.deepEqual(oauthLogins, ["kimi-coding"], "the provider's own oauth login ran");
+		assert.deepEqual(subject.inputs, [], "a subscription provider is never asked for a key");
+		assert.equal((await subject.store.read()).pools["kimi-coding"]?.slots[0]?.kind, "oauth");
+	} finally {
+		await rm(subject.directory, { recursive: true, force: true });
+	}
+});
+
+test("a pool whose provider declares neither auth method names the pool in the failure", async () => {
+	const subject = await providerLoginHarness({ xai: { auth: {} } }, []);
+	try {
+		await subject.command("login xai home", subject.context);
+
+		assert.deepEqual(subject.notifications, [
+			"K-\u03c0 accounts: Provider xai offers neither subscription OAuth nor an API key",
+		]);
+		assert.deepEqual((await subject.store.read()).pools, {});
+		assert.deepEqual(await subject.store.readSecrets(), {});
 	} finally {
 		await rm(subject.directory, { recursive: true, force: true });
 	}

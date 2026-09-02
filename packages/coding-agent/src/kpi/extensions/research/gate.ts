@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { isJsonObject } from "../graph/schema.ts";
 import { atomicWrite, contractHash, type Task } from "../run-store.ts";
 import type { ResearchMode } from "../settings.ts";
+import { DEFAULT_RESEARCH_ENDPOINTS, type ResearchEndpoints } from "./endpoints.ts";
 import { exaSearch } from "./exa.ts";
 import { perplexitySearch } from "./perplexity.ts";
 import {
@@ -42,6 +43,10 @@ export interface ResearchDependencies {
 	operatorNoNetwork?: boolean;
 	maxExternalCalls?: number;
 	signal?: AbortSignal;
+	/** Resolved origins. Absent means each service's documented default. */
+	endpoints?: ResearchEndpoints;
+	/** Per-request deadline, resolved by the control plane. */
+	timeoutMs?: number;
 }
 
 /** Research binds to what the job must achieve, not to which slice is current. */
@@ -136,15 +141,20 @@ export async function conductResearch(
 		}
 		const queries = [task.goal, alternateQuery(task.goal)];
 		for (const [index, query] of queries.entries()) {
+			const endpoints = dependencies.endpoints ?? DEFAULT_RESEARCH_ENDPOINTS;
 			const outcome = await session.call(service, query, async (key) =>
 				service === "exa"
 					? exaSearch(query, key, {
 							numResults: MAX_RESULTS_PER_REQUEST,
+							baseUrl: endpoints.exa,
+							timeoutMs: dependencies.timeoutMs,
 							fetch: dependencies.fetch,
 							signal: dependencies.signal,
 						})
 					: perplexitySearch(query, key, {
 							maxResults: MAX_RESULTS_PER_REQUEST,
+							baseUrl: endpoints.perplexity,
+							timeoutMs: dependencies.timeoutMs,
 							fetch: dependencies.fetch,
 							signal: dependencies.signal,
 						}),

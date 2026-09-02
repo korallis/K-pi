@@ -8,6 +8,18 @@ import type { ExtensionCommandContext } from "../packages/coding-agent/src/core/
 import { registerAccounts } from "../packages/coding-agent/src/kpi/extensions/accounts/index.ts";
 import { AccountsStore } from "../packages/coding-agent/src/kpi/extensions/accounts/store.ts";
 import { verifyChain } from "../packages/coding-agent/src/kpi/extensions/append-log.ts";
+import { researchCellFromDocument } from "../packages/coding-agent/src/kpi/extensions/board.ts";
+import { parseLoopInvocation } from "../packages/coding-agent/src/kpi/extensions/gated-loop.ts";
+import {
+	assertResearchBaseUrl,
+	DEFAULT_EXA_BASE_URL,
+	DEFAULT_PERPLEXITY_BASE_URL,
+	DEFAULT_RESEARCH_TIMEOUT_MS,
+	fetchBounded,
+	ResearchEndpointError,
+	ResearchTimeoutError,
+	resolveResearchEndpoints,
+} from "../packages/coding-agent/src/kpi/extensions/research/endpoints.ts";
 import {
 	conductResearch,
 	REQUIRED_EXTERNAL_SOURCES,
@@ -590,4 +602,274 @@ test("setup saves what the operator typed and records the resulting mode", async
 			await rm(project, { recursive: true, force: true });
 		}
 	});
+});
+
+// ---------------------------------------------------------------------------
+// B2/B4: overridable, validated endpoints and a bounded request
+// ---------------------------------------------------------------------------
+
+test("a settings base URL is used, and it beats the environment", async () => {
+	const requested: string[] = [];
+	const stubFetch: typeof fetch = async (input) => {
+		requested.push(String(input));
+		return new Response(exaPayload(["https://one.test/a", "https://two.test/b"]), { status: 200 });
+	};
+	const directory = await mkdtemp(join(tmpdir(), "kpi-research-endpoint-"));
+	try {
+		await writeFile(
+			join(directory, "settings.json"),
+			JSON.stringify({ research: "auto", researchEndpoints: { exa: "http://127.0.0.1:8181/v1/" } }),
+		);
+		const { endpoints, timeoutMs } = resolveResearchEndpoints({ exa: "http://127.0.0.1:8181/v1/" }, {
+			EXA_BASE_URL: "http://127.0.0.1:9999",
+		} as NodeJS.ProcessEnv);
+		// The operator wrote the settings file deliberately; a stray variable does
+		// not silently redirect research.
+		assert.equal(endpoints.exa, "http://127.0.0.1:8181/v1", "settings win and the trailing slash is normalized");
+		assert.equal(endpoints.perplexity, DEFAULT_PERPLEXITY_BASE_URL, "an unset service keeps its documented origin");
+		assert.equal(timeoutMs, DEFAULT_RESEARCH_TIMEOUT_MS);
+
+		await conductResearch(directory, directory, task(), {
+			keys: { exa: "exa-key" },
+			mode: "exa",
+			endpoints,
+			fetch: stubFetch,
+			now: () => FIXED_NOW,
+		});
+		assert.deepEqual(requested, ["http://127.0.0.1:8181/v1/search"], "the client called the configured origin");
+		const document = JSON.parse(await readFile(join(directory, "research.json"), "utf8")) as {
+			mode: string;
+			network: { state: string };
+		};
+		assert.equal(document.mode, "exa");
+		assert.equal(document.network.state, "online");
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("the environment supplies a base URL when settings do not", () => {
+	const { endpoints } = resolveResearchEndpoints({}, {
+		EXA_BASE_URL: "http://127.0.0.1:8181",
+		PERPLEXITY_BASE_URL: "https://gateway.internal.test/pplx",
+	} as NodeJS.ProcessEnv);
+	assert.equal(endpoints.exa, "http://127.0.0.1:8181");
+	assert.equal(endpoints.perplexity, "https://gateway.internal.test/pplx");
+});
+
+test("both services keep their documented origins when nothing overrides them", () => {
+	const { endpoints, timeoutMs } = resolveResearchEndpoints({}, {} as NodeJS.ProcessEnv);
+	assert.equal(endpoints.exa, DEFAULT_EXA_BASE_URL);
+	assert.equal(endpoints.perplexity, DEFAULT_PERPLEXITY_BASE_URL);
+	assert.equal(timeoutMs, DEFAULT_RESEARCH_TIMEOUT_MS);
+});
+
+test("an unusable base URL is refused, and a credentialed one is never echoed", () => {
+	const cases: { value: string; reason: RegExp }[] = [
+		{ value: "", reason: /the value is empty/u },
+		{ value: "api.exa.ai", reason: /not an absolute URL/u },
+		{ value: "ftp://api.exa.ai", reason: /ftp scheme is not supported/u },
+		{ value: "https://user:hunter2@api.exa.ai", reason: /embeds credentials/u },
+		{ value: "https://api.exa.ai/search?key=abc", reason: /carries no query or fragment/u },
+		{ value: "https://api.exa.ai/#frag", reason: /carries no query or fragment/u },
+	];
+	for (const scenario of cases) {
+		assert.throws(
+			() => assertResearchBaseUrl(scenario.value, "exa", "settings"),
+			(error: unknown) => {
+				assert.ok(error instanceof ResearchEndpointError, scenario.value);
+				assert.match(error.message, scenario.reason, scenario.value);
+				assert.match(error.message, /^EXA_BASE_URL from settings/u, "the message names the knob to fix");
+				// The rejected value is never quoted back: it may be the credential.
+				assert.doesNotMatch(error.message, /hunter2/u, "a password never reaches a diagnostic");
+				return true;
+			},
+		);
+	}
+	// The same refusal happens through resolution, so a bad settings file cannot
+	// fall back to the public host the operator was trying to avoid.
+	assert.throws(
+		() => resolveResearchEndpoints({ perplexity: "notaurl" }),
+		/PERPLEXITY_BASE_URL from settings is not a usable base URL/u,
+	);
+	assert.throws(
+		() => resolveResearchEndpoints({}, { EXA_BASE_URL: "notaurl" } as NodeJS.ProcessEnv),
+		/EXA_BASE_URL from the environment is not a usable base URL/u,
+	);
+});
+
+test("a research timeout is bounded and validated", () => {
+	assert.equal(resolveResearchEndpoints({ timeoutMs: 2_000 }).timeoutMs, 2_000);
+	assert.equal(resolveResearchEndpoints({}, { RESEARCH_TIMEOUT_MS: "3000" } as NodeJS.ProcessEnv).timeoutMs, 3_000);
+	assert.throws(() => resolveResearchEndpoints({ timeoutMs: 10 }), /between 1000 and 120000 ms, received 10/u);
+	assert.throws(() => resolveResearchEndpoints({ timeoutMs: 500_000 }), /between 1000 and 120000 ms/u);
+	assert.throws(() => resolveResearchEndpoints({ timeoutMs: 1.5 }), /integer number of milliseconds/u);
+	assert.throws(
+		() => resolveResearchEndpoints({}, { RESEARCH_TIMEOUT_MS: "soon" } as NodeJS.ProcessEnv),
+		/integer number of milliseconds/u,
+	);
+});
+
+test("a service that never answers is recorded as a timeout, not a hang", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "kpi-research-timeout-"));
+	try {
+		let aborted = false;
+		// A server that answers only when its caller gives up: exactly the shape
+		// that could hold a planning node open forever.
+		const hangingFetch: typeof fetch = (_input, init) =>
+			new Promise((_resolve, reject) => {
+				init?.signal?.addEventListener("abort", () => {
+					aborted = true;
+					reject(init.signal?.reason ?? new Error("aborted"));
+				});
+			});
+
+		const started = Date.now();
+		const document = await conductResearch(directory, directory, task(), {
+			keys: { exa: "exa-key", perplexity: "pplx-key" },
+			mode: "auto",
+			timeoutMs: 1_000,
+			fetch: hangingFetch,
+		});
+		const elapsed = Date.now() - started;
+		assert.ok(aborted, "the request was aborted rather than left pending");
+		assert.ok(elapsed < 30_000, `the gate returned in ${elapsed}ms instead of hanging`);
+		// Every configured service timed out, so this is engine no-network with the
+		// failure class recorded per attempt.
+		assert.equal(document.network.state, "no-network");
+		assert.equal(document.network.origin, "engine");
+		assert.ok(document.network.failures.length > 0, "the timeout was recorded");
+		for (const failure of document.network.failures) {
+			assert.equal(failure.class, "timeout", `${failure.service} recorded ${failure.class}`);
+		}
+		assert.equal(document.mode, "local");
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("a caller abort stays an abort and is not relabelled a timeout", async () => {
+	const controller = new AbortController();
+	const pendingFetch: typeof fetch = (_input, init) =>
+		new Promise((_resolve, reject) => {
+			init?.signal?.addEventListener("abort", () => reject(init.signal?.reason ?? new Error("aborted")));
+		});
+	const promise = fetchBounded(
+		"http://127.0.0.1:9/never",
+		{ method: "POST" },
+		{ service: "Exa", timeoutMs: 30_000, signal: controller.signal, fetch: pendingFetch },
+	);
+	controller.abort(new DOMException("operator cancelled", "AbortError"));
+	await assert.rejects(promise, (error: unknown) => {
+		assert.equal(classifyResearchFailure(error), "abort", "a cancelled call is an abort");
+		return true;
+	});
+});
+
+test("the bounded fetch labels its own deadline TimeoutError for the classifier", async () => {
+	const pendingFetch: typeof fetch = (_input, init) =>
+		new Promise((_resolve, reject) => {
+			init?.signal?.addEventListener("abort", () => reject(new Error("some runtime wording")));
+		});
+	await assert.rejects(
+		fetchBounded(
+			"http://127.0.0.1:9/never",
+			{ method: "POST" },
+			{
+				service: "Perplexity",
+				timeoutMs: 1_000,
+				fetch: pendingFetch,
+			},
+		),
+		(error: unknown) => {
+			assert.ok(error instanceof ResearchTimeoutError);
+			assert.equal(error.name, "TimeoutError");
+			assert.match(error.message, /Perplexity request timed out after 1000ms/u);
+			// The recorded class must not depend on how a runtime words an abort.
+			assert.equal(classifyResearchFailure(error), "timeout");
+			return true;
+		},
+	);
+});
+
+// ---------------------------------------------------------------------------
+// B3: the operator's own no-network decision
+// ---------------------------------------------------------------------------
+
+test("/kpi --no-network composes with every invocation form", () => {
+	assert.deepEqual(parseLoopInvocation("--no-network add a healthcheck"), {
+		goal: "add a healthcheck",
+		mode: "gated",
+		noNetwork: true,
+	});
+	assert.deepEqual(parseLoopInvocation("--no-network --mode autopilot add a healthcheck"), {
+		goal: "add a healthcheck",
+		mode: "autopilot",
+		noNetwork: true,
+	});
+	assert.deepEqual(parseLoopInvocation("--no-network --until-green add a healthcheck"), {
+		goal: "add a healthcheck",
+		mode: "autopilot",
+		noNetwork: true,
+	});
+	assert.deepEqual(parseLoopInvocation("--no-network --plan specs/healthcheck"), {
+		goal: "Implement frozen plan from specs/healthcheck",
+		mode: "gated",
+		planPath: "specs/healthcheck",
+		noNetwork: true,
+	});
+	// Absent means auto, and the flag needs something to do.
+	assert.equal(parseLoopInvocation("add a healthcheck").noNetwork, undefined);
+	assert.throws(() => parseLoopInvocation("--no-network"), /--no-network requires a goal/u);
+	assert.throws(() => parseLoopInvocation("--no-networkish goal"), /Unknown \/kpi option: --no-networkish/u);
+});
+
+test("an operator no-network job records origin operator and never asks a service", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "kpi-research-operator-"));
+	try {
+		await writeFile(join(directory, "AGENTS.md"), "# gates\n\n- npm test\n");
+		let calls = 0;
+		const countingFetch: typeof fetch = async () => {
+			calls += 1;
+			return new Response("{}", { status: 200 });
+		};
+		// Keys are present and healthy: the only reason this job stays offline is
+		// that the operator said so.
+		const document = await conductResearch(directory, directory, task(), {
+			keys: { exa: "exa-key", perplexity: "pplx-key" },
+			mode: "auto",
+			operatorNoNetwork: true,
+			fetch: countingFetch,
+			now: () => FIXED_NOW,
+		});
+		assert.equal(calls, 0, "no service was asked");
+		assert.equal(document.network.state, "no-network");
+		assert.equal(document.network.origin, "operator");
+		assert.equal(document.network.reason, "operator requested no-network");
+		assert.deepEqual(document.network.failures, [], "an operator decision is not a failure");
+		assert.equal(document.mode, "local");
+		assert.ok(document.sources.length > 0, "the repository is still researched");
+		for (const source of document.sources) {
+			assert.equal(source.kind, "local");
+			assert.equal(source.service, null);
+			assert.doesNotMatch(source.ref, /^https?:/u, "no external URL is invented");
+		}
+		const markdown = await readFile(join(directory, "research.md"), "utf8");
+		assert.match(markdown, /- network: no-network \(operator\)/u);
+		assert.match(markdown, /- reason: operator requested no-network/u);
+
+		// The board cell an operator actually sees for that state.
+		const cell = researchCellFromDocument(document);
+		assert.deepEqual(cell, { cell: "RESEARCH local · no-network operator" });
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("the operator's offline decision travels on the frozen contract", () => {
+	// Persisted on task.json rather than in process state, so a resumed job in a
+	// fresh process cannot quietly reach the network.
+	const contract = { ...task(), research_network: "offline" as const };
+	assert.equal(contract.research_network, "offline");
+	assert.equal((task() as { research_network?: string }).research_network, undefined);
 });

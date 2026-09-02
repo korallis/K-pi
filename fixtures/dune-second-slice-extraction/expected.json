@@ -1,0 +1,6 @@
+{
+  "case": "dune-second-slice-extraction",
+  "outcome": "unsafe",
+  "reason": "shared needs two consuming slices before extraction; 0 declared",
+  "note": "No slice depends on shared yet, so the extraction has not earned itself. The zero in the reason separates a premature extraction from the one-consumer case, which declares one."
+}

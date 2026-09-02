@@ -230,43 +230,104 @@ export function renderBoard(model: BoardModel): string[] {
 	return fitBoard(lines, model.width);
 }
 
+/** The two-space gap between lamps, which is also where a lamp row may fold. */
+const LAMP_SEPARATOR = "  ";
+
+/** A row of run-file lamps, identified by carrying every file it must show. */
+function isFileLampRow(line: string): boolean {
+	return RUN_FILE_NAMES.every((name) => line.includes(name));
+}
+
 /**
- * Narrow terminals may wrap; CURRENT stage id and STOP must remain visible.
+ * Folds a lamp row instead of cutting it.
+ *
+ * A truncated lamp row is worse than a taller board: the operator cannot tell a
+ * dark lamp from an absent one, so every lamp folds onto the next line rather
+ * than disappearing behind an ellipsis. A single lamp wider than the terminal is
+ * emitted whole - the name is the information.
+ */
+function foldLamps(line: string, width: number): string[] {
+	const indent = line.slice(0, line.length - line.trimStart().length);
+	const body = line.slice(indent.length);
+	const label = body.startsWith("FILES") ? "FILES" : "";
+	const lamps = body
+		.slice(label.length)
+		.trim()
+		.split(LAMP_SEPARATOR)
+		.filter((lamp) => lamp.length > 0);
+	if (lamps.length === 0) {
+		return [line];
+	}
+	const firstPrefix = label.length > 0 ? `${indent}${label}${LAMP_SEPARATOR}` : indent;
+	const continuationPrefix = `${indent}${LAMP_SEPARATOR}`;
+	const rows: string[] = [];
+	let current = "";
+	let prefix = firstPrefix;
+	for (const lamp of lamps) {
+		const candidate = current.length === 0 ? `${prefix}${lamp}` : `${current}${LAMP_SEPARATOR}${lamp}`;
+		if (current.length > 0 && candidate.length > width) {
+			rows.push(current);
+			prefix = continuationPrefix;
+			current = `${prefix}${lamp}`;
+			continue;
+		}
+		current = candidate;
+	}
+	if (current.length > 0) {
+		rows.push(current);
+	}
+	return rows;
+}
+
+function clamp(line: string, width: number): string {
+	return line.length <= width ? line : `${line.slice(0, Math.max(0, width - 1))}…`;
+}
+
+/**
+ * Narrow terminals may wrap; the current stage, STOP, and every run-file lamp
+ * must remain visible.
  */
 export function fitBoard(lines: readonly string[], width?: number): string[] {
 	if (width === undefined || width <= 0 || width >= 100) {
 		return [...lines];
 	}
-	const compact: string[] = [];
+	const essential: string[] = [];
 	for (const line of lines) {
 		if (line.includes("CURRENT")) {
 			const match = /(\d{2}\s+\S+)\s+CURRENT/u.exec(line);
 			const marker = match !== null ? `${match[1]} CURRENT` : "CURRENT";
-			compact.push(marker.length <= width ? marker : marker.slice(0, width));
+			essential.push(marker.length <= width ? marker : marker.slice(0, width));
 			continue;
 		}
 		if (line.startsWith("STOP ") || line.startsWith("STOP STATES")) {
-			compact.push(line.length <= width ? line : line.slice(0, width));
+			essential.push(clamp(line, width));
 			continue;
 		}
 		if (line.startsWith("K-π") || line.startsWith("WAITING ON OPERATOR") || line.startsWith("HUMAN OVERSIGHT")) {
-			compact.push(line.length <= width ? line : `${line.slice(0, Math.max(0, width - 1))}…`);
+			essential.push(clamp(line, width));
 		}
 	}
-	// Keep remaining context after essentials, still width-bound.
+	// Keep remaining context after the essentials, still width-bound, with lamp
+	// rows folded rather than cut.
+	const rest: string[] = [];
 	for (const line of lines) {
-		if (compact.some((entry) => entry === line || (line.includes("CURRENT") && entry.includes("CURRENT")))) {
+		if (
+			line.includes("CURRENT") ||
+			line.startsWith("STOP ") ||
+			line.startsWith("STOP STATES") ||
+			line.startsWith("K-π") ||
+			line.startsWith("WAITING ON OPERATOR") ||
+			line.startsWith("HUMAN OVERSIGHT")
+		) {
 			continue;
 		}
-		if (line.startsWith("STOP ") || line.startsWith("STOP STATES") || line.startsWith("K-π")) {
+		if (isFileLampRow(line)) {
+			rest.push(...foldLamps(line, width));
 			continue;
 		}
-		if (line.startsWith("WAITING ON OPERATOR") || line.startsWith("HUMAN OVERSIGHT")) {
-			continue;
-		}
-		compact.push(line.length <= width ? line : `${line.slice(0, Math.max(0, width - 1))}…`);
+		rest.push(clamp(line, width));
 	}
-	return compact;
+	return [...essential, ...rest];
 }
 
 /** Research.json → board cell. Never invents external URLs. */

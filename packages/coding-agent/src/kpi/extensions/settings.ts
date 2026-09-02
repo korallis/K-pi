@@ -20,11 +20,37 @@ export function isResearchMode(value: unknown): value is ResearchMode {
 	return typeof value === "string" && (RESEARCH_MODES as readonly string[]).includes(value);
 }
 
-export interface KpiSettings {
-	research: ResearchMode;
+/**
+ * Where research services are reached and how long a request may take.
+ *
+ * Present so an operator can point the clients at a self-hosted gateway or a
+ * contained origin. Validated on read: a base URL that cannot be used is a
+ * configuration error the operator must see, not a silent fall back to the
+ * public host they were trying to avoid.
+ */
+export interface KpiResearchEndpointSettings {
+	exa?: string;
+	perplexity?: string;
+	timeoutMs?: number;
 }
 
-const DEFAULT_SETTINGS: KpiSettings = { research: "auto" };
+export interface KpiSettings {
+	research: ResearchMode;
+	researchEndpoints: KpiResearchEndpointSettings;
+}
+
+const DEFAULT_SETTINGS: KpiSettings = { research: "auto", researchEndpoints: {} };
+
+function readEndpointSettings(value: unknown): KpiResearchEndpointSettings {
+	if (!isJsonObject(value)) {
+		return {};
+	}
+	return {
+		...(typeof value.exa === "string" ? { exa: value.exa } : {}),
+		...(typeof value.perplexity === "string" ? { perplexity: value.perplexity } : {}),
+		...(typeof value.timeoutMs === "number" ? { timeoutMs: value.timeoutMs } : {}),
+	};
+}
 
 export function settingsPath(projectRoot: string): string {
 	return join(projectRoot, CONFIG_DIR_NAME, "settings.json");
@@ -40,7 +66,10 @@ export async function readKpiSettings(projectRoot: string): Promise<KpiSettings>
 		if (!isJsonObject(parsed)) {
 			return { ...DEFAULT_SETTINGS };
 		}
-		return { research: isResearchMode(parsed.research) ? parsed.research : DEFAULT_SETTINGS.research };
+		return {
+			research: isResearchMode(parsed.research) ? parsed.research : DEFAULT_SETTINGS.research,
+			researchEndpoints: readEndpointSettings(parsed.researchEndpoints),
+		};
 	} catch {
 		return { ...DEFAULT_SETTINGS };
 	}

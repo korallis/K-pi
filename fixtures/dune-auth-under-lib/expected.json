@@ -1,0 +1,6 @@
+{
+  "case": "dune-auth-under-lib",
+  "outcome": "unsafe",
+  "reason": "Auth must live in its auth folder",
+  "note": "The folder name matches the id, the interface is inside the folder and the map is fresh; the only defect is the layer bucket in the path. A layer folder is legal inside a feature folder, never as the home of a capability."
+}

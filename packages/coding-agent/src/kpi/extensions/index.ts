@@ -7,6 +7,7 @@ import { registerKMode } from "../kstack/mode.ts";
 import { registerKStackSetup } from "../kstack/models.ts";
 import { registerAccounts } from "./accounts/index.ts";
 import { AccountsStore } from "./accounts/store.ts";
+import { registerAppendSystem } from "./append-system.ts";
 import { registerAutoWrap } from "./auto-wrap.ts";
 import { registerBackgroundBus } from "./bus/communicate.ts";
 import { registerControlPlane } from "./control-plane.ts";
@@ -56,6 +57,7 @@ function discoverBundledResources(): ResourcesDiscoverResult {
 export default function kPi(pi: ExtensionAPI): void {
 	pi.on("resources_discover", discoverBundledResources);
 	registerAccounts(pi);
+	registerAppendSystem(pi);
 	registerAutoWrap(pi);
 	if (typeof pi.registerTool === "function") {
 		registerBackgroundBus(pi);

@@ -5,6 +5,7 @@ import { defineTool, type ExtensionAPI } from "../../../core/extensions/types.ts
 import { readActiveJob } from "../run-store.ts";
 import { readKpiSettings } from "../settings.ts";
 
+import { type ResearchEndpoints, resolveResearchEndpoints } from "./endpoints.ts";
 import { exaContents, exaSearch } from "./exa.ts";
 import { perplexitySearch } from "./perplexity.ts";
 import {
@@ -22,6 +23,8 @@ const MAX_TOOL_OUTPUT_CHARACTERS = 10_000;
 interface ToolSession {
 	session: ResearchSession;
 	service: ResearchService;
+	endpoints: ResearchEndpoints;
+	timeoutMs: number;
 }
 
 /**
@@ -34,20 +37,24 @@ const sessions = new Map<string, ResearchSession>();
 async function sessionFor(cwd: string, service: ResearchService): Promise<ToolSession> {
 	const job = await readActiveJob(cwd);
 	const jobId = job?.jobId ?? "no-job";
+	const settings = await readKpiSettings(cwd);
+	// Resolved per call rather than cached with the session: an operator who
+	// corrects a base URL should not have to end the job for it to take effect.
+	const { endpoints, timeoutMs } = resolveResearchEndpoints(settings.researchEndpoints);
 	const existing = sessions.get(jobId);
 	if (existing !== undefined) {
-		return { session: existing, service };
+		return { session: existing, service, endpoints, timeoutMs };
 	}
 	const session = new ResearchSession({
 		jobId,
-		mode: (await readKpiSettings(cwd)).research,
+		mode: settings.research,
 		keys: await resolveResearchKeys(),
 		eventsPath: job === undefined ? undefined : join(cwd, CONFIG_DIR_NAME, "runs", jobId, "events.jsonl"),
 		round: typeof job?.state.round === "number" ? job.state.round : 0,
 		node: typeof job?.state.node === "string" ? job.state.node : "research",
 	});
 	sessions.set(jobId, session);
-	return { session, service };
+	return { session, service, endpoints, timeoutMs };
 }
 
 /** Test seam: a fresh process starts with no sessions, and so must a fresh test. */
@@ -73,10 +80,12 @@ export function registerResearchTools(pi: ExtensionAPI): void {
 			description: "Search current web sources through the first-party Exa REST client",
 			parameters: Type.Object({ query: Type.String(), numResults: Type.Optional(Type.Number()) }),
 			async execute(_id, params, signal, _update, context) {
-				const { session } = await sessionFor(context.cwd, "exa");
+				const { session, endpoints, timeoutMs } = await sessionFor(context.cwd, "exa");
 				const outcome = await session.call("exa", params.query, async (key) =>
 					exaSearch(params.query, key, {
 						numResults: Math.min(params.numResults ?? 5, MAX_RESULTS_PER_REQUEST),
+						baseUrl: endpoints.exa,
+						timeoutMs,
 						signal,
 					}),
 				);
@@ -95,10 +104,10 @@ export function registerResearchTools(pi: ExtensionAPI): void {
 			description: "Retrieve bounded highlights for at most ten URLs through Exa",
 			parameters: Type.Object({ urls: Type.Array(Type.String(), { maxItems: MAX_CONTENTS_URLS }) }),
 			async execute(_id, params, signal, _update, context) {
-				const { session } = await sessionFor(context.cwd, "exa");
+				const { session, endpoints, timeoutMs } = await sessionFor(context.cwd, "exa");
 				const urls = params.urls.slice(0, MAX_CONTENTS_URLS);
 				const outcome = await session.call("exa", urls.join(" "), async (key) =>
-					exaContents(urls, key, { signal }),
+					exaContents(urls, key, { baseUrl: endpoints.exa, timeoutMs, signal }),
 				);
 				if (!outcome.ok) {
 					throw new Error(`Exa research call failed: ${outcome.class}`);
@@ -136,10 +145,12 @@ export function registerResearchTools(pi: ExtensionAPI): void {
 			description: "Search current web sources through the first-party Perplexity REST client",
 			parameters: Type.Object({ query: Type.String(), maxResults: Type.Optional(Type.Number()) }),
 			async execute(_id, params, signal, _update, context) {
-				const { session } = await sessionFor(context.cwd, "perplexity");
+				const { session, endpoints, timeoutMs } = await sessionFor(context.cwd, "perplexity");
 				const outcome = await session.call("perplexity", params.query, async (key) =>
 					perplexitySearch(params.query, key, {
 						maxResults: Math.min(params.maxResults ?? 5, MAX_RESULTS_PER_REQUEST),
+						baseUrl: endpoints.perplexity,
+						timeoutMs,
 						signal,
 					}),
 				);

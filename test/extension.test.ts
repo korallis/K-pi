@@ -31,6 +31,8 @@ test("extension factory registers commands, policy hook, and renderers", () => {
 	assert.deepEqual(commandNames, [
 		"pool",
 		"accounts",
+		// K-π's brevity prompt is installed by the product, not by hand.
+		"append-system",
 		"kpi",
 		"loop",
 		"kpi-ping",

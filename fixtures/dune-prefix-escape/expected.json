@@ -1,0 +1,10 @@
+{
+  "case": "dune-prefix-escape",
+  "outcome": "unsafe",
+  "reason": "UNSAFE claim outside module auth: src/auth-admin/roles.ts",
+  "claim": {
+    "path": "src/auth-admin/roles.ts",
+    "reason": "UNSAFE claim outside module auth: src/auth-admin/roles.ts"
+  },
+  "note": "The module boundary is folder segments, never a string prefix. src/auth/index.ts is claimable and src/auth-admin/roles.ts is not, even though the characters of src/auth line up, because src/auth-admin is a different capability."
+}

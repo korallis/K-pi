@@ -7,6 +7,7 @@ import test from "node:test";
 import { promisify } from "node:util";
 
 import type { ToolCallEvent, ToolCallEventResult } from "../packages/coding-agent/src/core/extensions/types.ts";
+import { appendEvent, verifyChain } from "../packages/coding-agent/src/kpi/extensions/append-log.ts";
 import {
 	type ActivePolicyState,
 	DEFAULT_ACTIVE_POLICY_STATE,
@@ -711,4 +712,146 @@ test("bash cannot read or write a secret-shaped path", async () => {
 		if (decision.kind !== "deny") continue;
 		assert.match(decision.reason, /secret-shaped path|outside write_allow/u, command);
 	}
+});
+
+// ---------------------------------------------------------------------------
+// B7: every tool attempt is recorded, so ordering is observable
+// ---------------------------------------------------------------------------
+
+/** A run store the policy hook can find, so attempts have somewhere to land. */
+async function orderingJob(directory: string, mode: "gated" | "autopilot" = "gated"): Promise<string> {
+	const runDirectory = join(directory, ".kpi", "runs", "2026-09-02-order");
+	await mkdir(runDirectory, { recursive: true });
+	await writeFile(
+		join(runDirectory, "task.json"),
+		`${JSON.stringify({
+			job_id: "2026-09-02-order",
+			mode,
+			goal: "add a healthcheck",
+			nongoals: [],
+			acceptance: [{ id: "AC-01", statement: "healthy", required: true, bounds: { write_allow: ["src/**"] } }],
+			constraints: [],
+			quality_gates: ["npm test"],
+			ac: { quality: "executable" },
+		})}\n`,
+	);
+	await writeFile(
+		join(runDirectory, "state.json"),
+		`${JSON.stringify({ job_id: "2026-09-02-order", mode, round: 2, node: "implement", status: "RUNNING" })}\n`,
+	);
+	await writeFile(join(runDirectory, "events.jsonl"), "");
+	return runDirectory;
+}
+
+async function toolRequests(runDirectory: string): Promise<Record<string, unknown>[]> {
+	const source = await readFile(join(runDirectory, "events.jsonl"), "utf8");
+	return source
+		.split("\n")
+		.filter((line) => line.length > 0)
+		.map((line) => JSON.parse(line) as Record<string, unknown>)
+		.filter((record) => record.type === "tool.request");
+}
+
+test("an allowed write is recorded as an attempt with its decision", async () => {
+	await withProject(async (directory) => {
+		const runDirectory = await orderingJob(directory);
+		const hook = policyHook({ resolveActiveState: async () => gated, readDiffStat: stubDiffStat });
+		const attendant = operator(directory, true);
+
+		assert.equal(await hook(write("src/health.ts"), attendant.context), undefined, "the write was allowed");
+
+		const requests = await toolRequests(runDirectory);
+		assert.equal(requests.length, 1);
+		assert.equal(requests[0].tool, "write");
+		assert.equal(requests[0].decision, "allow");
+		assert.equal(requests[0].path, "src/health.ts");
+		assert.equal(requests[0].round, 2, "the attempt carries the round it happened in");
+		assert.equal(requests[0].node, "implement");
+		assert.ok(typeof requests[0].ts === "string" && requests[0].ts.length > 0, "an attempt is timestamped");
+		assert.equal(await verifyChain(join(runDirectory, "events.jsonl")), true, "attempts join the hash chain");
+	});
+});
+
+test("a denied write is recorded before it is refused, so ordering is provable", async () => {
+	await withProject(async (directory) => {
+		const runDirectory = await orderingJob(directory);
+		const hook = policyHook({
+			resolveActiveState: async () => gated,
+			resolveWriteAllow: async () => ["src/**"],
+			readDiffStat: stubDiffStat,
+		});
+		const attendant = operator(directory, true);
+
+		const outcome = await hook(write("infra/deploy.sh"), attendant.context);
+		assert.equal(outcome?.block, true);
+		assert.match(outcome?.reason ?? "", /Policy denied write outside write_allow/u);
+
+		const requests = await toolRequests(runDirectory);
+		assert.equal(requests.length, 1, "the refused attempt is on the record");
+		assert.equal(requests[0].decision, "deny");
+		assert.equal(requests[0].path, "infra/deploy.sh");
+		assert.match(String(requests[0].reason), /Policy denied write outside write_allow/u);
+	});
+});
+
+test("a confirmed command is recorded whether or not the operator ever answers", async () => {
+	await withProject(async (directory) => {
+		const runDirectory = await orderingJob(directory);
+		const hook = policyHook({ resolveActiveState: async () => gated, readDiffStat: stubDiffStat });
+		// Declined: the attempt still happened.
+		const declining = operator(directory, false);
+		const outcome = await hook(bash("frobnicate --all"), declining.context);
+		assert.equal(outcome?.block, true);
+
+		const requests = await toolRequests(runDirectory);
+		assert.equal(requests.length, 1);
+		assert.equal(requests[0].tool, "bash");
+		assert.equal(requests[0].decision, "confirm");
+		assert.equal(requests[0].path, undefined, "a command names no path");
+		assert.match(String(requests[0].reason), /Approve unrecognized command/u);
+	});
+});
+
+test("attempts are ordered against the run's own terminal record", async () => {
+	await withProject(async (directory) => {
+		const runDirectory = await orderingJob(directory);
+		const eventsPath = join(runDirectory, "events.jsonl");
+		const hook = policyHook({
+			resolveActiveState: async () => gated,
+			resolveWriteAllow: async () => ["src/**"],
+			readDiffStat: stubDiffStat,
+		});
+		const attendant = operator(directory, true);
+
+		// The ordering UAT-30 needs: a terminal, then proof that nothing wrote after it.
+		await hook(write("src/one.ts"), attendant.context);
+		await appendEvent(eventsPath, {
+			ts: new Date().toISOString(),
+			type: "loop.terminal",
+			job_id: "2026-09-02-order",
+			round: 2,
+			node: "implement",
+			status: "UNSAFE",
+			reason: "stack.json is missing; implement has no frozen map to read",
+		});
+		await hook(write("infra/after.sh"), attendant.context);
+
+		const records = (await readFile(eventsPath, "utf8"))
+			.split("\n")
+			.filter((line) => line.length > 0)
+			.map((line) => JSON.parse(line) as Record<string, unknown>);
+		const sequence = records.map((record) => `${record.type}:${record.decision ?? record.status}`);
+		assert.deepEqual(sequence, ["tool.request:allow", "loop.terminal:UNSAFE", "tool.request:deny"]);
+		// The chain is what makes the order non-repudiable.
+		assert.equal(await verifyChain(eventsPath), true);
+	});
+});
+
+test("a tool attempt outside any job is not a failure and writes nothing", async () => {
+	await withProject(async (directory) => {
+		const hook = policyHook({ resolveActiveState: async () => gated, readDiffStat: stubDiffStat });
+		const attendant = operator(directory, true);
+		assert.equal(await hook(write("src/health.ts"), attendant.context), undefined);
+		await assert.rejects(readFile(join(directory, ".kpi", "runs", "2026-09-02-order", "events.jsonl"), "utf8"));
+	});
 });
