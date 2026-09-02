@@ -30,7 +30,7 @@ import { assertResearchFresh, conductResearch } from "./research/gate.ts";
 import { ResearchShortfallError, resolveResearchKeys } from "./research/session.ts";
 import { atomicWrite, createJob, readTaskForJob, type Task, writeAllowForTask } from "./run-store.ts";
 import { readKpiSettings } from "./settings.ts";
-import { assertScaffoldedBeforeBehavior, ensureStackFromTask, freezeCurrentSlice, scaffoldModule, stackRequiredFor } from "./stack.ts";
+import { assertScaffoldedBeforeBehavior, freezeCurrentSlice, scaffoldModule, stackRequiredFor } from "./stack.ts";
 
 const execFile = promisify(execFileCallback);
 const PLAN_FILES = ["requirements.md", "design.md", "tasks.md"] as const;
@@ -881,7 +881,6 @@ async function driveUntilPause(
 				// stack stops the round rather than being regenerated.
 				const contract = await readTaskForJob(projectRoot, task.job_id).catch(() => task);
 				if (stackRequiredFor(contract)) {
-					await ensureStackFromTask(jobDirectory, contract);
 					const { module } = await freezeCurrentSlice(projectRoot, jobDirectory, contract);
 					await scaffoldModule(projectRoot, module);
 					await assertScaffoldedBeforeBehavior(projectRoot, module);

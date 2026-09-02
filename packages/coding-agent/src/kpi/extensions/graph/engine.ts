@@ -21,6 +21,7 @@ import { registerPolicy } from "../policy.ts";
 import { ROLE_CONTRACT_FILE } from "../bus/roles.ts";
 import { BackgroundBus, type BusDependencies } from "../bus/spawn.ts";
 import { atomicWrite, readActiveJob, type Task, writeAllowForTask } from "../run-store.ts";
+import { assertDuneStack, DuneStackError } from "../stack.ts";
 import {
 	type BudgetExhaustion,
 	batchReadyNodes,
@@ -897,6 +898,19 @@ export class GraphEngine {
 				}
 				if (validationErrors.length > 0) {
 					continue;
+				}
+
+				// stack.json is not only JSON-shaped: Dune semantic rules refuse layer
+				// maps, missing twins, and folder/id mismatches before implement can read them.
+				if (node.response.path === "stack.json") {
+					try {
+						assertDuneStack(output);
+					} catch (error) {
+						validationErrors = [
+							error instanceof DuneStackError || error instanceof Error ? error.message : String(error),
+						];
+						continue;
+					}
 				}
 
 				await atomicWrite(join(this.runDirectory(), node.response.path), `${JSON.stringify(output, null, 2)}\n`);

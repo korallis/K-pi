@@ -124,7 +124,6 @@ const SAFE_COMMANDS: Record<string, true> = {
 	"git status --short": true,
 	"git rev-parse HEAD": true,
 	"git rev-parse --verify HEAD": true,
-	"git diff --shortstat HEAD": true,
 };
 
 /**
