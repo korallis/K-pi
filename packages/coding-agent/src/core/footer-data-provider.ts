@@ -3,6 +3,17 @@ import { existsSync, type FSWatcher, readFileSync, type Stats, statSync, unwatch
 import { dirname, join, resolve } from "path";
 import { closeWatcher, FS_WATCH_RETRY_DELAY_MS, watchWithErrorHandler } from "../utils/fs-watch.ts";
 
+/**
+ * A status made safe for a single footer row: newlines, tabs and runs of spaces
+ * collapse to one space.
+ */
+export function sanitizeStatusText(text: string): string {
+	return text
+		.replace(/[\r\n\t]/g, " ")
+		.replace(/ +/g, " ")
+		.trim();
+}
+
 export type GitPaths = {
 	repoDir: string;
 	commonGitDir: string;
@@ -134,6 +145,23 @@ export class FooterDataProvider {
 	/** Extension status texts set via ctx.ui.setStatus() */
 	getExtensionStatuses(): ReadonlyMap<string, string> {
 		return this.extensionStatuses;
+	}
+
+	/**
+	 * Extension statuses as one line, sorted by key.
+	 *
+	 * Lives beside the statuses because every footer that renders them has to
+	 * agree on the rule: a status may be multi-line, a footer row is one line,
+	 * and two footers folding it differently would show the same run two ways.
+	 */
+	getExtensionStatusLine(): string | undefined {
+		if (this.extensionStatuses.size === 0) {
+			return undefined;
+		}
+		return Array.from(this.extensionStatuses.entries())
+			.sort(([left], [right]) => left.localeCompare(right))
+			.map(([, text]) => sanitizeStatusText(text))
+			.join(" ");
 	}
 
 	/** Subscribe to git branch changes. Returns unsubscribe function. */
@@ -384,5 +412,5 @@ export class FooterDataProvider {
 /** Read-only view for extensions - excludes setExtensionStatus, setAvailableProviderCount and dispose */
 export type ReadonlyFooterDataProvider = Pick<
 	FooterDataProvider,
-	"getGitBranch" | "getExtensionStatuses" | "getAvailableProviderCount" | "onBranchChange"
+	"getGitBranch" | "getExtensionStatuses" | "getExtensionStatusLine" | "getAvailableProviderCount" | "onBranchChange"
 >;

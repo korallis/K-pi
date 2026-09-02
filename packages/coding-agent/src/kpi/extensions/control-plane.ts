@@ -2,13 +2,14 @@ import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 
 import { CONFIG_DIR_NAME } from "../../config.ts";
-
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "../../core/extensions/types.ts";
+import { EXTENSION_WIDGET_MAX_LINES } from "../../core/extensions/types.ts";
 import { kModeState } from "../kstack/mode.ts";
 
 import { appendEvent, inspectChain, type JsonValue } from "./append-log.ts";
 import {
 	type BoardModel,
+	fitBoardHeight,
 	normalizeStop,
 	RUN_FILE_NAMES,
 	renderBoard,
@@ -250,6 +251,14 @@ export async function renderStatusOverlay(cwd: string, options: BoardBuildOption
 	return (await createStatusWidget(cwd, options)).join("\n");
 }
 
+/**
+ * The always-on board, fitted to the widget surface.
+ *
+ * A board taller than the widget budget is cut from the top by the interactive
+ * mode, which removes `STOP`, the file lamps and the paused extras - so the
+ * board is fitted here instead, where it is known which rows carry the
+ * information. `/kpi status` still renders the whole board in an overlay.
+ */
 async function installWidget(ctx: ExtensionContext): Promise<boolean> {
 	const lines = await createStatusWidget(ctx.cwd);
 	if (lines.length === 1 && lines[0] === "no active job") {
@@ -261,7 +270,7 @@ async function installWidget(ctx: ExtensionContext): Promise<boolean> {
 		const paused = job !== undefined && isPausedHuman(job.state);
 		ctx.ui.setTheme(paused ? "protocol-blue" : "loop-amber");
 	}
-	ctx.ui.setWidget("kpi", lines);
+	ctx.ui.setWidget("kpi", fitBoardHeight(lines, EXTENSION_WIDGET_MAX_LINES));
 	return true;
 }
 
@@ -278,7 +287,8 @@ async function showStatus(ctx: ExtensionCommandContext): Promise<void> {
 		const paused = job !== undefined && isPausedHuman(job.state);
 		ctx.ui.setTheme(paused ? "protocol-blue" : "loop-amber");
 	}
-	ctx.ui.setWidget("kpi", lines);
+	// The widget is fitted; the overlay below renders every line.
+	ctx.ui.setWidget("kpi", fitBoardHeight(lines, EXTENSION_WIDGET_MAX_LINES));
 	if (ctx.mode !== "tui" || !ctx.hasUI) {
 		ctx.ui.notify(lines.join("\n"), "info");
 		return;

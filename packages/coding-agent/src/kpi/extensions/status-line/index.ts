@@ -253,11 +253,22 @@ function installFooter(ctx: ExtensionContext, state: FooterState): void {
 					.join(theme.fg("dim", SEGMENT_SEPARATOR));
 
 				const request = assembled.segments.request;
-				if (!request) return [truncateToWidth(left, width)];
+				const rail =
+					request === undefined || request.length === 0
+						? truncateToWidth(left, width)
+						: (() => {
+								const right = theme.fg("muted", request);
+								const padding = width - visibleWidth(left) - visibleWidth(right);
+								return padding >= 4 ? left + " ".repeat(padding) + right : truncateToWidth(left, width);
+							})();
 
-				const right = theme.fg("muted", request);
-				const padding = width - visibleWidth(left) - visibleWidth(right);
-				return padding >= 4 ? [left + " ".repeat(padding) + right] : [truncateToWidth(left, width)];
+				// Replacing Pi's footer took its extension-status row with it, and
+				// this extension publishes into that row itself - `publishKpiStatus`
+				// even clears the slot for the `full` preset to avoid duplicating
+				// what the rail already shows. Without this the accounts widget, and
+				// the job line for every other preset, are written and never drawn.
+				const statusLine = footerData.getExtensionStatusLine();
+				return statusLine === undefined ? [rail] : [rail, truncateToWidth(theme.fg("muted", statusLine), width)];
 			},
 		};
 	});

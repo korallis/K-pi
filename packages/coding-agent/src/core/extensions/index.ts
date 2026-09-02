@@ -177,9 +177,10 @@ export type {
 	WriteToolCallEvent,
 	WriteToolResultEvent,
 } from "./types.ts";
-// Type guards
+// Type guards and shared constants
 export {
 	defineTool,
+	EXTENSION_WIDGET_MAX_LINES,
 	isBashToolResult,
 	isEditToolResult,
 	isFindToolResult,

@@ -3,9 +3,11 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { EXTENSION_WIDGET_MAX_LINES } from "../packages/coding-agent/src/core/extensions/types.ts";
 import {
 	type BoardModel,
 	fitBoard,
+	fitBoardHeight,
 	RUN_FILE_NAMES,
 	renderBoard,
 	researchCellFromDocument,
@@ -540,6 +542,47 @@ test("a paused narrow board keeps the operator question and the lamps", () => {
 	for (const line of lines) {
 		assert.ok(line.length <= 60, `"${line}" fits`);
 	}
+});
+
+test("the widget-sized board keeps STOP and the lamps a top-cut would drop", () => {
+	const paused = renderBoard(
+		boardModel({
+			paused: true,
+			stop: "RUNNING",
+			pendingQuestion: "All quality gates and isolated review are green. Approve this change for commit?",
+		}),
+	);
+	// The defect this pins: the paused board is taller than the widget budget, so
+	// the interactive mode cut it from the top and appended "(widget truncated)",
+	// removing STOP, the run-file lamps and the paused extras - the rows the
+	// board exists to show.
+	assert.ok(paused.length > EXTENSION_WIDGET_MAX_LINES, "the paused board really does overflow the widget");
+
+	const fitted = fitBoardHeight(paused, EXTENSION_WIDGET_MAX_LINES);
+	assert.ok(fitted.length <= EXTENSION_WIDGET_MAX_LINES, `fitted to ${fitted.length} lines`);
+	const text = fitted.join("\n");
+	assert.ok(text.includes("STOP RUNNING"), "STOP survived the fit");
+	assert.ok(text.includes("WAITING ON OPERATOR"), "the operator question survived");
+	assert.ok(text.includes("04 implement CURRENT"), "the current stage survived");
+	for (const name of RUN_FILE_NAMES) {
+		assert.ok(text.includes(name), `the ${name} lamp survived`);
+	}
+	assert.ok(
+		fitted.some((line) => line.startsWith("K-π")),
+		"the brand survived",
+	);
+	// Board order is preserved, so the fitted board reads like the full one.
+	const order = fitted.map((line) => paused.indexOf(line));
+	assert.deepEqual(
+		order,
+		[...order].sort((left, right) => left - right),
+		"rows stay in board order",
+	);
+});
+
+test("a running board already inside the budget is returned untouched", () => {
+	const running = renderBoard(boardModel({}));
+	assert.deepEqual(fitBoardHeight(running, EXTENSION_WIDGET_MAX_LINES), running);
 });
 
 test("folding a lamp row preserves every lamp in order", () => {

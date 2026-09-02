@@ -105,7 +105,17 @@ export interface ExtensionUIDialogOptions {
 /** Placement for extension widgets. */
 export type WidgetPlacement = "aboveEditor" | "belowEditor";
 
-/** Options for extension widgets. */
+/**
+ * Lines an array-form extension widget may occupy before the interactive mode
+ * truncates it.
+ *
+ * Exposed because a widget that is truncated loses information silently: the
+ * extension is the only party that knows which of its rows are load-bearing, so
+ * it has to be able to fit its own content rather than discover the cut after
+ * the fact.
+ */
+export const EXTENSION_WIDGET_MAX_LINES = 10;
+
 export interface ExtensionWidgetOptions {
 	/** Where the widget is rendered. Defaults to "aboveEditor". */
 	placement?: WidgetPlacement;

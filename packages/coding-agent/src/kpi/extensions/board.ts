@@ -330,6 +330,62 @@ export function fitBoard(lines: readonly string[], width?: number): string[] {
 	return [...essential, ...rest];
 }
 
+/**
+ * How much an operator loses by not seeing a row, highest first.
+ *
+ * `STOP` and the current stage are what the board is scanned for, and both sit
+ * at the far ends of it - so a head-cut or a tail-cut each destroy one of them.
+ * The ladder exists so that a surface too short for the whole board drops the
+ * rows an operator can reconstruct (the context layer, the three laws, the
+ * fingerprint) and never the rows they cannot.
+ */
+const ROW_PRIORITY: ReadonlyArray<(line: string) => boolean> = [
+	(line) => line.startsWith("K-π"),
+	(line) => line.includes("CURRENT"),
+	(line) => line.trimStart().startsWith("STOP ") && !line.trimStart().startsWith("STOP STATES"),
+	(line) => line.trimStart().startsWith("WAITING ON OPERATOR"),
+	(line) => isFileLampRow(line),
+	(line) => line.trimStart().startsWith("ROUND "),
+	(line) => line.trimStart().startsWith("GATE "),
+	(line) => line.trimStart().startsWith("NODE "),
+	(line) => line.trimStart().startsWith("HUMAN OVERSIGHT"),
+	(line) => line.trimStart().startsWith("SHARED RUN STATE"),
+	(line) => line.trimStart().startsWith("STOP STATES"),
+];
+
+function rowRank(line: string): number {
+	const index = ROW_PRIORITY.findIndex((matches) => matches(line));
+	return index === -1 ? ROW_PRIORITY.length : index;
+}
+
+/**
+ * Fits the board into a surface that shows a fixed number of lines.
+ *
+ * The interactive widget cuts a too-tall widget from the top and appends
+ * "(widget truncated)", which drops `STOP`, the run-file lamps and the paused
+ * extras - exactly the rows the board exists to show, because they are last.
+ * Choosing here by what the row is worth keeps the board readable in the
+ * always-on widget; `/kpi status` still renders every line in an overlay.
+ *
+ * Output stays in board order, so the fitted board reads like a shorter version
+ * of the same board rather than a re-sorted one.
+ */
+export function fitBoardHeight(lines: readonly string[], maxLines: number): string[] {
+	if (maxLines <= 0 || lines.length <= maxLines) {
+		return [...lines];
+	}
+	const ranked = lines.map((line, index) => ({ line, index, rank: rowRank(line) }));
+	const keep = new Set(
+		ranked
+			.slice()
+			// Ties keep board order, so a folded lamp row is never split.
+			.sort((left, right) => left.rank - right.rank || left.index - right.index)
+			.slice(0, maxLines)
+			.map((entry) => entry.index),
+	);
+	return lines.filter((_line, index) => keep.has(index));
+}
+
 /** Research.json → board cell. Never invents external URLs. */
 export function researchCellFromDocument(document: {
 	network?: {

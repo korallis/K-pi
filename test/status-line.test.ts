@@ -218,7 +218,8 @@ test("registered footer full preset embeds kpi job fields and refreshes after st
 	const footerData = {
 		getGitBranch: () => "main",
 		onBranchChange: () => () => {},
-		getExtensionStatuses: () => [],
+		getExtensionStatuses: () => new Map<string, string>(),
+		getExtensionStatusLine: () => undefined,
 	};
 	const ctx = {
 		cwd: root,
@@ -299,6 +300,123 @@ test("registered footer full preset embeds kpi job fields and refreshes after st
 		assert.match(afterRoute, /\$|12%|openai/);
 		assert.match(afterRoute, /r2\/3/);
 		assert.match(afterRoute, /GATE human/);
+	} finally {
+		component?.dispose?.();
+		resetFooterRouteSnapshot();
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("the registered footer draws the extension statuses it took over", async () => {
+	const root = await mkdtemp(join(tmpdir(), "kpi-footer-status-"));
+	let sessionStart: ((event: unknown, ctx: ExtensionContext) => void) | undefined;
+	let footerFactory:
+		| ((
+				tui: unknown,
+				theme: unknown,
+				footerData: unknown,
+		  ) => { render: (w: number) => string[]; dispose?: () => void })
+		| undefined;
+
+	const pi = {
+		on(event: string, handler: (event: unknown, ctx: ExtensionContext) => void) {
+			if (event === "session_start") sessionStart = handler;
+		},
+		registerCommand() {},
+	} as unknown as ExtensionAPI;
+
+	const ctx = {
+		cwd: root,
+		mode: "tui",
+		model: { name: "test-model" },
+		thinkingLevel: "off",
+		getContextUsage: () => ({ percent: 10, contextWindow: 100_000 }),
+		sessionManager: { getBranch: () => [] },
+		ui: {
+			setFooter(factory: typeof footerFactory) {
+				footerFactory = factory as typeof footerFactory;
+			},
+			setStatus() {},
+			notify() {},
+		},
+	} as unknown as ExtensionContext;
+
+	let component: { render: (w: number) => string[]; dispose?: () => void } | undefined;
+	try {
+		registerStatusLine(pi);
+		sessionStart?.({}, ctx);
+		assert.ok(footerFactory, "footer must register on session_start");
+		await new Promise((resolve) => setTimeout(resolve, 30));
+
+		// Replacing Pi's footer removed the row these are drawn on. The accounts
+		// widget publishes here, so losing the row loses the operator's only view
+		// of which credential is serving them.
+		const footerData = {
+			getGitBranch: () => "main",
+			onBranchChange: () => () => {},
+			getExtensionStatuses: () => new Map([["accounts", "ACCOUNTS\n  LOCAL-OPENAI  a (local) $0"]]),
+			getExtensionStatusLine: () => "ACCOUNTS LOCAL-OPENAI a (local) $0",
+		};
+		component = footerFactory!({ requestRender() {} }, { fg: (_name: string, text: string) => text }, footerData);
+		const lines = component.render(200);
+
+		assert.ok(lines.length >= 2, `expected a status row alongside the rail, got ${lines.length} line(s)`);
+		assert.ok(lines[0]?.includes("K-π"), "the first row is still the K-π rail");
+		assert.match(lines.slice(1).join("\n"), /ACCOUNTS LOCAL-OPENAI a \(local\) \$0/u);
+	} finally {
+		component?.dispose?.();
+		resetFooterRouteSnapshot();
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("a footer with no extension statuses stays a single row", async () => {
+	const root = await mkdtemp(join(tmpdir(), "kpi-footer-nostatus-"));
+	let sessionStart: ((event: unknown, ctx: ExtensionContext) => void) | undefined;
+	let footerFactory:
+		| ((
+				tui: unknown,
+				theme: unknown,
+				footerData: unknown,
+		  ) => { render: (w: number) => string[]; dispose?: () => void })
+		| undefined;
+	const pi = {
+		on(event: string, handler: (event: unknown, ctx: ExtensionContext) => void) {
+			if (event === "session_start") sessionStart = handler;
+		},
+		registerCommand() {},
+	} as unknown as ExtensionAPI;
+	const ctx = {
+		cwd: root,
+		mode: "tui",
+		model: { name: "test-model" },
+		thinkingLevel: "off",
+		getContextUsage: () => ({ percent: 10, contextWindow: 100_000 }),
+		sessionManager: { getBranch: () => [] },
+		ui: {
+			setFooter(factory: typeof footerFactory) {
+				footerFactory = factory as typeof footerFactory;
+			},
+			setStatus() {},
+			notify() {},
+		},
+	} as unknown as ExtensionContext;
+	let component: { render: (w: number) => string[]; dispose?: () => void } | undefined;
+	try {
+		registerStatusLine(pi);
+		sessionStart?.({}, ctx);
+		await new Promise((resolve) => setTimeout(resolve, 30));
+		component = footerFactory!(
+			{ requestRender() {} },
+			{ fg: (_name: string, text: string) => text },
+			{
+				getGitBranch: () => "main",
+				onBranchChange: () => () => {},
+				getExtensionStatuses: () => new Map<string, string>(),
+				getExtensionStatusLine: () => undefined,
+			},
+		);
+		assert.equal(component.render(200).length, 1);
 	} finally {
 		component?.dispose?.();
 		resetFooterRouteSnapshot();
