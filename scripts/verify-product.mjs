@@ -508,8 +508,14 @@ async function main() {
 
 	const metricsNeeded = args.metrics;
 	const metricsOk = metricsNeeded.every((id) => report.metrics[id]?.pass === true);
-	const gatesOk = Object.values(gates).every((g) => g === true);
+	// Skipped gates (via --skip-gates) are not green and not red — they just did not
+	// run here. M-07 still fails closed when those skips are present and M-07 is
+	// requested. Overall ok only requires the gates this invocation actually ran.
+	const gatesOk = Object.values(gates)
+		.filter((g) => g !== "skipped")
+		.every((g) => g === true);
 	report.ok = failures.length === 0 && metricsOk && gatesOk;
+
 
 	ensureDir(dirname(jsonPath));
 	writeFileSync(jsonPath, `${JSON.stringify(report, null, 2)}\n`);

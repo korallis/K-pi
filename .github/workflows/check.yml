@@ -155,8 +155,16 @@ jobs:
         run: npm run verify:built
 
       - name: Whole-product proof
-        # M-01..M-07 collectors + secret-free remediation-proof.json. Gates already ran above.
-        run: node scripts/verify-product.mjs --skip-gates --json "${RUNNER_TEMP}/remediation-proof.json"
+        # M-01..M-06 collectors + secret-free remediation-proof.json.
+        # Repository gates and built-harness already ran as prior steps; M-07 is
+        # that conjunction (do not re-run gates here, and do not claim M-07 via
+        # --skip-gates — that path intentionally records gates as skipped).
+        run: >-
+          node scripts/verify-product.mjs
+          --skip-gates
+          --metrics M-01,M-02,M-03,M-04,M-05,M-06
+          --json "${RUNNER_TEMP}/remediation-proof.json"
+
 
       - name: Working tree clean after gates
         # Every gate is read-only, and the sync check must not regenerate
