@@ -15,16 +15,24 @@ import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 /**
- * Conservative default when tests pass an explicit cap without a model catalog.
- * Real CI derives the cap from the z.ai catalog `contextWindow`.
+ * Default pack cap when no model catalog is supplied (matches practical latency bound).
+ * Real CI derives the cap from catalog contextWindow then clamps to PRACTICAL_MAX_CHUNK_BYTES.
  */
-export const DEFAULT_MAX_CHUNK_BYTES = 384_000;
+export const DEFAULT_MAX_CHUNK_BYTES = 160_000;
 
 /**
  * Absolute safety ceiling for one chunk's diff bytes in the HTTP JSON body.
  * Never raise a single request past this even if the model context is larger.
  */
 export const ABSOLUTE_MAX_CHUNK_BYTES = 1_500_000;
+
+/**
+ * Practical per-request diff cap for flash-tier latency. Catalog contextWindow may
+ * allow ~300–800 KiB of input; multi-hundred-KiB prompts routinely exceed the 15–30m
+ * group wall clock at concurrency 2. Keep requests large vs the old 96 KiB argv era
+ * (~10–30 chunks for multi-MB selections) without starving the job timeout.
+ */
+export const PRACTICAL_MAX_CHUNK_BYTES = 160_000;
 
 /** @deprecated alias — same as ABSOLUTE_MAX_CHUNK_BYTES (HTTP body hard ceiling). */
 export const HARD_MAX_CHUNK_BYTES = ABSOLUTE_MAX_CHUNK_BYTES;
@@ -65,6 +73,7 @@ export function maxChunkBytesFromModelContext(opts) {
 	const bytesPerToken = opts.bytesPerToken ?? DEFAULT_BYTES_PER_TOKEN;
 	const inputFraction = opts.inputFraction ?? CONTEXT_INPUT_FRACTION;
 	const absoluteMax = opts.absoluteMax ?? ABSOLUTE_MAX_CHUNK_BYTES;
+	const practicalMax = opts.practicalMax ?? PRACTICAL_MAX_CHUNK_BYTES;
 	if (!Number.isSafeInteger(contextWindow) || contextWindow < 1024) {
 		throw new Error("contextWindow must be an integer >= 1024");
 	}
@@ -89,7 +98,8 @@ export function maxChunkBytesFromModelContext(opts) {
 			`model context leaves only ${usableTokens} input tokens after reserves (contextWindow=${contextWindow}, maxTokens=${reserveOut}, framingBytes=${framingBytes}); fails closed`,
 		);
 	}
-	return Math.min(absoluteMax, usableTokens * bytesPerToken);
+	const fromContext = usableTokens * bytesPerToken;
+	return Math.min(absoluteMax, practicalMax, fromContext);
 }
 
 /**

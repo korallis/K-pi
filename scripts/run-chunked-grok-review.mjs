@@ -22,6 +22,7 @@ import {
 	DEFAULT_MAX_CHUNK_BYTES,
 	HARD_MAX_CHUNK_BYTES,
 	MIN_CHUNK_BYTES,
+	PRACTICAL_MAX_CHUNK_BYTES,
 	adaptiveMaxChunkBytes,
 	maxChunkBytesFromModelContext,
 	parseChunkLocationIndex,
@@ -51,6 +52,7 @@ export {
 	ABSOLUTE_MAX_CHUNK_BYTES,
 	DEFAULT_MAX_CHUNK_BYTES,
 	HARD_MAX_CHUNK_BYTES,
+	PRACTICAL_MAX_CHUNK_BYTES,
 	maxChunkBytesFromModelContext,
 };
 

@@ -109,7 +109,7 @@ test("writeDiffChunks emits stable names and a manifest", () => {
 });
 
 test("chunk defaults prefer HTTP context budgets over argv-era 96 KiB", () => {
-	assert.equal(DEFAULT_MAX_CHUNK_BYTES, 384_000);
+	assert.equal(DEFAULT_MAX_CHUNK_BYTES, 160_000);
 	assert.equal(HARD_MAX_CHUNK_BYTES, ABSOLUTE_MAX_CHUNK_BYTES);
 	assert.equal(ABSOLUTE_MAX_CHUNK_BYTES, 1_500_000);
 	assert.ok(DEFAULT_MAX_CHUNK_BYTES < ABSOLUTE_MAX_CHUNK_BYTES);
@@ -129,8 +129,8 @@ test("maxChunkBytesFromModelContext reserves output and framing", () => {
 		maxTokens: 131_072,
 		framingBytes: 10_000,
 	});
-	assert.ok(n >= 200_000 && n <= ABSOLUTE_MAX_CHUNK_BYTES, `got ${n}`);
-	assert.ok(Math.ceil(4_700_000 / n) <= 20);
+	assert.ok(n >= 50_000 && n <= 160_000, `got ${n}`);
+	assert.ok(Math.ceil(4_700_000 / n) <= 40);
 });
 
 test("oversized file sections split under the pack cap", () => {

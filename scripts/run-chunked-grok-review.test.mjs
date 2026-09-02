@@ -354,12 +354,12 @@ test("union overflow writes full validated findings then fails closed", async ()
 test("budget defaults pair low concurrency with context-sized chunks", () => {
 	assert.equal(DEFAULT_MAX_CONCURRENCY, 2);
 	assert.equal(DEFAULT_CHUNK_TIMEOUT_SEC, 720);
-	assert.equal(DEFAULT_MAX_CHUNK_BYTES, 384_000);
+	assert.equal(DEFAULT_MAX_CHUNK_BYTES, 160_000);
 	assert.ok(DEFAULT_MAX_CHUNK_BYTES < ABSOLUTE_MAX_CHUNK_BYTES);
 	const hard = resolveReviewChunkBudgetBytes("glm-5.3-flash", "");
 	assert.ok(hard > 96_000, `context budget should exceed argv-era 96KiB, got ${hard}`);
 	const est = Math.ceil(4_700_000 / hard);
-	assert.ok(est >= 8 && est <= 20, `expected ~10–15 chunks for 4.7MB, est=${est} hard=${hard}`);
+	assert.ok(est >= 10 && est <= 40, `expected ~15–30 chunks for 4.7MB, est=${est} hard=${hard}`);
 	const worstCaseMs = Math.ceil(est / DEFAULT_MAX_CONCURRENCY) * 30_000;
 	assert.ok(worstCaseMs < DEFAULT_CHUNK_TIMEOUT_SEC * 1000);
 });

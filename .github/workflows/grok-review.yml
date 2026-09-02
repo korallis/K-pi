@@ -11,7 +11,7 @@
 # Model id from vars.GROK_REVIEW_MODEL, validated against packages/ai/.../zai.json
 # (baseUrl + id + contextWindow from that file only). Chunk size is derived from the
 # model contextWindow — prompts travel in the JSON body, not argv. Target order of
-# magnitude is ~10–15 large chunks for a multi-MB selection, not dozens of 96 KiB cuts.
+# magnitude is ~15–30 practical-sized chunks for a multi-MB selection (contextWindow upper bound, 160 KiB practical latency cap), not dozens of 96 KiB argv cuts.
 # Required secret: ZAI_API_KEY. No Copilot CLI, no GROK_REVIEW_BACKEND toggle.
 #
 # Check context name stays exactly "Grok review" so existing branch protection keeps
@@ -27,7 +27,7 @@
 #   - Chunk bytes come from the catalog contextWindow (with inventory/framing reserves), not argv.
 #   - Infer concurrency: matrix max-parallel=2 and --max-concurrency=2 → ≤4 concurrent
 #     chat-completions against z.ai. Raising either multiplies the other; keep the product
-#     small on flash-tier quotas. ~10–15 context-sized chunks finish well inside 15m.
+#     small on flash-tier quotas. ~15–30 practical chunks finish inside the 35m group timeout.
 #   - Prompt inventory is selected-plus-priority + exclusion summary (not 2k pin rows).
 #   - Every selected path/chunk is reviewed exactly once; missing/duplicate groups fail closed.
 #
@@ -288,7 +288,7 @@ jobs:
     needs: prepare
     if: needs.prepare.outputs.group-count != '0' && needs.prepare.outputs.group-count != ''
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 35
     permissions:
       contents: read
     strategy:

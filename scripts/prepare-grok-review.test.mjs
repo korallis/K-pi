@@ -143,8 +143,8 @@ test("context-sized prepare packs a multi-MB selection into far fewer than 74 ch
 			`chunkCount ${meta.chunkCount} exceeds capacity ${MATRIX_CAPACITY}`,
 		);
 		assert.ok(
-			meta.chunkCount <= 20,
-			`expected ~10–15 context chunks for ${selectedBytes} bytes, got ${meta.chunkCount} at max=${meta.maxChunkBytes}`,
+			meta.chunkCount <= 40,
+			`expected ~15–30 practical chunks for ${selectedBytes} bytes, got ${meta.chunkCount} at max=${meta.maxChunkBytes}`,
 		);
 		assert.equal(
 			meta.groups.reduce((n, g) => n + g.chunkCount, 0),
