@@ -4,7 +4,7 @@
 
 **How agents use this file.** Pick the lowest incomplete package whose dependencies are complete. Implement only that package. Run its scoped verification. Check its DoD only after the observable result passes. Do not use historical `[x]` boxes as proof.
 
-**Ordering.** IDs sort as written: `RP-00`, `RP-01`, `RP-01A`, `RP-02`, … `RP-19`. RP-00 through RP-16 are complete, so **`RP-17` is the current lowest incomplete package**.
+**Ordering.** IDs sort as written: `RP-00`, `RP-01`, `RP-01A`, `RP-02`, … `RP-19`. RP-00 through RP-18 are complete, so **`RP-19` is the current lowest incomplete package**.
 
 IDs: `RP-##`. Stories and ACs: `PRD.md`. Normative contracts: `spec.md`, `../UPSTREAM.md`, and focused product docs. Research and gap IDs: [`remediation-research.md`](remediation-research.md).
 
@@ -60,9 +60,9 @@ RP-05 + RP-10 → RP-11
 RP-01A + RP-11 → RP-13
 RP-05 + RP-13 → RP-14
 RP-05 + RP-11 → RP-15
-RP-08 + RP-10 + RP-13 + RP-15 → RP-16 → RP-17  ← current
+RP-08 + RP-10 + RP-13 + RP-15 → RP-16 → RP-17
 RP-05 + RP-07 + RP-10 + RP-12 + RP-13 + RP-16 → RP-18
-RP-01A + RP-02…RP-18 → RP-19
+RP-01A + RP-02…RP-18 → RP-19  ← current
 ```
 
 ---
@@ -898,9 +898,9 @@ npm run kstack:sync:check
 
 ### DoD
 
-- [ ] Sync is deterministic, semantic, patch-safe, and license-preserving
-- [ ] Drift reporting is pstack-tree aware
-- [ ] `kstack:sync:check` can no longer pass invalid generated skills
+- [x] Sync is deterministic, semantic, patch-safe, and license-preserving
+- [x] Drift reporting is pstack-tree aware
+- [x] `kstack:sync:check` can no longer pass invalid generated skills
 
 ---
 
@@ -942,9 +942,9 @@ node --test --experimental-strip-types test/control-plane.test.ts test/status-li
 
 ### DoD
 
-- [ ] US-15, US-16, and US-25 are information-complete
-- [ ] All upstream state owners feed honest lamps/labels
-- [ ] M-06 measures a real assistant response
+- [x] US-15, US-16, and US-25 are information-complete
+- [x] All upstream state owners feed honest lamps/labels
+- [x] M-06 measures a real assistant response
 
 ---
 
