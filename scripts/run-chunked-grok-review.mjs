@@ -37,13 +37,21 @@ import {
 
 
 
-/** One concurrent wave per group — capped to matrix max chunks/group (≤16). */
-export const DEFAULT_MAX_CONCURRENCY = 16;
+/** Per-group chunk pool. Paired with workflow matrix max-parallel (see grok-review.yml). */
+export const DEFAULT_MAX_CONCURRENCY = 2;
 /** Per-chunk wall timeout; one high-effort group must finish inside the 15m job. */
 export const DEFAULT_CHUNK_TIMEOUT_SEC = 720;
 
 export const DEFAULT_MAX_AI_CREDITS = 50;
 export const REQUIRED_EFFORT = "high";
+
+/** Bounded retries for z.ai 429 / transient network failures (not schema/4xx). */
+export const DEFAULT_ZAI_MAX_RETRIES = 5;
+/** Base delay before the first retry when no Retry-After header is present. */
+export const DEFAULT_ZAI_BACKOFF_BASE_MS = 1_000;
+/** Cap on a single backoff sleep (keeps a 15m group job recoverable). */
+export const DEFAULT_ZAI_BACKOFF_CAP_MS = 30_000;
+
 
 export { DEFAULT_MAX_CHUNK_BYTES, PROMPT_ARGV_TEST_CEILING_BYTES };
 
@@ -437,14 +445,118 @@ export function resolveZaiCatalogPath(env = process.env, fromModuleUrl = import.
 }
 
 /**
+ * Parse Retry-After (seconds or HTTP-date) or common provider reset headers into ms.
+ * Returns null when absent or unusable.
+ *
+ * @param {Headers | Record<string, string> | undefined | null} headers
+ * @param {string} [bodyText]
+ * @param {number} [nowMs]
+ * @returns {number | null}
+ */
+export function parseRetryAfterMs(headers, bodyText = "", nowMs = Date.now()) {
+	const get = (name) => {
+		if (!headers) return "";
+		if (typeof headers.get === "function") return String(headers.get(name) ?? "");
+		const key = Object.keys(headers).find((k) => k.toLowerCase() === name.toLowerCase());
+		return key ? String(headers[key] ?? "") : "";
+	};
+	const raw =
+		get("retry-after") ||
+		get("x-ratelimit-reset-after") ||
+		get("x-ratelimit-reset-ms") ||
+		get("ratelimit-reset");
+	if (raw) {
+		const asNumber = Number(raw);
+		if (Number.isFinite(asNumber) && asNumber >= 0) {
+			// Values that look like epoch seconds (≥ ~year 2001) → delta from now.
+			if (asNumber > 1_000_000_000) {
+				const deltaSec = asNumber > 1_000_000_000_000 ? (asNumber - nowMs) / 1000 : asNumber - nowMs / 1000;
+				if (deltaSec > 0) return Math.ceil(deltaSec * 1000);
+			} else if (asNumber > 10_000) {
+				// Likely already milliseconds.
+				return Math.ceil(asNumber);
+			} else {
+				return Math.ceil(asNumber * 1000);
+			}
+		}
+		const when = Date.parse(raw);
+		if (Number.isFinite(when) && when > nowMs) return when - nowMs;
+	}
+	// Optional body hint: {"error":{"retry_after":1.5}} — never trust large values blindly.
+	if (bodyText) {
+		try {
+			const payload = JSON.parse(bodyText);
+			const candidate =
+				payload?.error?.retry_after ??
+				payload?.error?.retryAfter ??
+				payload?.retry_after ??
+				payload?.retryAfter;
+			const n = Number(candidate);
+			if (Number.isFinite(n) && n >= 0 && n <= 600) return Math.ceil(n * 1000);
+		} catch {
+			/* ignore */
+		}
+	}
+	return null;
+}
+
+/**
+ * Exponential backoff with full jitter, optionally floored by Retry-After.
+ *
+ * @param {number} attempt zero-based failed attempt index
+ * @param {{
+ *   baseMs?: number,
+ *   capMs?: number,
+ *   retryAfterMs?: number | null,
+ *   random?: () => number,
+ * }} [opts]
+ */
+export function computeZaiBackoffMs(attempt, opts = {}) {
+	const baseMs = opts.baseMs ?? DEFAULT_ZAI_BACKOFF_BASE_MS;
+	const capMs = opts.capMs ?? DEFAULT_ZAI_BACKOFF_CAP_MS;
+	const random = typeof opts.random === "function" ? opts.random : Math.random;
+	const exp = Math.min(capMs, baseMs * 2 ** Math.max(0, attempt));
+	const jittered = Math.floor(random() * exp);
+	const retryAfter = Number.isFinite(opts.retryAfterMs) ? Math.max(0, Number(opts.retryAfterMs)) : 0;
+	return Math.min(capMs, Math.max(jittered, retryAfter));
+}
+
+/**
+ * @param {unknown} error
+ * @param {boolean} aborted
+ */
+export function isTransientZaiNetworkError(error, aborted) {
+	if (aborted) return false;
+	const message = error instanceof Error ? error.message : String(error ?? "");
+	const name = error instanceof Error ? error.name : "";
+	if (name === "AbortError" || /aborted/i.test(message)) return false;
+	// undici / fetch: TypeError "fetch failed"; Node: ECONNRESET, ETIMEDOUT, etc.
+	return (
+		/fetch failed/i.test(message) ||
+		/network/i.test(message) ||
+		/ECONNRESET|ECONNREFUSED|EPIPE|ETIMEDOUT|ENOTFOUND|UND_ERR/i.test(message) ||
+		name === "TypeError"
+	);
+}
+
+/**
  * OpenAI-compatible chat-completions runner for the z.ai pool.
  * baseUrl is taken from the catalog entry for `spec.model` on every call — never a frozen constant.
  * Returns the same `{ ok, reason, stdout, stderr, code }` shape as defaultRunCommand.
+ *
+ * 429 and transient network errors retry with exponential backoff + jitter (honours Retry-After).
+ * Exhausted retries fail closed with reason `rate-limit` or `spawn-error`.
  *
  * @param {{
  *   apiKey: string,
  *   catalog: ReturnType<typeof loadZaiProviderCatalog>,
  *   fetchImpl?: typeof fetch,
+ *   maxRetries?: number,
+ *   backoffBaseMs?: number,
+ *   backoffCapMs?: number,
+ *   sleep?: (ms: number) => Promise<void>,
+ *   random?: () => number,
+ *   now?: () => number,
  * }} config
  * @returns {(spec: ReviewRunSpec) => Promise<ReviewRunResult>}
  */
@@ -452,6 +564,17 @@ export function createZaiRunCommand(config) {
 	const apiKey = config.apiKey;
 	const catalog = config.catalog;
 	const fetchImpl = config.fetchImpl ?? globalThis.fetch;
+	const maxRetries =
+		Number.isSafeInteger(config.maxRetries) && config.maxRetries >= 0
+			? config.maxRetries
+			: DEFAULT_ZAI_MAX_RETRIES;
+	const backoffBaseMs = config.backoffBaseMs ?? DEFAULT_ZAI_BACKOFF_BASE_MS;
+	const backoffCapMs = config.backoffCapMs ?? DEFAULT_ZAI_BACKOFF_CAP_MS;
+	const sleep =
+		config.sleep ??
+		((ms) => new Promise((resolve) => setTimeout(resolve, Math.max(0, ms))));
+	const random = config.random ?? Math.random;
+	const now = config.now ?? Date.now;
 	if (typeof apiKey !== "string" || apiKey.trim().length === 0) {
 		throw new Error("createZaiRunCommand requires a non-empty apiKey");
 	}
@@ -476,77 +599,147 @@ export function createZaiRunCommand(config) {
 				code: null,
 			};
 		}
-		const controller = new AbortController();
-		const timer = setTimeout(() => controller.abort(), Math.max(1, spec.timeoutSec) * 1000);
+
+		const deadline = now() + Math.max(1, spec.timeoutSec) * 1000;
 		const url = `${entry.baseUrl}/chat/completions`;
-		try {
-			const response = await fetchImpl(url, {
-				method: "POST",
-				headers: {
-					"content-type": "application/json",
-					authorization: `Bearer ${apiKey}`,
-				},
-				body: JSON.stringify({
-					model: entry.id,
-					messages: [{ role: "user", content: spec.prompt }],
-					temperature: 0,
-				}),
-				signal: controller.signal,
-			});
-			const rawText = await response.text();
-			if (!response.ok) {
+		/** @type {ReviewRunResult | null} */
+		let lastFailure = null;
+
+		for (let attempt = 0; attempt <= maxRetries; attempt++) {
+			const remainingMs = deadline - now();
+			if (remainingMs <= 0) {
 				return {
 					ok: false,
-					reason: "exit-nonzero",
-					stdout: "",
-					stderr: `z.ai HTTP ${response.status}: ${rawText.slice(0, 1500)}`,
-					code: response.status,
+					reason: "timeout",
+					stdout: lastFailure?.stdout ?? "",
+					stderr: lastFailure?.stderr
+						? `${lastFailure.stderr} (overall timeout)`
+						: `timed out after ${spec.timeoutSec}s`,
+					code: null,
 				};
 			}
-			let payload;
+
+			const controller = new AbortController();
+			const timer = setTimeout(() => controller.abort(), remainingMs);
 			try {
-				payload = JSON.parse(rawText);
-			} catch {
+				const response = await fetchImpl(url, {
+					method: "POST",
+					headers: {
+						"content-type": "application/json",
+						authorization: `Bearer ${apiKey}`,
+					},
+					body: JSON.stringify({
+						model: entry.id,
+						messages: [{ role: "user", content: spec.prompt }],
+						temperature: 0,
+					}),
+					signal: controller.signal,
+				});
+				const rawText = await response.text();
+				if (response.status === 429) {
+					const retryAfterMs = parseRetryAfterMs(response.headers, rawText, now());
+					lastFailure = {
+						ok: false,
+						reason: "rate-limit",
+						stdout: "",
+						stderr: `z.ai HTTP 429: ${rawText.slice(0, 1500)}`,
+						code: 429,
+					};
+					if (attempt >= maxRetries) break;
+					const waitMs = computeZaiBackoffMs(attempt, {
+						baseMs: backoffBaseMs,
+						capMs: backoffCapMs,
+						retryAfterMs,
+						random,
+					});
+					const room = deadline - now();
+					if (room <= 0) break;
+					await sleep(Math.min(waitMs, room));
+					continue;
+				}
+				if (!response.ok) {
+					return {
+						ok: false,
+						reason: "exit-nonzero",
+						stdout: "",
+						stderr: `z.ai HTTP ${response.status}: ${rawText.slice(0, 1500)}`,
+						code: response.status,
+					};
+				}
+				let payload;
+				try {
+					payload = JSON.parse(rawText);
+				} catch {
+					return {
+						ok: false,
+						reason: "invalid-response",
+						stdout: rawText,
+						stderr: "z.ai response was not JSON",
+						code: response.status,
+					};
+				}
+				const content = payload?.choices?.[0]?.message?.content;
+				if (typeof content !== "string") {
+					return {
+						ok: false,
+						reason: "invalid-response",
+						stdout: rawText,
+						stderr: "z.ai response missing choices[0].message.content string",
+						code: response.status,
+					};
+				}
 				return {
-					ok: false,
-					reason: "invalid-response",
-					stdout: rawText,
-					stderr: "z.ai response was not JSON",
-					code: response.status,
+					ok: true,
+					reason: "success",
+					stdout: content,
+					stderr: "",
+					code: 0,
 				};
-			}
-			const content = payload?.choices?.[0]?.message?.content;
-			if (typeof content !== "string") {
-				return {
+			} catch (error) {
+				const aborted = controller.signal.aborted;
+				const message = error instanceof Error ? error.message : String(error);
+				if (aborted || !isTransientZaiNetworkError(error, aborted)) {
+					return {
+						ok: false,
+						reason: aborted ? "timeout" : "spawn-error",
+						stdout: "",
+						stderr: aborted ? `timed out after ${spec.timeoutSec}s` : message,
+						code: null,
+					};
+				}
+				lastFailure = {
 					ok: false,
-					reason: "invalid-response",
-					stdout: rawText,
-					stderr: "z.ai response missing choices[0].message.content string",
-					code: response.status,
+					reason: "spawn-error",
+					stdout: "",
+					stderr: message,
+					code: null,
 				};
+				if (attempt >= maxRetries) break;
+				const waitMs = computeZaiBackoffMs(attempt, {
+					baseMs: backoffBaseMs,
+					capMs: backoffCapMs,
+					random,
+				});
+				const room = deadline - now();
+				if (room <= 0) break;
+				await sleep(Math.min(waitMs, room));
+			} finally {
+				clearTimeout(timer);
 			}
-			return {
-				ok: true,
-				reason: "success",
-				stdout: content,
-				stderr: "",
-				code: 0,
-			};
-		} catch (error) {
-			const aborted = controller.signal.aborted;
-			const message = error instanceof Error ? error.message : String(error);
-			return {
-				ok: false,
-				reason: aborted ? "timeout" : "spawn-error",
-				stdout: "",
-				stderr: aborted ? `timed out after ${spec.timeoutSec}s` : message,
-				code: null,
-			};
-		} finally {
-			clearTimeout(timer);
 		}
+
+		return (
+			lastFailure ?? {
+				ok: false,
+				reason: "spawn-error",
+				stdout: "",
+				stderr: "z.ai request failed after retries",
+				code: null,
+			}
+		);
 	};
 }
+
 
 /**
  * Pick the inference backend from the environment.

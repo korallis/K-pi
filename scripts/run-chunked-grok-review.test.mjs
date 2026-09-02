@@ -11,19 +11,24 @@ import {
 	DEFAULT_CHUNK_TIMEOUT_SEC,
 	DEFAULT_MAX_CHUNK_BYTES,
 	DEFAULT_MAX_CONCURRENCY,
+	DEFAULT_ZAI_MAX_RETRIES,
 	PROMPT_ARGV_TEST_CEILING_BYTES,
 	REQUIRED_EFFORT,
+	computeZaiBackoffMs,
 	copilotSpawnEnv,
 	createZaiRunCommand,
 	defaultRunCommand,
+	isTransientZaiNetworkError,
 	loadZaiProviderCatalog,
 	mapPool,
+	parseRetryAfterMs,
 	resolveReviewRunCommand,
 	resolveZaiCatalogModel,
 	resolveZaiCatalogPath,
 	runChunkedGrokReview,
 	runGroupGrokReview,
 } from "./run-chunked-grok-review.mjs";
+
 
 
 
@@ -366,20 +371,23 @@ test("union overflow writes full validated findings then fails closed", async ()
 
 test("budget defaults stay latency-bound under argv ceiling", () => {
 	assert.equal(REQUIRED_EFFORT, "high");
-	assert.equal(DEFAULT_MAX_CONCURRENCY, 16);
+	// Paired with grok-review.yml matrix max-parallel=2 → worst-case 4 in-flight z.ai calls.
+	assert.equal(DEFAULT_MAX_CONCURRENCY, 2);
 	assert.equal(DEFAULT_CHUNK_TIMEOUT_SEC, 720);
 	assert.equal(DEFAULT_MAX_CHUNK_BYTES, 96_000);
 	// Prompt argv element must stay under the conservative 100 KiB ceiling
 	// (Linux MAX_ARG_STRLEN is ~128 KiB; preamble is a few KiB on top of the chunk).
 	assert.ok(DEFAULT_MAX_CHUNK_BYTES < PROMPT_ARGV_TEST_CEILING_BYTES);
 	assert.ok(PROMPT_ARGV_TEST_CEILING_BYTES < 128 * 1024);
-	// Provenance-reduced PR3-scale selection (~1.43 MB) fits one concurrent wave.
+	// Provenance-reduced PR3-scale selection (~1.43 MB) still partitions under matrix capacity.
 	const provenanceReducedMax = 1_450_000;
 	const chunksNeeded = Math.ceil(provenanceReducedMax / DEFAULT_MAX_CHUNK_BYTES);
-	assert.ok(
-		chunksNeeded <= DEFAULT_MAX_CONCURRENCY,
-		`need ${chunksNeeded} chunks <= concurrency ${DEFAULT_MAX_CONCURRENCY}`,
-	);
+	assert.ok(chunksNeeded <= 128, `need ${chunksNeeded} chunks <= matrix capacity 128`);
+	// At concurrency 2, serial waves still finish inside the 15m group timeout even if
+	// each chunk takes tens of seconds (74 chunks × ~10s / 2 ≈ 6 min).
+	const worstCaseMs = Math.ceil(74 / DEFAULT_MAX_CONCURRENCY) * 10_000;
+	assert.ok(worstCaseMs < DEFAULT_CHUNK_TIMEOUT_SEC * 1000);
+
 	// Spawn env must not forward the Actions GITHUB_TOKEN.
 	const env = copilotSpawnEnv({ PATH: "/bin", HOME: "/tmp", COPILOT_GITHUB_TOKEN: "t", GITHUB_TOKEN: "nope", GH_TOKEN: "nope" });
 	assert.equal(env.COPILOT_GITHUB_TOKEN, "t");
@@ -750,10 +758,208 @@ test("createZaiRunCommand fails closed on unknown model without calling network"
 	}
 });
 
-test("createZaiRunCommand fails closed on HTTP error", async () => {
+test("parseRetryAfterMs reads seconds, HTTP-date, and body hints", () => {
+	assert.equal(parseRetryAfterMs({ "retry-after": "2" }, "", 0), 2000);
+	assert.equal(parseRetryAfterMs({ "Retry-After": "1.5" }, "", 0), 1500);
+	const now = Date.UTC(2026, 0, 1, 0, 0, 0);
+	// HTTP-date has second resolution; use a whole-second delta.
+	const httpDate = new Date(now + 4000).toUTCString();
+	assert.equal(parseRetryAfterMs({ "retry-after": httpDate }, "", now), 4000);
+	assert.equal(
+		parseRetryAfterMs({}, JSON.stringify({ error: { retry_after: 1.25 } }), now),
+		1250,
+	);
+	assert.equal(parseRetryAfterMs({}, "", now), null);
+});
+
+test("computeZaiBackoffMs floors on Retry-After and stays under cap", () => {
+	const ms = computeZaiBackoffMs(0, {
+		baseMs: 1000,
+		capMs: 5000,
+		retryAfterMs: 2500,
+		random: () => 0,
+	});
+	assert.equal(ms, 2500);
+	const capped = computeZaiBackoffMs(10, {
+		baseMs: 1000,
+		capMs: 5000,
+		retryAfterMs: 99999,
+		random: () => 0.999,
+	});
+	assert.equal(capped, 5000);
+});
+
+test("isTransientZaiNetworkError treats fetch failed as retryable", () => {
+	assert.equal(isTransientZaiNetworkError(new TypeError("fetch failed"), false), true);
+	assert.equal(isTransientZaiNetworkError(new Error("ECONNRESET"), false), true);
+	assert.equal(isTransientZaiNetworkError(new Error("fetch failed"), true), false);
+	assert.equal(isTransientZaiNetworkError(new Error("invalid schema"), false), false);
+});
+
+test("createZaiRunCommand retries 429 then succeeds", async () => {
+	let hits = 0;
+	const sleeps = [];
 	const stub = await startLocalZaiStub(async (_req, res) => {
+		hits += 1;
+		if (hits === 1) {
+			res.writeHead(429, {
+				"content-type": "application/json",
+				"retry-after": "1",
+			});
+			res.end(JSON.stringify({ error: { code: "1302", message: "Rate limit reached for requests" } }));
+			return;
+		}
+		res.writeHead(200, { "content-type": "application/json" });
+		res.end(JSON.stringify({ choices: [{ message: { content: "[]" } }] }));
+	});
+	const dir = mkdtempSync(join(tmpdir(), "kpi-zai-429-ok-"));
+	try {
+		const catalog = loadZaiProviderCatalog(
+			writeTempZaiCatalog(dir, {
+				"glm-5.3": { name: "GLM-5.3", baseUrl: stub.baseUrl },
+			}),
+		);
+		const run = createZaiRunCommand({
+			apiKey: "k",
+			catalog,
+			fetchImpl: fetch,
+			maxRetries: 3,
+			sleep: async (ms) => {
+				sleeps.push(ms);
+			},
+			random: () => 0,
+		});
+		const result = await run({ prompt: "p", model: "glm-5.3", timeoutSec: 30 });
+		assert.equal(result.ok, true);
+		assert.equal(result.reason, "success");
+		assert.equal(hits, 2);
+		assert.equal(sleeps.length, 1);
+		assert.ok(sleeps[0] >= 1000, `expected Retry-After floor, got ${sleeps[0]}`);
+	} finally {
+		await stub.close();
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("createZaiRunCommand exhausts repeated 429 and fails closed as rate-limit", async () => {
+	let hits = 0;
+	const stub = await startLocalZaiStub(async (_req, res) => {
+		hits += 1;
 		res.writeHead(429, { "content-type": "application/json" });
 		res.end(JSON.stringify({ error: { message: "rate limited" } }));
+	});
+	const dir = mkdtempSync(join(tmpdir(), "kpi-zai-429-fail-"));
+	try {
+		const catalog = loadZaiProviderCatalog(
+			writeTempZaiCatalog(dir, {
+				"glm-5.3": { name: "GLM-5.3", baseUrl: stub.baseUrl },
+			}),
+		);
+		const run = createZaiRunCommand({
+			apiKey: "k",
+			catalog,
+			fetchImpl: fetch,
+			maxRetries: 2,
+			sleep: async () => {},
+			random: () => 0,
+		});
+		const result = await run({ prompt: "p", model: "glm-5.3", timeoutSec: 30 });
+		assert.equal(result.ok, false);
+		assert.equal(result.reason, "rate-limit");
+		assert.equal(result.code, 429);
+		assert.match(result.stderr, /HTTP 429/);
+		assert.equal(hits, 3); // initial + 2 retries
+		assert.ok(DEFAULT_ZAI_MAX_RETRIES >= 1);
+	} finally {
+		await stub.close();
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("createZaiRunCommand honours Retry-After when computing backoff", async () => {
+	const sleeps = [];
+	const stub = await startLocalZaiStub(async (_req, res) => {
+		res.writeHead(429, {
+			"content-type": "application/json",
+			"retry-after": "3",
+		});
+		res.end(JSON.stringify({ error: { message: "slow down" } }));
+	});
+	const dir = mkdtempSync(join(tmpdir(), "kpi-zai-ra-"));
+	try {
+		const catalog = loadZaiProviderCatalog(
+			writeTempZaiCatalog(dir, {
+				"glm-5.3": { name: "GLM-5.3", baseUrl: stub.baseUrl },
+			}),
+		);
+		const run = createZaiRunCommand({
+			apiKey: "k",
+			catalog,
+			fetchImpl: fetch,
+			maxRetries: 1,
+			backoffBaseMs: 100,
+			sleep: async (ms) => {
+				sleeps.push(ms);
+			},
+			random: () => 0, // jittered floor = 0 without Retry-After
+		});
+		const result = await run({ prompt: "p", model: "glm-5.3", timeoutSec: 30 });
+		assert.equal(result.ok, false);
+		assert.equal(result.reason, "rate-limit");
+		assert.equal(sleeps.length, 1);
+		assert.equal(sleeps[0], 3000);
+	} finally {
+		await stub.close();
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("createZaiRunCommand retries transient network errors then succeeds", async () => {
+	let hits = 0;
+	const stub = await startLocalZaiStub(async (_req, res) => {
+		hits += 1;
+		res.writeHead(200, { "content-type": "application/json" });
+		res.end(JSON.stringify({ choices: [{ message: { content: "[]" } }] }));
+	});
+	const dir = mkdtempSync(join(tmpdir(), "kpi-zai-net-"));
+	try {
+		const catalog = loadZaiProviderCatalog(
+			writeTempZaiCatalog(dir, {
+				"glm-5.3": { name: "GLM-5.3", baseUrl: stub.baseUrl },
+			}),
+		);
+		let fetchCalls = 0;
+		const run = createZaiRunCommand({
+			apiKey: "k",
+			catalog,
+			fetchImpl: async (url, init) => {
+				fetchCalls += 1;
+				if (fetchCalls === 1) {
+					throw new TypeError("fetch failed");
+				}
+				return fetch(url, init);
+			},
+			maxRetries: 2,
+			sleep: async () => {},
+			random: () => 0,
+		});
+		const result = await run({ prompt: "p", model: "glm-5.3", timeoutSec: 30 });
+		assert.equal(result.ok, true);
+		assert.equal(result.reason, "success");
+		assert.equal(fetchCalls, 2);
+		assert.equal(hits, 1);
+	} finally {
+		await stub.close();
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("createZaiRunCommand fails closed on non-429 HTTP error without retry", async () => {
+	let hits = 0;
+	const stub = await startLocalZaiStub(async (_req, res) => {
+		hits += 1;
+		res.writeHead(500, { "content-type": "application/json" });
+		res.end(JSON.stringify({ error: { message: "boom" } }));
 	});
 	const dir = mkdtempSync(join(tmpdir(), "kpi-zai-http-"));
 	try {
@@ -762,16 +968,26 @@ test("createZaiRunCommand fails closed on HTTP error", async () => {
 				"glm-5.3": { name: "GLM-5.3", baseUrl: stub.baseUrl },
 			}),
 		);
-		const run = createZaiRunCommand({ apiKey: "k", catalog, fetchImpl: fetch });
+		const run = createZaiRunCommand({
+			apiKey: "k",
+			catalog,
+			fetchImpl: fetch,
+			maxRetries: 5,
+			sleep: async () => {
+				assert.fail("should not sleep on non-429 HTTP errors");
+			},
+		});
 		const result = await run({ prompt: "p", model: "glm-5.3", timeoutSec: 5 });
 		assert.equal(result.ok, false);
 		assert.equal(result.reason, "exit-nonzero");
-		assert.match(result.stderr, /HTTP 429/);
+		assert.match(result.stderr, /HTTP 500/);
+		assert.equal(hits, 1);
 	} finally {
 		await stub.close();
 		rmSync(dir, { recursive: true, force: true });
 	}
 });
+
 
 test("createZaiRunCommand fails closed on non-JSON body", async () => {
 	const stub = await startLocalZaiStub(async (_req, res) => {

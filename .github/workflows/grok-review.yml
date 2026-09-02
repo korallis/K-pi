@@ -3,6 +3,8 @@
 # Layout:
 #   1. prepare — trusted select + partition + group; uploads immutable inputs; emits matrix
 #   2. infer   — hosted Ubuntu matrix; read-only; no write token; each chunk once
+#               max-parallel 2 × per-group concurrency 2 → worst-case 4 in-flight
+#               z.ai requests (flash tier); 429 retries live in run-chunked-grok-review.mjs
 #   3. Grok review (exact name) — download all groups; union; sticky comment; fail closed
 #
 # Inference backend: z.ai OpenAI-compatible chat completions for the `zai` pool.
@@ -19,6 +21,9 @@
 #   - Base is checked out for trusted gate scripts; head is read-only diff source.
 #   - Gate scripts run from base when present; head bootstrap is same-repo landing only.
 #   - Prepare hard-bounds selected diff (8 MiB). Matrix is bounded (≤8 groups × ≤16 chunks; capacity 128).
+#   - Infer concurrency: matrix max-parallel=2 and --max-concurrency=2 → ≤4 concurrent
+#     chat-completions against z.ai. Raising either multiplies the other; keep the product
+#     small on flash-tier quotas. 74 chunks still finish well inside the 15m group timeout.
 #   - Prompt inventory is selected-plus-priority + exclusion summary (not 2k pin rows).
 #   - Every selected path/chunk is reviewed exactly once; missing/duplicate groups fail closed.
 #
@@ -194,6 +199,7 @@ jobs:
 
           # Partition + group into one-wave matrix (≤8×16; capacity 128).
           # Chunk size is adaptive: ceil(selected / 128) up to argv-safe 96 KiB.
+          # max-concurrency here is prepare-side only (unused by packing); infer sets its own.
           env -u GITHUB_TOKEN -u GH_TOKEN \
             node "$RUNNER_TEMP/gate-scripts/prepare-grok-review.mjs" \
             --diff "$RUNNER_TEMP/prepare/pr.diff" \
@@ -201,7 +207,7 @@ jobs:
             --out-dir "$RUNNER_TEMP/prepare" \
             --max-groups 8 \
             --max-chunks-per-group 16 \
-            --max-concurrency 16
+            --max-concurrency 2
 
           # Bundle gate scripts for infer/finalize (immutable copy).
           cp -a "$RUNNER_TEMP/gate-scripts" "$RUNNER_TEMP/prepare/gate-scripts"
@@ -279,7 +285,8 @@ jobs:
       contents: read
     strategy:
       fail-fast: false
-      max-parallel: 8
+      # With --max-concurrency 2 below: worst-case in-flight = 2 × 2 = 4.
+      max-parallel: 2
       matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
     env:
       GROK_REVIEW_MODEL: ${{ vars.GROK_REVIEW_MODEL }}
@@ -328,7 +335,7 @@ jobs:
             --out-meta "$RUNNER_TEMP/group-out/meta.json" \
             --work-dir "$RUNNER_TEMP/group-work" \
             --effort high \
-            --max-concurrency 16 \
+            --max-concurrency 2 \
             --chunk-timeout-sec 720 \
             --max-ai-credits 50
           status=$?
@@ -507,8 +514,14 @@ jobs:
             fi
             if [ "$FINALIZE_OUTCOME" != "success" ]; then
               overflow=$(jq -r '.overflow // false' "$RUNNER_TEMP/final/grok-review-meta.json" 2>/dev/null || echo false)
+              rate_limited=0
+              if [ -f "$RUNNER_TEMP/final/grok-review-meta.json" ]; then
+                rate_limited=$(jq -r '[.chunks[]? | select(.reason == "rate-limit")] | length' "$RUNNER_TEMP/final/grok-review-meta.json" 2>/dev/null || echo 0)
+              fi
               if [ "$overflow" = "true" ]; then
                 echo '**Failed closed:** union exceeded the adaptive hard cap after dedupe. Full validated findings are in the artifact and summarized below when space allows.'
+              elif [ "${rate_limited:-0}" != "0" ]; then
+                echo "**Failed closed:** z.ai **rate limit** exhausted on \`${rate_limited}\` chunk(s) (HTTP 429). Do not blind-rerun at the same concurrency; wait for quota reset or lower max-parallel × max-concurrency. Inspect chunk outcomes below and the workflow artifact."
               else
                 echo '**Failed closed:** Grok review did not complete (provenance reduction, missing group, timeout, inference error, invalid schema, or overflow). Inspect the required workflow log and artifact.'
               fi
