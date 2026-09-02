@@ -140,10 +140,12 @@ npm run check
 
 ### DoD
 
-- [ ] Plain chat never prompts; AC-13.1 denials and secret/reserved paths still deny
-- [ ] Gated job: read-only compositions run silently; unknown commands ask once with a three-way choice; *Always* persists
-- [ ] A finished job neither sets policy mode nor receives tool.request records
-- [ ] Traceability map regenerated; AC-13.5/13.6 bound to real tests
+- [x] Plain chat never prompts; AC-13.1 denials and secret/reserved paths still deny — `test/policy.test.ts` "chat scope never confirms but keeps every hard deny", "with no live job the hook is chat scope…"; built bundle in a scratch git repo (`--mode json`, no job): `printf '%s\n' "${HOME:-}"; command -v node || true` and `node --version | head -n 1` executed with zero prompt events, `git push origin main` blocked with `Policy denied command`
+- [x] Gated job: read-only compositions run silently; unknown commands ask once with a three-way choice; *Always* persists — `test/shell-classifier.test.ts` (4 tests), `test/policy.test.ts` "read-only inspection commands are allowed whatever their arguments…", "a composition is only as safe as its least safe segment", "an operator can allow a command for the session…", "always allow persists to policy.json allow[]…", "a declined or cancelled approval blocks the call"
+- [x] A finished job neither sets policy mode nor receives tool.request records — "a finished job never puts chat into a job mode or receives its tool requests"; the write-bounds override is skipped in chat scope
+- [x] Traceability map regenerated; AC-13.5/13.6 bound to real tests — `docs/traceability-map.json` 319/319 covered
+
+**Landed 2026-09-02 on branch `fx/02-policy`.** Gates: `npm run check` green, `npm run test:kpi` 663/663, `packages/coding-agent` policy vitest 4/4, `npm run build:offline` green. Policy files are now seeded only in a project directory (`.kpi/` present or a git root).
 
 ---
 ## FX-03 — Smart routing: bare text is chat, the agent starts jobs, dead runs stop haunting the session

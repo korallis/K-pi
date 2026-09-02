@@ -18,7 +18,7 @@
     "shared_title_must_assert_all_bound_ids": true
   },
   "counts": {
-    "ac": 173,
+    "ac": 175,
     "metric": 7,
     "gap": 54,
     "rp": 21,
@@ -26,8 +26,8 @@
     "nfr": 8,
     "schema": 4,
     "event": 22,
-    "total": 317,
-    "covered": 317,
+    "total": 319,
+    "covered": 319,
     "uncovered": 0
   },
   "shared_titles": [
@@ -1911,6 +1911,44 @@
         }
       ],
       "failure_route": "Reopen RP-02 for AC-13.4; RP-19 does not patch feature behavior"
+    },
+    {
+      "id": "AC-13.5",
+      "kind": "ac",
+      "primary_owner": "RP-02",
+      "prd_us": "US-13",
+      "uat_row": "UAT-13",
+      "summary": "With no live job (chat scope), reads, writes, unknown commands and `git commit` never confirm; AC-13.1 denials, secret-shaped paths and reserved artifacts still",
+      "coverage": "covered",
+      "named_checks": [
+        {
+          "name": "chat_scope_never_confirms_but_keeps_every_hard_deny",
+          "file": "test/policy.test.ts",
+          "test_title": "chat scope never confirms but keeps every hard deny",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^chat scope never confirms but keeps every hard deny$' test/policy.test.ts",
+          "observable": "no live job: unknown commands, writes and commits run without a prompt; push, rm -rf, deploy, secret paths and reserved artifacts still deny"
+        }
+      ],
+      "failure_route": "Reopen RP-02 for AC-13.5; RP-19 does not patch feature behavior"
+    },
+    {
+      "id": "AC-13.6",
+      "kind": "ac",
+      "primary_owner": "RP-02",
+      "prd_us": "US-13",
+      "uat_row": "UAT-13",
+      "summary": "A gated confirm offers \"Allow for this session\", \"Always allow in this project\" and \"Deny\". *Always* persists the exact command to `.kpi/policy.json` `allow[]` ",
+      "coverage": "covered",
+      "named_checks": [
+        {
+          "name": "always_allow_persists_to_policy_json_allow_and_is_honoured_by_a_fresh_session",
+          "file": "test/policy.test.ts",
+          "test_title": "always allow persists to policy.json allow[] and is honoured by a fresh session",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^always allow persists to policy\\.json allow\\[\\] and is honoured by a fresh session$' test/policy.test.ts",
+          "observable": "Always allow writes the exact command to .kpi/policy.json allow[]; a new session honours it without a prompt; hard denies are not laundered"
+        }
+      ],
+      "failure_route": "Reopen RP-02 for AC-13.6; RP-19 does not patch feature behavior"
     },
     {
       "id": "AC-14.1",
