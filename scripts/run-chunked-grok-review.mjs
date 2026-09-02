@@ -8,7 +8,9 @@
  * 3. Validate each chunk's JSON; fail closed on timeout, error, or bad schema.
  * 4. Union/deduplicate findings; write one normalized result + meta (model, chunks).
  *
- * Effort stays `high`. Model stays the configured Grok id. No alternate vendors.
+ * Effort stays `high`. Model is the configured review id (Grok via Copilot, or a
+ * z.ai catalog id when `GROK_REVIEW_BACKEND=zai`). No frozen endpoint constants.
+
  */
 
 import { randomBytes } from "node:crypto";
@@ -92,6 +94,29 @@ export function untrustedDiffDelimiters(nonce = randomBytes(8).toString("hex")) 
 		end: `END UNTRUSTED DIFF ${token}`,
 	};
 }
+
+/**
+ * Copilot path: model must be a Grok id. z.ai path: model must be a known id in
+ * the shipped catalog (resolved at runtime; no frozen model list here).
+ * @param {string} model
+ * @param {NodeJS.ProcessEnv} [env]
+ */
+export function assertReviewModelId(model, env = process.env) {
+	const id = typeof model === "string" ? model.trim() : "";
+	if (!id) throw new Error("model is required");
+	const backend = (env.GROK_REVIEW_BACKEND ?? "").trim().toLowerCase();
+	const zaiKey = env.ZAI_API_KEY ?? env.Z_AI_API_KEY ?? "";
+	const useZai = backend === "zai" || (backend === "" && zaiKey.length > 0);
+	if (useZai) {
+		const catalog = loadZaiProviderCatalog(resolveZaiCatalogPath(env));
+		resolveZaiCatalogModel(catalog, id);
+		return;
+	}
+	if (!/^grok-[A-Za-z0-9._-]+$/u.test(id)) {
+		throw new Error("model must be a Grok id (grok-…)");
+	}
+}
+
 
 
 function parseArgs(argv) {
@@ -178,9 +203,7 @@ function parseArgs(argv) {
 	if (opts.effort !== REQUIRED_EFFORT) {
 		throw new Error(`effort must be "${REQUIRED_EFFORT}"`);
 	}
-	if (!/^grok-[A-Za-z0-9._-]+$/u.test(opts.model)) {
-		throw new Error("model must be a Grok id (grok-…)");
-	}
+	assertReviewModelId(opts.model);
 	if (!Number.isSafeInteger(opts.maxConcurrency) || opts.maxConcurrency < 1) {
 		throw new Error("max-concurrency must be a positive integer");
 	}
