@@ -6,17 +6,18 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import {
+	ABSOLUTE_MAX_CHUNK_BYTES,
 	DEFAULT_MAX_CHUNK_BYTES,
 	HARD_MAX_CHUNK_BYTES,
-	PROMPT_ARGV_TEST_CEILING_BYTES,
-	adaptiveMaxChunkBytes,
 	MIN_CHUNK_BYTES,
+	adaptiveMaxChunkBytes,
+	maxChunkBytesFromModelContext,
+	partitionUnifiedDiff,
+	writeDiffChunks,
 	parseChunkLocationIndex,
 	formatHunkHeader,
-	partitionUnifiedDiff,
 	splitOversizedSection,
 	splitDiffFileSections,
-	writeDiffChunks,
 } from "./partition-pr-diff.mjs";
 
 function fileDiff(path, bodyLines) {
@@ -107,30 +108,32 @@ test("writeDiffChunks emits stable names and a manifest", () => {
 	}
 });
 
-test("chunk bytes stay under the Linux argv-safe ceiling", () => {
-	assert.equal(DEFAULT_MAX_CHUNK_BYTES, 96_000);
-	assert.equal(HARD_MAX_CHUNK_BYTES, 96_000);
-	assert.ok(DEFAULT_MAX_CHUNK_BYTES <= PROMPT_ARGV_TEST_CEILING_BYTES);
-	assert.ok(PROMPT_ARGV_TEST_CEILING_BYTES < 128 * 1024);
+test("chunk defaults prefer HTTP context budgets over argv-era 96 KiB", () => {
+	assert.equal(DEFAULT_MAX_CHUNK_BYTES, 384_000);
+	assert.equal(HARD_MAX_CHUNK_BYTES, ABSOLUTE_MAX_CHUNK_BYTES);
+	assert.equal(ABSOLUTE_MAX_CHUNK_BYTES, 1_500_000);
+	assert.ok(DEFAULT_MAX_CHUNK_BYTES < ABSOLUTE_MAX_CHUNK_BYTES);
 });
 
-test("adaptive packing targets ceil(selected/waveSlots) within floor and hard max", () => {
-	// Grow toward capacity with 1.2× packing slack, clamped to 96 KiB hard max.
-	// 1.6 MiB * 1.2 / 8 = 240 KiB → 96 KiB.
-	assert.equal(adaptiveMaxChunkBytes(1_600_000, { floor: 4_096, hardMax: 200_000, waveSlots: 8 }), 96_000);
-	// Floor wins when target is smaller than floor.
-	assert.equal(adaptiveMaxChunkBytes(50_000, { floor: 40_000, waveSlots: 16 }), 40_000);
-	// Target with slack: ceil(4_705_437 * 6 / (128 * 5)) = 44_114.
-	assert.equal(adaptiveMaxChunkBytes(4_705_437, { floor: MIN_CHUNK_BYTES, hardMax: 96_000, waveSlots: 128 }), 44_114);
-	// At the 8 MiB selection boundary with slack: ceil(8_388_608 * 6 / (128 * 5)) = 78_644.
-	assert.equal(adaptiveMaxChunkBytes(8_388_608, { floor: MIN_CHUNK_BYTES, hardMax: 96_000, waveSlots: 128 }), 78_644);
-	// Never above hard max even when floor is higher than hard max request.
-	assert.equal(adaptiveMaxChunkBytes(100_000, { floor: 200_000, hardMax: 96_000, waveSlots: 16 }), 96_000);
-	// Empty selection keeps the floor.
-	assert.equal(adaptiveMaxChunkBytes(0, { floor: 4_096, hardMax: 96_000, waveSlots: 128 }), 4_096);
+test("adaptive packing packs at context hardMax (chunk count falls out of size)", () => {
+	assert.equal(adaptiveMaxChunkBytes(1_600_000, { floor: 4_096, hardMax: 345_000, waveSlots: 8 }), 345_000);
+	assert.equal(adaptiveMaxChunkBytes(50_000, { floor: 40_000, hardMax: 345_000, waveSlots: 16 }), 345_000);
+	assert.equal(adaptiveMaxChunkBytes(4_705_437, { floor: MIN_CHUNK_BYTES, hardMax: 345_000, waveSlots: 128 }), 345_000);
+	assert.equal(adaptiveMaxChunkBytes(100_000, { floor: 200_000, hardMax: 9_999_999, waveSlots: 16 }), ABSOLUTE_MAX_CHUNK_BYTES);
+	assert.equal(adaptiveMaxChunkBytes(0, { floor: 4_096, hardMax: 345_000, waveSlots: 128 }), 4_096);
 });
 
-test("oversized file sections split under the argv-safe cap", () => {
+test("maxChunkBytesFromModelContext reserves output and framing", () => {
+	const n = maxChunkBytesFromModelContext({
+		contextWindow: 1_000_000,
+		maxTokens: 131_072,
+		framingBytes: 10_000,
+	});
+	assert.ok(n >= 200_000 && n <= ABSOLUTE_MAX_CHUNK_BYTES, `got ${n}`);
+	assert.ok(Math.ceil(4_700_000 / n) <= 20);
+});
+
+test("oversized file sections split under the pack cap", () => {
 	const big = fileDiff("big.ts", ["z".repeat(50_000), "y".repeat(50_000), "x".repeat(50_000)]);
 	assert.ok(Buffer.byteLength(big, "utf8") > 96_000);
 	const pieces = splitOversizedSection(

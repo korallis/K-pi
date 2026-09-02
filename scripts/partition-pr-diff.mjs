@@ -4,54 +4,108 @@
  * Split a unified git diff into deterministic, size-capped chunks on file
  * boundaries. Whole file sections stay intact; packing is greedy in the order
  * git emitted the sections. A single file larger than the cap becomes its own
- * chunk.
+ * chunk (split further when needed).
  *
  * Review-input *reduction* (byte-identical upstream, covered artifacts) lives in
- * `select-grok-review-input.mjs`. This module only bounds concurrent prompt size.
+ * `select-grok-review-input.mjs`. This module bounds HTTP prompt size for the
+ * z.ai reviewer — the prompt travels in a JSON body, not argv.
  */
 
 import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 /**
- * Linux `MAX_ARG_STRLEN` is ~128 KiB per argv element. Copilot takes the full
- * prompt as `--prompt <text>`, so each chunk must stay under that ceiling.
- * Provenance reduction owns *what* is reviewed; concurrency owns one-wave fit.
+ * Conservative default when tests pass an explicit cap without a model catalog.
+ * Real CI derives the cap from the z.ai catalog `contextWindow`.
  */
-export const DEFAULT_MAX_CHUNK_BYTES = 96_000;
-
-/** Hard ceiling — never raise a prompt past the argv-safe bound. */
-export const HARD_MAX_CHUNK_BYTES = 96_000;
+export const DEFAULT_MAX_CHUNK_BYTES = 384_000;
 
 /**
- * Sane packing floor. Adaptive sizing may grow above this toward
- * `ceil(selectedBytes / waveSlots)`, but never below it (except when
- * hardMax is tighter).
+ * Absolute safety ceiling for one chunk's diff bytes in the HTTP JSON body.
+ * Never raise a single request past this even if the model context is larger.
+ */
+export const ABSOLUTE_MAX_CHUNK_BYTES = 1_500_000;
+
+/** @deprecated alias — same as ABSOLUTE_MAX_CHUNK_BYTES (HTTP body hard ceiling). */
+export const HARD_MAX_CHUNK_BYTES = ABSOLUTE_MAX_CHUNK_BYTES;
+
+/**
+ * Sane packing floor. Adaptive sizing may grow above this toward the
+ * context-derived hard max, but never below it (except when hardMax is tighter).
  */
 export const MIN_CHUNK_BYTES = 4_096;
 
-/**
- * Conservative test ceiling for prompt argv bytes (chunk + preamble margin).
- * Must stay below Linux MAX_ARG_STRLEN (~128 KiB).
- */
-export const PROMPT_ARGV_TEST_CEILING_BYTES = 100_000;
+/** Approximate UTF-8 bytes per input token for code/diffs (conservative). */
+export const DEFAULT_BYTES_PER_TOKEN = 3;
 
 /**
- * Resolve the pack cap for one-wave review.
+ * Fraction of model `contextWindow` reserved for the review *input* (framing +
+ * inventory + diff). The rest covers reasoning/output headroom on flash tiers.
+ */
+export const CONTEXT_INPUT_FRACTION = 0.25;
+
+/**
+ * Derive the max diff-chunk byte budget from a z.ai catalog model entry.
+ * Leaves room for inventory/framing (caller passes framingBytes) and maxTokens.
  *
- * Target roughly `ceil(selectedBytes / waveSlots)` so a selection that fits
- * under the select-byte cap can pack into the matrix when waveSlots is the
- * matrix capacity (128 × 96 KiB = 12.2 MiB > 8 MiB select cap). Apply a small
- * packing-slack factor because greedy file-boundary packing under-fills
- * chunks. Clamp to a sane floor and the argv-safe hard max. Never inflate
- * past hardMax.
+ * @param {{
+ *   contextWindow: number,
+ *   maxTokens?: number,
+ *   framingBytes?: number,
+ *   bytesPerToken?: number,
+ *   inputFraction?: number,
+ *   absoluteMax?: number,
+ * }} opts
+ * @returns {number}
+ */
+export function maxChunkBytesFromModelContext(opts) {
+	const contextWindow = opts.contextWindow;
+	const maxTokens = opts.maxTokens ?? 0;
+	const framingBytes = opts.framingBytes ?? 0;
+	const bytesPerToken = opts.bytesPerToken ?? DEFAULT_BYTES_PER_TOKEN;
+	const inputFraction = opts.inputFraction ?? CONTEXT_INPUT_FRACTION;
+	const absoluteMax = opts.absoluteMax ?? ABSOLUTE_MAX_CHUNK_BYTES;
+	if (!Number.isSafeInteger(contextWindow) || contextWindow < 1024) {
+		throw new Error("contextWindow must be an integer >= 1024");
+	}
+	if (!Number.isSafeInteger(bytesPerToken) || bytesPerToken < 1) {
+		throw new Error("bytesPerToken must be a positive integer");
+	}
+	if (!(inputFraction > 0 && inputFraction <= 1)) {
+		throw new Error("inputFraction must be in (0, 1]");
+	}
+	if (!Number.isSafeInteger(absoluteMax) || absoluteMax < MIN_CHUNK_BYTES) {
+		throw new Error("absoluteMax must be a positive integer");
+	}
+	if (!Number.isSafeInteger(framingBytes) || framingBytes < 0) {
+		throw new Error("framingBytes must be a non-negative integer");
+	}
+	const framingTokens = Math.ceil(framingBytes / bytesPerToken);
+	const reserveOut = Number.isSafeInteger(maxTokens) && maxTokens > 0 ? maxTokens : 0;
+	const usableTokens =
+		Math.floor(contextWindow * inputFraction) - reserveOut - framingTokens - 1024;
+	if (usableTokens < 2048) {
+		throw new Error(
+			`model context leaves only ${usableTokens} input tokens after reserves (contextWindow=${contextWindow}, maxTokens=${reserveOut}, framingBytes=${framingBytes}); fails closed`,
+		);
+	}
+	return Math.min(absoluteMax, usableTokens * bytesPerToken);
+}
+
+/**
+ * Resolve the pack cap for HTTP-body review chunks.
+ *
+ * Prefer the context-derived `hardMax` so chunk count falls out of model budget
+ * (tens of large requests), not matrix slot filling (dozens of tiny argv-era
+ * requests). `waveSlots` is retained for API compatibility; capacity is enforced
+ * after partition against the matrix, not by shrinking chunks toward slot fill.
  *
  * @param {number} selectedBytes
  * @param {{ floor?: number, hardMax?: number, waveSlots?: number }} [opts]
  */
 export function adaptiveMaxChunkBytes(
 	selectedBytes,
-	{ floor = MIN_CHUNK_BYTES, hardMax = HARD_MAX_CHUNK_BYTES, waveSlots = 128 } = {},
+	{ floor = MIN_CHUNK_BYTES, hardMax = DEFAULT_MAX_CHUNK_BYTES, waveSlots = 128 } = {},
 ) {
 	if (!Number.isSafeInteger(selectedBytes) || selectedBytes < 0) {
 		throw new Error("selectedBytes must be a non-negative integer");
@@ -65,15 +119,12 @@ export function adaptiveMaxChunkBytes(
 	if (!Number.isSafeInteger(hardMax) || hardMax < 1) {
 		throw new Error("hardMax must be a positive integer");
 	}
-	const effectiveHard = Math.min(hardMax, HARD_MAX_CHUNK_BYTES);
+	const effectiveHard = Math.min(hardMax, ABSOLUTE_MAX_CHUNK_BYTES);
 	const effectiveFloor = Math.min(Math.max(1, floor), effectiveHard);
 	if (selectedBytes === 0) return effectiveFloor;
-	// Greedy boundary packing leaves residual free space per chunk; budget 20%.
-	const PACK_SLACK_NUM = 6;
-	const PACK_SLACK_DEN = 5; // 1.2×
-	const target = Math.ceil((selectedBytes * PACK_SLACK_NUM) / (waveSlots * PACK_SLACK_DEN));
-	return Math.min(effectiveHard, Math.max(effectiveFloor, target));
+	return effectiveHard;
 }
+
 
 
 /**

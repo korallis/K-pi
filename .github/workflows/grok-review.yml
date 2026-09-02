@@ -4,15 +4,18 @@
 #   1. prepare — trusted select + partition + group; uploads immutable inputs; emits matrix
 #   2. infer   — hosted Ubuntu matrix; read-only; no write token; each chunk once
 #               max-parallel 2 × per-group concurrency 2 → worst-case 4 in-flight
-#               z.ai requests (flash tier); 429 retries live in run-chunked-grok-review.mjs
+#               z.ai HTTP chat/completions; 429 retries in run-chunked-grok-review.mjs
 #   3. Grok review (exact name) — download all groups; union; sticky comment; fail closed
 #
-# Inference backend: z.ai OpenAI-compatible chat completions for the `zai` pool.
-# Model id comes from vars.GROK_REVIEW_MODEL and is validated against the checked-out
-# packages/ai/src/providers/data/zai.json catalog (baseUrl + id from that file only).
-# Operator default: glm-5.3-flash (cost/quota — why we left Copilot). Switch the repo
-# variable to glm-5.3 if flash reviews too shallowly; both ids are in the catalog.
-# Required secret: ZAI_API_KEY. Check context name stays "Grok review" for branch protection.
+# Reviewer: z.ai is the only inference path (OpenAI-compatible chat/completions).
+# Model id from vars.GROK_REVIEW_MODEL, validated against packages/ai/.../zai.json
+# (baseUrl + id + contextWindow from that file only). Chunk size is derived from the
+# model contextWindow — prompts travel in the JSON body, not argv. Target order of
+# magnitude is ~10–15 large chunks for a multi-MB selection, not dozens of 96 KiB cuts.
+# Required secret: ZAI_API_KEY. No Copilot CLI, no GROK_REVIEW_BACKEND toggle.
+#
+# Check context name stays exactly "Grok review" so existing branch protection keeps
+# matching; renaming that string needs a separate protection update.
 # GitHub's ephemeral write token is introduced only in the final job's comment step.
 # Inference clears GITHUB_TOKEN/GH_TOKEN and never sends a repository token to z.ai.
 
@@ -21,9 +24,10 @@
 #   - Base is checked out for trusted gate scripts; head is read-only diff source.
 #   - Gate scripts run from base when present; head bootstrap is same-repo landing only.
 #   - Prepare hard-bounds selected diff (8 MiB). Matrix is bounded (≤8 groups × ≤16 chunks; capacity 128).
+#   - Chunk bytes come from the catalog contextWindow (with inventory/framing reserves), not argv.
 #   - Infer concurrency: matrix max-parallel=2 and --max-concurrency=2 → ≤4 concurrent
 #     chat-completions against z.ai. Raising either multiplies the other; keep the product
-#     small on flash-tier quotas. 74 chunks still finish well inside the 15m group timeout.
+#     small on flash-tier quotas. ~10–15 context-sized chunks finish well inside 15m.
 #   - Prompt inventory is selected-plus-priority + exclusion summary (not 2k pin rows).
 #   - Every selected path/chunk is reviewed exactly once; missing/duplicate groups fail closed.
 #
@@ -62,7 +66,6 @@ jobs:
       HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
       # Must be a model id present in packages/ai/src/providers/data/zai.json
       GROK_REVIEW_MODEL: ${{ vars.GROK_REVIEW_MODEL }}
-      GROK_REVIEW_BACKEND: zai
     outputs:
       matrix: ${{ steps.prepare.outputs.matrix }}
       chunk-count: ${{ steps.prepare.outputs.chunk_count }}
@@ -151,6 +154,17 @@ jobs:
             exit 1
           fi
           echo "gate_script_source=$gate_script_source" >> "$GITHUB_OUTPUT"
+          
+          # Catalog must be available for prepare (contextWindow chunk sizing) and infer.
+          if [ -f untrusted/packages/ai/src/providers/data/zai.json ]; then
+            cp untrusted/packages/ai/src/providers/data/zai.json "$RUNNER_TEMP/gate-scripts/zai.json"
+          elif [ -f trusted/packages/ai/src/providers/data/zai.json ]; then
+            cp trusted/packages/ai/src/providers/data/zai.json "$RUNNER_TEMP/gate-scripts/zai.json"
+          else
+            echo "::error::packages/ai/src/providers/data/zai.json missing from base and head"
+            exit 1
+          fi
+
           chmod -R a-w "$RUNNER_TEMP/gate-scripts"
 
           pin_base_args=()
@@ -198,13 +212,14 @@ jobs:
             --out-exclusion-summary "$RUNNER_TEMP/prepare/exclusion-summary.txt"
 
           # Partition + group into one-wave matrix (≤8×16; capacity 128).
-          # Chunk size is adaptive: ceil(selected / 128) up to argv-safe 96 KiB.
-          # max-concurrency here is prepare-side only (unused by packing); infer sets its own.
+          # Chunk size from z.ai catalog contextWindow for GROK_REVIEW_MODEL.
           env -u GITHUB_TOKEN -u GH_TOKEN \
             node "$RUNNER_TEMP/gate-scripts/prepare-grok-review.mjs" \
             --diff "$RUNNER_TEMP/prepare/pr.diff" \
             --inventory "$RUNNER_TEMP/prepare/pr-inventory-prompt.txt" \
             --out-dir "$RUNNER_TEMP/prepare" \
+            --model "${{ vars.GROK_REVIEW_MODEL }}" \
+            --catalog "$RUNNER_TEMP/gate-scripts/zai.json" \
             --max-groups 8 \
             --max-chunks-per-group 16 \
             --max-concurrency 2
@@ -214,14 +229,7 @@ jobs:
 
           # Ship the z.ai pool catalog with prepare artifacts so infer resolves baseUrl from file.
           mkdir -p "$RUNNER_TEMP/prepare/catalog"
-          if [ -f untrusted/packages/ai/src/providers/data/zai.json ]; then
-            cp untrusted/packages/ai/src/providers/data/zai.json "$RUNNER_TEMP/prepare/catalog/zai.json"
-          elif [ -f trusted/packages/ai/src/providers/data/zai.json ]; then
-            cp trusted/packages/ai/src/providers/data/zai.json "$RUNNER_TEMP/prepare/catalog/zai.json"
-          else
-            echo "::error::packages/ai/src/providers/data/zai.json missing from base and head"
-            exit 1
-          fi
+          cp "$RUNNER_TEMP/gate-scripts/zai.json" "$RUNNER_TEMP/prepare/catalog/zai.json"
 
           CATALOG_PATH="$RUNNER_TEMP/prepare/catalog/zai.json" \
             node --input-type=module <<'NODE'
@@ -290,7 +298,6 @@ jobs:
       matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
     env:
       GROK_REVIEW_MODEL: ${{ vars.GROK_REVIEW_MODEL }}
-      GROK_REVIEW_BACKEND: zai
       GROUP_ID: ${{ matrix.group }}
     steps:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
@@ -311,10 +318,8 @@ jobs:
           ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
           # Catalog file shipped by prepare — baseUrl/model resolved only from this file.
           ZAI_CATALOG_PATH: ${{ runner.temp }}/prepare/catalog/zai.json
-          GROK_REVIEW_BACKEND: zai
           GITHUB_TOKEN: ""
           GH_TOKEN: ""
-          COPILOT_GITHUB_TOKEN: ""
         run: |
           set -euo pipefail
           group_pad=$(printf '%02d' "$GROUP_ID")
@@ -334,10 +339,8 @@ jobs:
             --out-json "$RUNNER_TEMP/group-out/result.json" \
             --out-meta "$RUNNER_TEMP/group-out/meta.json" \
             --work-dir "$RUNNER_TEMP/group-work" \
-            --effort high \
             --max-concurrency 2 \
-            --chunk-timeout-sec 720 \
-            --max-ai-credits 50
+            --chunk-timeout-sec 720
           status=$?
           set -e
           # Always stage result for upload even on failure (partial findings).

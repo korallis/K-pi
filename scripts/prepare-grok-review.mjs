@@ -1,21 +1,21 @@
 #!/usr/bin/env node
 
 /**
- * Trusted prepare step for multi-job Grok review.
+ * Trusted prepare step for multi-job z.ai review (required check name: "Grok review").
  *
  * Assumes select-grok-review-input already wrote the selected diff + prompt inventory.
- * This script partitions the selected diff into argv-safe chunks, groups them into
- * a bounded one-wave matrix, and writes immutable prepare artifacts.
+ * This script partitions the selected diff into context-window-sized HTTP body chunks,
+ * groups them into a bounded one-wave matrix, and writes immutable prepare artifacts.
  */
 
 import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+	ABSOLUTE_MAX_CHUNK_BYTES,
 	DEFAULT_MAX_CHUNK_BYTES,
 	HARD_MAX_CHUNK_BYTES,
 	MIN_CHUNK_BYTES,
-	PROMPT_ARGV_TEST_CEILING_BYTES,
 	adaptiveMaxChunkBytes,
 	partitionUnifiedDiff,
 	writeDiffChunks,
@@ -28,9 +28,11 @@ import {
 } from "./group-grok-chunks.mjs";
 import {
 	INVENTORY_PROMPT_MAX_BYTES,
-	PROMPT_FRAMING_RESERVE_BYTES,
 	buildPrompt,
+	loadZaiProviderCatalog,
 	measurePromptFramingBytes,
+	resolveReviewChunkBudgetBytes,
+	resolveZaiCatalogPath,
 } from "./run-chunked-grok-review.mjs";
 
 export { DEFAULT_MAX_GROUPS, DEFAULT_MAX_CHUNKS_PER_GROUP, MATRIX_CAPACITY };
@@ -69,23 +71,25 @@ export function prepareGrokReview(options) {
 
 	const maxGroups = options.maxGroups ?? DEFAULT_MAX_GROUPS;
 	const maxChunksPerGroup = options.maxChunksPerGroup ?? DEFAULT_MAX_CHUNKS_PER_GROUP;
-	const maxConcurrency = options.maxConcurrency ?? maxChunksPerGroup;
+	const maxConcurrency = options.maxConcurrency ?? 2;
 	const matrixSlots = maxGroups * maxChunksPerGroup;
 
 	const framingBytes = measurePromptFramingBytes(inventoryText);
-	const argvRoomForChunk = PROMPT_ARGV_TEST_CEILING_BYTES - framingBytes;
-	if (argvRoomForChunk < 4_096) {
-		throw new Error(
-			`inventory+framing leave only ${argvRoomForChunk} bytes for diff chunks under argv ceiling ${PROMPT_ARGV_TEST_CEILING_BYTES}`,
-		);
+	const catalog =
+		options.catalog ??
+		loadZaiProviderCatalog(options.catalogPath ?? resolveZaiCatalogPath(options.env ?? process.env));
+	const modelId = options.model ?? (options.env ?? process.env).GROK_REVIEW_MODEL ?? "";
+	if (!modelId || typeof modelId !== "string") {
+		throw new Error("prepare requires --model or GROK_REVIEW_MODEL (z.ai catalog id)");
 	}
 
-	// --max-chunk-bytes is an optional hard ceiling (default argv-safe 96 KiB),
-	// not a lock. Adaptive packing targets ceil(selected / matrixSlots) with slack.
-	const hardMax = Math.min(
-		options.maxChunkBytes ?? HARD_MAX_CHUNK_BYTES,
-		argvRoomForChunk,
-		HARD_MAX_CHUNK_BYTES,
+	// Explicit --max-chunk-bytes wins; otherwise size from catalog contextWindow.
+	const hardMax = resolveReviewChunkBudgetBytes(
+		modelId,
+		inventoryText,
+		options.maxChunkBytes ?? null,
+		catalog,
+		options.env ?? process.env,
 	);
 	let maxChunkBytes = adaptiveMaxChunkBytes(selectedBytes, {
 		floor: Math.min(MIN_CHUNK_BYTES, hardMax),
@@ -94,24 +98,24 @@ export function prepareGrokReview(options) {
 	});
 
 	let chunks = partitionUnifiedDiff(diffText, { maxChunkBytes });
-	// If greedy packing still overshoots capacity, raise to the argv-safe hard
-	// max once. Byte budget 128×96KiB > 8MiB select cap; remaining overflow is
-	// a genuine fail-closed case (pathological section shapes).
-	if (chunks.length > matrixSlots && maxChunkBytes < hardMax) {
-		maxChunkBytes = hardMax;
-		chunks = partitionUnifiedDiff(diffText, { maxChunkBytes });
+	// Context budget already prefers large chunks; if capacity still overflows,
+	// fail closed (select cap × matrix must accommodate).
+	if (chunks.length > matrixSlots) {
+		throw new Error(
+			`failed closed: ${chunks.length} chunks exceed matrix capacity ${matrixSlots} at maxChunkBytes=${maxChunkBytes}`,
+		);
 	}
 
 	mkdirSync(options.outDir, { recursive: true });
 	const chunksDir = join(options.outDir, "chunks");
 	writeDiffChunks(diffText, chunksDir, { maxChunkBytes });
 
-	// Prove every chunk prompt stays under argv ceiling including inventory context.
+	const promptBudget = hardMax + framingBytes;
 	for (const chunk of chunks) {
 		const promptBytes = Buffer.byteLength(buildPrompt(chunk.text, inventoryText), "utf8");
-		if (promptBytes > PROMPT_ARGV_TEST_CEILING_BYTES) {
+		if (promptBytes > promptBudget) {
 			throw new Error(
-				`failed closed: chunk ${chunk.index} prompt is ${promptBytes} bytes above argv ceiling ${PROMPT_ARGV_TEST_CEILING_BYTES}`,
+				`failed closed: chunk ${chunk.index} prompt is ${promptBytes} bytes above model budget ${promptBudget}`,
 			);
 		}
 	}
@@ -133,15 +137,17 @@ export function prepareGrokReview(options) {
 	const meta = {
 		selectedDiffBytes: selectedBytes,
 		inventoryBytes,
+		model: modelId,
 		maxChunkBytes,
 		chunkCount: chunks.length,
 		groupCount: plan.groupCount,
 		maxGroups,
 		maxChunksPerGroup,
 		maxConcurrency,
-		argvCeiling: PROMPT_ARGV_TEST_CEILING_BYTES,
+		contextHardMax: hardMax,
 		framingBytes,
-		argvRoomForChunk,
+		promptBudget,
+		absoluteMaxChunkBytes: ABSOLUTE_MAX_CHUNK_BYTES,
 		groups: plan.groups,
 		matrix: plan.matrix,
 	};
@@ -153,11 +159,13 @@ export function prepareGrokReview(options) {
 
 function parseArgs(argv) {
 	const opts = {
-		maxChunkBytes: DEFAULT_MAX_CHUNK_BYTES,
+		maxChunkBytes: null,
 		maxGroups: DEFAULT_MAX_GROUPS,
 		maxChunksPerGroup: DEFAULT_MAX_CHUNKS_PER_GROUP,
-		maxConcurrency: DEFAULT_MAX_CHUNKS_PER_GROUP,
+		maxConcurrency: 2,
 		inventoryPath: null,
+		model: null,
+		catalogPath: null,
 	};
 	for (let i = 0; i < argv.length; i++) {
 		const arg = argv[i];
@@ -175,6 +183,12 @@ function parseArgs(argv) {
 				break;
 			case "--out-dir":
 				opts.outDir = next();
+				break;
+			case "--model":
+				opts.model = next();
+				break;
+			case "--catalog":
+				opts.catalogPath = next();
 				break;
 			case "--max-chunk-bytes":
 				opts.maxChunkBytes = Number.parseInt(next(), 10);
@@ -200,9 +214,10 @@ function parseArgs(argv) {
 
 function main() {
 	const opts = parseArgs(process.argv.slice(2));
+	if (!opts.model) opts.model = process.env.GROK_REVIEW_MODEL;
 	const meta = prepareGrokReview(opts);
 	console.log(
-		`prepare grok review: chunks=${meta.chunkCount} groups=${meta.groupCount} maxChunkBytes=${meta.maxChunkBytes} selected=${meta.selectedDiffBytes}`,
+		`prepare z.ai review: chunks=${meta.chunkCount} groups=${meta.groupCount} maxChunkBytes=${meta.maxChunkBytes} model=${meta.model} selected=${meta.selectedDiffBytes}`,
 	);
 }
 

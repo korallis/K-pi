@@ -1,29 +1,29 @@
 #!/usr/bin/env node
 
 /**
- * Concurrent, size-capped Grok review for the required CI gate.
+ * Concurrent, size-capped z.ai review for the required CI gate.
  *
- * 1. Partition the PR diff on file boundaries into deterministic chunks.
- * 2. Run high-effort Grok on every chunk concurrently (bounded pool).
+ * 1. Partition the PR diff on file boundaries into context-window-sized chunks.
+ * 2. Call the configured z.ai catalog model on every chunk (bounded pool).
  * 3. Validate each chunk's JSON; fail closed on timeout, error, or bad schema.
  * 4. Union/deduplicate findings; write one normalized result + meta (model, chunks).
  *
- * Effort stays `high`. Model is the configured review id (Grok via Copilot, or a
- * z.ai catalog id when `GROK_REVIEW_BACKEND=zai`). No frozen endpoint constants.
-
+ * Inference is z.ai only (OpenAI-compatible chat/completions). The required check
+ * context is still named "Grok review" so branch protection keeps matching until
+ * that string is renamed separately. No Copilot CLI path, no backend toggle.
  */
 
 import { randomBytes } from "node:crypto";
-import { spawn } from "node:child_process";
 import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+	ABSOLUTE_MAX_CHUNK_BYTES,
 	DEFAULT_MAX_CHUNK_BYTES,
 	HARD_MAX_CHUNK_BYTES,
 	MIN_CHUNK_BYTES,
-	PROMPT_ARGV_TEST_CEILING_BYTES,
 	adaptiveMaxChunkBytes,
+	maxChunkBytesFromModelContext,
 	parseChunkLocationIndex,
 	partitionUnifiedDiff,
 	writeDiffChunks,
@@ -35,15 +35,10 @@ import {
 	sortFindings,
 } from "./validate-grok-review.mjs";
 
-
-
 /** Per-group chunk pool. Paired with workflow matrix max-parallel (see grok-review.yml). */
 export const DEFAULT_MAX_CONCURRENCY = 2;
-/** Per-chunk wall timeout; one high-effort group must finish inside the 15m job. */
+/** Per-chunk wall timeout; one group must finish inside the 15m job. */
 export const DEFAULT_CHUNK_TIMEOUT_SEC = 720;
-
-export const DEFAULT_MAX_AI_CREDITS = 50;
-export const REQUIRED_EFFORT = "high";
 
 /** Bounded retries for z.ai 429 / transient network failures (not schema/4xx). */
 export const DEFAULT_ZAI_MAX_RETRIES = 5;
@@ -52,10 +47,12 @@ export const DEFAULT_ZAI_BACKOFF_BASE_MS = 1_000;
 /** Cap on a single backoff sleep (keeps a 15m group job recoverable). */
 export const DEFAULT_ZAI_BACKOFF_CAP_MS = 30_000;
 
-
-export { DEFAULT_MAX_CHUNK_BYTES, PROMPT_ARGV_TEST_CEILING_BYTES };
-
-
+export {
+	ABSOLUTE_MAX_CHUNK_BYTES,
+	DEFAULT_MAX_CHUNK_BYTES,
+	HARD_MAX_CHUNK_BYTES,
+	maxChunkBytesFromModelContext,
+};
 
 const PROMPT_PREAMBLE = `You are the required K-π pull-request reviewer. Review only defects introduced by the supplied diff chunk.
 
@@ -109,32 +106,25 @@ export function untrustedDiffDelimiters(nonce = randomBytes(8).toString("hex")) 
  * @param {string} model
  * @param {NodeJS.ProcessEnv} [env]
  */
-export function assertReviewModelId(model, env = process.env) {
+
+/**
+ * Model must be a known id in the shipped z.ai catalog (resolved at runtime).
+ * @param {string} model
+ * @param {NodeJS.ProcessEnv} [env]
+ * @param {ReturnType<typeof loadZaiProviderCatalog>} [catalog]
+ */
+export function assertReviewModelId(model, env = process.env, catalog) {
 	const id = typeof model === "string" ? model.trim() : "";
 	if (!id) throw new Error("model is required");
-	const backend = (env.GROK_REVIEW_BACKEND ?? "").trim().toLowerCase();
-	const zaiKey = env.ZAI_API_KEY ?? env.Z_AI_API_KEY ?? "";
-	const useZai = backend === "zai" || (backend === "" && zaiKey.length > 0);
-	if (useZai) {
-		const catalog = loadZaiProviderCatalog(resolveZaiCatalogPath(env));
-		resolveZaiCatalogModel(catalog, id);
-		return;
-	}
-	if (!/^grok-[A-Za-z0-9._-]+$/u.test(id)) {
-		throw new Error("model must be a Grok id (grok-…)");
-	}
+	const cat = catalog ?? loadZaiProviderCatalog(resolveZaiCatalogPath(env));
+	resolveZaiCatalogModel(cat, id);
 }
-
-
 
 function parseArgs(argv) {
 	const opts = {
-		effort: REQUIRED_EFFORT,
-		maxChunkBytes: DEFAULT_MAX_CHUNK_BYTES,
+		maxChunkBytes: null,
 		maxConcurrency: DEFAULT_MAX_CONCURRENCY,
 		chunkTimeoutSec: DEFAULT_CHUNK_TIMEOUT_SEC,
-		maxAiCredits: DEFAULT_MAX_AI_CREDITS,
-		copilotBin: "copilot",
 		groupManifestPath: null,
 		groupDir: null,
 		changedPathsPath: null,
@@ -184,15 +174,6 @@ function parseArgs(argv) {
 			case "--chunk-timeout-sec":
 				opts.chunkTimeoutSec = Number.parseInt(next(), 10);
 				break;
-			case "--max-ai-credits":
-				opts.maxAiCredits = Number.parseInt(next(), 10);
-				break;
-			case "--effort":
-				opts.effort = next();
-				break;
-			case "--copilot-bin":
-				opts.copilotBin = next();
-				break;
 			default:
 				throw new Error(`unknown argument: ${arg}`);
 		}
@@ -208,10 +189,12 @@ function parseArgs(argv) {
 			if (!opts[key]) throw new Error(`missing required --${key.replace(/[A-Z]/gu, (c) => `-${c.toLowerCase()}`)}`);
 		}
 	}
-	if (opts.effort !== REQUIRED_EFFORT) {
-		throw new Error(`effort must be "${REQUIRED_EFFORT}"`);
-	}
 	assertReviewModelId(opts.model);
+	if (opts.maxChunkBytes != null) {
+		if (!Number.isSafeInteger(opts.maxChunkBytes) || opts.maxChunkBytes < 1) {
+			throw new Error("max-chunk-bytes must be a positive integer");
+		}
+	}
 	if (!Number.isSafeInteger(opts.maxConcurrency) || opts.maxConcurrency < 1) {
 		throw new Error("max-concurrency must be a positive integer");
 	}
@@ -221,12 +204,6 @@ function parseArgs(argv) {
 	return opts;
 }
 
-/**
- * @template T
- * @param {T[]} items
- * @param {number} concurrency
- * @param {(item: T, index: number) => Promise<unknown>} worker
- */
 export async function mapPool(items, concurrency, worker) {
 	const results = new Array(items.length);
 	let nextIndex = 0;
@@ -243,136 +220,9 @@ export async function mapPool(items, concurrency, worker) {
 }
 
 /**
- * Env vars Copilot needs for non-interactive Grok. Drop the Actions process
- * environment so argv+env stay under ARG_MAX while each prompt stays ≤96 KiB.
- * @param {NodeJS.ProcessEnv} [source]
+ * @typedef {{ prompt: string, model: string, timeoutSec: number }} ReviewRunSpec
+ * @typedef {{ ok: boolean, reason: string, stdout: string, stderr: string, code: number | null }} ReviewRunResult
  */
-export function copilotSpawnEnv(source = process.env) {
-	/** @type {NodeJS.ProcessEnv} */
-	const env = {
-		PATH: source.PATH ?? "/usr/bin:/bin",
-		HOME: source.HOME ?? "/tmp",
-		LANG: source.LANG ?? "C.UTF-8",
-		COPILOT_GITHUB_TOKEN: source.COPILOT_GITHUB_TOKEN ?? "",
-		GITHUB_TOKEN: "",
-		GH_TOKEN: "",
-	};
-	for (const key of [
-		"HTTPS_PROXY",
-		"HTTP_PROXY",
-		"NO_PROXY",
-		"https_proxy",
-		"http_proxy",
-		"no_proxy",
-		"SSL_CERT_FILE",
-		"NODE_EXTRA_CA_CERTS",
-		"XDG_CONFIG_HOME",
-		"XDG_CACHE_HOME",
-		"XDG_DATA_HOME",
-	]) {
-		if (source[key]) env[key] = source[key];
-	}
-	return env;
-}
-
-/**
- * @typedef {{
- *   ok: boolean,
- *   reason: string,
- *   stdout: string,
- *   stderr: string,
- *   code: number | null,
- * }} ReviewRunResult
- *
- * @typedef {{
- *   copilotBin?: string,
- *   prompt: string,
- *   model: string,
- *   effort?: string,
- *   maxAiCredits?: number,
- *   timeoutSec: number,
- * }} ReviewRunSpec
- */
-
-/**
- * Copilot CLI spawn — legacy default backend.
- *
- * @param {ReviewRunSpec} spec
- * @returns {Promise<ReviewRunResult>}
- */
-export function defaultRunCommand(spec) {
-	return new Promise((resolve) => {
-		const child = spawn(
-			spec.copilotBin ?? "copilot",
-			[
-				"--prompt",
-				spec.prompt,
-				"--model",
-				spec.model,
-				"--effort",
-				spec.effort ?? "high",
-				"--max-ai-credits",
-				String(spec.maxAiCredits ?? 50),
-				"--no-ask-user",
-				"--no-custom-instructions",
-				"--disable-builtin-mcps",
-				"--available-tools=",
-				"--silent",
-			],
-			{
-				stdio: ["ignore", "pipe", "pipe"],
-				env: copilotSpawnEnv(),
-			},
-		);
-
-		let stdout = "";
-		let stderr = "";
-		let settled = false;
-		const finish = (result) => {
-			if (settled) return;
-			settled = true;
-			resolve(result);
-		};
-		const timer = setTimeout(() => {
-			child.kill("SIGKILL");
-			finish({
-				ok: false,
-				reason: "timeout",
-				stdout,
-				stderr: stderr.trim() || `timed out after ${spec.timeoutSec}s`,
-				code: null,
-			});
-		}, spec.timeoutSec * 1000);
-
-		child.stdout.setEncoding("utf8");
-		child.stderr.setEncoding("utf8");
-		child.stdout.on("data", (chunk) => {
-			stdout += chunk;
-		});
-		child.stderr.on("data", (chunk) => {
-			stderr += chunk;
-		});
-		child.on("error", (error) => {
-			clearTimeout(timer);
-			finish({ ok: false, reason: "spawn-error", stdout, stderr: error.message, code: null });
-		});
-		child.on("close", (code, signal) => {
-			clearTimeout(timer);
-			if (settled) return;
-			if (code === 0) {
-				finish({ ok: true, reason: "success", stdout, stderr, code });
-				return;
-			}
-			finish({
-				ok: false,
-				reason: signal ? `signal-${signal}` : "exit-nonzero",
-				stdout,
-				stderr,
-				code,
-			});
-		});
-	});
-}
 
 /**
  * Load the z.ai provider catalog JSON (packages/ai/src/providers/data/zai.json shape:
@@ -384,7 +234,7 @@ export function defaultRunCommand(spec) {
  */
 export function loadZaiProviderCatalog(catalogPath) {
 	const raw = JSON.parse(readFileSync(catalogPath, "utf8"));
-	/** @type {Record<string, { id: string, name?: string, baseUrl: string, api: string }>} */
+	/** @type {Record<string, { id: string, name?: string, baseUrl: string, api: string, contextWindow: number, maxTokens?: number }>} */
 	const models = {};
 	if (!raw || typeof raw !== "object") {
 		throw new Error(`z.ai catalog is not an object: ${catalogPath}`);
@@ -397,11 +247,20 @@ export function loadZaiProviderCatalog(catalogPath) {
 			if (!baseUrl) {
 				throw new Error(`z.ai catalog model ${id} missing baseUrl in ${catalogPath}`);
 			}
+			const contextWindow = entry.contextWindow;
+			if (!Number.isSafeInteger(contextWindow) || contextWindow < 1024) {
+				throw new Error(
+					`z.ai catalog model ${id} missing usable contextWindow in ${catalogPath}`,
+				);
+			}
+			const maxTokens = entry.maxTokens;
 			models[id] = {
 				id,
 				name: typeof entry.name === "string" ? entry.name : undefined,
 				baseUrl: baseUrl.replace(/\/+$/u, ""),
 				api,
+				contextWindow,
+				maxTokens: Number.isSafeInteger(maxTokens) && maxTokens > 0 ? maxTokens : undefined,
 			};
 		}
 	}
@@ -542,7 +401,7 @@ export function isTransientZaiNetworkError(error, aborted) {
 /**
  * OpenAI-compatible chat-completions runner for the z.ai pool.
  * baseUrl is taken from the catalog entry for `spec.model` on every call — never a frozen constant.
- * Returns the same `{ ok, reason, stdout, stderr, code }` shape as defaultRunCommand.
+ * Returns `{ ok, reason, stdout, stderr, code }` for the chunk runner.
  *
  * 429 and transient network errors retry with exponential backoff + jitter (honours Retry-After).
  * Exhausted retries fail closed with reason `rate-limit` or `spawn-error`.
@@ -741,44 +600,66 @@ export function createZaiRunCommand(config) {
 }
 
 
+
 /**
- * Pick the inference backend from the environment.
- * - `GROK_REVIEW_BACKEND=zai` (or presence of `ZAI_API_KEY` with backend unset) → z.ai
- * - otherwise Copilot CLI (`defaultRunCommand`)
- *
- * Never forwards GITHUB_TOKEN / GH_TOKEN into the z.ai request.
- * Model id and baseUrl come only from the z.ai catalog + configured model var.
+ * Build the z.ai chat-completions runner from the environment.
+ * Requires `ZAI_API_KEY` (or `Z_AI_API_KEY`). Model id and baseUrl come only
+ * from the z.ai catalog + configured model var — never frozen constants.
  *
  * @param {NodeJS.ProcessEnv} [env]
- * @param {{ fetchImpl?: typeof fetch, catalogPath?: string, catalog?: ReturnType<typeof loadZaiProviderCatalog> }} [opts]
+ * @param {{ catalog?: ReturnType<typeof loadZaiProviderCatalog>, catalogPath?: string, fetchImpl?: typeof fetch, maxRetries?: number, sleep?: (ms: number) => Promise<void>, random?: () => number, now?: () => number }} [opts]
  * @returns {(spec: ReviewRunSpec) => Promise<ReviewRunResult>}
  */
 export function resolveReviewRunCommand(env = process.env, opts = {}) {
-	const backend = (env.GROK_REVIEW_BACKEND ?? "").trim().toLowerCase();
 	const zaiKey = env.ZAI_API_KEY ?? env.Z_AI_API_KEY ?? "";
-	const useZai = backend === "zai" || (backend === "" && zaiKey.length > 0);
-	if (useZai) {
-		if (!zaiKey) {
-			throw new Error("GROK_REVIEW_BACKEND=zai requires ZAI_API_KEY");
-		}
-		const catalog =
-			opts.catalog ??
-			loadZaiProviderCatalog(opts.catalogPath ?? resolveZaiCatalogPath(env));
-		return createZaiRunCommand({
-			apiKey: zaiKey,
-			catalog,
-			fetchImpl: opts.fetchImpl,
-		});
+	if (!zaiKey) {
+		throw new Error("ZAI_API_KEY is required for the review gate (z.ai is the only inference path)");
 	}
-	return defaultRunCommand;
+	const catalog =
+		opts.catalog ??
+		loadZaiProviderCatalog(opts.catalogPath ?? resolveZaiCatalogPath(env));
+	return createZaiRunCommand({
+		apiKey: zaiKey,
+		catalog,
+		fetchImpl: opts.fetchImpl,
+		maxRetries: opts.maxRetries,
+		sleep: opts.sleep,
+		random: opts.random,
+		now: opts.now,
+	});
 }
 
-
 /**
- * @param {string} chunkText
- * @param {string} [inventoryText]
- * @param {{ begin: string, end: string } | null} [delimiters]
+ * Resolve max diff-chunk bytes from an explicit override or the model catalog entry.
+ * @param {string} modelId
+ * @param {string} inventoryText
+ * @param {number | null | undefined} explicitMax
+ * @param {ReturnType<typeof loadZaiProviderCatalog>} [catalog]
+ * @param {NodeJS.ProcessEnv} [env]
  */
+export function resolveReviewChunkBudgetBytes(
+	modelId,
+	inventoryText = "",
+	explicitMax = null,
+	catalog = undefined,
+	env = process.env,
+) {
+	if (explicitMax != null) {
+		if (!Number.isSafeInteger(explicitMax) || explicitMax < 1) {
+			throw new Error("maxChunkBytes must be a positive integer");
+		}
+		return Math.min(explicitMax, ABSOLUTE_MAX_CHUNK_BYTES);
+	}
+	const cat = catalog ?? loadZaiProviderCatalog(resolveZaiCatalogPath(env));
+	const entry = resolveZaiCatalogModel(cat, modelId);
+	const framingBytes = measurePromptFramingBytes(inventoryText);
+	return maxChunkBytesFromModelContext({
+		contextWindow: entry.contextWindow,
+		maxTokens: entry.maxTokens ?? 0,
+		framingBytes,
+	});
+}
+
 export function buildPrompt(chunkText, inventoryText = "", delimiters = null) {
 	const delim = delimiters ?? untrustedDiffDelimiters();
 	const inventoryBlock =
@@ -789,10 +670,10 @@ export function buildPrompt(chunkText, inventoryText = "", delimiters = null) {
 	return `${PROMPT_PREAMBLE}\n${inventoryBlock}${delim.begin}\n${chunkText}\n${delim.end}\n`;
 }
 
-/** Hard ceiling for complete inventory inside each prompt (argv remainder). */
+/** Hard ceiling for complete inventory inside each prompt. */
 export const INVENTORY_PROMPT_MAX_BYTES = 64_000;
 
-/** Bytes reserved for preamble/epilogue/safety when sizing chunks around inventory. */
+/** Bytes reserved for preamble/epilogue/safety when sizing chunks around inventory (HTTP body). */
 export const PROMPT_FRAMING_RESERVE_BYTES = 6_000;
 
 /**
@@ -808,7 +689,7 @@ export function measurePromptFramingBytes(inventoryText = "") {
 
 /**
  * @param {object} options
- * @param {{ runCommand?: typeof defaultRunCommand }} [hooks]
+ * @param {{ runCommand?: (spec: ReviewRunSpec) => Promise<ReviewRunResult>, catalog?: ReturnType<typeof loadZaiProviderCatalog> }} [hooks]
  */
 export async function runChunkedGrokReview(options, hooks = {}) {
 	const runCommand = hooks.runCommand ?? resolveReviewRunCommand();
@@ -834,39 +715,33 @@ export async function runChunkedGrokReview(options, hooks = {}) {
 	mkdirSync(options.workDir, { recursive: true });
 
 	const selectedBytes = Buffer.byteLength(diffText, "utf8");
-	const framingBytes =
-		Buffer.byteLength(PROMPT_PREAMBLE, "utf8") +
-		PROMPT_FRAMING_RESERVE_BYTES +
-		(inventoryBytes > 0 ? inventoryBytes + 2 : 0);
-	const argvRoomForChunk = PROMPT_ARGV_TEST_CEILING_BYTES - framingBytes;
-	if (argvRoomForChunk < 4_096) {
-		throw new Error(
-			`inventory+framing leave only ${argvRoomForChunk} bytes for diff chunks under argv ceiling ${PROMPT_ARGV_TEST_CEILING_BYTES}; fails closed`,
-		);
-	}
-	const hardMax = Math.min(options.maxChunkBytes ?? HARD_MAX_CHUNK_BYTES, argvRoomForChunk, HARD_MAX_CHUNK_BYTES);
+	const catalog = hooks.catalog ?? loadZaiProviderCatalog(resolveZaiCatalogPath());
+	const hardMax = resolveReviewChunkBudgetBytes(
+		options.model,
+		inventoryText,
+		options.maxChunkBytes,
+		catalog,
+	);
 	const maxChunkBytes = adaptiveMaxChunkBytes(selectedBytes, {
 		floor: Math.min(MIN_CHUNK_BYTES, hardMax),
 		hardMax,
-		// Local one-shot path: concurrency is the wave width (not full matrix).
 		waveSlots: Math.max(1, options.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY),
 	});
+	const promptBudget = hardMax + measurePromptFramingBytes(inventoryText);
 	const chunks = partitionUnifiedDiff(diffText, { maxChunkBytes });
 	writeDiffChunks(diffText, join(options.workDir, "chunks"), { maxChunkBytes });
 	for (const chunk of chunks) {
 		const promptBytes = Buffer.byteLength(buildPrompt(chunk.text, inventoryText), "utf8");
-		if (promptBytes > PROMPT_ARGV_TEST_CEILING_BYTES) {
+		if (promptBytes > promptBudget) {
 			throw new Error(
-				`failed closed: chunk ${chunk.index} prompt is ${promptBytes} bytes above argv ceiling ${PROMPT_ARGV_TEST_CEILING_BYTES}`,
+				`failed closed: chunk ${chunk.index} prompt is ${promptBytes} bytes above model budget ${promptBudget}`,
 			);
 		}
 	}
 
-
 	if (chunks.length === 0) {
 		const meta = {
 			model: options.model,
-			effort: options.effort,
 			chunkCount: 0,
 			maxChunkBytes: maxChunkBytes,
 			inventoryBytes,
@@ -890,11 +765,8 @@ export async function runChunkedGrokReview(options, hooks = {}) {
 		writeFileSync(promptPath, prompt);
 
 		const result = await runCommand({
-			copilotBin: options.copilotBin,
 			prompt,
 			model: options.model,
-			effort: options.effort,
-			maxAiCredits: options.maxAiCredits,
 			timeoutSec: options.chunkTimeoutSec,
 		});
 		writeFileSync(rawPath, result.stdout ?? "");
@@ -962,7 +834,6 @@ export async function runChunkedGrokReview(options, hooks = {}) {
 
 	const baseMeta = {
 		model: options.model,
-		effort: options.effort,
 		chunkCount: chunks.length,
 		maxChunkBytes: maxChunkBytes,
 		inventoryBytes,
@@ -1045,7 +916,7 @@ export async function runChunkedGrokReview(options, hooks = {}) {
  * Does not union across groups — finalize owns the global union.
  *
  * @param {object} options
- * @param {{ runCommand?: typeof defaultRunCommand }} [hooks]
+ * @param {{ runCommand?: (spec: ReviewRunSpec) => Promise<ReviewRunResult>, catalog?: ReturnType<typeof loadZaiProviderCatalog> }} [hooks]
  */
 export async function runGroupGrokReview(options, hooks = {}) {
 	const runCommand = hooks.runCommand ?? resolveReviewRunCommand();
@@ -1126,9 +997,9 @@ export async function runGroupGrokReview(options, hooks = {}) {
 			throw new Error(`group ${groupId}: chunk ${entry.index} diff is empty`);
 		}
 		const promptBytes = Buffer.byteLength(buildPrompt(text, inventoryText), "utf8");
-		if (promptBytes > PROMPT_ARGV_TEST_CEILING_BYTES) {
+		if (promptBytes > ABSOLUTE_MAX_CHUNK_BYTES + measurePromptFramingBytes(inventoryText)) {
 			throw new Error(
-				`failed closed: chunk ${entry.index} prompt is ${promptBytes} bytes above argv ceiling ${PROMPT_ARGV_TEST_CEILING_BYTES}`,
+				`failed closed: chunk ${entry.index} prompt is ${promptBytes} bytes above absolute HTTP budget`,
 			);
 		}
 		const paths = Array.isArray(entry.paths) ? entry.paths : [];
@@ -1158,11 +1029,8 @@ export async function runGroupGrokReview(options, hooks = {}) {
 		writeFileSync(promptPath, prompt);
 
 		const result = await runCommand({
-			copilotBin: options.copilotBin,
 			prompt,
 			model: options.model,
-			effort: options.effort,
-			maxAiCredits: options.maxAiCredits,
 			timeoutSec: options.chunkTimeoutSec,
 		});
 		writeFileSync(rawPath, result.stdout ?? "");
@@ -1220,7 +1088,6 @@ export async function runGroupGrokReview(options, hooks = {}) {
 		group: groupId,
 		reason: failures.length === 0 ? "success" : "chunk-failures",
 		model: options.model,
-		effort: options.effort,
 		chunkCount: chunks.length,
 		inventoryBytes,
 		maxConcurrency: options.maxConcurrency,

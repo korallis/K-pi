@@ -12,17 +12,15 @@ import {
 	DEFAULT_MAX_CHUNK_BYTES,
 	DEFAULT_MAX_CONCURRENCY,
 	DEFAULT_ZAI_MAX_RETRIES,
-	PROMPT_ARGV_TEST_CEILING_BYTES,
-	REQUIRED_EFFORT,
+	ABSOLUTE_MAX_CHUNK_BYTES,
 	computeZaiBackoffMs,
-	copilotSpawnEnv,
 	createZaiRunCommand,
-	defaultRunCommand,
 	isTransientZaiNetworkError,
 	loadZaiProviderCatalog,
 	mapPool,
 	parseRetryAfterMs,
 	resolveReviewRunCommand,
+	resolveReviewChunkBudgetBytes,
 	resolveZaiCatalogModel,
 	resolveZaiCatalogPath,
 	runChunkedGrokReview,
@@ -102,16 +100,13 @@ test("empty diff skips inference and records zero chunks", async () => {
 			{
 				diffPath,
 				changedPathsPath: pathsPath,
-				model: "grok-4.6",
-				effort: REQUIRED_EFFORT,
+				model: "glm-5.3-flash",
 				outJson: join(dir, "out.json"),
 				outMeta: join(dir, "meta.json"),
 				workDir: join(dir, "work"),
 				maxChunkBytes: 100,
 				maxConcurrency: 2,
 				chunkTimeoutSec: 30,
-				maxAiCredits: 1,
-				copilotBin: "copilot",
 			},
 			{
 				runCommand: async () => {
@@ -123,7 +118,7 @@ test("empty diff skips inference and records zero chunks", async () => {
 		assert.equal(calls, 0);
 		assert.deepEqual(findings, []);
 		assert.equal(meta.chunkCount, 0);
-		assert.equal(meta.model, "grok-4.6");
+		assert.equal(meta.model, "glm-5.3-flash");
 		assert.equal(JSON.parse(readFileSync(join(dir, "out.json"), "utf8")).length, 0);
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
@@ -145,22 +140,18 @@ test("runs concurrent chunks, validates each, unions findings, records model and
 			{
 				diffPath,
 				changedPathsPath: pathsPath,
-				model: "grok-4.6",
-				effort: "high",
+				model: "glm-5.3-flash",
 				outJson: join(dir, "out.json"),
 				outMeta: join(dir, "meta.json"),
 				workDir: join(dir, "work"),
 				maxChunkBytes: 120,
 				maxConcurrency: 3,
 				chunkTimeoutSec: 30,
-				maxAiCredits: 5,
-				copilotBin: "copilot",
 			},
 			{
 				runCommand: async (spec) => {
 					calls.push(spec.model);
-					assert.equal(spec.effort, "high");
-					assert.equal(spec.model, "grok-4.6");
+					assert.equal(spec.model, "glm-5.3-flash");
 					const path = spec.prompt.includes("a.ts")
 						? "a.ts"
 						: spec.prompt.includes("b.ts")
@@ -184,7 +175,7 @@ test("runs concurrent chunks, validates each, unions findings, records model and
 		);
 
 		assert.ok(calls.length >= 2);
-		assert.equal(meta.model, "grok-4.6");
+		assert.equal(meta.model, "glm-5.3-flash");
 		assert.equal(meta.chunkCount, calls.length);
 		assert.equal(meta.findingCount, findings.length);
 		assert.ok(findings.length >= 2);
@@ -209,16 +200,13 @@ test("any chunk timeout fails closed but still writes partial findings artifacts
 					{
 						diffPath,
 						changedPathsPath: pathsPath,
-						model: "grok-4.6",
-						effort: "high",
+						model: "glm-5.3-flash",
 						outJson: join(dir, "out.json"),
 						outMeta: join(dir, "meta.json"),
 						workDir: join(dir, "work"),
 						maxChunkBytes: 40,
 						maxConcurrency: 2,
 						chunkTimeoutSec: 30,
-						maxAiCredits: 1,
-						copilotBin: "copilot",
 					},
 					{
 						runCommand: async () => {
@@ -239,7 +227,7 @@ test("any chunk timeout fails closed but still writes partial findings artifacts
 			/failed closed/,
 		);
 		const meta = JSON.parse(readFileSync(join(dir, "meta.json"), "utf8"));
-		assert.equal(meta.model, "grok-4.6");
+		assert.equal(meta.model, "glm-5.3-flash");
 		assert.ok(meta.chunkCount >= 1);
 		assert.equal(meta.findingCount, null);
 		assert.equal(meta.partialFindingCount, 1);
@@ -266,16 +254,13 @@ test("invalid chunk schema fails closed", async () => {
 					{
 						diffPath,
 						changedPathsPath: pathsPath,
-						model: "grok-4.6",
-						effort: "high",
+						model: "glm-5.3-flash",
 						outJson: join(dir, "out.json"),
 						outMeta: join(dir, "meta.json"),
 						workDir: join(dir, "work"),
 						maxChunkBytes: 1000,
 						maxConcurrency: 1,
 						chunkTimeoutSec: 30,
-						maxAiCredits: 1,
-						copilotBin: "copilot",
 					},
 					{
 						runCommand: async () => ({
@@ -314,16 +299,13 @@ test("union overflow writes full validated findings then fails closed", async ()
 					{
 						diffPath,
 						changedPathsPath: pathsPath,
-						model: "grok-4.6",
-						effort: "high",
+						model: "glm-5.3-flash",
 						outJson: join(dir, "out.json"),
 						outMeta: join(dir, "meta.json"),
 						workDir: join(dir, "work"),
 						maxChunkBytes: 120,
 						maxConcurrency: 3,
 						chunkTimeoutSec: 30,
-						maxAiCredits: 5,
-						copilotBin: "copilot",
 					},
 					{
 						runCommand: async (spec) => {
@@ -369,32 +351,19 @@ test("union overflow writes full validated findings then fails closed", async ()
 
 
 
-test("budget defaults stay latency-bound under argv ceiling", () => {
-	assert.equal(REQUIRED_EFFORT, "high");
-	// Paired with grok-review.yml matrix max-parallel=2 → worst-case 4 in-flight z.ai calls.
+test("budget defaults pair low concurrency with context-sized chunks", () => {
 	assert.equal(DEFAULT_MAX_CONCURRENCY, 2);
 	assert.equal(DEFAULT_CHUNK_TIMEOUT_SEC, 720);
-	assert.equal(DEFAULT_MAX_CHUNK_BYTES, 96_000);
-	// Prompt argv element must stay under the conservative 100 KiB ceiling
-	// (Linux MAX_ARG_STRLEN is ~128 KiB; preamble is a few KiB on top of the chunk).
-	assert.ok(DEFAULT_MAX_CHUNK_BYTES < PROMPT_ARGV_TEST_CEILING_BYTES);
-	assert.ok(PROMPT_ARGV_TEST_CEILING_BYTES < 128 * 1024);
-	// Provenance-reduced PR3-scale selection (~1.43 MB) still partitions under matrix capacity.
-	const provenanceReducedMax = 1_450_000;
-	const chunksNeeded = Math.ceil(provenanceReducedMax / DEFAULT_MAX_CHUNK_BYTES);
-	assert.ok(chunksNeeded <= 128, `need ${chunksNeeded} chunks <= matrix capacity 128`);
-	// At concurrency 2, serial waves still finish inside the 15m group timeout even if
-	// each chunk takes tens of seconds (74 chunks × ~10s / 2 ≈ 6 min).
-	const worstCaseMs = Math.ceil(74 / DEFAULT_MAX_CONCURRENCY) * 10_000;
+	assert.equal(DEFAULT_MAX_CHUNK_BYTES, 384_000);
+	assert.ok(DEFAULT_MAX_CHUNK_BYTES < ABSOLUTE_MAX_CHUNK_BYTES);
+	const hard = resolveReviewChunkBudgetBytes("glm-5.3-flash", "");
+	assert.ok(hard > 96_000, `context budget should exceed argv-era 96KiB, got ${hard}`);
+	const est = Math.ceil(4_700_000 / hard);
+	assert.ok(est >= 8 && est <= 20, `expected ~10–15 chunks for 4.7MB, est=${est} hard=${hard}`);
+	const worstCaseMs = Math.ceil(est / DEFAULT_MAX_CONCURRENCY) * 30_000;
 	assert.ok(worstCaseMs < DEFAULT_CHUNK_TIMEOUT_SEC * 1000);
-
-	// Spawn env must not forward the Actions GITHUB_TOKEN.
-	const env = copilotSpawnEnv({ PATH: "/bin", HOME: "/tmp", COPILOT_GITHUB_TOKEN: "t", GITHUB_TOKEN: "nope", GH_TOKEN: "nope" });
-	assert.equal(env.COPILOT_GITHUB_TOKEN, "t");
-	assert.equal(env.GITHUB_TOKEN, "");
-	assert.equal(env.GH_TOKEN, "");
-	assert.equal(env.PATH, "/bin");
 });
+
 
 
 test("inventory makes lockfile replacement visible in every chunk prompt without file contents", async () => {
@@ -426,16 +395,13 @@ test("inventory makes lockfile replacement visible in every chunk prompt without
 				diffPath,
 				changedPathsPath: pathsPath,
 				inventoryPath: invPath,
-				model: "grok-4.6",
-				effort: "high",
+				model: "glm-5.3-flash",
 				outJson: join(dir, "out.json"),
 				outMeta: join(dir, "meta.json"),
 				workDir: join(dir, "work"),
 				maxChunkBytes: 96_000,
 				maxConcurrency: 2,
 				chunkTimeoutSec: 30,
-				maxAiCredits: 5,
-				copilotBin: "copilot",
 			},
 			{
 				runCommand: async (spec) => {
@@ -447,7 +413,7 @@ test("inventory makes lockfile replacement visible in every chunk prompt without
 					assert.match(spec.prompt, /covered-artifact:check/);
 					assert.equal(/^omitted:/m.test(spec.prompt), false);
 					assert.equal(spec.prompt.includes("node_modules"), false);
-					assert.ok(Buffer.byteLength(spec.prompt, "utf8") <= PROMPT_ARGV_TEST_CEILING_BYTES);
+					assert.ok(Buffer.byteLength(spec.prompt, "utf8") <= ABSOLUTE_MAX_CHUNK_BYTES + 100_000);
 					sawInventory = true;
 					return { ok: true, reason: "success", stdout: "[]", stderr: "", code: 0 };
 				},
@@ -526,12 +492,9 @@ test("runGroupGrokReview reviews each assigned chunk once and never duplicates",
 				groupManifestPath: manifestPath,
 				groupDir,
 				inventoryPath: invPath,
-				model: "grok-4.6",
-				effort: "high",
+				model: "glm-5.3-flash",
 				maxConcurrency: 2,
 				chunkTimeoutSec: 30,
-				maxAiCredits: 5,
-				copilotBin: "copilot",
 				outJson: join(dir, "out.json"),
 				outMeta: join(dir, "meta.json"),
 				workDir: join(dir, "work"),
@@ -573,19 +536,27 @@ test("runGroupGrokReview rejects chunkCount mismatch and path escape", async () 
 		);
 		await assert.rejects(
 			() =>
-				runGroupGrokReview({
+				runGroupGrokReview(
+					{
 					groupManifestPath: join(groupDir, "manifest.json"),
 					groupDir,
-					model: "grok-4.6",
-					effort: "high",
+					model: "glm-5.3-flash",
 					maxConcurrency: 2,
 					chunkTimeoutSec: 30,
-					maxAiCredits: 5,
-					copilotBin: "copilot",
 					outJson: join(dir, "out.json"),
 					outMeta: join(dir, "meta.json"),
 					workDir: join(dir, "work"),
-				}),
+					},
+					{
+						runCommand: async () => ({
+							ok: true,
+							reason: "success",
+							stdout: "[]",
+							stderr: "",
+							code: 0,
+						}),
+					},
+				),
 			/chunkCount/,
 		);
 
@@ -599,19 +570,27 @@ test("runGroupGrokReview rejects chunkCount mismatch and path escape", async () 
 		);
 		await assert.rejects(
 			() =>
-				runGroupGrokReview({
+				runGroupGrokReview(
+					{
 					groupManifestPath: join(groupDir, "manifest.json"),
 					groupDir,
-					model: "grok-4.6",
-					effort: "high",
+					model: "glm-5.3-flash",
 					maxConcurrency: 2,
 					chunkTimeoutSec: 30,
-					maxAiCredits: 5,
-					copilotBin: "copilot",
 					outJson: join(dir, "out.json"),
 					outMeta: join(dir, "meta.json"),
 					workDir: join(dir, "work"),
-				}),
+					},
+					{
+						runCommand: async () => ({
+							ok: true,
+							reason: "success",
+							stdout: "[]",
+							stderr: "",
+							code: 0,
+						}),
+					},
+				),
 			/confinement/,
 		);
 	} finally {
@@ -647,7 +626,17 @@ async function readRequestBody(req) {
 
 function writeTempZaiCatalog(dir, models) {
 	const path = join(dir, "zai.json");
-	const body = { "openai-completions": models };
+	const normalized = {};
+	for (const [id, entry] of Object.entries(models)) {
+		normalized[id] = {
+			...entry,
+			name: entry.name ?? id,
+			baseUrl: entry.baseUrl,
+			contextWindow: entry.contextWindow ?? 100_000,
+			maxTokens: entry.maxTokens ?? 4096,
+		};
+	}
+	const body = { "openai-completions": normalized };
 	writeFileSync(path, `${JSON.stringify(body, null, 2)}\n`);
 	return path;
 }
@@ -732,8 +721,8 @@ test("createZaiRunCommand posts to catalog baseUrl and returns assistant content
 		assert.equal(sawBody.model, "glm-5.3");
 		assert.equal(sawBody.messages[0].content, "review this");
 		assert.equal(sawUrl, "/api/coding/paas/v4/chat/completions");
-		// Prompt rides in HTTP body — not subject to PROMPT_ARGV_TEST_CEILING_BYTES.
-		assert.ok(PROMPT_ARGV_TEST_CEILING_BYTES > 0);
+		// Prompt rides in HTTP body — sized from catalog contextWindow.
+		assert.ok(ABSOLUTE_MAX_CHUNK_BYTES > 96_000);
 	} finally {
 		await stub.close();
 		rmSync(dir, { recursive: true, force: true });
@@ -1059,9 +1048,9 @@ test("createZaiRunCommand times out via AbortSignal", async () => {
 	}
 });
 
-test("resolveReviewRunCommand selects zai when backend=zai and requires key", () => {
+test("resolveReviewRunCommand requires ZAI_API_KEY and builds z.ai runner", () => {
 	assert.throws(
-		() => resolveReviewRunCommand({ GROK_REVIEW_BACKEND: "zai" }),
+		() => resolveReviewRunCommand({}),
 		/ZAI_API_KEY/,
 	);
 	const dir = mkdtempSync(join(tmpdir(), "kpi-zai-res-"));
@@ -1070,13 +1059,10 @@ test("resolveReviewRunCommand selects zai when backend=zai and requires key", ()
 			"glm-5.3": { name: "GLM-5.3", baseUrl: "http://127.0.0.1:9/v4" },
 		});
 		const run = resolveReviewRunCommand({
-			GROK_REVIEW_BACKEND: "zai",
 			ZAI_API_KEY: "secret",
 			ZAI_CATALOG_PATH: catalogPath,
 		});
 		assert.equal(typeof run, "function");
-		const copilot = resolveReviewRunCommand({ GROK_REVIEW_BACKEND: "copilot" });
-		assert.equal(copilot, defaultRunCommand);
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}
