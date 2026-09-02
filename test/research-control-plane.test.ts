@@ -756,11 +756,9 @@ test("a caller abort stays an abort and is not relabelled a timeout", async () =
 	const controller = new AbortController();
 	const pendingFetch: typeof fetch = (_input, init) =>
 		new Promise((_resolve, reject) => {
-			init?.signal?.addEventListener(
-				"abort",
-				() => reject(init.signal?.reason ?? new Error("aborted")),
-				{ once: true },
-			);
+			init?.signal?.addEventListener("abort", () => reject(init.signal?.reason ?? new Error("aborted")), {
+				once: true,
+			});
 		});
 	const promise = fetchBounded(
 		"http://127.0.0.1:9/never",
@@ -777,11 +775,7 @@ test("a caller abort stays an abort and is not relabelled a timeout", async () =
 test("the bounded fetch labels its own deadline TimeoutError for the classifier", async () => {
 	const pendingFetch: typeof fetch = (_input, init) =>
 		new Promise((_resolve, reject) => {
-			init?.signal?.addEventListener(
-				"abort",
-				() => reject(new Error("some runtime wording")),
-				{ once: true },
-			);
+			init?.signal?.addEventListener("abort", () => reject(new Error("some runtime wording")), { once: true });
 		});
 	await assert.rejects(
 		fetchBounded(
