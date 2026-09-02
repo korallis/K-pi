@@ -45,13 +45,17 @@ export interface LoopDependencies {
 	busDependencies?: BusDependencies;
 	onStateChange?: () => Promise<void>;
 	jobId?: string;
-	/** Injected wall clock in epoch milliseconds. */
+	/** Test/DI wall clock. Production uses Date.now. Not an operator flag. */
 	now?: () => number;
-	/** Injected accumulated job cost in USD. */
+	/**
+	 * Test/DI cost meter. Production never sets this: spend is session usage ×
+	 * model.cost, restored from the graph checkpoint. Not an operator flag and
+	 * not a way to zero a live job's spend.
+	 */
 	accumulatedCostUsd?: () => number;
-	/** Injected transient-retry backoff. */
+	/** Test/DI transient-retry backoff. Production uses real sleep. */
 	sleep?: Sleeper;
-	/** First backoff step; each further retry doubles it. */
+	/** Test/DI first backoff step. Production uses DEFAULT_RETRY_BASE_MS. */
 	retryBaseDelayMs?: number;
 }
 
@@ -61,6 +65,12 @@ export interface LoopInvocation {
 	planPath?: string;
 	/** The operator declared this job offline for research. */
 	noNetwork?: boolean;
+	/** Optional run-wide budget caps frozen onto the job contract. */
+	limits?: {
+		maxRounds?: number;
+		maxCostUsd?: number;
+		timeoutMs?: number;
+	};
 }
 
 export interface LoopOutcome {
@@ -91,19 +101,60 @@ function unwrapPath(value: string): string {
 
 export function parseLoopInvocation(args: string): LoopInvocation {
 	let input = args.trim();
-	// A leading flag rather than another branch, so the operator's network
-	// decision composes with every existing form instead of forcing a choice
-	// between declaring offline and declaring a mode or a frozen plan.
+	// Leading flags compose: offline, budget caps, then mode/plan/goal.
+	// Caps freeze onto task.limits so the graph budget can end the run with
+	// exhausted_limit naming the cap the operator set.
 	let noNetwork = false;
-	const offlineFlag = /^--no-network(?=\s|$)/u.exec(input);
-	if (offlineFlag !== null) {
-		noNetwork = true;
-		input = input.slice(offlineFlag[0].length).trim();
-		if (input.length === 0) {
-			throw new Error("/kpi --no-network requires a goal");
+	const limits: NonNullable<LoopInvocation["limits"]> = {};
+	const takeFlag = (pattern: RegExp): string | undefined => {
+		const match = pattern.exec(input);
+		if (match === null) {
+			return undefined;
+		}
+		input = `${input.slice(0, match.index)} ${input.slice(match.index + match[0].length)}`
+			.trim()
+			.replace(/\s+/gu, " ");
+		return match[1];
+	};
+	for (;;) {
+		const before = input;
+		if (/^--no-network(?=\s|$)/u.test(input) || /\s--no-network(?=\s|$)/u.test(input)) {
+			const m = /(?:^|\s)--no-network(?=\s|$)/u.exec(input);
+			if (m) {
+				noNetwork = true;
+				input = `${input.slice(0, m.index)} ${input.slice(m.index + m[0].length)}`.trim().replace(/\s+/gu, " ");
+			}
+		}
+		const cost = takeFlag(/(?:^|\s)--max-cost-usd\s+(\S+)/u);
+		if (cost !== undefined) {
+			const n = Number(cost);
+			if (!Number.isFinite(n) || n <= 0) {
+				throw new Error("/kpi --max-cost-usd requires a positive number");
+			}
+			limits.maxCostUsd = n;
+		}
+		const timeout = takeFlag(/(?:^|\s)--timeout-ms\s+(\S+)/u);
+		if (timeout !== undefined) {
+			const n = Number(timeout);
+			if (!Number.isFinite(n) || n <= 0) {
+				throw new Error("/kpi --timeout-ms requires a positive number");
+			}
+			limits.timeoutMs = n;
+		}
+		const rounds = takeFlag(/(?:^|\s)--max-rounds\s+(\S+)/u);
+		if (rounds !== undefined) {
+			const n = Number(rounds);
+			if (!Number.isInteger(n) || n <= 0) {
+				throw new Error("/kpi --max-rounds requires a positive integer");
+			}
+			limits.maxRounds = n;
+		}
+		if (input === before) {
+			break;
 		}
 	}
 	const offline = noNetwork ? { noNetwork: true as const } : {};
+	const limitFields = Object.keys(limits).length > 0 ? { limits } : {};
 	if (input.startsWith("--mode")) {
 		const match = /^--mode\s+(\S+)(?:\s+([\s\S]+))?$/u.exec(input);
 		if (match === null) {
@@ -117,7 +168,7 @@ export function parseLoopInvocation(args: string): LoopInvocation {
 		if (goal.length === 0) {
 			throw new Error(`/kpi --mode ${mode} requires a goal`);
 		}
-		return { goal, mode, ...offline };
+		return { goal, mode, ...offline, ...limitFields };
 	}
 	if (input.startsWith("--until-green")) {
 		const separator = input[13];
@@ -128,7 +179,7 @@ export function parseLoopInvocation(args: string): LoopInvocation {
 		if (goal.length === 0) {
 			throw new Error("/kpi --until-green requires a goal");
 		}
-		return { goal, mode: "autopilot", ...offline };
+		return { goal, mode: "autopilot", ...offline, ...limitFields };
 	}
 	if (input.startsWith("--plan")) {
 		const separator = input[6];
@@ -144,15 +195,29 @@ export function parseLoopInvocation(args: string): LoopInvocation {
 			mode: "gated",
 			planPath,
 			...offline,
+			...limitFields,
 		};
 	}
 	if (input.startsWith("--")) {
 		throw new Error(`Unknown /kpi option: ${input.split(/\s/u, 1)[0]}`);
 	}
 	if (input.length === 0) {
+		// Name the flag the operator used so bare caps/offline without a goal are legible.
+		if (noNetwork) {
+			throw new Error("/kpi --no-network requires a goal");
+		}
+		if (limits.maxCostUsd !== undefined) {
+			throw new Error("/kpi --max-cost-usd requires a goal");
+		}
+		if (limits.timeoutMs !== undefined) {
+			throw new Error("/kpi --timeout-ms requires a goal");
+		}
+		if (limits.maxRounds !== undefined) {
+			throw new Error("/kpi --max-rounds requires a goal");
+		}
 		throw new Error("/kpi requires a goal");
 	}
-	return { goal: input, mode: "gated", ...offline };
+	return { goal: input, mode: "gated", ...offline, ...limitFields };
 }
 
 export function makeJobId(goal: string): string {
@@ -942,9 +1007,7 @@ async function driveUntilPause(
 					/failed response validation/iu.test(message))
 			) {
 				const reason =
-					/not valid JSON|assistant response text is unavailable|response must be a JSON object/iu.test(
-						message,
-					)
+					/not valid JSON|assistant response text is unavailable|response must be a JSON object/iu.test(message)
 						? "stack.json is missing; implement has no frozen map to read"
 						: message.replace(/^agent node plan failed response validation after \d+ attempts: /u, "");
 				return {
@@ -1005,8 +1068,24 @@ async function driveUntilPause(
 				failingAcIds: await failingAcIds(jobDirectory),
 			});
 			if (currentStopState.status === "NO_PROGRESS" || currentStopState.status === "EXHAUSTED") {
+				// maxRounds exhaustion is a stop-reducer outcome, not a graph budget
+				// cap — still name the limit so state.json.exhausted_limit is legible.
+				const withLimit =
+					currentStopState.status === "EXHAUSTED"
+						? {
+								...state,
+								terminal: {
+									status: "EXHAUSTED" as const,
+									limit: "maxRounds" as const,
+									reason: "maximum verifier rounds exhausted",
+									round: currentStopState.round,
+									superstep: state.superstep,
+									nodes: [...state.active],
+								},
+							}
+						: state;
 				return {
-					state,
+					state: withLimit,
 					stopState: currentStopState,
 					shippedThisRun,
 					terminalStatus: currentStopState.status,
@@ -1240,7 +1319,14 @@ export async function resumeLoop(
 			await dependencies.onStateChange?.();
 			return { jobId, status: "BLOCKED", graphState: result.state };
 		}
-		await writeState(jobDirectory, task, result.state, result.stopState, "DONE");
+		// DONE is a terminal like any other: it goes through the one writer, so
+		// `events.jsonl` alone shows the run ended rather than only `state.json`.
+		await writeTerminalState(jobDirectory, eventsPath, task, {
+			state: result.state,
+			stopState: result.stopState,
+			terminalStatus: "DONE",
+			terminalEmitted: result.terminalEmitted,
+		});
 		await dependencies.onStateChange?.();
 		return { jobId, status: "DONE", graphState: result.state };
 	} finally {
@@ -1269,6 +1355,7 @@ export async function runLoop(
 		ac: { quality: compilation.quality },
 		dependency_baseline: await runtimeDependencies(ctx.cwd),
 		...(invocation.noNetwork === true ? { research_network: "offline" as const } : {}),
+		...(invocation.limits !== undefined ? { limits: invocation.limits } : {}),
 		// K-mode's match is frozen here and nowhere else: name plus every ordered
 		// step (including skip reasons). Re-matching mid-run would change what the
 		// run was for; contractHash includes this freeze for the same reason.
@@ -1450,7 +1537,14 @@ export async function runLoop(
 			await writeTerminalState(job.directory, job.eventsPath, task, blocked);
 			throw error;
 		}
-		await writeState(job.directory, task, state, result.stopState, "DONE");
+		// Same one writer as every other terminal, so a finished run is legible
+		// from `events.jsonl` on its own.
+		await writeTerminalState(job.directory, job.eventsPath, task, {
+			state,
+			stopState: result.stopState,
+			terminalStatus: "DONE",
+			terminalEmitted: result.terminalEmitted,
+		});
 		await dependencies.onStateChange?.();
 		return { jobId: job.jobId, status: "DONE", graphState: state };
 	} finally {

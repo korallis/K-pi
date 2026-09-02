@@ -1,9 +1,9 @@
-import { mkdir, readFile, stat } from "node:fs/promises";
+import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 import { getAgentDir, getKpiResourceDir } from "../../config.ts";
 import type { ExtensionAPI, ExtensionCommandContext } from "../../core/extensions/types.ts";
-import { atomicWrite } from "./run-store.ts";
+import { atomicWriteSync } from "./run-store.ts";
 
 /**
  * The file name the resource loader looks for. K-π's brevity rule is an
@@ -28,9 +28,9 @@ export interface AppendSystemStatus {
 	path: string;
 }
 
-async function readIfPresent(path: string): Promise<string | undefined> {
+function readIfPresent(path: string): string | undefined {
 	try {
-		return await readFile(path, "utf8");
+		return readFileSync(path, "utf8");
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code === "ENOENT") {
 			return undefined;
@@ -46,21 +46,26 @@ async function readIfPresent(path: string): Promise<string | undefined> {
  * agent directory gets it without being asked. An existing file is the
  * operator's, whether they wrote it or edited ours: it is reported, never
  * touched. Replacing it is a separate, confirmed decision.
+ *
+ * Synchronous on purpose. The resource loader discovers this file while it
+ * assembles the system prompt, and it loads extensions first - so an install
+ * that runs during registration is on disk in time for the very first turn,
+ * while anything awaited later would only reach the second session in a fresh
+ * agent directory.
  */
-export async function ensureAppendSystemInstalled(agentDirectory: string = getAgentDir()): Promise<AppendSystemStatus> {
+export function ensureAppendSystemInstalled(agentDirectory: string = getAgentDir()): AppendSystemStatus {
 	const target = installedAppendSystemPath(agentDirectory);
-	const shipped = await readIfPresent(shippedAppendSystemPath());
+	const shipped = readIfPresent(shippedAppendSystemPath());
 	if (shipped === undefined) {
 		// A source tree without a built resource directory is not a failure to
 		// report at every session start.
 		return { outcome: "unavailable", path: target };
 	}
-	const existing = await readIfPresent(target);
+	const existing = readIfPresent(target);
 	if (existing !== undefined) {
 		return { outcome: existing === shipped ? "current" : "operator-owned", path: target };
 	}
-	await mkdir(agentDirectory, { recursive: true });
-	await atomicWrite(target, shipped);
+	atomicWriteSync(target, shipped);
 	return { outcome: "installed", path: target };
 }
 
@@ -73,7 +78,7 @@ export async function installAppendSystemCommand(
 	ctx: ExtensionCommandContext,
 	agentDirectory: string = getAgentDir(),
 ): Promise<AppendSystemStatus> {
-	const status = await ensureAppendSystemInstalled(agentDirectory);
+	const status = ensureAppendSystemInstalled(agentDirectory);
 	if (status.outcome === "unavailable") {
 		ctx.ui.notify(`No shipped ${APPEND_SYSTEM_FILE} found at ${shippedAppendSystemPath()}`, "warning");
 		return status;
@@ -94,29 +99,30 @@ export async function installAppendSystemCommand(
 		ctx.ui.notify(`Kept your ${status.path}`, "info");
 		return { outcome: "kept", path: status.path };
 	}
-	const shipped = await readIfPresent(shippedAppendSystemPath());
+	const shipped = readIfPresent(shippedAppendSystemPath());
 	if (shipped === undefined) {
 		return { outcome: "unavailable", path: status.path };
 	}
-	await atomicWrite(status.path, shipped);
+	atomicWriteSync(status.path, shipped);
 	ctx.ui.notify(`Replaced ${status.path} with the shipped ${APPEND_SYSTEM_FILE}`, "info");
 	return { outcome: "replaced", path: status.path };
 }
 
 /** Reports whether the installed prompt is in force, without changing it. */
-export async function appendSystemInstalled(agentDirectory: string = getAgentDir()): Promise<boolean> {
+export function appendSystemInstalled(agentDirectory: string = getAgentDir()): boolean {
 	try {
-		return (await stat(installedAppendSystemPath(agentDirectory))).isFile();
+		return statSync(installedAppendSystemPath(agentDirectory)).isFile();
 	} catch {
 		return false;
 	}
 }
 
 export function registerAppendSystem(pi: ExtensionAPI): void {
-	pi.on("session_start", async (_event, _ctx) => {
-		// First run installs it; every later run leaves whatever is there alone.
-		await ensureAppendSystemInstalled();
-	});
+	// Installed here, not on `session_start`: the resource loader loads
+	// extensions before it discovers the append file, so registration is the
+	// last moment that still lands ahead of the first system prompt. First run
+	// installs it; every later run leaves whatever is there alone.
+	ensureAppendSystemInstalled();
 	pi.registerCommand("append-system", {
 		description: "Install K-π's concise-output system prompt, or report the file already in place",
 		handler: async (_args, ctx) => {

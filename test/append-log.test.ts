@@ -285,7 +285,7 @@ test("review.verdict appends concise accepted-review fields without issue text",
 			approved: false,
 			blocking_count: 3,
 			nonblocking_count: 1,
-			fingerprint: "sha256:" + "b".repeat(64),
+			fingerprint: `sha256:${"b".repeat(64)}`,
 		});
 		assert.equal(record.type, "review.verdict");
 		assert.equal(record.blocking_count, 3);
@@ -306,14 +306,14 @@ test("buildReviewVerdictEventFields keeps counts only", () => {
 		nonBlockingIssues: ["n"],
 		evidence: ["evidence.json"],
 		round: 2,
-		output_fingerprint: "sha256:" + "c".repeat(64),
+		output_fingerprint: `sha256:${"c".repeat(64)}`,
 	});
 	assert.deepEqual(fields, {
 		status: "REVISE",
 		approved: false,
 		blocking_count: 3,
 		nonblocking_count: 1,
-		fingerprint: "sha256:" + "c".repeat(64),
+		fingerprint: `sha256:${"c".repeat(64)}`,
 	});
 	assert.equal(buildReviewVerdictEventFields({ status: "PASS" }), undefined);
 });

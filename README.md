@@ -102,6 +102,13 @@ node scripts/verify-product.mjs --json .kpi/remediation-proof.json
 # WF-03: executable autopilot
 /kpi --mode autopilot add /health; check: curl -fsS localhost:3000/health
 
+# WF-03b: operator budget caps (freeze onto task.limits → graph EXHAUSTED)
+/kpi --max-cost-usd 1.5 --mode autopilot <goal>   # stop when session usage×rates hit USD
+/kpi --timeout-ms 600000 --mode autopilot <goal>  # wall-clock job cap
+/kpi --max-rounds 3 --mode autopilot <goal>       # coding-loop round cap
+# Flags compose with --mode / --plan / --until-green / --no-network.
+# Local pools stay $0 (AC-27.6); maxCostUsd meters non-local catalog spend only.
+
 # WF-04: inspect, stop, or audit
 /kpi status
 /kpi stop

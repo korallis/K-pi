@@ -9,6 +9,7 @@ import {
 	appendSystemInstalled,
 	ensureAppendSystemInstalled,
 	installAppendSystemCommand,
+	registerAppendSystem,
 	shippedAppendSystemPath,
 } from "../packages/coding-agent/src/kpi/extensions/append-system.ts";
 import { formatEventEntry, formatVerdictReply } from "../packages/coding-agent/src/kpi/extensions/renderers.ts";
@@ -154,7 +155,7 @@ test("a fresh agent directory gets the shipped APPEND_SYSTEM on first run", asyn
 	const home = await mkdtemp(join(tmpdir(), "kpi-append-system-"));
 	try {
 		const agentDirectory = join(home, ".kpi", "agent");
-		const first = await ensureAppendSystemInstalled(agentDirectory);
+		const first = ensureAppendSystemInstalled(agentDirectory);
 		assert.equal(first.outcome, "installed");
 		assert.equal(first.path, join(agentDirectory, "APPEND_SYSTEM.md"));
 
@@ -163,11 +164,11 @@ test("a fresh agent directory gets the shipped APPEND_SYSTEM on first run", asyn
 		const shipped = await readFile(shippedAppendSystemPath(), "utf8");
 		assert.equal(installed, shipped, "the shipped prompt is what landed");
 		assert.match(installed, /Keep user-visible answers short/u);
-		assert.equal(await appendSystemInstalled(agentDirectory), true);
+		assert.equal(appendSystemInstalled(agentDirectory), true);
 
 		// Second run: already current, and nothing is rewritten.
 		const before = (await stat(first.path)).mtimeMs;
-		const second = await ensureAppendSystemInstalled(agentDirectory);
+		const second = ensureAppendSystemInstalled(agentDirectory);
 		assert.equal(second.outcome, "current");
 		assert.equal((await stat(first.path)).mtimeMs, before, "an unchanged file is not rewritten");
 	} finally {
@@ -185,7 +186,7 @@ test("an operator's own APPEND_SYSTEM is never silently overwritten", async () =
 		await writeFile(target, mine);
 
 		// First run leaves it alone and says whose it is.
-		const status = await ensureAppendSystemInstalled(agentDirectory);
+		const status = ensureAppendSystemInstalled(agentDirectory);
 		assert.equal(status.outcome, "operator-owned");
 		assert.equal(await readFile(target, "utf8"), mine, "the operator's file survived first run");
 
@@ -199,6 +200,40 @@ test("an operator's own APPEND_SYSTEM is never silently overwritten", async () =
 		assert.equal(approved.outcome, "replaced");
 		assert.equal(await readFile(target, "utf8"), await readFile(shippedAppendSystemPath(), "utf8"));
 	} finally {
+		await rm(home, { recursive: true, force: true });
+	}
+});
+
+test("the prompt is on disk when registration returns, before any session hook", async () => {
+	const home = await mkdtemp(join(tmpdir(), "kpi-append-system-order-"));
+	const previousAgentDir = process.env.KPI_CODING_AGENT_DIR;
+	try {
+		const agentDirectory = join(home, ".kpi", "agent");
+		process.env.KPI_CODING_AGENT_DIR = agentDirectory;
+
+		const hooks: string[] = [];
+		const commands: string[] = [];
+		registerAppendSystem({
+			on: (event: string) => void hooks.push(event),
+			registerCommand: (name: string) => void commands.push(name),
+		} as unknown as Parameters<typeof registerAppendSystem>[0]);
+
+		// The resource loader loads extensions and only then discovers the append
+		// file, so the install has to have happened by the time registration
+		// returns. A `session_start` hook would be too late for the first prompt.
+		assert.equal(appendSystemInstalled(agentDirectory), true, "installed during registration");
+		assert.match(
+			await readFile(join(agentDirectory, "APPEND_SYSTEM.md"), "utf8"),
+			/Keep user-visible answers short/u,
+		);
+		assert.deepEqual(hooks, [], "no session hook is needed once the install is registration-time");
+		assert.deepEqual(commands, ["append-system"]);
+	} finally {
+		if (previousAgentDir === undefined) {
+			delete process.env.KPI_CODING_AGENT_DIR;
+		} else {
+			process.env.KPI_CODING_AGENT_DIR = previousAgentDir;
+		}
 		await rm(home, { recursive: true, force: true });
 	}
 });

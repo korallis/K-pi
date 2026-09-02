@@ -115,6 +115,16 @@ test("resuming an already-DONE job is idempotent", async () => {
 		const context = { cwd: directory } as ExtensionCommandContext;
 		assert.equal((await resumeLoop(jobId, context)).status, "DONE");
 		assert.equal((await resumeLoop(jobId, context)).status, "DONE");
+		// One run, one terminal record. Replaying a job that already finished
+		// must not append a second `loop.terminal` to a log an operator reads as
+		// the run's history.
+		const events = await readFile(join(run, "events.jsonl"), "utf8").catch(() => "");
+		const terminals = events
+			.split("\n")
+			.filter((line) => line.length > 0)
+			.map((line) => JSON.parse(line) as { type: string })
+			.filter((record) => record.type === "loop.terminal");
+		assert.equal(terminals.length, 0, JSON.stringify(terminals));
 	} finally {
 		await rm(directory, { recursive: true, force: true });
 	}
@@ -209,6 +219,55 @@ test("a mid-superstep stop marks only the work that ran and never reruns it", as
 		for (const id of workerIds) {
 			assert.equal(finished.nodes[id].runs, 1, `${id} ran exactly once across the kill`);
 		}
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("restored maxCostUsd exhaustion keeps checkpoint spend without an injected meter", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "kpi-resume-cost-honest-"));
+	const graph: GraphDefinition = {
+		schemaVersion: 2,
+		id: "cost-honest-resume",
+		entry: "spend",
+		nodes: [{ id: "spend", type: "set" as const, assignments: { spent: true } }],
+		edges: [{ from: "spend", to: "spend" }],
+		limits: { maxSteps: 20, maxNodeRuns: 20, maxConcurrency: 1, maxCostUsd: 1, timeoutMs: 600_000 },
+		policy: {
+			allowNonInteractive: true,
+			allowNonInteractiveMutations: false,
+			confirmProjectGraph: false,
+			confirmMutatingNodes: false,
+		},
+	};
+	try {
+		let cost = 0;
+		const engine = new GraphEngine(graph, {
+			projectRoot: directory,
+			jobId: "honest-cost-job",
+			accumulatedCostUsd: () => {
+				cost = 1.5;
+				return cost;
+			},
+		});
+		const stopped = await engine.runUntilPause();
+		engine.dispose();
+		assert.equal(stopped.status, "exhausted");
+		assert.equal(stopped.terminal?.limit, "maxCostUsd");
+		assert.ok(stopped.budget.costUsd >= 1);
+
+		// Production resumeLoop does not inject accumulatedCostUsd — only the
+		// checkpoint. Same caps must stay exhausted.
+		const restored = await GraphEngine.restore(graph, {
+			projectRoot: directory,
+			jobId: "honest-cost-job",
+		});
+		assert.equal(restored.state.status, "exhausted", "forgetting spend would silently rearm the run");
+		assert.equal(restored.state.terminal?.limit, "maxCostUsd");
+		assert.ok(restored.state.budget.costUsd >= 1, `expected durable cost, got ${restored.state.budget.costUsd}`);
+		const still = await restored.runUntilPause();
+		assert.equal(still.status, "exhausted");
+		restored.dispose();
 	} finally {
 		await rm(directory, { recursive: true, force: true });
 	}

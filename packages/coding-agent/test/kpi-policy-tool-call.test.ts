@@ -1,9 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-	DEFAULT_ACTIVE_POLICY_STATE,
-	evaluateToolCall,
-	type PolicyConfig,
-} from "../src/kpi/extensions/policy.ts";
+import { DEFAULT_ACTIVE_POLICY_STATE, evaluateToolCall, type PolicyConfig } from "../src/kpi/extensions/policy.ts";
 
 const policy: PolicyConfig = {
 	deny: [],

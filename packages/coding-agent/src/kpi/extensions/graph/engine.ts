@@ -3,23 +3,17 @@ import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 
 import { CONFIG_DIR_NAME, getAgentDir, getKpiResourceDir } from "../../../config.ts";
-
-import { type CreateAgentSessionOptions, createAgentSession } from "../../../core/sdk.ts";
-import type { ExtensionUIContext } from "../../../core/extensions/types.ts";
-import type { InlineExtension } from "../../../core/extensions/types.ts";
+import type { ExtensionUIContext, InlineExtension } from "../../../core/extensions/types.ts";
 import { DefaultResourceLoader } from "../../../core/resource-loader.ts";
+import { type CreateAgentSessionOptions, createAgentSession } from "../../../core/sdk.ts";
 import { SessionManager } from "../../../core/session-manager.ts";
 import { SettingsManager } from "../../../core/settings-manager.ts";
-
-import { appendEvent, buildReviewVerdictEventFields } from "../append-log.ts";
 import { AccountsStore } from "../accounts/store.ts";
-import {
-	type LocalProviderId,
-	registerLocalProviders,
-} from "../local/providers.ts";
-import { registerPolicy } from "../policy.ts";
+import { appendEvent, buildReviewVerdictEventFields } from "../append-log.ts";
 import { ROLE_CONTRACT_FILE } from "../bus/roles.ts";
 import { BackgroundBus, type BusDependencies } from "../bus/spawn.ts";
+import { type LocalProviderId, registerLocalProviders } from "../local/providers.ts";
+import { registerPolicy } from "../policy.ts";
 import { atomicWrite, readActiveJob, type Task, writeAllowForTask } from "../run-store.ts";
 import { assertDuneStack, DuneStackError } from "../stack.ts";
 import {
@@ -59,6 +53,11 @@ export interface GraphAgentSession {
 	readonly sessionId: string;
 	prompt(text: string): Promise<void>;
 	getLastAssistantText?(): string | undefined;
+	/**
+	 * Session-billed USD so far (provider usage × model.cost). Graph budget
+	 * accumulates deltas after each node; optional so test fakes stay thin.
+	 */
+	getSessionStats?(): { cost: number };
 	getActiveToolNames(): string[];
 	dispose(): void;
 }
@@ -74,9 +73,12 @@ export interface GraphEngineOptions {
 	 * fake launcher; production uses the default process launcher.
 	 */
 	busDependencies?: BusDependencies;
-	/** Injected wall clock in epoch milliseconds. */
+	/** Test/DI wall clock. Production uses Date.now. */
 	now?: () => number;
-	/** Injected accumulated job cost in USD. */
+	/**
+	 * Test/DI additive cost meter. When omitted, spend is checkpoint baseline +
+	 * session usage×rates. Never invent spend; clamp external readings at 0.
+	 */
 	accumulatedCostUsd?: () => number;
 	/** Cap overrides from the validated task/job contract. */
 	limits?: GraphBudgetOverrides;
@@ -461,7 +463,6 @@ async function loadResponseSchema(projectRoot: string, name: string): Promise<Js
 	return JSON.parse(await readFile(join(getKpiResourceDir(), "schemas", name), "utf8")) as JsonSchema;
 }
 
-
 /**
  * Graph agent sessions are not the operator CLI: they need local model catalogs
  * and policy, not control-plane widgets/status that bind a parent ExtensionRunner
@@ -523,6 +524,15 @@ export class GraphEngine {
 	private readonly threadSessions = new Map<string, GraphAgentSession>();
 	private readonly now: () => number;
 	private readonly accumulatedCostUsd: () => number;
+	/**
+	 * Durable spend already on the checkpoint (prior process). Restored runs must
+	 * keep it so maxCostUsd cannot rearm by forgetting what was already billed.
+	 */
+	private readonly baselineCostUsd: number;
+	/** USD billed by agent sessions in this process (provider usage × model.cost). */
+	private sessionCostUsd = 0;
+	/** Last getSessionStats().cost observed per live session (for deltas). */
+	private readonly sessionCostBaseline = new WeakMap<object, number>();
 	private readonly sleep: Sleeper;
 	private readonly retryBaseDelayMs: number;
 	private checkpointWrites: Promise<void> = Promise.resolve();
@@ -536,7 +546,25 @@ export class GraphEngine {
 		this.nodes = new Map(graph.nodes.map((node) => [node.id, node]));
 		this.sessionFactory = options.createAgentSession ?? createAgentSession;
 		this.now = options.now ?? Date.now;
-		this.accumulatedCostUsd = options.accumulatedCostUsd ?? (() => 0);
+		this.sessionCostUsd = 0;
+		// Checkpoint cost is durable product state. An injected meter is additive
+		// test/DI only and must never cancel real spend (clamp at zero).
+		const checkpointCost =
+			initialState !== undefined &&
+			typeof initialState.budget?.costUsd === "number" &&
+			Number.isFinite(initialState.budget.costUsd)
+				? Math.max(0, initialState.budget.costUsd)
+				: 0;
+		const externalMeter = options.accumulatedCostUsd;
+		if (externalMeter !== undefined) {
+			// Tests own the prior-spend story via the meter; do not also double-count
+			// the checkpoint baseline they already encoded there.
+			this.baselineCostUsd = 0;
+			this.accumulatedCostUsd = () => Math.max(0, externalMeter()) + this.sessionCostUsd;
+		} else {
+			this.baselineCostUsd = checkpointCost;
+			this.accumulatedCostUsd = () => this.baselineCostUsd + this.sessionCostUsd;
+		}
 		this.sleep = options.sleep ?? defaultSleep;
 		this.retryBaseDelayMs = options.retryBaseDelayMs ?? DEFAULT_RETRY_BASE_MS;
 
@@ -761,6 +789,21 @@ export class GraphEngine {
 		return { targets: [...targets], terminal, gap };
 	}
 
+	/**
+	 * Fold session-billed cost into the job meter. Uses deltas so threaded
+	 * sessions that keep running across nodes are not double-counted.
+	 */
+	private recordSessionCost(session: GraphAgentSession): void {
+		const stats = session.getSessionStats?.();
+		if (stats === undefined || typeof stats.cost !== "number" || !Number.isFinite(stats.cost)) {
+			return;
+		}
+		const previous = this.sessionCostBaseline.get(session) ?? 0;
+		const delta = Math.max(0, stats.cost - previous);
+		this.sessionCostBaseline.set(session, stats.cost);
+		this.sessionCostUsd += delta;
+	}
+
 	private async createSessionForNode(
 		node: AgentGraphNode,
 	): Promise<{ session: GraphAgentSession; disposeAfter: boolean }> {
@@ -803,7 +846,10 @@ export class GraphEngine {
 		});
 		if (this.uiContext !== undefined) {
 			const session = result.session as GraphAgentSession & {
-				bindExtensions?: (b: { uiContext?: ExtensionUIContext; mode?: "rpc" | "print" | "interactive" }) => Promise<void>;
+				bindExtensions?: (b: {
+					uiContext?: ExtensionUIContext;
+					mode?: "rpc" | "print" | "interactive";
+				}) => Promise<void>;
 			};
 			if (typeof session.bindExtensions === "function") {
 				await session.bindExtensions({
@@ -921,6 +967,7 @@ export class GraphEngine {
 				`agent node ${node.id} failed response validation after ${node.response.retries + 1} attempts: ${validationErrors.join("; ")}`,
 			);
 		} finally {
+			this.recordSessionCost(session);
 			if (disposeAfter) {
 				session.dispose();
 			}

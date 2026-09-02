@@ -1,9 +1,26 @@
+import type { ProviderResponse } from "../types.ts";
+import { headersToRecord } from "./headers.ts";
+
 const DEFAULT_MAX_RETRY_DELAY_MS = 60_000;
 
 interface ProviderRetryOptions {
 	maxRetries?: number;
 	maxRetryDelayMs?: number;
 	signal?: AbortSignal;
+	/**
+	 * Every response the provider actually returned, including the ones that
+	 * arrived as a thrown SDK error.
+	 *
+	 * The success path reports its own response after this helper returns. A
+	 * non-2xx never gets there: the SDK throws, so without this callback a 429
+	 * or a quota refusal would leave no trace for a caller that routes on
+	 * provider health, and one credential could be retried to exhaustion while
+	 * a healthy sibling sat idle. Fires once per attempt, before the retry
+	 * decision, so the final failure is reported too.
+	 *
+	 * A transport error carries no response and is not reported here.
+	 */
+	onResponse?: (response: ProviderResponse) => void | Promise<void>;
 }
 
 interface ProviderError extends Error {
@@ -115,6 +132,16 @@ export async function retryProviderRequest<T>(
 			return await request();
 		} catch (error) {
 			if (options.signal?.aborted) throw createAbortError();
+			// The provider answered; the answer was a refusal. Report it before the
+			// retry decision so that the attempt this helper is about to give up on
+			// is reported too, and a caller routing on provider health sees the
+			// status whether or not anyone retries it.
+			if (isProviderError(error) && error.status !== undefined) {
+				await options.onResponse?.({
+					status: error.status,
+					headers: error.headers === undefined ? {} : headersToRecord(error.headers),
+				});
+			}
 			if (retriesRemaining <= 0 || !isProviderError(error) || !isRetryableProviderError(error)) throw error;
 
 			const retryIndex = maxRetries - retriesRemaining;

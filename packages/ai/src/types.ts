@@ -144,7 +144,10 @@ export interface ProviderRequestOptions<TModel = Model<Api>> {
 	 */
 	onPayload?: (payload: unknown, model: TModel) => unknown | undefined | Promise<unknown | undefined>;
 	/**
-	 * Optional callback invoked after an HTTP response is received.
+	 * Called with the provider's response before its body is consumed, for every
+	 * response the provider returned - a non-2xx included, reported just before
+	 * the request throws. A transport failure that produced no response is not
+	 * reported.
 	 */
 	onResponse?: (response: ProviderResponse, model: TModel) => void | Promise<void>;
 	/**
@@ -179,7 +182,8 @@ export interface ProviderRequestOptions<TModel = Model<Api>> {
 export interface StreamOptions extends ProviderRequestOptions<Model<Api>> {
 	/**
 	 * Optional callback invoked after an HTTP response is received and before
-	 * its body stream is consumed.
+	 * its body stream is consumed, for every response the provider returned - a
+	 * non-2xx included, reported just before the request throws.
 	 */
 	onResponse?: (response: ProviderResponse, model: Model<Api>) => void | Promise<void>;
 	temperature?: number;

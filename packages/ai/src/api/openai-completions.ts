@@ -364,6 +364,7 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 					maxRetries: options?.maxRetries,
 					maxRetryDelayMs: options?.maxRetryDelayMs,
 					signal: options?.signal,
+					onResponse: (failed) => options?.onResponse?.(failed, model),
 				},
 			);
 			await options?.onResponse?.({ status: response.status, headers: headersToRecord(response.headers) }, model);

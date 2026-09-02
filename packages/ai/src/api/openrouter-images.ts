@@ -76,6 +76,7 @@ export const generateImages: ImagesFunction<"openrouter-images", ImagesOptions> 
 				maxRetries: options?.maxRetries,
 				maxRetryDelayMs: options?.maxRetryDelayMs,
 				signal: options?.signal,
+				onResponse: (failed) => options?.onResponse?.(failed, model),
 			},
 		);
 		await options?.onResponse?.({ status: rawResponse.status, headers: headersToRecord(rawResponse.headers) }, model);

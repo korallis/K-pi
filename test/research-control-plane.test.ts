@@ -796,6 +796,28 @@ test("the bounded fetch labels its own deadline TimeoutError for the classifier"
 // B3: the operator's own no-network decision
 // ---------------------------------------------------------------------------
 
+test("/kpi budget flags parse and freeze onto invocation.limits", () => {
+	assert.deepEqual(parseLoopInvocation("--max-cost-usd 1.25 --mode autopilot ship it"), {
+		goal: "ship it",
+		mode: "autopilot",
+		limits: { maxCostUsd: 1.25 },
+	});
+	assert.deepEqual(parseLoopInvocation("--timeout-ms 5000 --max-rounds 3 add a healthcheck"), {
+		goal: "add a healthcheck",
+		mode: "gated",
+		limits: { timeoutMs: 5000, maxRounds: 3 },
+	});
+	assert.deepEqual(parseLoopInvocation("--no-network --max-cost-usd 0.5 --until-green finish the job"), {
+		goal: "finish the job",
+		mode: "autopilot",
+		noNetwork: true,
+		limits: { maxCostUsd: 0.5 },
+	});
+	assert.throws(() => parseLoopInvocation("--max-cost-usd 0 goal"), /positive number/u);
+	assert.throws(() => parseLoopInvocation("--timeout-ms -1 goal"), /positive number/u);
+	assert.throws(() => parseLoopInvocation("--max-rounds 1.5 goal"), /positive integer/u);
+});
+
 test("/kpi --no-network composes with every invocation form", () => {
 	assert.deepEqual(parseLoopInvocation("--no-network add a healthcheck"), {
 		goal: "add a healthcheck",

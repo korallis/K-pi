@@ -7,7 +7,7 @@ describe("makeJobId", () => {
 	it("accepts multi-line executable AC goals without double dashes", () => {
 		const goal = [
 			"AC-01: GET /health returns status 200; cmd npm test exits 0; writes only src/health/** and test/health/**",
-			"AC-02: GET /health returns JSON {\"status\":\"ok\"}; cmd npm test exits 0; writes only src/health/** and test/health/**",
+			'AC-02: GET /health returns JSON {"status":"ok"}; cmd npm test exits 0; writes only src/health/** and test/health/**',
 		].join("\n");
 		const id = makeJobId(goal);
 		expect(id).toMatch(JOB_ID);

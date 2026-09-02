@@ -112,7 +112,7 @@ function eventPayload(type: (typeof EVENT_TYPES)[number]): Record<string, unknow
 				approved: false,
 				blocking_count: 2,
 				nonblocking_count: 1,
-				fingerprint: "sha256:" + "a".repeat(64),
+				fingerprint: `sha256:${"a".repeat(64)}`,
 			};
 		case "research.started":
 			return { ...base, mode: "auto", network_state: "online" };

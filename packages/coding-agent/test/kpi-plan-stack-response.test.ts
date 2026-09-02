@@ -4,11 +4,12 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
 import { afterEach, describe, expect, it } from "vitest";
 
-import { GraphEngine, type GraphAgentSession } from "../src/kpi/extensions/graph/engine.ts";
-import { freezeCurrentSlice, readDuneStack } from "../src/kpi/extensions/stack.ts";
+import { type GraphAgentSession, GraphEngine } from "../src/kpi/extensions/graph/engine.ts";
 import type { Task } from "../src/kpi/extensions/run-store.ts";
+import { freezeCurrentSlice, readDuneStack } from "../src/kpi/extensions/stack.ts";
 
 const healthStack = {
 	version: 1 as const,
@@ -185,9 +186,7 @@ describe("plan stack.json response contract", () => {
 			createAgentSession: async () => ({ session: mockSession(bad) }),
 		});
 
-		await expect(engine.runSuperstep()).rejects.toThrow(
-			/Layer folder|failed response validation/i,
-		);
+		await expect(engine.runSuperstep()).rejects.toThrow(/Layer folder|failed response validation/i);
 		// Must not invent a stack.json on failed validation
 		expect(() => readFileSync(join(root, ".kpi", "runs", jobId, "stack.json"), "utf8")).toThrow();
 	});

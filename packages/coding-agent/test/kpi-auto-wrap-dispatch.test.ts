@@ -28,7 +28,6 @@ describe("auto-wrap command re-dispatch contract", () => {
 				if (await tryExecute(text)) return "command";
 			}
 			const inputResult = await emitInput(text);
-			if (inputResult.action === "handled") return "handled";
 			let current = text;
 			if (inputResult.action === "transform") {
 				current = inputResult.text;

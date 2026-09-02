@@ -214,6 +214,16 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	const hasThinkingEntry = sessionManager.getBranch().some((entry) => entry.type === "thinking_level_change");
 
 	let model = options.model;
+	// Top-level extension registerProvider (and native) overrides must reach the
+	// active model even when the caller already passed one — otherwise vendor
+	// baseUrl wins and nested graph/worker sessions that re-resolve from the
+	// registry get a different endpoint than the parent.
+	if (model) {
+		const refreshed = modelRuntime.getModel(model.provider, model.id);
+		if (refreshed) {
+			model = refreshed;
+		}
+	}
 	let modelFallbackMessage: string | undefined;
 	// If session has data, try to restore model from it
 	if (!model && hasExistingSession && existingSession.model) {

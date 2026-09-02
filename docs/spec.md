@@ -136,6 +136,9 @@ specs/
 | `/kpi --plan <path>` | Skip specify; freeze plan files |
 | `/kpi --mode gated\|autopilot` | Force mode |
 | `/kpi --until-green` | Alias of autopilot |
+| `/kpi --max-cost-usd <n>` | Freeze maxCostUsd onto task.limits |
+| `/kpi --timeout-ms <n>` | Freeze timeoutMs onto task.limits |
+| `/kpi --max-rounds <n>` | Freeze maxRounds onto task.limits |
 | `/kpi status` | Overlay from files, no model. Must look like the Avid boards. |
 | `/kpi stop` | Write `BLOCKED`, halt |
 | `/statusbar` | Toggle the K-π footer |

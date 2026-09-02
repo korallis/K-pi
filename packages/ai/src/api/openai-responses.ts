@@ -154,6 +154,7 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 					maxRetries: options?.maxRetries,
 					maxRetryDelayMs: options?.maxRetryDelayMs,
 					signal: options?.signal,
+					onResponse: (failed) => options?.onResponse?.(failed, model),
 				},
 			);
 			await options?.onResponse?.({ status: response.status, headers: headersToRecord(response.headers) }, model);

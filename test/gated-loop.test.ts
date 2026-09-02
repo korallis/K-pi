@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile as execFileCallback } from "node:child_process";
-import { cp, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import type { ExtensionCommandContext } from "../packages/coding-agent/src/core/extensions/types.ts";
+import { verifyChain } from "../packages/coding-agent/src/kpi/extensions/append-log.ts";
 import { researchCellFromDocument } from "../packages/coding-agent/src/kpi/extensions/board.ts";
 import type { BusDependencies } from "../packages/coding-agent/src/kpi/extensions/bus/spawn.ts";
 import { registerControlPlane } from "../packages/coding-agent/src/kpi/extensions/control-plane.ts";
@@ -125,12 +126,6 @@ const healthStack = JSON.stringify(
 	null,
 	2,
 );
-
-async function writePlannedStack(directory: string, jobId: string, document: string = healthStack): Promise<void> {
-	const runDirectory = join(directory, ".kpi", "runs", jobId);
-	await mkdir(runDirectory, { recursive: true });
-	await writeFile(join(runDirectory, "stack.json"), `${document}\n`);
-}
 
 function loopSessions(
 	directory: string,
@@ -325,6 +320,18 @@ test("loop on healthcheck fixture reaches human confirm with green gates", async
 		assert.equal(state.passed, true);
 		assert.deepEqual(state.bounds, { held: true });
 		assert.match(await git(directory, "log", "-1", "--pretty=%s"), CONVENTIONAL_COMMIT_PATTERN);
+		// A finished run must be legible from the event log on its own: an
+		// operator reconstructing this job from `events.jsonl` never reads
+		// `state.json`.
+		const terminals = (await readFile(join(directory, ".kpi", "runs", jobId, "events.jsonl"), "utf8"))
+			.split("\n")
+			.filter((line) => line.length > 0)
+			.map((line) => JSON.parse(line) as { type: string; status?: string; job_id?: string })
+			.filter((record) => record.type === "loop.terminal");
+		assert.equal(terminals.length, 1, JSON.stringify(terminals));
+		assert.equal(terminals[0]?.status, "DONE");
+		assert.equal(terminals[0]?.job_id, jobId);
+		assert.equal(await verifyChain(join(directory, ".kpi", "runs", jobId, "events.jsonl")), true);
 	} finally {
 		await rm(directory, { recursive: true, force: true });
 	}

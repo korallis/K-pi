@@ -722,7 +722,19 @@ export interface BeforeProviderHeadersEvent {
 	requestId: string;
 }
 
-/** Fired after a provider response is received and before the response stream is consumed. */
+/**
+ * Fired after a provider response is received and before the response stream is
+ * consumed.
+ *
+ * Every response the provider returned, not only the successful ones: a 429, a
+ * quota refusal or any other non-2xx arrives here too, carrying that response's
+ * own status and headers. An extension that routes on provider health can
+ * therefore see a refusal from the transport itself rather than inferring one
+ * from a thrown error.
+ *
+ * A transport failure that produced no response (DNS, connect, abort) is not
+ * reported here.
+ */
 export interface AfterProviderResponseEvent {
 	type: "after_provider_response";
 	status: number;
@@ -1535,7 +1547,8 @@ export interface ProviderConfig {
 	 * Optional streamSimple handler for custom APIs.
 	 * Implementations must invoke `options.onPayload` before sending the provider request and use any
 	 * returned replacement payload. They must invoke `options.onResponse` after receiving the response
-	 * and before consuming its body, matching built-in providers.
+	 * and before consuming its body, matching built-in providers - including for a non-2xx response,
+	 * which the built-in providers report before throwing so that health routing sees the refusal.
 	 */
 	streamSimple?: (model: Model<Api>, context: Context, options?: SimpleStreamOptions) => AssistantMessageEventStream;
 	/** Custom headers to include in requests. */

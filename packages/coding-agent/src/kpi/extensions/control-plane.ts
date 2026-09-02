@@ -442,7 +442,7 @@ export function registerControlPlane(pi: ExtensionAPI, dependencies: LoopDepende
 	});
 
 	const command = {
-		description: "Control the K-π coding loop",
+		description: "Control the K-π coding loop (--max-cost-usd / --timeout-ms / --max-rounds freeze onto task.limits)",
 		handler: async (args: string, ctx: ExtensionCommandContext) => {
 			await handleKpiCommand(args, ctx, dependencies);
 		},

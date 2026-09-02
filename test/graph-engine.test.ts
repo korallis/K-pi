@@ -298,6 +298,53 @@ test("an injected cost source crosses maxCostUsd without sleeps", async () => {
 	}
 });
 
+test("session getSessionStats cost crosses maxCostUsd without a fabricated floor", async () => {
+	const projectRoot = await fixture();
+	try {
+		let prompts = 0;
+		const session = {
+			sessionId: "priced-session",
+			prompt: async () => {
+				prompts += 1;
+			},
+			getSessionStats: () => ({ cost: prompts * 0.04 }),
+			getActiveToolNames: () => ["read"],
+			dispose: () => undefined,
+		};
+		const engine = new GraphEngine(
+			graph(
+				"session-cost-cap",
+				[
+					{
+						id: "agent",
+						type: "agent",
+						prompt: "spend",
+						tools: ["read"],
+						readOnly: true,
+						context: { mode: "thread", threadKey: "priced" },
+					},
+				],
+				[{ from: "agent", to: "agent" }],
+				{ maxCostUsd: 0.05, maxSteps: 20, maxNodeRuns: 20 },
+			),
+			{
+				projectRoot,
+				jobId: "session-cost-job",
+				createAgentSession: async () => ({ session }),
+			},
+		);
+
+		const state = await engine.runUntilPause();
+
+		assert.equal(state.status, "exhausted");
+		assert.equal(state.terminal?.limit, "maxCostUsd");
+		assert.ok(state.budget.costUsd >= 0.05, `expected real session cost, got ${state.budget.costUsd}`);
+		assert.ok(prompts >= 2, "need at least two priced prompts to cross the cap via deltas");
+	} finally {
+		await rm(projectRoot, { recursive: true, force: true });
+	}
+});
+
 test("an injected clock crosses timeoutMs without sleeps", async () => {
 	const projectRoot = await fixture();
 	try {
@@ -802,7 +849,7 @@ test("review.verdict is a first-class event and fields stay concise", async () =
 		nonBlockingIssues: ["nit"],
 		evidence: ["evidence.json"],
 		round: 1,
-		output_fingerprint: "sha256:" + "d".repeat(64),
+		output_fingerprint: `sha256:${"d".repeat(64)}`,
 	});
 	assert.equal(fields?.blocking_count, 0);
 	assert.equal(fields?.approved, true);

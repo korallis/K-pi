@@ -8,6 +8,7 @@ import type {
 	ImageContent,
 	Model,
 	ModelThinkingLevel,
+	ProviderResponse,
 	StopReason,
 	StreamOptions,
 	TextContent,
@@ -427,10 +428,16 @@ export function mapStopReasonString(reason: string): StopReason {
  * `headers` property, and retryProviderRequest only retries errors that carry
  * both, so normalize the error by adding the missing `headers` before
  * rethrowing.
+ *
+ * `onResponse` receives the refusals. This SDK exposes no raw response on the
+ * success path, so a caller routing on provider health would otherwise learn
+ * nothing at all from a Google pool; a quota refusal is the one response it can
+ * still be told about.
  */
 export function retryGoogleRequest<T>(
 	request: () => Promise<T>,
 	options?: Pick<StreamOptions, "maxRetries" | "maxRetryDelayMs" | "signal">,
+	onResponse?: (response: ProviderResponse) => void | Promise<void>,
 ): Promise<T> {
 	return retryProviderRequest(
 		async () => {
@@ -447,6 +454,7 @@ export function retryGoogleRequest<T>(
 			maxRetries: options?.maxRetries,
 			maxRetryDelayMs: options?.maxRetryDelayMs,
 			signal: options?.signal,
+			onResponse,
 		},
 	);
 }

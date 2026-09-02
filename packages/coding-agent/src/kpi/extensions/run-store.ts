@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { Dirent } from "node:fs";
+import { closeSync, type Dirent, fsyncSync, mkdirSync, openSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { mkdir, open, readdir, readFile, rename, rm, stat } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 
@@ -185,6 +185,34 @@ export async function atomicWrite(
 		await rename(tempPath, path);
 	} catch (error) {
 		await rm(tempPath, { force: true });
+		throw error;
+	}
+}
+
+/**
+ * The same publish-or-leave-untouched guarantee for a caller that cannot await.
+ *
+ * Extension registration is synchronous, and a file the resource loader reads
+ * while assembling the first system prompt has to exist before that read - so
+ * one small install cannot be deferred to a promise the loader will not wait
+ * for. Same temp-then-rename order, same fsync before the rename.
+ */
+export function atomicWriteSync(path: string, data: string | Uint8Array): void {
+	mkdirSync(dirname(path), { recursive: true });
+	const tempPath = tempPathFor(path);
+	const handle = openSync(tempPath, "wx", 0o600);
+
+	try {
+		try {
+			writeFileSync(handle, data);
+			fsyncSync(handle);
+		} finally {
+			closeSync(handle);
+		}
+		// Only now: the content is complete and durable.
+		renameSync(tempPath, path);
+	} catch (error) {
+		rmSync(tempPath, { force: true });
 		throw error;
 	}
 }
