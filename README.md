@@ -462,63 +462,62 @@ The flags compose with `--mode`, `--plan` and `--until-green`.
 ## 9. Reading the board
 
 The board is a pure render of run-owned state. It never starts a model, which is
-why `/kpi status` works with your provider unreachable.
+why `/kpi status` works with your provider unreachable. Its look follows the
+graph-engineering boards in
+[the Avid post](https://x.com/av1dlive/status/2092622516544270781); the
+in-repo contract is [`docs/visual-targets.md`](docs/visual-targets.md).
 
 Amber (`#ff6a1a`) means the loop is running. Protocol-blue (`#3da9fc`) means it is
-paused on you. A running board:
+paused on you. The always-on widget above the editor is the compact cut of the
+board, framed in the theme's colours:
 
 ```text
-K-π  LOOP 20260902-add-get-health-…  MODE gated  JOB 20260902-add-get-health-…
-CONTEXT LAYER  product ○  structure ○  tech ○
-  AGENTS 0  BUS ○
-STAGES  01 ac-compile CURRENT   02 specify PENDING   03 plan PENDING   04 implement PENDING
-        05 test PENDING   06 bounds PENDING   07 review PENDING   08 ship PENDING
-ROUND 0/3  FINGERPRINT —  PASS/FAIL
-GATE machine
+K-π GRAPH CONTROL │ MODE gated │ JOB 20260902-add-get-health │ ROUND 0/3
+┌─────────────┬─────────────┬─────────────┬─────────────┬─────────────┬─────────────┬─────────────┬─────────────┐
+│01 ac-compile│ 02 specify  │   03 plan   │04 implement │   05 test   │  06 bounds  │  07 review  │   08 ship   │
+│   CURRENT   │   PENDING   │   PENDING   │   PENDING   │   PENDING   │   PENDING   │   PENDING   │   PENDING   │
+└─────────────┴─────────────┴─────────────┴─────────────┴─────────────┴─────────────┴─────────────┴─────────────┘
 FILES  ● task.json  ● context.md  ○ candidate.json  ○ evidence.json  ○ verdict.json  ● events.jsonl
-STOP RUNNING
-NODE ac-compiler
+LOOP 20260902-add-get-health  STAGE 01 ac-compile  NODE ac-compiler  GATE machine        ┌──────────────┐
+ROUND 0/3  PASS/FAIL PENDING  FINGERPRINT —                                               │ STOP RUNNING │
+CONTEXT product ○  structure ○  tech ○  AGENTS 0  BUS ○                                   └──────────────┘
 ```
 
-- **Stage rail** — the eight stages, `01 ac-compile`, `02 specify`, `03 plan`,
+- **Stage cells** — the eight stages, `01 ac-compile`, `02 specify`, `03 plan`,
   `04 implement`, `05 test`, `06 bounds`, `07 review`, `08 ship`. Exactly one is
-  `CURRENT`; the rest are `DONE` or `PENDING`.
+  `CURRENT` (accent border); the rest are `DONE` (green) or `PENDING` (dim).
 - **Six file lamps** — `task.json`, `context.md`, `candidate.json`,
   `evidence.json`, `verdict.json`, `events.jsonl`, in that order. `●` is present
   and non-empty, `○` is missing or empty. They fill in as the run progresses.
 - **ROUND** — `round/maxRounds`. **FINGERPRINT** is the output fingerprint once a
-  verifier has run. **PASS/FAIL** becomes `PASS` or `FAIL`.
+  verifier has run. **PASS/FAIL PENDING** becomes `PASS ● last verifier` or
+  `FAIL ● last verifier` once a verdict exists.
 - **GATE** — `machine` while the loop decides, `human` when you do.
 - **RESEARCH** — a cell such as `RESEARCH local 0 src` when research ran without
-  external services.
-- **STOP** — the stop vocabulary, and nothing else: `RUNNING`, `DONE`, `BLOCKED`,
-  `EXHAUSTED`, `NO_PROGRESS`, `UNSAFE`, `NEEDS_HUMAN`.
+  external services (in the context layer of the full board).
+- **STOP** — the box at the right, and nothing else: `RUNNING`, `DONE`,
+  `BLOCKED`, `EXHAUSTED`, `NO_PROGRESS`, `UNSAFE`, `NEEDS_HUMAN`.
 - **NODE** — the graph node that last ran.
 
-A paused board turns protocol-blue and adds the operator rows — the pending
-question, a lamp row for the terminal states, and the laws the loop holds itself
-to while it waits:
+A paused board turns protocol-blue, its header reads `K-π PROTOCOL … GATE
+approval`, and it adds the operator rows — the pending question and the lamp row
+for the terminal states:
 
 ```text
-HUMAN OVERSIGHT REQUIRED
 WAITING ON OPERATOR  All quality gates and isolated review are green. Approve this change for commit?
-SHARED RUN STATE
-  ● task.json  ● context.md  ● candidate.json  ● evidence.json  ● verdict.json  ● events.jsonl
 STOP STATES  DONE ○  BLOCKED ○  APPROVAL ●
-THREE LAWS
-  1. Outer loop owns the return path
-  2. Shared files are the contract
-  3. Irreversible effects stay outside the worker
 ```
 
-`/kpi status` renders every line in an overlay. The always-on widget has a fixed
-line budget, and a board taller than it is fitted by what each row is worth
-rather than truncated: the rows that carry `STOP`, the lamps and the pending
-question are kept, in board order, so the short board reads like the same board
-rather than a re-sorted one.
+`/kpi status` draws the full board in an overlay: the context layer, the stage
+cells, the iteration loop, the human-oversight box, the file-lamp cells, and
+while paused the shared run state, the stop states, the three laws the loop
+holds itself to while it waits, and the operator question. Any key closes it.
+The widget is removed once the newest run has ended; `/kpi status` then names
+that last job and its stop state.
 
-Narrow terminals wrap rather than lose fields. The guarantee is information, not
-pixel identity.
+Narrow terminals wrap rather than lose fields: below 70 columns the rows are
+flat, the lamp and stage rows fold, and the job id gives way before `MODE` or
+`ROUND`. The guarantee is information, not pixel identity.
 
 ## 10. The footer
 

@@ -92,10 +92,12 @@ node scripts/pty-rows/uat-16.mjs && node scripts/pty-rows/uat-06.mjs && node scr
 
 ### DoD
 
-- [ ] Widget and `/kpi status` are framed, themed Board A/B; every AC-25.1 field present at 200/120/80/60 columns; STOP and current stage never truncated
-- [ ] Pause flips to protocol-blue with APPROVAL lit; resume flips back; the widget repaints without a restart
-- [ ] No finished job is drawn above the editor; footer line 2 is a single job line with ROUTE once
-- [ ] pty graders and the four test files pass; map-bound titles unchanged
+- [x] Widget and `/kpi status` are framed, themed Board A/B; every AC-25.1 field present at 200/120/80/60 columns; STOP and current stage never truncated — `test/operator-ui.test.ts` ("the framed board keeps every required field at 200, 120, 80 and 60 columns", "colour never enters the width math", "tones: …"), `scripts/pty-rows/uat-25.mjs` 14/14 ok
+- [x] Pause flips to protocol-blue with APPROVAL lit; resume flips back; the widget repaints without a restart — component `invalidate()` on theme swap; "a paused board is the protocol variant with APPROVAL lit"; `uat-16.mjs` 17/17 ok, `uat-06.mjs` 10/10 ok
+- [x] No finished job is drawn above the editor; footer line 2 is a single job line with ROUTE once — `test/control-plane.test.ts` ("a finished job is not pinned above the editor", "the session widget is a framed component painted at the live width"), `test/status-line.test.ts` ("the registered footer draws the extension statuses it took over", "formatStatusRow …", "the job line is hidden when the newest job is finished")
+- [x] pty graders and the four test files pass; map-bound titles unchanged — `npm run test:kpi` 656/656, `npm run check` green, traceability map untouched
+
+**Landed 2026-09-02 on branch `fx/01-board`.** Also fixed here: the `[kpi/status-line] agent_settled publish failed: … ctx is stale` warning in print/JSON mode (the handler now returns unless the session is a TUI, and a stale-context error is ignored, since the replacement session reinstalls the footer). Lamp glyphs stay `●`/`○` (the pty graders and the file-lamp tests read them); the `■`/`▪` idea from the plan was dropped. The always-on widget is 9 lines running at 120 columns, 12 at 100, up to 14 paused at 100 because the operator question wraps instead of being cut.
 
 ---
 ## FX-02 — Policy: chat scope, read-only classifier, remembered approvals, liveness

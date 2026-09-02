@@ -3,19 +3,20 @@ import { join } from "node:path";
 
 import { CONFIG_DIR_NAME } from "../../config.ts";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "../../core/extensions/types.ts";
-import { EXTENSION_WIDGET_MAX_LINES } from "../../core/extensions/types.ts";
 import { kModeState } from "../kstack/mode.ts";
 
 import { appendEvent, inspectChain, type JsonValue } from "./append-log.ts";
 import {
 	type BoardModel,
-	fitBoardHeight,
 	normalizeStop,
 	RUN_FILE_NAMES,
 	renderBoard,
 	researchCellFromDocument,
 	type StopDisplay,
+	type Verifier,
 } from "./board.ts";
+import { createBoardComponent } from "./board-component.ts";
+import { type BoardLayout, type BoardPalette, PLAIN_PALETTE, paintBoard, paletteFromTheme } from "./board-frame.ts";
 import { liveWorkerCount } from "./bus/live-snapshot.ts";
 import { type LoopDependencies, type LoopOutcome, parseLoopInvocation, resumeLoop, runLoop } from "./gated-loop.ts";
 import { atomicWrite, JOB_ID_PATTERN, type RunState, readActiveJob, readLiveJob } from "./run-store.ts";
@@ -180,6 +181,16 @@ function fingerprintFromState(state: RunState): string | undefined {
 	return undefined;
 }
 
+/**
+ * A FAIL is only a fail once a verdict exists. `passed` starts out false, so a
+ * round-0 board used to read FAIL before any verifier had run.
+ */
+function verifierFor(passed: boolean | undefined, fileLit: Readonly<Record<string, boolean>>): Verifier {
+	if (passed === true) return "pass";
+	if (passed === false && fileLit["verdict.json"] === true) return "fail";
+	return "pending";
+}
+
 export interface BoardBuildOptions {
 	/** Terminal width for narrow fit. */
 	width?: number;
@@ -206,6 +217,8 @@ export async function buildBoardModel(cwd: string, options: BoardBuildOptions = 
 	const agents = options.agents ?? liveWorkerCount();
 	const busLit = await busLogLit(job.directory);
 
+	const fileLit = await fileLitMap(job.directory);
+	const passed = booleanValue(typeof state.passed === "boolean" ? state.passed : nestedValue(state, "test", "passed"));
 	return {
 		jobId: job.jobId,
 		mode: stringValue(state.mode, "gated"),
@@ -215,10 +228,12 @@ export async function buildBoardModel(cwd: string, options: BoardBuildOptions = 
 		node: stringValue(state.node, "unknown"),
 		stop: displayStop(state),
 		paused,
+		gate: paused ? "human" : "machine",
 		...(typeof state.pending_question === "string" ? { pendingQuestion: state.pending_question } : {}),
-		passed: booleanValue(typeof state.passed === "boolean" ? state.passed : nestedValue(state, "test", "passed")),
+		passed,
+		verifier: verifierFor(passed, fileLit),
 		fingerprint: fingerprintFromState(state),
-		fileLit: await fileLitMap(job.directory),
+		fileLit,
 		contextPack: await contextPackLamps(cwd, job.directory),
 		research: await loadResearchCell(job.directory),
 		agents,
@@ -249,6 +264,20 @@ export async function createStatusWidget(cwd: string, options: BoardBuildOptions
 
 export async function renderStatusOverlay(cwd: string, options: BoardBuildOptions = {}): Promise<string> {
 	return (await createStatusWidget(cwd, options)).join("\n");
+}
+
+/** The framed board for a surface of `width` columns; plain unless a palette is given. */
+export async function paintStatusBoard(
+	cwd: string,
+	options: BoardBuildOptions & { width: number; layout: BoardLayout; palette?: BoardPalette },
+): Promise<string[] | undefined> {
+	const model = await buildBoardModel(cwd, options);
+	if (model === undefined) return undefined;
+	return paintBoard(model, {
+		width: options.width,
+		layout: options.layout,
+		palette: options.palette ?? PLAIN_PALETTE,
+	});
 }
 
 /** Reported once per process: a repeated warning would be noise, silence was the bug. */
@@ -285,28 +314,30 @@ export function resetBoardThemeWarning(): void {
 }
 
 /**
- * The always-on board, fitted to the widget surface.
+ * The always-on board above the editor.
  *
- * A board taller than the widget budget is cut from the top by the interactive
- * mode, which removes `STOP`, the file lamps and the paused extras - so the
- * board is fitted here instead, where it is known which rows carry the
- * information. `/kpi status` still renders the whole board in an overlay.
+ * The widget is a component, not a list of strings: the interactive mode caps
+ * a string widget at ten lines and paints it in the default colour, which is
+ * how the board came up as an unframed text block. A component renders at the
+ * live width, is never cut, and repaints in the new colours when the theme
+ * swaps between amber and protocol-blue.
  */
 async function installWidget(ctx: ExtensionContext): Promise<boolean> {
-	const lines = await createStatusWidget(ctx.cwd);
-	if (lines.length === 1 && lines[0] === "no active job") {
+	const model = await buildBoardModel(ctx.cwd);
+	if (model === undefined) {
 		ctx.ui.setWidget("kpi", undefined);
 		return false;
 	}
-	const job = await readLiveJob(ctx.cwd);
-	applyBoardTheme(ctx, job !== undefined && isPausedHuman(job.state));
-	ctx.ui.setWidget("kpi", fitBoardHeight(lines, EXTENSION_WIDGET_MAX_LINES));
+	applyBoardTheme(ctx, model.paused);
+	ctx.ui.setWidget("kpi", (_tui, theme) =>
+		createBoardComponent(model, { layout: "compact", palette: paletteFromTheme(theme) }),
+	);
 	return true;
 }
 
 async function showStatus(ctx: ExtensionCommandContext): Promise<void> {
-	const lines = await createStatusWidget(ctx.cwd);
-	if (lines.length === 1 && lines[0] === "no active job") {
+	const model = await buildBoardModel(ctx.cwd);
+	if (model === undefined) {
 		ctx.ui.setWidget("kpi", undefined);
 		// The last run is still worth a line: it says why the board is empty.
 		const last = await readActiveJob(ctx.cwd);
@@ -318,26 +349,35 @@ async function showStatus(ctx: ExtensionCommandContext): Promise<void> {
 		return;
 	}
 
-	const job = await readLiveJob(ctx.cwd);
-	applyBoardTheme(ctx, job !== undefined && isPausedHuman(job.state));
-	// The widget is fitted; the overlay below renders every line.
-	ctx.ui.setWidget("kpi", fitBoardHeight(lines, EXTENSION_WIDGET_MAX_LINES));
+	applyBoardTheme(ctx, model.paused);
+	ctx.ui.setWidget("kpi", (_tui, theme) =>
+		createBoardComponent(model, { layout: "compact", palette: paletteFromTheme(theme) }),
+	);
 	if (ctx.mode !== "tui" || !ctx.hasUI) {
-		ctx.ui.notify(lines.join("\n"), "info");
+		ctx.ui.notify(renderBoard(model).join("\n"), "info");
 		return;
 	}
 
+	// The full board, framed and in the live theme; any key closes it.
 	await ctx.ui.custom<void>(
-		(_tui, _theme, _keybindings, done) => ({
-			handleInput() {
-				done();
-			},
-			invalidate() {},
-			render() {
-				return lines;
-			},
-		}),
-		{ overlay: true },
+		(_tui, theme, _keybindings, done) => {
+			const board = createBoardComponent(model, { layout: "full", palette: paletteFromTheme(theme) });
+			return {
+				handleInput() {
+					done();
+				},
+				invalidate() {
+					board.invalidate();
+				},
+				render(width: number) {
+					return board.render(width);
+				},
+				dispose() {
+					board.dispose();
+				},
+			};
+		},
+		{ overlay: true, overlayOptions: { width: "92%", maxHeight: "90%", anchor: "center" } },
 	);
 }
 
