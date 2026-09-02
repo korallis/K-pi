@@ -399,14 +399,15 @@ export function isLiveJob(job: ActiveJob | undefined): job is ActiveJob {
 	return job !== undefined && !isFinishedRunStatus(job.state.status);
 }
 
-export async function readActiveJob(cwd: string): Promise<ActiveJob | undefined> {
+/** Every started run under `.kpi/runs`, newest progress document first. */
+async function stateCandidates(cwd: string): Promise<(ActiveJob & { modifiedAt: number })[]> {
 	const runsDirectory = join(cwd, CONFIG_DIR_NAME, "runs");
 	let entries: Dirent[];
 	try {
 		entries = await readdir(runsDirectory, { withFileTypes: true });
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-			return undefined;
+			return [];
 		}
 		throw error;
 	}
@@ -419,5 +420,23 @@ export async function readActiveJob(cwd: string): Promise<ActiveJob | undefined>
 		)
 	).filter((candidate) => candidate !== undefined);
 	candidates.sort((left, right) => right.modifiedAt - left.modifiedAt);
-	return candidates[0];
+	return candidates;
+}
+
+export async function readActiveJob(cwd: string): Promise<ActiveJob | undefined> {
+	return (await stateCandidates(cwd))[0];
+}
+
+/**
+ * The run that is still open: the newest job that has not reached a product
+ * terminal, or nothing when every run has ended.
+ *
+ * This is what the widget, the footer, and the policy hook read. A finished run
+ * is still the newest document on disk, but it owns no follow-up, sets no policy
+ * mode, and receives no tool.request records - drawing it above the editor as if
+ * it were live is exactly how a dead `UNSAFE` job haunted a whole session.
+ */
+export async function readLiveJob(cwd: string): Promise<ActiveJob | undefined> {
+	const newest = (await stateCandidates(cwd))[0];
+	return isLiveJob(newest) ? newest : undefined;
 }

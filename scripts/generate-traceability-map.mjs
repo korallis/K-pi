@@ -711,23 +711,23 @@ const AC = {
 	// US-24
 	"AC-24.1": [
 		"test/runtime-milestone.test.ts",
-		"bare goals wrap while commands and active-job follow-ups do not",
-		"package on, no job, bare message → sticky /k-mode + gated /kpi wrap",
+		"bare text stays plain chat and the agent starts a K-π job through kpi_start_job",
+		"routing auto: bare text is plain chat; the agent queues a gated /kpi through kpi_start_job, sent on agent_end with sticky /k-mode",
 	],
 	"AC-24.2": [
 		"test/runtime-milestone.test.ts",
-		"bare goals wrap while commands and active-job follow-ups do not",
-		"commands (/kpi, /k-mode, /accounts, …) are never auto-wrapped",
+		"routing always wraps bare goals but never commands",
+		"commands (/kpi, /k-mode, /accounts, …) are never wrapped; routing always wraps bare text into a gated /kpi",
 	],
 	"AC-24.3": [
 		"test/runtime-milestone.test.ts",
-		"bare goals wrap while commands and active-job follow-ups do not",
-		"while job active, bare follow-up steers parent session and does not start a new job",
+		"a live job owns bare follow-ups and kpi_start_job refuses to start a second one",
+		"while a job is live, bare text steers the parent session and kpi_start_job refuses; a finished job owns nothing",
 	],
 	"AC-24.4": [
 		"test/runtime-milestone.test.ts",
-		"bare goals wrap while commands and active-job follow-ups do not",
-		"/kpi off or kpi.autoWrap=false restores plain Pi for bare messages",
+		"kpi off, kpi.routing off, and worker sessions leave no automatic job start",
+		"/kpi off or kpi.routing=off leaves only explicit /kpi; bus workers never hold kpi_start_job",
 	],
 
 	// US-25

@@ -173,10 +173,10 @@ Grader discipline: prefer a deterministic check — exit code, exact string, fil
 - **Pass evidence:** Each worker is a `kpi --mode rpc` session with its own session file under `.kpi/runs/<job>/agents/`. The third spawn is denied. The second writer is denied. A second `claim_path` on the same path is denied until release or holder-pid death. The parent decides from `verdict.json` and `evidence.json`, never a worker transcript. The board can show `AGENTS n`. No `pi-intercom`, `pi-mesh`, `pi-agents-talk-to-each-other`, `pi-bus`, or `pi-side-agents` in any manifest. A reviewer holding only `write_contract` does not consume the single-writer slot.
 - **ACs:** AC-23.1–23.9 · **Owner:** RP-13, RP-14
 
-### UAT-24 — US-24 Bare message starts gated K-mode
-- **Real-user question:** Can I just type what I want, with no slash command?
-- **Action:** With no active job type `add a healthcheck`; then type `/accounts`; then with a job active type a bare follow-up; then `/kpi off`.
-- **Pass evidence:** The bare message starts sticky `/k-mode` plus a gated `/kpi` with that text. Commands are never auto-wrapped. The bare follow-up steers the existing job and starts no second job — the run directory count stays at one. `/kpi off`, or `kpi.autoWrap = false`, restores plain harness input.
+### UAT-24 — US-24 Bare message is plain chat; the agent starts a K-π job for substantial work
+- **Real-user question:** Can I just type what I want, with no slash command, and get a job only when it is really a job?
+- **Action:** With no live job type `hi`, then `why is the build red?`, then `add a healthcheck endpoint with a test and ship it`; with that job live type a bare follow-up; then `/kpi off` and repeat the goal; then `/kpi always` and type `add a metrics endpoint`.
+- **Pass evidence:** The first two messages create no run directory and are answered in chat. The third produces a `kpi_start_job` call, a one-sentence reply, and exactly one run directory whose `task.json` has that goal and quality gates that match the repository's package manager. The follow-up steers the existing job and creates none. After `/kpi off` the goal is answered as chat with no run directory. After `/kpi always` the bare goal becomes `/kpi --mode gated add a metrics endpoint` directly.
 - **ACs:** AC-24.1–24.4 · **Owner:** RP-05
 
 ### UAT-25 — US-25 TUI is information-complete, not pixel-perfect

@@ -604,8 +604,8 @@ IDs: `WP-##`. Stories: `US-##` in `PRD.md`. Contracts: `spec.md`.
 
 ### Create
 
-- session_start hook: bare text → gated `/kpi` + `/k-mode` when autoWrap and no job
-- `/kpi off` clears autoWrap
+- session_start hook: bare text → gated `/kpi` + `/k-mode` when autoWrap and no job (historical; replaced 2026-09-02 by `kpi.routing` and the `kpi_start_job` tool, `fixes.md` FX-03)
+- `/kpi off` clears autoWrap (historical; now `/kpi auto|always|off`)
 - `package.json` peerDependencies `>=0.84.0`; CI installs `0.84.4`
 - visual-targets honesty note already in docs; widget tests assert field presence, not pixels
 

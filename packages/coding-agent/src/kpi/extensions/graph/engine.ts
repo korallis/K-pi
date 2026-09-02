@@ -14,7 +14,7 @@ import { ROLE_CONTRACT_FILE } from "../bus/roles.ts";
 import { BackgroundBus, type BusDependencies } from "../bus/spawn.ts";
 import { type LocalProviderId, registerLocalProviders } from "../local/providers.ts";
 import { registerPolicy } from "../policy.ts";
-import { atomicWrite, readActiveJob, type Task, writeAllowForTask } from "../run-store.ts";
+import { atomicWrite, readLiveJob, type Task, writeAllowForTask } from "../run-store.ts";
 import { assertDuneStack, DuneStackError } from "../stack.ts";
 import {
 	type BudgetExhaustion,
@@ -469,7 +469,7 @@ async function loadResponseSchema(projectRoot: string, name: string): Promise<Js
  * context. Loading full k-pi here previously crashed the host with stale ctx.
  */
 async function resolveActiveWriteAllow(cwd: string): Promise<string[]> {
-	const job = await readActiveJob(cwd);
+	const job = await readLiveJob(cwd);
 	if (job === undefined) {
 		return [];
 	}

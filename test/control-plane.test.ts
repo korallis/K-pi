@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -8,6 +8,7 @@ import type { ExtensionCommandContext, ExtensionContext } from "../packages/codi
 
 import { verifyChain } from "../packages/coding-agent/src/kpi/extensions/append-log.ts";
 import { createStatusWidget, registerControlPlane } from "../packages/coding-agent/src/kpi/extensions/control-plane.ts";
+import { routingState } from "../packages/coding-agent/src/kpi/extensions/settings.ts";
 
 type CommandHandler = (args: string, context: ExtensionCommandContext) => Promise<void>;
 type SessionStartHandler = (event: unknown, context: ExtensionContext) => Promise<void>;
@@ -206,5 +207,53 @@ test("kpi verify accepts a job id and refuses to eat a goal", async () => {
 			/records chained|FAILED verification/u,
 			"a multi-word goal was not swallowed by the verify subcommand",
 		);
+	});
+});
+
+test("a long or multi-line goal is never probed as a job id", async () => {
+	await withFixture(async (directory) => {
+		const { commands } = registerFixture();
+		const notifications: string[] = [];
+		const goal = `${"the ui of this terminal looks nothing like the reference images ".repeat(6)}\nplease fix it`;
+		await commands.get("kpi")?.(goal, context(directory, notifications, []));
+
+		assert.ok(
+			notifications.every((message) => !/ENAMETOOLONG|ENOTDIR/u.test(message)),
+			`the goal was treated as text, not a path: ${notifications.join(" | ")}`,
+		);
+		// The loop got as far as creating a run for the goal before the fixture's
+		// session factory refused to start an agent.
+		const runs = await readdir(join(directory, ".kpi", "runs"));
+		assert.equal(runs.length, 1, "exactly one run directory for the goal");
+		const task = JSON.parse(await readFile(join(directory, ".kpi", "runs", runs[0] ?? "", "task.json"), "utf8")) as {
+			goal: string;
+			quality_gates: string[];
+		};
+		assert.equal(task.goal, goal, "the goal is kept verbatim on the contract");
+		assert.deepEqual(task.quality_gates, [], "no package manager or AGENTS.md block means no guessed gates");
+		assert.ok(
+			notifications.some((message) => /quality gates/u.test(message)),
+			"missing gates are reported to the operator",
+		);
+	});
+});
+
+test("kpi auto, always and off set the session routing override", async () => {
+	await withFixture(async (directory) => {
+		const { commands } = registerFixture();
+		const notifications: string[] = [];
+		try {
+			for (const mode of ["off", "always", "auto"] as const) {
+				await commands.get("kpi")?.(mode, context(directory, notifications, []));
+				assert.equal(routingState.override, mode);
+			}
+			assert.deepEqual(
+				notifications.map((message) => message.split(":")[0]),
+				["K-π routing off", "K-π routing always", "K-π routing auto"],
+			);
+			assert.deepEqual(await readdir(join(directory)), [], "a routing switch starts no job");
+		} finally {
+			delete routingState.override;
+		}
 	});
 });

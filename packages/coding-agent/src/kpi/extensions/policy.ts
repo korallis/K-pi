@@ -11,7 +11,7 @@ import { type ExtensionAPI, isToolCallEventType, type ToolCallEvent } from "../.
 import { appendEvent } from "./append-log.ts";
 import { isJsonObject } from "./graph/schema.ts";
 import { isAuthoritativeKnowledgeGraphPath } from "./kg/store.ts";
-import { type RunState, readActiveJob, type Task, writeAllowForTask } from "./run-store.ts";
+import { type RunState, readLiveJob, type Task, writeAllowForTask } from "./run-store.ts";
 
 const execFile = promisify(execFileCallback);
 
@@ -446,7 +446,7 @@ function isReleaseApproved(state: RunState): boolean {
  * the current HEAD, so reading the flag reads a checked one.
  */
 export async function resolveActivePolicyState(cwd: string): Promise<ActivePolicyState> {
-	const job = await readActiveJob(cwd);
+	const job = await readLiveJob(cwd);
 	if (job === undefined) {
 		return DEFAULT_ACTIVE_POLICY_STATE;
 	}
@@ -618,7 +618,7 @@ async function recordToolRequest(
 	reason?: string,
 ): Promise<void> {
 	try {
-		const job = await readActiveJob(cwd);
+		const job = await readLiveJob(cwd);
 		if (job === undefined) {
 			return;
 		}

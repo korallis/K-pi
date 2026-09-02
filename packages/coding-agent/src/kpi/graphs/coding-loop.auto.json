@@ -50,7 +50,7 @@
 			"response": {
 				"path": "stack.json",
 				"schema": "stack.schema.json",
-				"retries": 1,
+				"retries": 2,
 				"state": {}
 			}
 		},

@@ -18,8 +18,8 @@ import {
 } from "./board.ts";
 import { liveWorkerCount } from "./bus/live-snapshot.ts";
 import { type LoopDependencies, type LoopOutcome, parseLoopInvocation, resumeLoop, runLoop } from "./gated-loop.ts";
-import { atomicWrite, JOB_ID_PATTERN, type RunState, readActiveJob } from "./run-store.ts";
-import { autoWrapState } from "./settings.ts";
+import { atomicWrite, JOB_ID_PATTERN, type RunState, readActiveJob, readLiveJob } from "./run-store.ts";
+import { isRoutingMode, type RoutingMode, routingState } from "./settings.ts";
 import { getFooterRouteSnapshot } from "./status-line/route-snapshot.ts";
 import { formatUsage } from "./status-line/segments.ts";
 
@@ -195,7 +195,7 @@ export interface BoardBuildOptions {
  * Must not call a model client or createAgentSession.
  */
 export async function buildBoardModel(cwd: string, options: BoardBuildOptions = {}): Promise<BoardModel | undefined> {
-	const job = await readActiveJob(cwd);
+	const job = await readLiveJob(cwd);
 	if (job === undefined) return undefined;
 
 	const state = job.state;
@@ -298,7 +298,7 @@ async function installWidget(ctx: ExtensionContext): Promise<boolean> {
 		ctx.ui.setWidget("kpi", undefined);
 		return false;
 	}
-	const job = await readActiveJob(ctx.cwd);
+	const job = await readLiveJob(ctx.cwd);
 	applyBoardTheme(ctx, job !== undefined && isPausedHuman(job.state));
 	ctx.ui.setWidget("kpi", fitBoardHeight(lines, EXTENSION_WIDGET_MAX_LINES));
 	return true;
@@ -308,11 +308,17 @@ async function showStatus(ctx: ExtensionCommandContext): Promise<void> {
 	const lines = await createStatusWidget(ctx.cwd);
 	if (lines.length === 1 && lines[0] === "no active job") {
 		ctx.ui.setWidget("kpi", undefined);
-		ctx.ui.notify("no active job", "info");
+		// The last run is still worth a line: it says why the board is empty.
+		const last = await readActiveJob(ctx.cwd);
+		const status = typeof last?.state.status === "string" ? last.state.status : undefined;
+		ctx.ui.notify(
+			last === undefined ? "no active job" : `no active job — last job ${last.jobId} ${status ?? "ended"}`,
+			"info",
+		);
 		return;
 	}
 
-	const job = await readActiveJob(ctx.cwd);
+	const job = await readLiveJob(ctx.cwd);
 	applyBoardTheme(ctx, job !== undefined && isPausedHuman(job.state));
 	// The widget is fitted; the overlay below renders every line.
 	ctx.ui.setWidget("kpi", fitBoardHeight(lines, EXTENSION_WIDGET_MAX_LINES));
@@ -388,6 +394,25 @@ async function verifyJobLog(args: string, ctx: ExtensionCommandContext): Promise
 	);
 }
 
+const ROUTING_NOTICES: Record<RoutingMode, string> = {
+	off: "K-π routing off: bare text is plain chat and only /kpi starts a job",
+	auto: "K-π routing auto: the agent starts a job for substantial work",
+	always: "K-π routing always: bare text starts a gated job",
+};
+
+/** A missing, unnameable, or non-directory run path is "not a run", never a crash. */
+const TOLERATED_PROBE_ERRORS = new Set(["ENOENT", "ENAMETOOLONG", "ENOTDIR"]);
+
+async function isRunDirectory(cwd: string, jobId: string): Promise<boolean> {
+	try {
+		await readFile(join(cwd, CONFIG_DIR_NAME, "runs", jobId, "task.json"), "utf8");
+		return true;
+	} catch (error) {
+		if (TOLERATED_PROBE_ERRORS.has((error as NodeJS.ErrnoException).code ?? "")) return false;
+		throw error;
+	}
+}
+
 async function handleKpiCommand(
 	args: string,
 	ctx: ExtensionCommandContext,
@@ -402,9 +427,9 @@ async function handleKpiCommand(
 		await stopJob(ctx);
 		return;
 	}
-	if (command === "off") {
-		autoWrapState.enabled = false;
-		ctx.ui.notify("K-π automatic goal wrapping off", "info");
+	if (isRoutingMode(command)) {
+		routingState.override = command;
+		ctx.ui.notify(ROUTING_NOTICES[command], "info");
 		return;
 	}
 	// A subcommand may not swallow a goal: `verify` alone, or `verify <job-id>`,
@@ -418,17 +443,13 @@ async function handleKpiCommand(
 		const onStateChange = async () => {
 			await installWidget(ctx);
 		};
-		let outcome: LoopOutcome;
-		try {
-			await readFile(join(ctx.cwd, CONFIG_DIR_NAME, "runs", command, "task.json"), "utf8");
-			outcome = await resumeLoop(command, ctx, { ...dependencies, onStateChange });
-		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-			outcome = await runLoop(parseLoopInvocation(command), ctx, {
-				...dependencies,
-				onStateChange,
-			});
-		}
+		// Only something shaped like a job id is probed as one. A goal is free
+		// text, and turning it into a path is how a long message once died with
+		// ENAMETOOLONG before the loop ever started.
+		const resume = JOB_ID_PATTERN.test(command) && (await isRunDirectory(ctx.cwd, command));
+		const outcome: LoopOutcome = resume
+			? await resumeLoop(command, ctx, { ...dependencies, onStateChange })
+			: await runLoop(parseLoopInvocation(command), ctx, { ...dependencies, onStateChange });
 		ctx.ui.notify(`K-π job ${outcome.jobId} ${outcome.status}`, "info");
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
@@ -442,7 +463,8 @@ export function registerControlPlane(pi: ExtensionAPI, dependencies: LoopDepende
 	});
 
 	const command = {
-		description: "Control the K-π coding loop (--max-cost-usd / --timeout-ms / --max-rounds freeze onto task.limits)",
+		description:
+			"Control the K-π coding loop: <goal>, status, stop, verify, auto|always|off routing (--max-cost-usd / --timeout-ms / --max-rounds freeze onto task.limits)",
 		handler: async (args: string, ctx: ExtensionCommandContext) => {
 			await handleKpiCommand(args, ctx, dependencies);
 		},

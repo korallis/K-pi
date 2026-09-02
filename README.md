@@ -392,9 +392,14 @@ starting point for this harness, not a benchmark result.
 /kpi --until-green <goal>
 ```
 
-`/kpi off` restores plain harness input; `/k-mode off` disables K-mode. A bare
-non-command message starts a gated `/kpi` job with sticky K-mode when automatic
-wrapping is enabled.
+A bare non-command message is plain chat. Under the default routing (`auto`) the
+agent calls `kpi_start_job` for substantial engineering work, which queues a
+gated `/kpi` job with sticky K-mode after the current turn; questions, greetings
+and quick edits are answered directly. `/kpi always` wraps every bare message
+into a gated job as before; `/kpi off` (or `kpi.routing = off` in
+`.kpi/settings.json` / `~/.kpi/agent/settings.json` under `kpi`) leaves only
+explicit `/kpi`. `/k-mode off` disables K-mode. Existing installs: run
+`/append-system` to refresh the routing rule in `~/.kpi/agent/APPEND_SYSTEM.md`.
 
 ### Gated versus autopilot
 

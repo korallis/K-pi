@@ -625,9 +625,11 @@ test("the resolver reads mode, release approval, write bounds, and quality gates
 		assert.equal((await hook(bash("curl https://example.test"), context))?.block, true, "autopilot denies unknown");
 
 		// The loop's progress document publishes the release.set assignment flattened.
+		// Ship runs while the job is still open: release is approved before the
+		// commit, and the run only reaches DONE after it.
 		await writeFile(
 			join(runDirectory, "state.json"),
-			JSON.stringify({ job_id: "job-1", status: "DONE", release: { approved: true } }),
+			JSON.stringify({ job_id: "job-1", status: "RUNNING", release: { approved: true } }),
 		);
 		assert.equal(await hook(commit, context), undefined, "released autopilot may commit");
 
@@ -644,6 +646,18 @@ test("the resolver reads mode, release approval, write bounds, and quality gates
 		);
 		assert.equal((await hook(commit, context))?.block, true, "a withdrawn approval holds the commit again");
 		assert.deepEqual(prompts, [], "autopilot decides without an operator");
+
+		// A finished run is the newest document on disk but no longer a job the
+		// policy is about: its mode, bounds and approval stop applying.
+		await writeFile(
+			join(runDirectory, "state.json"),
+			JSON.stringify({ job_id: "job-1", status: "DONE", release: { approved: true } }),
+		);
+		assert.deepEqual(
+			await resolveActivePolicyState(directory),
+			DEFAULT_ACTIVE_POLICY_STATE,
+			"a finished job sets no policy mode",
+		);
 	});
 });
 

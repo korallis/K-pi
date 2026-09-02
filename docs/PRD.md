@@ -333,14 +333,14 @@ Source: https://github.com/alirezarezvani/claude-skills/blob/main/engineering/mi
 - **AC-23.8** `claim_path` is exclusive. A second claim on the same path is denied until release or the holder pid dies.
 - **AC-23.9** `write_contract` is not `write`/`edit`. A reviewer or tester holding only `write_contract` is not a writer, does not consume the single-writer slot, and can publish nothing but its own declared run-contract file.
 
-### US-24 — Bare message starts gated K-mode
+### US-24 — Bare message is plain chat; the agent starts a K-π job for substantial work
 
-**Story.** As an operator, I type a goal with no slash and k-pi still runs the harness.
+**Story.** As an operator, I type what I want with no slash. A question, a greeting, or a quick edit is answered directly; a real engineering task becomes a K-π job without my having to remember `/kpi`.
 
-- **AC-24.1** Package enabled, no active job, message does not start with `/` → sticky `/k-mode` + gated `/kpi` with that text.
-- **AC-24.2** Commands (`/kpi`, `/k-mode`, `/accounts`, `/setup-kstack`, …) are never auto-wrapped.
-- **AC-24.3** While a job is active, a bare follow-up is steer/followUp into the parent session. It does not start a second job.
-- **AC-24.4** `/kpi off` or setting `kpi.autoWrap = false` restores plain Pi for bare messages.
+- **AC-24.1** With `kpi.routing = auto` (default) a bare message is ordinary harness input. For substantial engineering work the agent calls `kpi_start_job`, which queues a gated `/kpi` for that goal after the current turn and sets sticky `/k-mode`. Greetings, questions, pasted logs, and goals under 12 characters are refused by the tool and answered directly; no run directory is created for them.
+- **AC-24.2** Commands (`/kpi`, `/k-mode`, `/accounts`, `/setup-kstack`, …) are never wrapped. `kpi.routing = always` (or `/kpi always`) wraps every bare message into a gated `/kpi` with that text, on one line.
+- **AC-24.3** While a job is live, a bare follow-up is steer/followUp into the parent session and `kpi_start_job` refuses to start a second job. A finished run (`DONE`, `BLOCKED`, `EXHAUSTED`, `NO_PROGRESS`, `UNSAFE`, `NEEDS_HUMAN`) owns no follow-up and is not drawn as live.
+- **AC-24.4** `/kpi off` or `kpi.routing = off` disables automatic starts: only explicit `/kpi`, `/loop`, `/k-mode` start a job. Bus worker sessions never hold `kpi_start_job`.
 
 ### US-25 — TUI is information-complete, not pixel-perfect
 
@@ -422,9 +422,12 @@ Source: https://github.com/alirezarezvani/claude-skills/blob/main/engineering/mi
 ### WF-00 Bare goal
 
 ```
+operator types: hi                                   → answered directly; no run directory
+operator types: why does npm test fail?              → investigated with tools; no run directory
 operator types: add a healthcheck and verify it
-  → autoWrap on, no job
-  → /k-mode on + /kpi --mode gated <text>
+  → routing auto, no live job
+  → agent judges it substantial → kpi_start_job
+  → turn ends → /k-mode on + /kpi --mode gated <goal>
   → same as WF-01
 ```
 

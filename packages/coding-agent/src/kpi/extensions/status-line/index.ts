@@ -2,7 +2,7 @@ import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { ExtensionAPI, ExtensionContext } from "../../../core/extensions/types.ts";
 
-import { readActiveJob } from "../run-store.ts";
+import { readLiveJob } from "../run-store.ts";
 
 import { type BrandPreset, renderIdleBrand, renderWorkingBrand } from "./brand.ts";
 import { getFooterRouteSnapshot, setFooterRouteChangeListener } from "./route-snapshot.ts";
@@ -79,7 +79,7 @@ function noteFooterFailure(phase: string, error: unknown): void {
 }
 
 async function loadKpiJobFields(ctx: ExtensionContext): Promise<KpiJobFields | undefined> {
-	const job = await readActiveJob(ctx.cwd);
+	const job = await readLiveJob(ctx.cwd);
 	if (job === undefined) return undefined;
 	const runState = job.state;
 	const mode = typeof runState.mode === "string" ? runState.mode : "gated";

@@ -130,8 +130,9 @@ specs/
 
 | Command | Behavior |
 |---|---|
-| *(bare text)* | If `kpi.autoWrap` (default on) and no job: sticky K-mode + gated `/kpi`. |
-| `/kpi off` | Disable autoWrap for this session |
+| *(bare text)* | Plain harness input. Under `kpi.routing = auto` (default) the agent may call the `kpi_start_job` tool, which queues `/kpi --mode <mode> <goal>` for after the current turn and sets sticky K-mode; `always` wraps bare text into a gated `/kpi` directly; `off` never starts a job automatically. A live job owns bare follow-ups. |
+| `/kpi auto\|always\|off` | Session routing override. `kpi.routing` in project `.kpi/settings.json` or user `~/.kpi/agent/settings.json` (`{"kpi":{"routing":…}}`) sets the default; project wins. |
+| `kpi_start_job` | Tool. Parent session only — never a graph node, never a bus worker. Refuses greetings, questions, goals under 12 characters, and any goal while a job is live. |
 | `/kpi [goal]` | Gated coding loop from a task. `/loop` is an alias. |
 | `/kpi --plan <path>` | Skip specify; freeze plan files |
 | `/kpi --mode gated\|autopilot` | Force mode |
