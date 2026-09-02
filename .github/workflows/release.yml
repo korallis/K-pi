@@ -41,6 +41,11 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build, gate and pack on this ref; skip the tag check, npm publish and GitHub release"
+        type: boolean
+        default: false
 
 concurrency:
   group: release-${{ github.ref }}
@@ -83,14 +88,19 @@ jobs:
 
       - name: Resolve the release version from the tag
         id: version
+        env:
+          DRY_RUN: ${{ inputs.dry_run }}
         run: |
           version=$(node -p "require('./packages/coding-agent/package.json').version")
-          if [ "$GITHUB_REF_NAME" != "v${version}" ]; then
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "dry run on ${GITHUB_REF_NAME}: version ${version}, nothing will be published"
+          elif [ "$GITHUB_REF_NAME" != "v${version}" ]; then
             echo "::error::tag ${GITHUB_REF_NAME} does not match packages/coding-agent/package.json version ${version} (expected tag v${version})"
             exit 1
+          else
+            echo "releasing @korallis/k-pi ${version} from tag ${GITHUB_REF_NAME}"
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "releasing @korallis/k-pi ${version} from tag ${GITHUB_REF_NAME}"
 
       - name: Install from the committed lockfile
         run: npm ci --ignore-scripts --no-audit --fund=false
@@ -122,6 +132,7 @@ jobs:
         # `npm run pack` already proved this exact tarball installs and that the
         # installed `kpi --version` matches. Re-running a tag must not fail, so a
         # version already on the registry is skipped (see the bootstrap note above).
+        if: ${{ !inputs.dry_run }}
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
@@ -136,6 +147,7 @@ jobs:
       - name: Publish the GitHub release
         # The only step with a repository token. `--verify-tag` refuses to invent a
         # tag; `upload --clobber` makes a re-run replace the asset instead of failing.
+        if: ${{ !inputs.dry_run }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ steps.version.outputs.version }}
