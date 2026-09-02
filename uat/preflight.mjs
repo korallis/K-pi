@@ -511,7 +511,9 @@ srv.listen(0, "127.0.0.1", () => {
 function stepPty(outDir) {
 	const ptyOut = join(outDir, "pty");
 	mkdirSync(ptyOut, { recursive: true });
-	// First: harness self-test (truecolor)
+	writeFileSync(join(outDir, "egress-pty.log"), "");
+
+	// Unit self-test (truecolor child, not product)
 	const st = spawnSync("python3", [ptyPath, "--self-test"], {
 		cwd: repoRoot,
 		encoding: "utf8",
@@ -520,74 +522,78 @@ function stepPty(outDir) {
 	writeFileSync(join(outDir, "pty-selftest.log"), `${st.stdout}\n${st.stderr}`);
 	if (st.status !== 0) fail("pty", "pty_drive --self-test failed", { stdout: st.stdout, stderr: st.stderr });
 
-	// Second: exercise built binary under PTY at fixed width (version banner)
-	const home = mkdtempSync(join(tmpdir(), "uat-e0-pty-home-"));
-	const agentDir = mkdtempSync(join(tmpdir(), "uat-e0-pty-agent-"));
-	const subject = mkdtempSync(join(tmpdir(), "uat-e0-pty-subj-"));
-	try {
-		const script = JSON.stringify([
-			{ expect: String.raw`0\.\d|kpi|K-`, send: "\u0003", timeout: 12 },
-		]);
-		const env = {
-			...process.env,
-			HOME: home,
-			KPI_CODING_AGENT_DIR: agentDir,
-			CI: "1",
-			PI_SKIP_VERSION_CHECK: "1",
-			TERM: "xterm-256color",
-			COLORTERM: "truecolor",
-			FORCE_COLOR: "3",
-			NODE_OPTIONS: `--require ${guardPath}`,
-			UAT_EGRESS_LOG: join(outDir, "egress-pty.log"),
-		};
-		// clear any inherited NO_COLOR for the python child env file via python -- 
-		const result = spawnSync(
-			"python3",
-			[
-				ptyPath,
-				"--cols",
-				"100",
-				"--rows",
-				"30",
-				"--out-dir",
-				ptyOut,
-				"--timeout",
-				"20",
-				"--script",
-				script,
-				"--",
-				process.execPath,
-				cliPath,
-				"--version",
-			],
-			{ cwd: subject, env, encoding: "utf8", timeout: 30_000 },
-		);
-		writeFileSync(join(outDir, "pty-bundle.log"), `${result.stdout}\n${result.stderr}`);
-		const rawPath = join(ptyOut, "frame.raw");
-		const txtPath = join(ptyOut, "frame.txt");
-		if (!existsSync(rawPath) || !existsSync(txtPath)) {
-			fail("pty", "bundle PTY did not write frames", {
-				status: result.status,
-				stdout: result.stdout,
-				stderr: result.stderr,
-			});
-		}
-		const txt = readFileSync(txtPath, "utf8");
-		if (!/0\.1\.0|kpi/i.test(txt) && result.status !== 0 && !txt.trim()) {
-			// version may print and exit before expect; accept non-empty frame from --version
-			fail("pty", "bundle PTY frame empty", { txt, status: result.status });
-		}
-		// record winsize claim
-		writeFileSync(
-			join(outDir, "pty-width.json"),
-			`${JSON.stringify({ cols: 100, rows: 30, frame_bytes: statSync(rawPath).size, text_sample: txt.slice(0, 200) }, null, 2)}\n`,
-		);
-		return { ok: true, frameBytes: statSync(rawPath).size };
-	} finally {
-		rmSync(home, { recursive: true, force: true });
-		rmSync(agentDir, { recursive: true, force: true });
-		rmSync(subject, { recursive: true, force: true });
+	// Interactive TUI of the built binary — fixed winsize, real SGR, K-π footer
+	const env = {
+		...process.env,
+		UAT_PTY_OUT: ptyOut,
+		NODE_OPTIONS: `${process.env.NODE_OPTIONS ? `${process.env.NODE_OPTIONS} ` : ""}--require ${guardPath}`,
+		UAT_EGRESS_LOG: join(outDir, "egress-pty.log"),
+	};
+	delete env.NO_COLOR;
+
+	const tui = spawnSync("python3", [ptyPath, "--self-test-tui", "--cli", cliPath], {
+		cwd: repoRoot,
+		env,
+		encoding: "utf8",
+		timeout: 60_000,
+	});
+	writeFileSync(join(outDir, "pty-tui-selftest.log"), `${tui.stdout}\n${tui.stderr}`);
+
+	const rawPath = join(ptyOut, "frame.raw");
+	const txtPath = join(ptyOut, "frame.txt");
+	if (!existsSync(rawPath) || !existsSync(txtPath)) {
+		fail("pty", "interactive TUI did not write frames", {
+			status: tui.status,
+			stdout: tui.stdout,
+			stderr: tui.stderr,
+		});
 	}
+	const raw = readFileSync(rawPath);
+	const txt = readFileSync(txtPath, "utf8");
+	writeFileSync(join(outDir, "frame.raw"), raw);
+	writeFileSync(join(outDir, "frame.txt"), txt);
+
+	const hasSgr = raw.includes(Buffer.from("\x1b["));
+	const hasTruecolor = raw.includes(Buffer.from("38;2")) || raw.includes(Buffer.from("48;2"));
+	const hasBrand = txt.includes("K-π");
+	const hasBanner = /kpi v0\.1\.0/i.test(txt);
+
+	const report = {
+		cols: 120,
+		rows: 40,
+		frame_bytes: raw.length,
+		has_sgr: hasSgr,
+		has_truecolor: hasTruecolor,
+		has_brand_K_pi: hasBrand,
+		has_kpi_banner: hasBanner,
+		tui_status: tui.status,
+		tui_stdout: (tui.stdout || "").trim().slice(0, 500),
+		text_sample: txt.slice(0, 400),
+	};
+	writeFileSync(join(outDir, "pty-width.json"), `${JSON.stringify(report, null, 2)}\n`);
+
+	if (tui.status !== 0) {
+		fail("pty", "interactive TUI self-test failed", report);
+	}
+	if (raw.length < 100) {
+		fail("pty", "interactive TUI frame too small — TUI did not paint", report);
+	}
+	if (!hasSgr) {
+		fail("pty", "frame.raw missing CSI/SGR — not a real TUI capture", report);
+	}
+	if (!hasTruecolor) {
+		fail("pty", "frame.raw missing truecolor 38;2/48;2", report);
+	}
+	if (!hasBrand) {
+		fail("pty", "frame.txt missing K-π footer brand", report);
+	}
+	return {
+		ok: true,
+		frameBytes: raw.length,
+		hasSgr,
+		hasTruecolor,
+		hasBrand,
+	};
 }
 
 function stepCanaries(outDir) {

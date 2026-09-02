@@ -1,0 +1,196 @@
+{
+  "models": [
+    "uat-stub"
+  ],
+  "scenes": [
+    {
+      "match": {
+        "promptIncludes": [
+          "UAT13_POLICY",
+          "git push origin HEAD"
+        ],
+        "once": true
+      },
+      "turns": [
+        {
+          "tool_calls": [
+            {
+              "name": "bash",
+              "arguments": {
+                "command": "git push origin HEAD"
+              }
+            }
+          ],
+          "finish_reason": "tool_calls"
+        }
+      ]
+    },
+    {
+      "match": {
+        "promptIncludes": [
+          "UAT13_POLICY",
+          "git push origin HEAD"
+        ]
+      },
+      "turns": [
+        {
+          "content": "policy path exercised for git push origin HEAD",
+          "finish_reason": "stop"
+        }
+      ]
+    },
+    {
+      "match": {
+        "promptIncludes": [
+          "UAT13_POLICY",
+          "git push --force origin HEAD"
+        ],
+        "once": true
+      },
+      "turns": [
+        {
+          "tool_calls": [
+            {
+              "name": "bash",
+              "arguments": {
+                "command": "git push --force origin HEAD"
+              }
+            }
+          ],
+          "finish_reason": "tool_calls"
+        }
+      ]
+    },
+    {
+      "match": {
+        "promptIncludes": [
+          "UAT13_POLICY",
+          "git push --force origin HEAD"
+        ]
+      },
+      "turns": [
+        {
+          "content": "policy path exercised for git push --force origin HEAD",
+          "finish_reason": "stop"
+        }
+      ]
+    },
+    {
+      "match": {
+        "promptIncludes": [
+          "UAT13_POLICY",
+          "rm -rf /tmp/uat-should-not-matter-but-deny"
+        ],
+        "once": true
+      },
+      "turns": [
+        {
+          "tool_calls": [
+            {
+              "name": "bash",
+              "arguments": {
+                "command": "rm -rf /tmp/uat-should-not-matter-but-deny"
+              }
+            }
+          ],
+          "finish_reason": "tool_calls"
+        }
+      ]
+    },
+    {
+      "match": {
+        "promptIncludes": [
+          "UAT13_POLICY",
+          "rm -rf /tmp/uat-should-not-matter-but-deny"
+        ]
+      },
+      "turns": [
+        {
+          "content": "policy path exercised for rm -rf /tmp/uat-should-not-matter-but-deny",
+          "finish_reason": "stop"
+        }
+      ]
+    },
+    {
+      "match": {
+        "promptIncludes": [
+          "UAT13_POLICY",
+          "kubectl apply -f deploy.yaml"
+        ],
+        "once": true
+      },
+      "turns": [
+        {
+          "tool_calls": [
+            {
+              "name": "bash",
+              "arguments": {
+                "command": "kubectl apply -f deploy.yaml"
+              }
+            }
+          ],
+          "finish_reason": "tool_calls"
+        }
+      ]
+    },
+    {
+      "match": {
+        "promptIncludes": [
+          "UAT13_POLICY",
+          "kubectl apply -f deploy.yaml"
+        ]
+      },
+      "turns": [
+        {
+          "content": "policy path exercised for kubectl apply -f deploy.yaml",
+          "finish_reason": "stop"
+        }
+      ]
+    },
+    {
+      "match": {
+        "promptIncludes": [
+          "UAT13_POLICY",
+          "totally-unknown-bin-xyz --force"
+        ],
+        "once": true
+      },
+      "turns": [
+        {
+          "tool_calls": [
+            {
+              "name": "bash",
+              "arguments": {
+                "command": "totally-unknown-bin-xyz --force"
+              }
+            }
+          ],
+          "finish_reason": "tool_calls"
+        }
+      ]
+    },
+    {
+      "match": {
+        "promptIncludes": [
+          "UAT13_POLICY",
+          "totally-unknown-bin-xyz --force"
+        ]
+      },
+      "turns": [
+        {
+          "content": "policy path exercised for totally-unknown-bin-xyz --force",
+          "finish_reason": "stop"
+        }
+      ]
+    },
+    {
+      "match": {},
+      "turns": [
+        {
+          "content": "uat-stub default",
+          "finish_reason": "stop"
+        }
+      ]
+    }
+  ]
+}
