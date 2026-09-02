@@ -1197,6 +1197,16 @@ export class AgentSession {
 				if (inputResult.action === "transform") {
 					currentText = inputResult.text;
 					currentImages = inputResult.images ?? currentImages;
+					// Bare-message auto-wrap rewrites to `/kpi …`. Extension commands
+					// were only tried on the original text; re-dispatch so wrapping
+					// actually starts the gated loop instead of sending `/kpi` as chat.
+					if (expandPromptTemplates && currentText.trimStart().startsWith("/")) {
+						const handled = await this._tryExecuteExtensionCommand(currentText.trimStart());
+						if (handled) {
+							preflightResult?.(true);
+							return;
+						}
+					}
 				}
 			}
 

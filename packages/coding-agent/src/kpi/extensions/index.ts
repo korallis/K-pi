@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { join, relative, resolve } from "node:path";
 
 import { getKpiResourceDir } from "../../config.ts";
 import type { ExtensionAPI, ResourcesDiscoverResult } from "../../core/extensions/types.ts";
@@ -27,7 +27,12 @@ export async function resolveActiveWriteAllow(cwd: string): Promise<string[]> {
 		return [];
 	}
 	const task = JSON.parse(await readFile(join(job.directory, "task.json"), "utf8")) as Task;
-	return writeAllowForTask(task);
+	const allow = [...writeAllowForTask(task)];
+	const runRelative = relative(resolve(cwd), resolve(job.directory)).replaceAll("\\", "/");
+	if (runRelative.length > 0 && !runRelative.startsWith("..")) {
+		allow.push(`${runRelative}/candidate.json`);
+	}
+	return allow;
 }
 
 /**

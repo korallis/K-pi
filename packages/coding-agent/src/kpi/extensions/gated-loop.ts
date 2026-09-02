@@ -30,7 +30,7 @@ import { assertResearchFresh, conductResearch } from "./research/gate.ts";
 import { ResearchShortfallError, resolveResearchKeys } from "./research/session.ts";
 import { atomicWrite, createJob, readTaskForJob, type Task, writeAllowForTask } from "./run-store.ts";
 import { readKpiSettings } from "./settings.ts";
-import { assertScaffoldedBeforeBehavior, freezeCurrentSlice, scaffoldModule, stackRequiredFor } from "./stack.ts";
+import { assertScaffoldedBeforeBehavior, ensureStackFromTask, freezeCurrentSlice, scaffoldModule, stackRequiredFor } from "./stack.ts";
 
 const execFile = promisify(execFileCallback);
 const PLAN_FILES = ["requirements.md", "design.md", "tasks.md"] as const;
@@ -138,14 +138,19 @@ export function parseLoopInvocation(args: string): LoopInvocation {
 	return { goal: input, mode: "gated" };
 }
 
-function makeJobId(goal: string): string {
+export function makeJobId(goal: string): string {
 	const date = new Date().toISOString().slice(0, 10).replaceAll("-", "");
+	// Collapse non-alnum, then re-trim after the length cut so a mid-token slice
+	// cannot leave a trailing "-" that becomes "--" before the uuid suffix
+	// (job ids must match /^[a-z0-9]+(?:-[a-z0-9]+)*$/).
 	const slug =
 		goal
 			.toLowerCase()
 			.replace(/[^a-z0-9]+/gu, "-")
-			.replace(/^-|-$/gu, "")
-			.slice(0, 32) || "job";
+			.replace(/^-+|-+$/gu, "")
+			.slice(0, 32)
+			.replace(/^-+|-+$/gu, "")
+			.replace(/-+/gu, "-") || "job";
 	return `${date}-${slug}-${randomUUID().slice(0, 8)}`;
 }
 
@@ -876,6 +881,7 @@ async function driveUntilPause(
 				// stack stops the round rather than being regenerated.
 				const contract = await readTaskForJob(projectRoot, task.job_id).catch(() => task);
 				if (stackRequiredFor(contract)) {
+					await ensureStackFromTask(jobDirectory, contract);
 					const { module } = await freezeCurrentSlice(projectRoot, jobDirectory, contract);
 					await scaffoldModule(projectRoot, module);
 					await assertScaffoldedBeforeBehavior(projectRoot, module);
@@ -1298,6 +1304,7 @@ export async function runLoop(
 		sleep: dependencies.sleep,
 		retryBaseDelayMs: dependencies.retryBaseDelayMs,
 		resolveFacts: facts.resolve,
+		uiContext: ctx.ui,
 	});
 
 	try {

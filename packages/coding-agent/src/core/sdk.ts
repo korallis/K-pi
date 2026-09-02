@@ -176,8 +176,12 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	const agentDir = options.agentDir ? resolvePath(options.agentDir) : getDefaultAgentDir();
 	let resourceLoader = options.resourceLoader;
 
-	const authPath = options.agentDir ? join(agentDir, "auth.json") : undefined;
-	const modelsPath = options.agentDir ? join(agentDir, "models.json") : undefined;
+	// Always bind auth/models to the resolved agentDir. Using options.agentDir as
+	// the only gate left graph/worker sessions on the default auth path while
+	// settings already pointed at KPI_CODING_AGENT_DIR, so local-openai had no
+	// credential and no stored catalog.
+	const authPath = join(agentDir, "auth.json");
+	const modelsPath = join(agentDir, "models.json");
 	const modelRuntime = options.modelRuntime ?? (await ModelRuntime.create({ authPath, modelsPath }));
 
 	const settingsManager = options.settingsManager ?? SettingsManager.create(cwd, agentDir);
@@ -189,6 +193,21 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		time("resourceLoader.reload");
 	}
 
+	// Apply any extension-queued providers before model selection (graph sessions
+	// pass a resourceLoader that already registered local-openai).
+	const pendingExtensions = resourceLoader.getExtensions();
+	if (pendingExtensions.runtime.pendingProviderRegistrations.length > 0) {
+		for (const { name, config } of pendingExtensions.runtime.pendingProviderRegistrations) {
+			modelRuntime.registerProvider(name, config);
+		}
+		pendingExtensions.runtime.pendingProviderRegistrations = [];
+		for (const { provider } of pendingExtensions.runtime.pendingNativeProviderRegistrations) {
+			modelRuntime.registerNativeProvider(provider);
+		}
+		pendingExtensions.runtime.pendingNativeProviderRegistrations = [];
+		await modelRuntime.refresh({ allowNetwork: false });
+	}
+
 	// Check if session has existing data to restore
 	const existingSession = sessionManager.buildSessionContext();
 	const hasExistingSession = existingSession.messages.length > 0;
@@ -196,7 +215,6 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 
 	let model = options.model;
 	let modelFallbackMessage: string | undefined;
-
 	// If session has data, try to restore model from it
 	if (!model && hasExistingSession && existingSession.model) {
 		const restoredModel = modelRuntime.getModel(existingSession.model.provider, existingSession.model.modelId);

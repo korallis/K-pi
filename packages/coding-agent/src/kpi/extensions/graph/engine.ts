@@ -1,16 +1,26 @@
 import { mkdir, readdir, readFile } from "node:fs/promises";
-import { basename, isAbsolute, join } from "node:path";
+import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 
-import { CONFIG_DIR_NAME, getKpiResourceDir } from "../../../config.ts";
+import { CONFIG_DIR_NAME, getAgentDir, getKpiResourceDir } from "../../../config.ts";
 
 import { type CreateAgentSessionOptions, createAgentSession } from "../../../core/sdk.ts";
+import type { ExtensionUIContext } from "../../../core/extensions/types.ts";
+import type { InlineExtension } from "../../../core/extensions/types.ts";
+import { DefaultResourceLoader } from "../../../core/resource-loader.ts";
 import { SessionManager } from "../../../core/session-manager.ts";
+import { SettingsManager } from "../../../core/settings-manager.ts";
 
 import { appendEvent, buildReviewVerdictEventFields } from "../append-log.ts";
+import { AccountsStore } from "../accounts/store.ts";
+import {
+	type LocalProviderId,
+	registerLocalProviders,
+} from "../local/providers.ts";
+import { registerPolicy } from "../policy.ts";
 import { ROLE_CONTRACT_FILE } from "../bus/roles.ts";
 import { BackgroundBus, type BusDependencies } from "../bus/spawn.ts";
-import { atomicWrite } from "../run-store.ts";
+import { atomicWrite, readActiveJob, type Task, writeAllowForTask } from "../run-store.ts";
 import {
 	type BudgetExhaustion,
 	batchReadyNodes,
@@ -83,6 +93,8 @@ export interface GraphEngineOptions {
 	sleep?: Sleeper;
 	/** First backoff step; each further retry doubles it. */
 	retryBaseDelayMs?: number;
+	/** Host UI so nested agent policy confirms reach the operator. */
+	uiContext?: ExtensionUIContext;
 }
 
 export interface GraphHumanUI {
@@ -448,11 +460,65 @@ async function loadResponseSchema(projectRoot: string, name: string): Promise<Js
 	return JSON.parse(await readFile(join(getKpiResourceDir(), "schemas", name), "utf8")) as JsonSchema;
 }
 
+
+/**
+ * Graph agent sessions are not the operator CLI: they need local model catalogs
+ * and policy, not control-plane widgets/status that bind a parent ExtensionRunner
+ * context. Loading full k-pi here previously crashed the host with stale ctx.
+ */
+async function resolveActiveWriteAllow(cwd: string): Promise<string[]> {
+	const job = await readActiveJob(cwd);
+	if (job === undefined) {
+		return [];
+	}
+	const task = JSON.parse(await readFile(join(job.directory, "task.json"), "utf8")) as Task;
+	const allow = [...writeAllowForTask(task)];
+	const runRelative = relative(resolve(cwd), resolve(job.directory)).replaceAll("\\", "/");
+	if (runRelative.length > 0 && !runRelative.startsWith("..")) {
+		allow.push(`${runRelative}/candidate.json`);
+	}
+	return allow;
+}
+
+function graphAgentExtensionFactories(): InlineExtension[] {
+	return [
+		{
+			name: "k-pi-graph-agent",
+			factory: (pi) => {
+				registerLocalProviders(pi, {
+					resolveSlots: async (poolId: LocalProviderId) => {
+						const slots = (await new AccountsStore().read()).pools[poolId]?.slots ?? [];
+						return slots.flatMap((slot) =>
+							slot.kind === "local" && slot.baseUrl !== undefined
+								? [{ slotId: slot.id, baseUrl: slot.baseUrl, secretRef: slot.secretRef }]
+								: [],
+						);
+					},
+					resolveToken: async (poolId: LocalProviderId, slotId: string) => {
+						const store = new AccountsStore();
+						const slot = (await store.read()).pools[poolId]?.slots.find((candidate) => candidate.id === slotId);
+						const reference = slot?.kind === "local" ? slot.secretRef : undefined;
+						if (reference === undefined) return undefined;
+						const credential = (await store.readSecrets())[reference];
+						return credential?.type === "api_key"
+							? credential.key
+							: credential?.type === "oauth"
+								? credential.access
+								: undefined;
+					},
+				});
+				registerPolicy(pi, { resolveWriteAllow: resolveActiveWriteAllow });
+			},
+		},
+	];
+}
+
 export class GraphEngine {
 	private readonly graph: GraphDefinition;
 	private readonly options: GraphEngineOptions;
 	private readonly nodes: Map<string, GraphNode>;
 	private readonly sessionFactory: GraphAgentSessionFactory;
+	private readonly uiContext?: ExtensionUIContext;
 	private readonly threadSessions = new Map<string, GraphAgentSession>();
 	private readonly now: () => number;
 	private readonly accumulatedCostUsd: () => number;
@@ -465,6 +531,7 @@ export class GraphEngine {
 		validateGraphDefinition(graph);
 		this.graph = graph;
 		this.options = options;
+		this.uiContext = options.uiContext;
 		this.nodes = new Map(graph.nodes.map((node) => [node.id, node]));
 		this.sessionFactory = options.createAgentSession ?? createAgentSession;
 		this.now = options.now ?? Date.now;
@@ -715,12 +782,35 @@ export class GraphEngine {
 		await mkdir(sessionDirectory, { recursive: true });
 		const sessionManager = SessionManager.continueRecent(this.options.projectRoot, sessionDirectory);
 
+		const agentDir = getAgentDir();
+		const settingsManager = SettingsManager.create(this.options.projectRoot, agentDir);
+		const resourceLoader = new DefaultResourceLoader({
+			cwd: this.options.projectRoot,
+			agentDir,
+			settingsManager,
+			extensionFactories: graphAgentExtensionFactories(),
+		});
+		await resourceLoader.reload();
 		const result = await this.sessionFactory({
 			cwd: this.options.projectRoot,
+			agentDir,
 			sessionManager,
+			settingsManager,
+			resourceLoader,
 			tools: [...node.tools],
 			excludeTools: node.readOnly ? ["bash", "edit", "write"] : undefined,
 		});
+		if (this.uiContext !== undefined) {
+			const session = result.session as GraphAgentSession & {
+				bindExtensions?: (b: { uiContext?: ExtensionUIContext; mode?: "rpc" | "print" | "interactive" }) => Promise<void>;
+			};
+			if (typeof session.bindExtensions === "function") {
+				await session.bindExtensions({
+					uiContext: this.uiContext,
+					mode: "rpc",
+				});
+			}
+		}
 		const unexpectedTool = node.readOnly
 			? result.session.getActiveToolNames().find((tool) => !node.tools.includes(tool))
 			: undefined;

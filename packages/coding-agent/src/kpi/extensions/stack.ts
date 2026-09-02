@@ -3,7 +3,7 @@ import { lstat, mkdir, readdir, readFile, readlink, realpath, stat, writeFile } 
 import { dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
 
 import { isJsonObject } from "./graph/schema.ts";
-import { atomicWrite, contractHash, type Task } from "./run-store.ts";
+import { atomicWrite, contractHash, type Task, writeAllowForTask } from "./run-store.ts";
 
 export interface StackModule {
 	id: string;
@@ -491,6 +491,67 @@ export interface FrozenSlice {
  * task, names this slice, and keeps its generic folders tight. Implement and
  * `claim_path` both go through here, so they cannot disagree.
  */
+
+/**
+ * When the plan node is read-only it cannot write `stack.json`. Derive a
+ * single-module Dune stack from the task's own write bounds so implement still
+ * has a frozen map. Prefer an existing stack.json when present.
+ */
+export async function ensureStackFromTask(runDirectory: string, task: Task): Promise<void> {
+	const path = join(runDirectory, "stack.json");
+	try {
+		await stat(path);
+		return;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+			throw error;
+		}
+	}
+
+	const allow = writeAllowForTask(task);
+	const folderPatterns = allow
+		.map((pattern: string) => pattern.replace(/\/\*\*$/u, "").replace(/\/\*$/u, "").replace(/\/$/u, ""))
+		.filter((pattern: string) => pattern.length > 0 && !pattern.includes("*"));
+	// Prefer a src/<capability> folder as the module home.
+	const moduleFolder =
+		folderPatterns.find((pattern) => pattern.startsWith("src/")) ??
+		folderPatterns[0] ??
+		"src/module";
+	const parts = moduleFolder.split("/").filter(Boolean);
+	const id = parts.at(-1) ?? "module";
+	const root = parts.length > 1 ? parts.slice(0, -1).join("/") : "src";
+	const interfacePath = `${moduleFolder}/index.ts`;
+	const allowed = allow.length > 0 ? [...allow] : [`${moduleFolder}/**`, `test/${id}/**`];
+	if (!allowed.some((pattern) => matchesPathPattern(pattern, `${moduleFolder}/index.ts`))) {
+		allowed.push(`${moduleFolder}/**`);
+	}
+	if (!allowed.some((pattern) => matchesPathPattern(pattern, `test/${id}/index.test.ts`))) {
+		allowed.push(`test/${id}/**`);
+	}
+
+	const stack: DuneStack = {
+		version: 1,
+		shape: "dune",
+		delivery: "vertical",
+		root,
+		scaffold_first: true,
+		task_hash: stackTaskHash(task),
+		current_module_id: id,
+		modules: [
+			{
+				id,
+				purpose: `Implement the ${id} capability for the frozen task`,
+				folder: moduleFolder,
+				interface: interfacePath,
+				allowed_paths: allowed,
+				depends_on: [],
+			},
+		],
+	};
+	assertDuneStack(stack);
+	await atomicWrite(path, `${JSON.stringify(stack, null, 2)}\n`);
+}
+
 export async function freezeCurrentSlice(projectRoot: string, runDirectory: string, task: Task): Promise<FrozenSlice> {
 	const stack = await readDuneStack(runDirectory);
 	await assertStackFresh(runDirectory, task, stack);

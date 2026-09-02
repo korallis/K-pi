@@ -122,6 +122,9 @@ const SAFE_COMMANDS: Record<string, true> = {
 	"git status": true,
 	"git status --porcelain": true,
 	"git status --short": true,
+	"git rev-parse HEAD": true,
+	"git rev-parse --verify HEAD": true,
+	"git diff --shortstat HEAD": true,
 };
 
 /**
@@ -453,10 +456,16 @@ export async function resolveActivePolicyState(cwd: string): Promise<ActivePolic
 	} catch {
 		return DEFAULT_ACTIVE_POLICY_STATE;
 	}
+	const writeAllow = Array.isArray(task.acceptance) ? [...writeAllowForTask(task)] : [];
+	// Implementer owns candidate.json in this job's run directory (not product tree).
+	const runRelative = relative(resolve(cwd), resolve(job.directory)).replaceAll("\\", "/");
+	if (runRelative.length > 0 && !runRelative.startsWith("..")) {
+		writeAllow.push(`${runRelative}/candidate.json`);
+	}
 	return {
 		mode: task.mode === "autopilot" ? "autopilot" : "gated",
 		releaseApproved: isReleaseApproved(job.state),
-		writeAllow: Array.isArray(task.acceptance) ? writeAllowForTask(task) : [],
+		writeAllow,
 		qualityGates: Array.isArray(task.quality_gates) ? task.quality_gates : [],
 	};
 }
