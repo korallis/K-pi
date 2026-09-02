@@ -81,11 +81,18 @@ async function fixture(name: string): Promise<string> {
 function nodeId(prompt: string): string {
 	if (prompt.includes("Check the frozen task")) return "ac-compiler";
 	if (prompt.includes("spec-first skill")) return "specify";
-	if (prompt.includes("implementation plan and stack.json")) return "plan";
 	if (prompt.includes("tdd-cycle skill")) return "implement";
 	if (prompt.includes("quality-gates skill")) return "test";
 	if (prompt.includes("isolated-review skill")) return "review";
 	if (prompt.includes("conventional-commit skill")) return "ship";
+	if (prompt.includes("frozen plan still matches")) return "plan-check";
+	if (
+		prompt.includes("implementation plan") ||
+		prompt.includes("stack.schema.json") ||
+		prompt.includes("Return only JSON matching stack.schema.json")
+	) {
+		return "plan";
+	}
 	return "retry";
 }
 
@@ -113,11 +120,6 @@ const healthStack = JSON.stringify(
 	2,
 );
 
-async function writePlannedStack(directory: string, jobId: string, document = healthStack): Promise<void> {
-	const runDirectory = join(directory, ".kpi", "runs", jobId);
-	await mkdir(runDirectory, { recursive: true });
-	await writeFile(join(runDirectory, "stack.json"), `${document}\n`);
-}
 
 function autoSessions(
 	directory: string,
@@ -141,11 +143,10 @@ function autoSessions(
 					const detected = nodeId(prompt);
 					if (detected !== "retry") currentNode = detected;
 					executed.push(currentNode || detected);
+					lastAssistantText = undefined;
 					if (currentNode === "plan" || currentNode === "plan-check") {
-						// Plan writes the map. The control plane freezes it before implement.
-						if (behavior.jobId !== undefined) {
-							await writePlannedStack(directory, behavior.jobId, behavior.stack);
-						}
+						// Plan returns stack JSON; the graph engine validates and writes it.
+						lastAssistantText = behavior.stack ?? healthStack;
 					} else if (currentNode === "implement") {
 						if (behavior.jobId !== undefined) {
 							await writeFile(
@@ -432,8 +433,9 @@ test("autopilot cannot release from model prose alone", async () => {
 					const detected = nodeId(prompt);
 					if (detected !== "retry") currentNode = detected;
 					executed.push(currentNode || detected);
+					lastAssistantText = undefined;
 					if (currentNode === "plan" || currentNode === "plan-check") {
-						await writePlannedStack(directory, jobId);
+						lastAssistantText = healthStack;
 					} else if (currentNode === "implement") {
 						await writeFile(join(directory, ".kpi", "runs", jobId, "candidate.json"), MINIMALIST_CANDIDATE);
 						await writeFile(join(directory, "src", "health", "server.js"), implementedServer);
@@ -507,8 +509,9 @@ test("an unrelated conventional commit never counts as this job shipping", async
 					const detected = nodeId(prompt);
 					if (detected !== "retry") currentNode = detected;
 					executed.push(currentNode || detected);
+					lastAssistantText = undefined;
 					if (currentNode === "plan" || currentNode === "plan-check") {
-						await writePlannedStack(directory, jobId);
+						lastAssistantText = healthStack;
 					} else if (currentNode === "implement") {
 						await writeFile(join(directory, ".kpi", "runs", jobId, "candidate.json"), MINIMALIST_CANDIDATE);
 						await writeFile(join(directory, "src", "health", "server.js"), implementedServer);
@@ -616,8 +619,9 @@ test("two commits claiming one job fail closed", async () => {
 					const detected = nodeId(prompt);
 					if (detected !== "retry") currentNode = detected;
 					executed.push(currentNode || detected);
+					lastAssistantText = undefined;
 					if (currentNode === "plan" || currentNode === "plan-check") {
-						await writePlannedStack(directory, jobId);
+						lastAssistantText = healthStack;
 					} else if (currentNode === "implement") {
 						await writeFile(join(directory, ".kpi", "runs", jobId, "candidate.json"), MINIMALIST_CANDIDATE);
 						await writeFile(join(directory, "src", "health", "server.js"), implementedServer);

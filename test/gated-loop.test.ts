@@ -86,12 +86,19 @@ async function fixture(): Promise<string> {
 function nodeId(prompt: string): string {
 	if (prompt.includes("Check the frozen task")) return "ac-compiler";
 	if (prompt.includes("spec-first skill")) return "specify";
-	if (prompt.includes("implementation plan and stack.json")) return "plan";
-	if (prompt.includes("frozen plan still matches")) return "plan-check";
+	// Implement mentions stack.json; match skills before the plan response contract.
 	if (prompt.includes("tdd-cycle skill")) return "implement";
 	if (prompt.includes("quality-gates skill")) return "test";
 	if (prompt.includes("isolated-review skill")) return "review";
 	if (prompt.includes("conventional-commit skill")) return "ship";
+	if (prompt.includes("frozen plan still matches")) return "plan-check";
+	if (
+		prompt.includes("implementation plan") ||
+		prompt.includes("stack.schema.json") ||
+		prompt.includes("Return only JSON matching stack.schema.json")
+	) {
+		return "plan";
+	}
 	return "retry";
 }
 
@@ -154,11 +161,18 @@ function loopSessions(
 					const detected = nodeId(prompt);
 					if (detected !== "retry") currentNode = detected;
 					executed.push(currentNode || detected);
+					// Response contracts read getLastAssistantText after prompt; never leak
+					// a prior node's JSON (plan stack) into a later schema (evidence).
+					lastAssistantText = undefined;
 
 					if (currentNode === "plan" || currentNode === "plan-check") {
-						// Plan writes the map. The control plane freezes it before implement.
-						if (options.jobId !== undefined && options.stack !== null) {
-							await writePlannedStack(directory, options.jobId, options.stack ?? undefined);
+						// Plan returns stack JSON; the graph engine validates and writes stack.json.
+						if (options.stack === null) {
+							lastAssistantText = undefined;
+						} else if (options.stack === "") {
+							lastAssistantText = "";
+						} else {
+							lastAssistantText = options.stack ?? healthStack;
 						}
 						if (options.jobId !== undefined && options.playbook !== undefined) {
 							const taskPath = join(directory, ".kpi", "runs", options.jobId, "task.json");
@@ -840,10 +854,11 @@ test("a no-stack playbook needs no map", async () => {
 	const jobId = "20260901-stack-exempt";
 	const executed: string[] = [];
 	try {
-		// No map is written, and the playbook is one of the named exemptions.
+		// Plan still returns a valid stack (response contract); the playbook exemption
+		// means implement does not freeze or scaffold against it.
 		const harness = commandHarness(
 			directory,
-			loopSessions(directory, executed, { jobId, stack: null, playbook: "typo" }),
+			loopSessions(directory, executed, { jobId, playbook: "typo" }),
 			jobId,
 			[],
 		);
