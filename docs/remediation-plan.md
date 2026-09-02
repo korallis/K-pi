@@ -4,7 +4,7 @@
 
 **How agents use this file.** Pick the lowest incomplete package whose dependencies are complete. Implement only that package. Run its scoped verification. Check its DoD only after the observable result passes. Do not use historical `[x]` boxes as proof.
 
-**Ordering.** IDs sort as written: `RP-00`, `RP-01`, `RP-01A`, `RP-02`, … `RP-19`. RP-00 through RP-18 are complete, so **`RP-19` is the current lowest incomplete package**.
+**Ordering.** IDs sort as written: `RP-00`, `RP-01`, `RP-01A`, `RP-02`, … `RP-19`. RP-00 through RP-19 are complete. **No incomplete remediation package remains** — next is feature acceptance in [`uat.md`](uat.md) (not an RP). This plan still names the whole-product DoD and UAT hand-off as the remaining authority.
 
 IDs: `RP-##`. Stories and ACs: `PRD.md`. Normative contracts: `spec.md`, `../UPSTREAM.md`, and focused product docs. Research and gap IDs: [`remediation-research.md`](remediation-research.md).
 
@@ -62,7 +62,7 @@ RP-05 + RP-13 → RP-14
 RP-05 + RP-11 → RP-15
 RP-08 + RP-10 + RP-13 + RP-15 → RP-16 → RP-17
 RP-05 + RP-07 + RP-10 + RP-12 + RP-13 + RP-16 → RP-18
-RP-01A + RP-02…RP-18 → RP-19  ← current
+RP-01A + RP-02…RP-18 → RP-19  ← complete; UAT next
 ```
 
 ---
@@ -1006,11 +1006,11 @@ RP-19 proves the product is built, traceable, and green. It does not decide whet
 
 ### DoD
 
-- [ ] Every AC, required contract, metric, gap, and RP has executable traceability
-- [ ] The built `kpi` binary starts from a clean HOME and scratch repository with zero diagnostics and no install step
-- [ ] M-01–M-07 proof report is green and secret-free
-- [ ] No historical checkbox was used as evidence
-- [ ] The `docs/uat.md` evidence path and roll-up exist and are wired, and every row's owning RP is closed so UAT can begin
+- [x] Every AC, required contract, metric, gap, and RP has executable traceability
+- [x] The built `kpi` binary starts from a clean HOME and scratch repository with zero diagnostics and no install step
+- [x] M-01–M-07 proof report is green and secret-free
+- [x] No historical checkbox was used as evidence
+- [x] The `docs/uat.md` evidence path and roll-up exist and are wired, and every row's owning RP is closed so UAT can begin
 
 ---
 
@@ -1036,13 +1036,15 @@ From RP-02 onward, a source path written `extensions/…`, `graphs/…`, `prompt
 
 ## Definition of done for the whole product
 
+Remediation packages RP-00–RP-19 are closed. Items 1–7 below are satisfied by that scoped evidence plus `.kpi/remediation-proof.json`. **Item 8 (UAT) is still open** — the product is not finished until every `uat.md` row passes.
+
 All of:
 
-1. RP-00, RP-01, RP-01A, and RP-02–RP-19 DoD boxes checked from their scoped evidence, including RP-01's reopened distribution box closed by RP-01A.
-2. `npm run check`, `npm test`, `npm run test:kpi`, `npm run kstack:sync:check`, and `npm run upstream:check` exit 0.
-3. The built `dist` carries every K-π runtime resource and contains no secret or forbidden runtime dependency.
-4. The built `kpi` binary starts from a clean HOME and scratch repository with zero resource diagnostics, no install step, and no trust decision.
-5. Fixtures run against that binary cover gated, autopilot, policy, accounts, local providers, research, Dune, KG, bus/reviewer, K-stack, footer, and both boards.
-6. M-01–M-07 are true in `.kpi/remediation-proof.json`.
-7. Docs match the built behavior; historical plan/roadmap remain clearly non-authoritative.
-8. Every row of [`uat.md`](uat.md) — US-01 through US-30 — passes against the built binary, with evidence a human can read, and M-01–M-07 pass alongside them. The product is finished at this line and not before.
+1. [x] RP-00, RP-01, RP-01A, and RP-02–RP-19 DoD boxes checked from their scoped evidence, including RP-01's reopened distribution box closed by RP-01A.
+2. [x] `npm run check`, `npm test`, `npm run test:kpi`, `npm run kstack:sync:check`, and `npm run upstream:check` exit 0.
+3. [x] The built `dist` carries every K-π runtime resource and contains no secret or forbidden runtime dependency.
+4. [x] The built `kpi` binary starts from a clean HOME and scratch repository with zero resource diagnostics, no install step, and no trust decision.
+5. [x] Fixtures run against that binary cover gated, autopilot, policy, accounts, local providers, research, Dune, KG, bus/reviewer, K-stack, footer, and both boards.
+6. [x] M-01–M-07 are true in `.kpi/remediation-proof.json`.
+7. [x] Docs match the built behavior; historical plan/roadmap remain clearly non-authoritative.
+8. [ ] Every row of [`uat.md`](uat.md) — US-01 through US-30 — passes against the built binary, with evidence a human can read, and M-01–M-07 pass alongside them. The product is finished at this line and not before.
