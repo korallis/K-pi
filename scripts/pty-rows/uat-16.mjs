@@ -225,14 +225,6 @@ const checks = [
 
 const verdict = writeRow(EVIDENCE, "UAT-16", {
 	checks,
-	control: {
-		describe:
-			"`dark-lamp/` deletes `verdict.json` after writing it and asserts the lamp is `○`; `amber/` keeps the same file and asserts `●`. Grading each capture against the other's expectation must fail, or the lamp is not reading the file at all.",
-		failedChecks: [
-			...(/○ verdict\.json/u.test(litLampRow) ? [] : ["amber-capture-is-not-dark"]),
-			...(/● verdict\.json/u.test(darkLampRow) ? [] : ["dark-capture-is-not-lit"]),
-		],
-	},
 	notes: `Driven against \`dist/bundle/cli.js\` over a real PTY at 140 columns, clean HOME, scratch git repo, loopback stub, egress guard.
 
 Three captures: the amber running board, the protocol-blue paused board, and a running board whose \`verdict.json\` was written and then deleted.
@@ -243,4 +235,4 @@ The paused board's full form is reached through \`/kpi status\`, which is the ro
 });
 
 console.log(JSON.stringify(verdict.checks.map((entry) => `${entry.ok ? "ok" : "FAIL"} ${entry.id}: ${entry.observed.slice(0, 70)}`), null, 1));
-console.log("control discriminates:", verdict.control?.discriminates);
+

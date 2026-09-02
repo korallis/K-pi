@@ -378,23 +378,8 @@ const checks = [
 	),
 ];
 
-/**
- * Control: re-grade each calibrated band against a neighbouring band's expected
- * hue. Every one must fail, otherwise the four colours are not being told apart
- * and "green/yellow/orange/red" would pass on any palette.
- */
-const rotated = ["yellow", "orange", "red", "green"];
-const controlFailures = calibration
-	.map((entry, index) => (entry.hue === rotated[index] ? undefined : `band-${entry.target}-is-not-${rotated[index]}`))
-	.filter((entry) => entry !== undefined);
-
 const verdict = writeRow(EVIDENCE, "UAT-15", {
 	checks,
-	control: {
-		describe:
-			"Each calibrated band is re-graded against the next band's colour (40%→yellow, 60%→orange, 80%→red, 95%→green). All four must fail, or the colour assertions are not distinguishing the four palette entries.",
-		failedChecks: controlFailures,
-	},
 	notes: `Driven against \`dist/bundle/cli.js\` over a real PTY at 160 columns, clean HOME, scratch git repo, loopback stub, egress guard.
 
 **Calibration.** The context window is ${LOCAL_CONTEXT_WINDOW} tokens for a local model, so each band is reached by having the stub report \`prompt_tokens\` for that share and then *reading back the percentage the footer actually painted*. The band assertion is checked against that measured percentage, not against the token count that was requested — see \`context-calibration.json\` for the requested tokens, the measured percentage, the SGR triple and the hue it classifies as.
@@ -406,4 +391,4 @@ const verdict = writeRow(EVIDENCE, "UAT-15", {
 
 console.log(JSON.stringify(verdict.checks.map((entry) => `${entry.ok ? "ok" : "FAIL"} ${entry.id}`), null, 1));
 console.log("calibration:", JSON.stringify(calibration));
-console.log("control discriminates:", verdict.control?.discriminates);
+

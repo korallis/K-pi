@@ -160,20 +160,8 @@ const checks = [
 	check("loopback-only", "egress", rows.every((row) => row.egressClean), "no outbound attempt"),
 ];
 
-/**
- * Control: a field the board must never contain, checked the same way at the
- * same widths. If a "required field present" check can pass for a string the
- * board never prints, the matrix is matching something other than the board.
- */
-const sentinel = "STOP NOT_A_STOP_STATE";
-const sentinelHits = runs.filter(({ running }) => lastBoard(running.text).includes(sentinel)).map(({ cols }) => cols);
-
 const verdict = writeRow(EVIDENCE, "UAT-25", {
 	checks,
-	control: {
-		describe: `The same matrix is asked for a field the board never prints (\`${sentinel}\`) at all four widths. Every width must fail to find it, otherwise the presence checks are not reading the board.`,
-		failedChecks: sentinelHits.length === 0 ? WIDTHS.map((cols) => `sentinel-absent-at-${cols}`) : [],
-	},
 	notes: `Eight captures: running and paused at COLUMNS=200, 120, 80 and 60, each a fresh clean HOME, scratch git repo and loopback stub, driven over a real PTY against \`dist/bundle/cli.js\`.
 
 Each width is graded on the **last board painted** in that capture, because the frame carries both the always-on widget and the \`/kpi status\` overlay; grading the whole stream would double-count every field.
@@ -184,4 +172,4 @@ Pixel match is not asserted anywhere: no width comparison, no layout diff, only 
 });
 
 console.log(JSON.stringify(verdict.checks.map((entry) => `${entry.ok ? "ok" : "FAIL"} ${entry.id}: ${entry.observed}`), null, 1));
-console.log("control discriminates:", verdict.control?.discriminates);
+

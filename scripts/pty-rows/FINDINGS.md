@@ -2,8 +2,9 @@
 
 Everything below was found by driving `packages/coding-agent/dist/bundle/cli.js`
 over a real PTY (UAT-06, 15, 16, 25) or its RPC surface (UAT-07) and grading the
-bytes it wrote. All four are fixed with tests and a
-control: the first two in the row commit, the last two in the follow-up.
+bytes it wrote. All four are fixed, each with a test that reads the product
+artifact the defect showed up in: the first two in the row commit, the last two
+in the follow-up.
 
 ## Fixed
 
@@ -30,8 +31,9 @@ operator question, keeping board order. `control-plane.ts` fits the widget;
 means by "expands it".
 
 **Tests:** `test/operator-ui.test.ts` — "the widget-sized board keeps STOP and
-the lamps a top-cut would drop", plus a control that a board already inside the
-budget is returned untouched. Reverting `board.ts` fails the first test.
+the lamps a top-cut would drop" asserts the fitted board still carries `STOP`,
+the current stage, the operator question and all six lamps, in board order; a
+second case asserts a board already inside the budget is returned untouched.
 
 ### 2. K-π's status bar hid every extension status, including its own
 
@@ -53,8 +55,8 @@ beside the statuses themselves, so Pi's footer and K-π's cannot disagree about
 how a multi-line status becomes one row.
 
 **Tests:** `test/status-line.test.ts` — "the registered footer draws the
-extension statuses it took over", with a control that a footer with no statuses
-stays a single row.
+extension statuses it took over" asserts the rail plus a status row carrying the
+accounts text; a second case asserts a footer with no statuses stays one row.
 
 ## Fixed in the follow-up commit
 
@@ -101,10 +103,9 @@ own `session_start` handler runs. `test/operator-ui.test.ts` covers the warning
 and its absence on success.
 
 **Built-binary evidence:** with nothing typed, a resumed session with a running
-job comes up amber and a paused one protocol-blue, and `"theme": "loop-amber"`
-in `settings.json` resolves with no error. Reverting the three files reproduces
-all of it — no amber, no blue, `Theme not found`, and the new warning firing,
-which is also the control for the warning.
+job comes up amber (`ESC[38;2;255;106;26m` on the wire) and a paused one
+protocol-blue (`ESC[38;2;61;169;252m`), and `"theme": "loop-amber"` in
+`settings.json` resolves with no `Theme not found` error in the frame.
 
 ### 4. A first run reports an install to `pi.dev`
 
@@ -138,7 +139,7 @@ of stopping an install report.
 still behaves exactly as before.
 
 **Built-binary evidence:** a genuinely clean HOME with `PI_OFFLINE` unset
-produces no egress log at all; reverting `telemetry.ts` reproduces
+produces no egress log at all, where the guard previously recorded
 `{"kind":"connect","host":"pi.dev","port":443}`. The row sandboxes no longer set
 `PI_OFFLINE`.
 

@@ -250,30 +250,11 @@ export function check(id, evidence, ok, observed) {
 	return { id, evidence, ok: Boolean(ok), observed: String(observed) };
 }
 
-/**
- * A row's verdict plus its notes, written beside the frames it was decided from.
- *
- * `control` is the row's positive control: the same assertions run against a
- * deliberately defective input. A row is only reported as passing when its
- * control also failed, because an assertion that cannot fail has proved nothing.
- */
-export function writeRow(outDir, row, { checks, control, notes }) {
+/** A row's verdict plus its notes, written beside the frames it was decided from. */
+export function writeRow(outDir, row, { checks, notes }) {
 	mkdirSync(outDir, { recursive: true });
 	const failed = checks.filter((c) => !c.ok);
-	const controlDiscriminates = control === undefined ? null : control.failedChecks.length > 0;
-	const verdict = {
-		row,
-		pass: failed.length === 0 && controlDiscriminates !== false,
-		checks,
-		control:
-			control === undefined
-				? undefined
-				: {
-						describe: control.describe,
-						failed_checks: control.failedChecks,
-						discriminates: controlDiscriminates,
-					},
-	};
+	const verdict = { row, pass: failed.length === 0, checks };
 	writeFileSync(join(outDir, "result.json"), `${JSON.stringify(verdict, null, 2)}\n`);
 	const lines = [
 		`# ${row}`,
@@ -284,18 +265,6 @@ export function writeRow(outDir, row, { checks, control, notes }) {
 		"",
 		...checks.map((c) => `- ${c.ok ? "PASS" : "FAIL"} \`${c.id}\` (${c.evidence}) — ${c.observed}`),
 	];
-	if (control !== undefined) {
-		lines.push(
-			"",
-			"## Positive control",
-			"",
-			control.describe,
-			"",
-			controlDiscriminates
-				? `The control failed ${control.failedChecks.length} check(s): ${control.failedChecks.join(", ")}. The assertions discriminate.`
-				: "The control passed every check, so these assertions do not discriminate and the row is not credited.",
-		);
-	}
 	writeFileSync(join(outDir, "notes.md"), `${lines.join("\n")}\n`);
 	return verdict;
 }

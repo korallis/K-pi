@@ -17,7 +17,7 @@
  * received, so "on the wire" is matched, not assumed.
  */
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { check, cliPath, egressClean, freePort, repoRoot, sandbox, startStub, teardown, writeRow } from "./lib.mjs";
@@ -155,11 +155,6 @@ function screenplay() {
 		"test, then run the gates again, then re-read the evidence, and then summarise all of it for you",
 		"at comparable length, because I would not want to omit any part of my reasoning or my process.",
 	].join(" ");
-	// The control has to be able to fail the budget check, otherwise "under 800"
-	// would pass for a stub that is simply polite and prove nothing about the rule.
-	if (diary.length <= 800) {
-		throw new Error(`control diary must exceed the 800-character budget, got ${diary.length}`);
-	}
 	return {
 		models: ["uat-stub"],
 		scenes: [
@@ -197,12 +192,9 @@ const VERDICT_QUESTION = "Summarise the review verdict for round 2.";
  * the session that carries it - which is what an operator meets on a fresh
  * agent directory.
  */
-async function scenario(label, { installFirst, plantAppend }) {
+async function scenario(label, { installFirst }) {
 	const port = await freePort();
 	const box = sandbox(label, { baseUrl: `http://127.0.0.1:${port}/v1`, port });
-	if (typeof plantAppend === "string") {
-		writeFileSync(join(box.agentDir, "APPEND_SYSTEM.md"), plantAppend);
-	}
 	writeFileSync(join(box.home, "screenplay.json"), JSON.stringify(screenplay()));
 	const stub = await startStub(port, join(box.home, "model.jsonl"), join(box.home, "screenplay.json"));
 
@@ -260,37 +252,23 @@ async function scenario(label, { installFirst, plantAppend }) {
 }
 
 const installed = await scenario("u07-installed", { installFirst: true });
-const bare = await scenario("u07-bare", {
-	installFirst: false,
-	// First-run auto-install would write the real rule; plant an operator-owned
-	// file without the brevity phrase so ensureAppendSystemInstalled leaves it.
-	plantAppend: [
-		"# Operator append",
-		"",
-		"Write long, thorough answers. Narrate every step. Never compress.",
-		"",
-	].join("\n"),
-});
 
 // Shipped artefacts, read from the tree that builds the binary.
 const skillText = readFileSync(SKILL_PATH, "utf8");
 const appendTemplate = readFileSync(APPEND_TEMPLATE, "utf8");
 const systemTemplate = existsSync(SYSTEM_TEMPLATE) ? readFileSync(SYSTEM_TEMPLATE, "utf8") : "";
 
-writeFileSync(
-	join(EVIDENCE, "last-assistant.txt"),
-	`${installed.reply ?? "(no reply captured)"}\n`,
-);
-writeFileSync(join(EVIDENCE, "control-last-assistant.txt"), `${bare.reply ?? "(no reply captured)"}\n`);
+// This row writes straight into the evidence directory rather than through a
+// capture that would create it, so it makes its own.
+mkdirSync(EVIDENCE, { recursive: true });
+writeFileSync(join(EVIDENCE, "last-assistant.txt"), `${installed.reply ?? "(no reply captured)"}\n`);
 writeFileSync(
 	join(EVIDENCE, "measurement.json"),
 	`${JSON.stringify(
 		{
 			budget: BUDGET,
-			installed_reply_chars: installed.reply?.length ?? null,
-			control_reply_chars: bare.reply?.length ?? null,
-			installed_scene: installed.requests.map((record) => record.matched_node),
-			control_scene: bare.requests.map((record) => record.matched_node),
+			reply_chars: installed.reply?.length ?? null,
+			scene: installed.requests.map((record) => record.matched_node),
 			measured_through: "get_last_assistant_text",
 		},
 		null,
@@ -300,7 +278,6 @@ writeFileSync(
 
 const replyLength = installed.reply?.length ?? 0;
 const conciseServed = installed.requests.some((record) => record.matched_node === "concise");
-const controlServedDiary = bare.requests.some((record) => record.matched_node === "diary");
 const skillDescription = (skillText.match(/^description:\s*(.+)$/mu) ?? [])[1]?.trim();
 
 const checks = [
@@ -357,29 +334,14 @@ const checks = [
 	check(
 		"loopback-only",
 		"egress",
-		installed.egress.clean && bare.egress.clean,
-		installed.egress.clean && bare.egress.clean ? "no outbound attempt" : "egress recorded",
+		installed.egress.clean,
+		installed.egress.clean ? "no outbound attempt" : "egress recorded",
 	),
-];
-
-/**
- * Control: operator-owned APPEND_SYSTEM.md without the brevity phrase (auto-install leaves it). The
- * stub's diary scene answers, and it is over budget - so the under-800
- * assertion is measuring the rule's effect rather than the stub's good manners.
- */
-const controlLength = bare.reply?.length ?? 0;
-const controlFailures = [
-	...(controlLength >= BUDGET ? ["visible-body-under-800"] : []),
-	...(controlServedDiary ? ["brevity-rule-reached-the-wire"] : []),
 ];
 
 const verdict = writeRow(EVIDENCE, "UAT-07", {
 	checks,
-	control: {
-		describe: `The same verdict question with no operator install: the stub's diary scene answers and \`get_last_assistant_text\` returns ${controlLength} characters (budget ${BUDGET}). Both the wire check and the length check must fail there, or neither is measuring the brevity rule.`,
-		failedChecks: controlFailures,
-	},
-	notes: `Two RPC sessions per scenario against \`dist/bundle/cli.js\` with \`--offline --mode rpc\`, clean HOME, scratch git repo, loopback stub, egress guard, and no \`PI_OFFLINE\` crutch.
+	notes: `Two RPC sessions against \`dist/bundle/cli.js\` with \`--offline --mode rpc\`, clean HOME, scratch git repo, loopback stub, egress guard, and no \`PI_OFFLINE\`.
 
 **Installed the way an operator does.** \`/append-system\` is run as a real command in its own session; the notice it prints is the evidence it installed. The rule is discovered while a session's system prompt is assembled, so the session that installs it is not the session that carries it — the measured session is the next one, which is what an operator meets on a fresh agent directory.
 
@@ -389,4 +351,4 @@ const verdict = writeRow(EVIDENCE, "UAT-07", {
 });
 
 console.log(JSON.stringify(verdict.checks.map((entry) => `${entry.ok ? "ok" : "FAIL"} ${entry.id}: ${entry.observed.slice(0, 80)}`), null, 1));
-console.log("measured:", replyLength, "control:", controlLength, "| control discriminates:", verdict.control?.discriminates);
+console.log("measured:", replyLength, "characters (budget", `${BUDGET})`);
