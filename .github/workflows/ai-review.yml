@@ -14,11 +14,13 @@
 # the workspace.
 #
 # Trust boundary:
-#   - `pull_request`, never the privileged variant: the PR head is checked out,
-#     so this job must never run with a write token available to PR-controlled
-#     code. The `GH_TOKEN` exists on the single review step only, and that step
-#     runs one trusted script that shells out to `git` and `gh` with validated
-#     argv — never through a shell.
+#   - `pull_request`, never the privileged variant. The checkout is the PR merge
+#     ref, so `scripts/ai-review.mjs` is restored from the merge base before it
+#     runs: a pull request cannot edit the script that receives the key and the
+#     comment token. (A same-repository author can still edit this workflow
+#     file, but that author already holds write access to the repository.) The
+#     `GH_TOKEN` exists on the single review step only, and the script shells
+#     out to `git` and `gh` with validated argv — never through a shell.
 #   - Fork heads are skipped: `pull_request` withholds secrets from forks, so the
 #     reviewer could not authenticate anyway. Outside contributions are reviewed
 #     by a human.
@@ -89,6 +91,12 @@ jobs:
             echo "::error::AI_REVIEW_MODEL repository variable is not set (must be a z.ai catalog model id)."
             exit 1
           fi
+
+      - name: Run the reviewer from the merge base
+        # The PR head must not choose the code that handles the secrets.
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: git checkout "$BASE_SHA" -- scripts/ai-review.mjs
 
       - name: Review the diff
         # The only step that sees a token. Every PR-controlled value arrives via

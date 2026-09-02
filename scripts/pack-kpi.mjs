@@ -217,9 +217,22 @@ function assertInstalls(tarball, manifest) {
 	const home = mkdtempSync(join(tmpdir(), "kpi-pack-home-"));
 	const agentDir = mkdtempSync(join(tmpdir(), "kpi-pack-agent-"));
 	try {
+		// --prefer-offline: the persistent CI runner's cache serves the three
+		// runtime dependencies, so a registry hiccup cannot fail the required gate;
+		// a cold cache still fetches them.
 		const install = run(
 			npmCommand(),
-			["install", "--global", "--prefix", prefix, "--no-audit", "--fund=false", "--loglevel=error", tarball],
+			[
+				"install",
+				"--global",
+				"--prefix",
+				prefix,
+				"--prefer-offline",
+				"--no-audit",
+				"--fund=false",
+				"--loglevel=error",
+				tarball,
+			],
 			{ cwd: home },
 		);
 		if (install.status !== 0) fail("tarball does not install", { stdout: install.stdout, stderr: install.stderr });
