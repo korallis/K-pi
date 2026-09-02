@@ -5,11 +5,13 @@
 #   2. infer   — hosted Ubuntu matrix; read-only; no write token; each chunk once
 #   3. Grok review (exact name) — download all groups; union; sticky comment; fail closed
 #
-# The Copilot credential can request inference only. GitHub's ephemeral write token is
-# introduced only in the final job's comment step. Inference clears GITHUB_TOKEN/GH_TOKEN.
+# Inference backend: z.ai OpenAI-compatible chat completions (GLM), selected from
+# packages/ai/src/providers/data/zai.json (baseUrl + model id). Required secret:
+# ZAI_API_KEY. The check context name stays "Grok review" for branch protection.
+# GitHub's ephemeral write token is introduced only in the final job's comment step.
+# Inference clears GITHUB_TOKEN/GH_TOKEN and never sends a repository token to z.ai.
 #
 # Trust boundary:
-#   - Copilot CLI is installed before any repository checkout, with an empty npmrc.
 #   - Base is checked out for trusted gate scripts; head is read-only diff source.
 #   - Gate scripts run from base when present; head bootstrap is same-repo landing only.
 #   - Prepare hard-bounds selected diff (8 MiB). Matrix is bounded (≤8 groups × ≤16 chunks; capacity 128).
@@ -17,6 +19,7 @@
 #   - Every selected path/chunk is reviewed exactly once; missing/duplicate groups fail closed.
 #
 # Hosted Ubuntu is deliberate. AI review must not occupy the Mac mini hard-gate queue.
+
 
 name: grok-review
 
@@ -48,7 +51,9 @@ jobs:
       BASE_SHA: ${{ github.event.pull_request.base.sha }}
       HEAD_SHA: ${{ github.event.pull_request.head.sha }}
       HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
-      GROK_REVIEW_MODEL: ${{ vars.GROK_REVIEW_MODEL }}
+      # Catalog default: packages/ai/src/providers/data/zai.json → glm-5.3-flash
+      GROK_REVIEW_MODEL: ${{ vars.GROK_REVIEW_MODEL || 'glm-5.3-flash' }}
+      GROK_REVIEW_BACKEND: zai
     outputs:
       matrix: ${{ steps.prepare.outputs.matrix }}
       chunk-count: ${{ steps.prepare.outputs.chunk_count }}
@@ -57,24 +62,25 @@ jobs:
     steps:
       - name: Refuse forks and missing reviewer configuration
         env:
-          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+          ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
           REPOSITORY: ${{ github.repository }}
         run: |
           if [ "$HEAD_REPOSITORY" != "$REPOSITORY" ]; then
             echo "::error::Grok review refuses fork code because pull_request secrets are unavailable."
             exit 1
           fi
-          if [ -z "$COPILOT_GITHUB_TOKEN" ]; then
-            echo "::error::COPILOT_GITHUB_TOKEN is not configured."
+          if [ -z "$ZAI_API_KEY" ]; then
+            echo "::error::ZAI_API_KEY is not configured (z.ai OpenAI-compatible API key)."
             exit 1
           fi
           case "$GROK_REVIEW_MODEL" in
-            grok-[A-Za-z0-9._-]*) ;;
+            glm-[A-Za-z0-9._-]*|grok-[A-Za-z0-9._-]*) ;;
             *)
-              echo "::error::GROK_REVIEW_MODEL must name a Grok model."
+              echo "::error::GROK_REVIEW_MODEL must name a catalog GLM (zai.json) or legacy Grok model id."
               exit 1
               ;;
           esac
+
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
@@ -237,7 +243,8 @@ jobs:
       max-parallel: 8
       matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
     env:
-      GROK_REVIEW_MODEL: ${{ vars.GROK_REVIEW_MODEL }}
+      GROK_REVIEW_MODEL: ${{ vars.GROK_REVIEW_MODEL || 'glm-5.3-flash' }}
+      GROK_REVIEW_BACKEND: zai
       GROUP_ID: ${{ matrix.group }}
     steps:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
@@ -245,32 +252,23 @@ jobs:
           node-version: 22.19.0
           package-manager-cache: false
 
-      - name: Install pinned Copilot CLI
-        env:
-          HOME: ${{ runner.temp }}/npm-home
-          NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/empty-user-npmrc
-          NPM_CONFIG_GLOBALCONFIG: ${{ runner.temp }}/empty-global-npmrc
-          npm_config_cache: ${{ runner.temp }}/npm-cache
-        run: |
-          mkdir -p "$HOME" "$npm_config_cache"
-          : > "$NPM_CONFIG_USERCONFIG"
-          : > "$NPM_CONFIG_GLOBALCONFIG"
-          npm install --global @github/copilot@1.0.82 --ignore-scripts --no-audit --fund=false
-
       - name: Download prepare artifacts
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: grok-prepare-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
           path: ${{ runner.temp }}/prepare
 
-      - name: Run group inference (read-only tokens)
+      - name: Run group inference (z.ai; no repository token)
         id: inference
         continue-on-error: true
         env:
-          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+          ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
+          # Catalog baseUrl from packages/ai/src/providers/data/zai.json
+          ZAI_BASE_URL: https://api.z.ai/api/coding/paas/v4
+          GROK_REVIEW_BACKEND: zai
           GITHUB_TOKEN: ""
           GH_TOKEN: ""
-          HOME: ${{ runner.temp }}/copilot-home
+          COPILOT_GITHUB_TOKEN: ""
         run: |
           set -euo pipefail
           group_pad=$(printf '%02d' "$GROUP_ID")
@@ -280,7 +278,7 @@ jobs:
             echo "::error::missing group manifest for group $GROUP_ID"
             exit 1
           fi
-          mkdir -p "$HOME" "$RUNNER_TEMP/group-work" "$RUNNER_TEMP/group-out"
+          mkdir -p "$RUNNER_TEMP/group-work" "$RUNNER_TEMP/group-out"
           set +e
           node "$RUNNER_TEMP/prepare/gate-scripts/run-chunked-grok-review.mjs" \
             --group-manifest "$manifest" \
@@ -310,6 +308,7 @@ jobs:
           cp -a "$RUNNER_TEMP/group-work/." "$RUNNER_TEMP/upload/group-${group_pad}/work/" 2>/dev/null || true
           exit "$status"
 
+
       - name: Upload group result
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -329,7 +328,7 @@ jobs:
       contents: read
       pull-requests: write
     env:
-      GROK_REVIEW_MODEL: ${{ vars.GROK_REVIEW_MODEL }}
+      GROK_REVIEW_MODEL: ${{ vars.GROK_REVIEW_MODEL || 'glm-5.3-flash' }}
       BASE_SHA: ${{ github.event.pull_request.base.sha }}
       HEAD_SHA: ${{ github.event.pull_request.head.sha }}
     steps:

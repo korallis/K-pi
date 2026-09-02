@@ -245,28 +245,43 @@ export function copilotSpawnEnv(source = process.env) {
 }
 
 /**
- * @param {{
- *   copilotBin: string,
+ * @typedef {{
+ *   ok: boolean,
+ *   reason: string,
+ *   stdout: string,
+ *   stderr: string,
+ *   code: number | null,
+ * }} ReviewRunResult
+ *
+ * @typedef {{
+ *   copilotBin?: string,
  *   prompt: string,
  *   model: string,
- *   effort: string,
- *   maxAiCredits: number,
+ *   effort?: string,
+ *   maxAiCredits?: number,
  *   timeoutSec: number,
- * }} spec
+ * }} ReviewRunSpec
+ */
+
+/**
+ * Copilot CLI spawn — legacy default backend.
+ *
+ * @param {ReviewRunSpec} spec
+ * @returns {Promise<ReviewRunResult>}
  */
 export function defaultRunCommand(spec) {
 	return new Promise((resolve) => {
 		const child = spawn(
-			spec.copilotBin,
+			spec.copilotBin ?? "copilot",
 			[
 				"--prompt",
 				spec.prompt,
 				"--model",
 				spec.model,
 				"--effort",
-				spec.effort,
+				spec.effort ?? "high",
 				"--max-ai-credits",
-				String(spec.maxAiCredits),
+				String(spec.maxAiCredits ?? 50),
 				"--no-ask-user",
 				"--no-custom-instructions",
 				"--disable-builtin-mcps",
@@ -321,11 +336,144 @@ export function defaultRunCommand(spec) {
 				ok: false,
 				reason: signal ? `signal-${signal}` : "exit-nonzero",
 				stdout,
-				stderr: stderr.trim(),
+				stderr,
 				code,
 			});
 		});
 	});
+}
+
+/**
+ * Catalog defaults from `packages/ai/src/providers/data/zai.json` (global coding API).
+ * Do not invent endpoints or model ids — verify against that file.
+ */
+export const ZAI_CODING_BASE_URL = "https://api.z.ai/api/coding/paas/v4";
+/** Flash review model id present in zai.json. */
+export const ZAI_DEFAULT_REVIEW_MODEL = "glm-5.3-flash";
+
+/**
+ * OpenAI-compatible chat-completions runner for z.ai GLM.
+ * Returns the same `{ ok, reason, stdout, stderr, code }` shape as defaultRunCommand
+ * so normalize/union/fail-closed stay unchanged. stdout is the assistant message
+ * content (the findings document), not the raw HTTP envelope.
+ *
+ * @param {{
+ *   baseUrl?: string,
+ *   apiKey: string,
+ *   fetchImpl?: typeof fetch,
+ * }} config
+ * @returns {(spec: ReviewRunSpec) => Promise<ReviewRunResult>}
+ */
+export function createZaiRunCommand(config) {
+	const baseUrl = (config.baseUrl ?? ZAI_CODING_BASE_URL).replace(/\/+$/u, "");
+	const apiKey = config.apiKey;
+	const fetchImpl = config.fetchImpl ?? globalThis.fetch;
+	if (typeof apiKey !== "string" || apiKey.trim().length === 0) {
+		throw new Error("createZaiRunCommand requires a non-empty apiKey");
+	}
+	if (typeof fetchImpl !== "function") {
+		throw new Error("createZaiRunCommand requires fetch");
+	}
+
+	return async function zaiRunCommand(spec) {
+		const controller = new AbortController();
+		const timer = setTimeout(() => controller.abort(), Math.max(1, spec.timeoutSec) * 1000);
+		const url = `${baseUrl}/chat/completions`;
+		try {
+			const response = await fetchImpl(url, {
+				method: "POST",
+				headers: {
+					"content-type": "application/json",
+					authorization: `Bearer ${apiKey}`,
+				},
+				body: JSON.stringify({
+					model: spec.model,
+					messages: [{ role: "user", content: spec.prompt }],
+					temperature: 0,
+				}),
+				signal: controller.signal,
+			});
+			const rawText = await response.text();
+			if (!response.ok) {
+				return {
+					ok: false,
+					reason: "exit-nonzero",
+					stdout: "",
+					stderr: `z.ai HTTP ${response.status}: ${rawText.slice(0, 1500)}`,
+					code: response.status,
+				};
+			}
+			let payload;
+			try {
+				payload = JSON.parse(rawText);
+			} catch {
+				return {
+					ok: false,
+					reason: "invalid-response",
+					stdout: rawText,
+					stderr: "z.ai response was not JSON",
+					code: response.status,
+				};
+			}
+			const content = payload?.choices?.[0]?.message?.content;
+			if (typeof content !== "string") {
+				return {
+					ok: false,
+					reason: "invalid-response",
+					stdout: rawText,
+					stderr: "z.ai response missing choices[0].message.content string",
+					code: response.status,
+				};
+			}
+			return {
+				ok: true,
+				reason: "success",
+				stdout: content,
+				stderr: "",
+				code: 0,
+			};
+		} catch (error) {
+			const aborted = controller.signal.aborted;
+			const message = error instanceof Error ? error.message : String(error);
+			return {
+				ok: false,
+				reason: aborted ? "timeout" : "spawn-error",
+				stdout: "",
+				stderr: aborted ? `timed out after ${spec.timeoutSec}s` : message,
+				code: null,
+			};
+		} finally {
+			clearTimeout(timer);
+		}
+	};
+}
+
+/**
+ * Pick the inference backend from the environment.
+ * - `GROK_REVIEW_BACKEND=zai` (or presence of `ZAI_API_KEY` with backend unset) → z.ai
+ * - otherwise Copilot CLI (`defaultRunCommand`)
+ *
+ * Never forwards GITHUB_TOKEN / GH_TOKEN into the z.ai request.
+ *
+ * @param {NodeJS.ProcessEnv} [env]
+ * @param {{ fetchImpl?: typeof fetch }} [opts]
+ * @returns {(spec: ReviewRunSpec) => Promise<ReviewRunResult>}
+ */
+export function resolveReviewRunCommand(env = process.env, opts = {}) {
+	const backend = (env.GROK_REVIEW_BACKEND ?? "").trim().toLowerCase();
+	const zaiKey = env.ZAI_API_KEY ?? env.Z_AI_API_KEY ?? "";
+	const useZai = backend === "zai" || (backend === "" && zaiKey.length > 0);
+	if (useZai) {
+		if (!zaiKey) {
+			throw new Error("GROK_REVIEW_BACKEND=zai requires ZAI_API_KEY");
+		}
+		return createZaiRunCommand({
+			baseUrl: env.ZAI_BASE_URL || ZAI_CODING_BASE_URL,
+			apiKey: zaiKey,
+			fetchImpl: opts.fetchImpl,
+		});
+	}
+	return defaultRunCommand;
 }
 
 /**
@@ -365,7 +513,7 @@ export function measurePromptFramingBytes(inventoryText = "") {
  * @param {{ runCommand?: typeof defaultRunCommand }} [hooks]
  */
 export async function runChunkedGrokReview(options, hooks = {}) {
-	const runCommand = hooks.runCommand ?? defaultRunCommand;
+	const runCommand = hooks.runCommand ?? resolveReviewRunCommand();
 	const diffText = readFileSync(options.diffPath, "utf8");
 	const changedPaths = readFileSync(options.changedPathsPath, "utf8").split("\0").filter(Boolean);
 	let inventoryText = "";
@@ -602,7 +750,7 @@ export async function runChunkedGrokReview(options, hooks = {}) {
  * @param {{ runCommand?: typeof defaultRunCommand }} [hooks]
  */
 export async function runGroupGrokReview(options, hooks = {}) {
-	const runCommand = hooks.runCommand ?? defaultRunCommand;
+	const runCommand = hooks.runCommand ?? resolveReviewRunCommand();
 	const manifest = JSON.parse(readFileSync(options.groupManifestPath, "utf8"));
 	const groupDir = options.groupDir;
 	if (!Number.isSafeInteger(manifest.group) || manifest.group < 0) {

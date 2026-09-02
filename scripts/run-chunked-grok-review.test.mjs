@@ -5,6 +5,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { createServer } from "node:http";
 import { unionGrokFindings } from "./validate-grok-review.mjs";
 import {
 	DEFAULT_CHUNK_TIMEOUT_SEC,
@@ -12,11 +13,18 @@ import {
 	DEFAULT_MAX_CONCURRENCY,
 	PROMPT_ARGV_TEST_CEILING_BYTES,
 	REQUIRED_EFFORT,
+	ZAI_CODING_BASE_URL,
+	ZAI_DEFAULT_REVIEW_MODEL,
 	copilotSpawnEnv,
+	createZaiRunCommand,
+	defaultRunCommand,
 	mapPool,
+	resolveReviewRunCommand,
 	runChunkedGrokReview,
 	runGroupGrokReview,
 } from "./run-chunked-grok-review.mjs";
+
+
 
 function fileDiff(path, bodyLines) {
 	const body = bodyLines.map((line) => `+${line}`).join("\n");
@@ -601,3 +609,182 @@ test("runGroupGrokReview rejects chunkCount mismatch and path escape", async () 
 		rmSync(dir, { recursive: true, force: true });
 	}
 });
+
+function startLocalZaiStub(handler) {
+	const server = createServer((req, res) => {
+		void handler(req, res);
+	});
+	return new Promise((resolve) => {
+		server.listen(0, "127.0.0.1", () => {
+			const { port } = server.address();
+			resolve({
+				server,
+				baseUrl: `http://127.0.0.1:${port}/api/coding/paas/v4`,
+				close: () =>
+					new Promise((r, j) => {
+						server.close((err) => (err ? j(err) : r()));
+					}),
+			});
+		});
+	});
+}
+
+async function readRequestBody(req) {
+	const chunks = [];
+	for await (const chunk of req) chunks.push(chunk);
+	return Buffer.concat(chunks).toString("utf8");
+}
+
+test("catalog z.ai defaults match packages/ai zai.json ids", () => {
+	assert.equal(ZAI_CODING_BASE_URL, "https://api.z.ai/api/coding/paas/v4");
+	assert.equal(ZAI_DEFAULT_REVIEW_MODEL, "glm-5.3-flash");
+});
+
+test("createZaiRunCommand returns assistant content as stdout on success", async () => {
+	const findingsDoc = JSON.stringify([
+		{
+			id: "grok-local",
+			severity: "P1",
+			path: "a.ts",
+			line: 1,
+			title: "ok",
+			body: "body",
+		},
+	]);
+	let sawAuth = "";
+	let sawBody = null;
+	const stub = await startLocalZaiStub(async (req, res) => {
+		assert.equal(req.method, "POST");
+		assert.equal(req.url, "/api/coding/paas/v4/chat/completions");
+		sawAuth = req.headers.authorization ?? "";
+		const raw = await readRequestBody(req);
+		sawBody = JSON.parse(raw);
+		res.writeHead(200, { "content-type": "application/json" });
+		res.end(
+			JSON.stringify({
+				choices: [{ message: { role: "assistant", content: findingsDoc } }],
+			}),
+		);
+	});
+	try {
+		const run = createZaiRunCommand({
+			baseUrl: stub.baseUrl,
+			apiKey: "test-key-not-real",
+			fetchImpl: fetch,
+		});
+		const result = await run({
+			prompt: "review this",
+			model: ZAI_DEFAULT_REVIEW_MODEL,
+			timeoutSec: 5,
+		});
+		assert.equal(result.ok, true);
+		assert.equal(result.reason, "success");
+		assert.equal(result.stdout, findingsDoc);
+		assert.equal(sawAuth, "Bearer test-key-not-real");
+		assert.equal(sawBody.model, "glm-5.3-flash");
+		assert.equal(sawBody.messages[0].content, "review this");
+		// Prompt rides in HTTP body — not subject to PROMPT_ARGV_TEST_CEILING_BYTES.
+		assert.ok(PROMPT_ARGV_TEST_CEILING_BYTES > 0);
+	} finally {
+		await stub.close();
+	}
+});
+
+test("createZaiRunCommand fails closed on HTTP error", async () => {
+	const stub = await startLocalZaiStub(async (_req, res) => {
+		res.writeHead(429, { "content-type": "application/json" });
+		res.end(JSON.stringify({ error: { message: "rate limited" } }));
+	});
+	try {
+		const run = createZaiRunCommand({
+			baseUrl: stub.baseUrl,
+			apiKey: "k",
+			fetchImpl: fetch,
+		});
+		const result = await run({ prompt: "p", model: "glm-5.3-flash", timeoutSec: 5 });
+		assert.equal(result.ok, false);
+		assert.equal(result.reason, "exit-nonzero");
+		assert.match(result.stderr, /HTTP 429/);
+	} finally {
+		await stub.close();
+	}
+});
+
+test("createZaiRunCommand fails closed on non-JSON body", async () => {
+	const stub = await startLocalZaiStub(async (_req, res) => {
+		res.writeHead(200, { "content-type": "text/plain" });
+		res.end("not-json");
+	});
+	try {
+		const run = createZaiRunCommand({
+			baseUrl: stub.baseUrl,
+			apiKey: "k",
+			fetchImpl: fetch,
+		});
+		const result = await run({ prompt: "p", model: "glm-5.3-flash", timeoutSec: 5 });
+		assert.equal(result.ok, false);
+		assert.equal(result.reason, "invalid-response");
+	} finally {
+		await stub.close();
+	}
+});
+
+test("createZaiRunCommand fails closed when content is missing", async () => {
+	const stub = await startLocalZaiStub(async (_req, res) => {
+		res.writeHead(200, { "content-type": "application/json" });
+		res.end(JSON.stringify({ choices: [{ message: {} }] }));
+	});
+	try {
+		const run = createZaiRunCommand({
+			baseUrl: stub.baseUrl,
+			apiKey: "k",
+			fetchImpl: fetch,
+		});
+		const result = await run({ prompt: "p", model: "glm-5.3-flash", timeoutSec: 5 });
+		assert.equal(result.ok, false);
+		assert.equal(result.reason, "invalid-response");
+		assert.match(result.stderr, /missing choices/);
+	} finally {
+		await stub.close();
+	}
+});
+
+test("createZaiRunCommand times out via AbortSignal", async () => {
+	const stub = await startLocalZaiStub(async (_req, res) => {
+		// Never respond until client aborts.
+		await new Promise((resolve) => setTimeout(resolve, 5000));
+		res.writeHead(200);
+		res.end("{}");
+	});
+	try {
+		const run = createZaiRunCommand({
+			baseUrl: stub.baseUrl,
+			apiKey: "k",
+			fetchImpl: fetch,
+		});
+		const started = Date.now();
+		const result = await run({ prompt: "p", model: "glm-5.3-flash", timeoutSec: 1 });
+		assert.equal(result.ok, false);
+		assert.equal(result.reason, "timeout");
+		assert.ok(Date.now() - started < 4000);
+	} finally {
+		await stub.close();
+	}
+});
+
+test("resolveReviewRunCommand selects zai when backend=zai and requires key", () => {
+	assert.throws(
+		() => resolveReviewRunCommand({ GROK_REVIEW_BACKEND: "zai" }),
+		/ZAI_API_KEY/,
+	);
+	const run = resolveReviewRunCommand({
+		GROK_REVIEW_BACKEND: "zai",
+		ZAI_API_KEY: "secret",
+		ZAI_BASE_URL: "http://127.0.0.1:9/v4",
+	});
+	assert.equal(typeof run, "function");
+	const copilot = resolveReviewRunCommand({ GROK_REVIEW_BACKEND: "copilot" });
+	assert.equal(copilot, defaultRunCommand);
+});
+
+
