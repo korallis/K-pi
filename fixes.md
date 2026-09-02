@@ -231,23 +231,23 @@ Incidental findings recorded for the other packages:
 
 | Package | From → To | Risk | Migration |
 |---|---|---|---|
-| typescript (+ remove `@typescript/native-preview`) | 5.9.3 + preview → **7.0.2** | High | Scripts: `tsgo -p …` → `tsc -p …`, `tsgo --noEmit` → `tsc --noEmit` (root `check`, `packages/{agent,ai,client,coding-agent,protocol,server,telemetry,tui,session-backends/sqlite-node}`). Add devDependency `typescript6: "npm:@typescript/typescript6@6.0.2"` and import it in `scripts/check-ts-relative-imports.mjs` (the only API consumer). Remove `experimentalDecorators`/`emitDecoratorMetadata` from `tsconfig.base.json`. Nightly note in AGENTS.md: `typescript@next`, not native-preview. |
-| @anthropic-ai/sandbox-runtime | 0.0.26 → **0.0.75** | High (pre-1.0) | Used only by the `sandbox` example extension via `SandboxManager.wrapWithSandbox(command)` (signature compatible). Root devDep + example dep bump; re-run the example's tests; drop `seccomp.bpfPath` from any fixture config. |
-| @anthropic-ai/sdk | 0.91.1 → **0.123.0** (also the `custom-provider-anthropic` example: 0.52.0 → 0.123.0) | Medium | `tsc` the `packages/ai/src/api/anthropic-messages.ts` path: exhaustive `stop_reason` switches gain `model_context_window_exceeded`; beta Files/Skills renames do not apply (unused); retired model ids may vanish from literal types — check fixtures/tests. |
-| highlight.js | 10.7.3 → **11.12.0** | Medium | Call form already v11. Confirm every `lib/languages/*.js` import still resolves under the v11 `exports` map (deep imports limited to `lib/core`, `lib/common`, `lib/languages/*`); re-snapshot any highlighted output test. Node ≥20. |
+| typescript (+ remove `@typescript/native-preview`) | 5.9.3 + preview → **7.0.2** | High | Scripts: `tsgo -p …` → `tsc -p …`, `tsgo --noEmit` → `tsc --noEmit` (root `check`, `packages/{agent,ai,client,coding-agent,protocol,server,telemetry,tui,session-backends/sqlite-node}`). `scripts/check-ts-relative-imports.mjs` scans source text instead of the compiler API (a `@typescript/typescript6` alias was tried and rejected: its `@typescript/old` dependency claims the `tsc` bin). `target`/`lib` ES2024 (regex `v` flag). Remove `experimentalDecorators`/`emitDecoratorMetadata` from `tsconfig.base.json`. |
+| @anthropic-ai/sandbox-runtime | 0.0.26 → **0.0.74** | High (pre-1.0) | Used only by the `sandbox` example extension via `SandboxManager.wrapWithSandbox(command)` (signature compatible). Root devDep + example dep bump; re-run the example's tests; drop `seccomp.bpfPath` from any fixture config. |
+| @anthropic-ai/sdk | 0.91.1 → **0.122.0** (also the `custom-provider-anthropic` example: 0.52.0 → 0.122.0) | Medium | Browser smoke: the SDK lazily imports `node:fs`/`node:path` for its credential-profile chain, stubbed for the SDK alone in `scripts/check-browser-smoke.mjs`.  `tsc` the `packages/ai/src/api/anthropic-messages.ts` path: exhaustive `stop_reason` switches gain `model_context_window_exceeded`; beta Files/Skills renames do not apply (unused); retired model ids may vanish from literal types — check fixtures/tests. |
+| highlight.js | 10.7.3 → **11.12.0** | Medium | Call form already v11. Imports rewritten to the exported subpaths (`lib/core`, `lib/languages/*`, root for the lazy all-languages load); the local `highlight-js.d.ts` shim deleted because v11 ships types. Node ≥20. |
 | diff | 8.0.4 → **9.0.0** | Medium | Patch-header formatting changes: re-baseline tests asserting unified-diff text (`packages/agent/test/harness/tools.test.ts`, `packages/coding-agent/test/tools.test.ts`); `oldFileName/newFileName` typed `string | undefined`. |
 | hosted-git-info | 9.0.3 → **10.1.1** | Medium | Raise root and `packages/coding-agent` `engines.node` to `>=22.22.2`; README/AGENTS.md "Node >= 22.19" → 22.22. API unchanged. |
-| @types/node | 22.19.19 → **latest 22.x** (deliberately not 26) | Medium | The one exception to "everything": types must match the engine floor. Move to 24.x/26.x only with an engines bump. |
-| openai | 6.40.0 → **7.9.0** | Med-Low | Node ≥22 only breaking change. `tsc` the five `packages/ai/src/api/*openai*` files (Responses `call_id` optional, `usage.compute_units`); re-run streaming tests (SSE abort semantics changed in 7.7). |
-| @google/genai | 1.52.0 → **2.20.0** | Low | Only the Interactions API broke; `generateContentStream`, `ThinkingConfig`, `FunctionCallingConfigMode` unchanged. |
+| @types/node | 22.19.19 → **22.20.1** (deliberately not 26) | Medium | The one exception to "everything": types must match the engine floor. Move to 24.x/26.x only with an engines bump. |
+| openai | 6.40.0 → **7.8.0** | Med-Low | Node ≥22 only breaking change. `tsc` the five `packages/ai/src/api/*openai*` files (Responses `call_id` optional, `usage.compute_units`); re-run streaming tests (SSE abort semantics changed in 7.7). |
+| @google/genai | 1.52.0 → **2.19.0** | Low | Only the Interactions API broke; `generateContentStream`, `ThinkingConfig`, `FunctionCallingConfigMode` unchanged. |
 | chalk | 5.6.2 → **6.0.0** | Low | Node ≥22; numeric `FORCE_COLOR` is now an exact level (none set in CI). |
 | @xterm/headless | 5.5.0 → **6.0.0** | Low-Med | Test-only (`packages/tui/test/virtual-terminal.ts`); no removed options in use; verify the ESM entry the runner resolves. |
-| http-proxy-agent / https-proxy-agent | 7.x → **9.1.0** | Low | ESM-only + Node ≥20; only `bedrock-converse-stream.ts` uses them with unchanged constructors. |
-| @aws-sdk/client-bedrock-runtime / @smithy/node-http-handler | → **3.1124.0** / **4.12.0** | Low | Additive. |
+| http-proxy-agent / https-proxy-agent | 7.x → **9.1.0** | Low | ESM-only + Node ≥20; only `bedrock-converse-stream.ts` uses them with unchanged constructors. Pulls an optional native `kerberos`, allowlisted as a bundle external. |
+| @aws-sdk/client-bedrock-runtime / @smithy/node-http-handler | → **3.1121.0** / **4.11.3** | Low | Additive. |
 | vitest / @vitest/coverage-v8 | 4.1.9 → **4.1.11** | Low | Concurrency-limit revival may reorder hooks; do not take `vitest@5` rc. |
 | vitest-evals | 0.15.0 → **0.16.1** | Low | Only the GitHub reporter action changed. |
 | undici | 8.9.0 → **8.10.1** | Low | Engines match exactly. |
-| typebox | 1.3.7 → **1.3.25** | Low | Immutability in `Assign/Update/Discard` (1.3.18), sparse-array checks (1.3.20): run `test/schema-conformance.test.ts` and the ai/agent suites. |
+| typebox | 1.3.7 → **1.3.23** | Low | Immutability in `Assign/Update/Discard` (1.3.18), sparse-array checks (1.3.20): run `test/schema-conformance.test.ts` and the ai/agent suites. |
 | marked | 18.0.5 → **18.0.11** | Low | Edge-case HTML changes: re-run `packages/tui/test/markdown.test.ts`. |
 | ignore | 7.0.5 → **7.0.8** | Low | Backslash/tab handling now git-exact. |
 | semver, minimatch, grok-mermaid, @types/semver | → 7.8.5, 10.2.6, 0.2.3, 7.8.0 | Low | Patch. |
@@ -255,7 +255,9 @@ Incidental findings recorded for the other packages:
 | esbuild, tsx | → 0.28.2, 4.23.13 | Low | Patch/minor. |
 | @earendil-works/pi-coding-agent in `packages/evals` | `^0.84.4` → **`^0.1.0`** | — | Workspace consistency; makes `npm ls` clean and matches the UPSTREAM.md register. |
 
-Keep the existing `overrides` (`protobufjs`, `rimraf`, `gaxios.rimraf`) unless `npm ls`/`npm audit` show they are no longer needed after the bump; if removed, say so in the commit.
+Keep the existing `overrides` (`protobufjs`, `rimraf`, `gaxios.rimraf`); add `overrides.vitest = 4.1.11` because `vitest-evals` otherwise nests vitest 4.1.9 under `packages/evals` and splits the `TaskMeta` augmentation.
+
+**Release-age rule.** The repository `.npmrc` sets `min-release-age=2`, so the newest installable version is the newest one published at least two days before the install. The versions above are those on 2026-09-02; `@anthropic-ai/sdk 0.123.0`, `openai 7.9.0`, `@google/genai 2.20.0`, `typebox 1.3.25`, `@aws-sdk/client-bedrock-runtime 3.1124.0`, `@smithy/node-http-handler 4.12.0` and `@anthropic-ai/sandbox-runtime 0.0.75` were published inside that window and follow on the next refresh.
 
 ### Change
 
@@ -283,9 +285,11 @@ npm run kstack:sync:check && npm run upstream:check -- --offline
 
 ### DoD
 
-- [ ] Every non-vendored dependency is at the version in the table; `npm outdated` lists only `@types/node` (deliberate) and nothing else
-- [ ] `npm run check`, `npm test`, `npm run test:kpi`, `npm run build`, `npm run pack` green on Node 22.22+ and 26
-- [ ] UPSTREAM.md §6 and AGENTS.md describe the divergence and the merge rule
+- [x] Every non-vendored dependency is at the version in the table; `npm outdated` lists only `@types/node` (deliberate) and nothing else — `npm outdated --workspaces --include-workspace-root` → `@types/node 22.20.1 → 26.4.0` only; `npm ls --all` clean; `npm audit --omit=dev` 0 vulnerabilities
+- [x] `npm run check`, `npm test`, `npm run test:kpi`, `npm run build`, `npm run pack` green on Node 22.22+ and 26 — on Node 26.7.0: check green (Biome 2.5, native `tsc` 7.0.2, browser smoke), `test:kpi` 670/670, `npm test` 83 script tests + every workspace vitest suite green (coding-agent 2010 passed / 61 skipped after the mermaid fixture retarget), `build:offline` green, `pack` → `release/korallis-k-pi-0.1.0.tgz` installs and runs; `kstack:sync:check` and `upstream:check --offline` ok; one live streamed turn on `openai-codex/gpt-5.6-sol` through openai 7.8 (`pong`). The Node 22.22 leg is CI's.
+- [x] UPSTREAM.md §6 and AGENTS.md describe the divergence and the merge rule — "Dependency refresh (2026-09-02)" register block with the ten forced patches; AGENTS.md Stack names TypeScript 7 and Node ≥ 22.22
+
+**Landed 2026-09-02 on branch `fx/03-smart-routing`.** Not exercised live: the Anthropic SDK 0.122 path (the account's Anthropic slot has no extra usage) and Google/Bedrock (no slots configured); their suites pass with recorded fixtures.
 
 ---
 

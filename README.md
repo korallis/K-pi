@@ -43,7 +43,7 @@ repository. Where a command's output is quoted, that is the text it printed.
 
 ## 1. Prerequisites
 
-- Node 22.19 or newer. Both `package.json` files declare `"node": ">=22.19.0"`.
+- Node 22.22 or newer. Both `package.json` files declare `"node": ">=22.22.2"`.
   This manual was produced on Node v26.7.0.
 - `git`, and `npm` (the repository uses npm workspaces).
 - A terminal that supports 24-bit colour if you want the amber and protocol-blue

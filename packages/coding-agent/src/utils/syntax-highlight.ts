@@ -1,24 +1,24 @@
-import hljs from "highlight.js/lib/core.js";
-import bash from "highlight.js/lib/languages/bash.js";
-import c from "highlight.js/lib/languages/c.js";
-import cpp from "highlight.js/lib/languages/cpp.js";
-import csharp from "highlight.js/lib/languages/csharp.js";
-import dart from "highlight.js/lib/languages/dart.js";
-import go from "highlight.js/lib/languages/go.js";
-import groovy from "highlight.js/lib/languages/groovy.js";
-import java from "highlight.js/lib/languages/java.js";
-import javascript from "highlight.js/lib/languages/javascript.js";
-import kotlin from "highlight.js/lib/languages/kotlin.js";
-import lua from "highlight.js/lib/languages/lua.js";
-import nix from "highlight.js/lib/languages/nix.js";
-import perl from "highlight.js/lib/languages/perl.js";
-import php from "highlight.js/lib/languages/php.js";
-import python from "highlight.js/lib/languages/python.js";
-import ruby from "highlight.js/lib/languages/ruby.js";
-import rust from "highlight.js/lib/languages/rust.js";
-import scala from "highlight.js/lib/languages/scala.js";
-import swift from "highlight.js/lib/languages/swift.js";
-import typescript from "highlight.js/lib/languages/typescript.js";
+import hljs from "highlight.js/lib/core";
+import bash from "highlight.js/lib/languages/bash";
+import c from "highlight.js/lib/languages/c";
+import cpp from "highlight.js/lib/languages/cpp";
+import csharp from "highlight.js/lib/languages/csharp";
+import dart from "highlight.js/lib/languages/dart";
+import go from "highlight.js/lib/languages/go";
+import groovy from "highlight.js/lib/languages/groovy";
+import java from "highlight.js/lib/languages/java";
+import javascript from "highlight.js/lib/languages/javascript";
+import kotlin from "highlight.js/lib/languages/kotlin";
+import lua from "highlight.js/lib/languages/lua";
+import nix from "highlight.js/lib/languages/nix";
+import perl from "highlight.js/lib/languages/perl";
+import php from "highlight.js/lib/languages/php";
+import python from "highlight.js/lib/languages/python";
+import ruby from "highlight.js/lib/languages/ruby";
+import rust from "highlight.js/lib/languages/rust";
+import scala from "highlight.js/lib/languages/scala";
+import swift from "highlight.js/lib/languages/swift";
+import typescript from "highlight.js/lib/languages/typescript";
 import { decodeHtmlEntityAt } from "./html.ts";
 
 const eagerLanguages = {
@@ -54,7 +54,7 @@ export function loadAllHighlightLanguages(): Promise<void> {
 	if (!allLanguagesPromise) {
 		allLanguagesPromise = new Promise((resolve) => {
 			setImmediate(() => {
-				void import("highlight.js/lib/index.js").then(
+				void import("highlight.js").then(
 					() => resolve(),
 					() => {
 						// Eager languages and plaintext fallback remain available.

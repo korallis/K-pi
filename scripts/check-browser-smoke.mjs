@@ -24,6 +24,26 @@ const generatedCatalogDataPlugin = {
 	},
 };
 
+// @anthropic-ai/sdk 0.93+ lazily imports node:fs and node:path (`await
+// import("node:…")`) for its local credential-profile chain. A browser that
+// supplies an API key never reaches those branches, so a browser bundler stubs
+// the two builtins for the SDK alone. The stub is scoped to the SDK's own files
+// on purpose: K-π's packages still must not touch Node builtins, and the check
+// keeps failing when they do.
+const anthropicSdkNodeBuiltinStubPlugin = {
+	name: "anthropic-sdk-node-builtin-stub",
+	setup(build) {
+		build.onResolve({ filter: /^node:(?:fs|path)$/ }, (args) => {
+			if (!normalizePath(args.importer).includes("node_modules/@anthropic-ai/sdk/")) return;
+			return { path: args.path, namespace: "anthropic-sdk-node-builtin-stub" };
+		});
+		build.onLoad({ filter: /.*/, namespace: "anthropic-sdk-node-builtin-stub" }, () => ({
+			contents: "export default {};",
+			loader: "js",
+		}));
+	},
+};
+
 function normalizePath(path) {
 	return path.replaceAll("\\", "/");
 }
@@ -48,7 +68,7 @@ try {
 		format: "esm",
 		logLevel: "silent",
 		outfile: outputPath,
-		plugins: [generatedCatalogDataPlugin],
+		plugins: [generatedCatalogDataPlugin, anthropicSdkNodeBuiltinStubPlugin],
 	});
 
 	const agentTreeshakeBuild = await build({
@@ -59,7 +79,7 @@ try {
 		logLevel: "silent",
 		metafile: true,
 		outfile: agentTreeshakeOutputPath,
-		plugins: [generatedCatalogDataPlugin],
+		plugins: [generatedCatalogDataPlugin, anthropicSdkNodeBuiltinStubPlugin],
 		write: false,
 	});
 	const inputs = agentTreeshakeBuild.metafile.inputs;

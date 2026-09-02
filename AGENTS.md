@@ -91,7 +91,7 @@ These are the only process rules. There is no principle preamble to read first.
 
 ## Stack (this repo)
 
-- TypeScript, Node `>= 22.19`. npm workspaces. Not pnpm.
+- TypeScript 7 (native `tsc`; there is no compiler API, so `scripts/check-ts-relative-imports.mjs` scans source text), Node `>= 22.22`. npm workspaces. Not pnpm.
 - Repository: `k-pi-monorepo` (private root). Published artifact: `@korallis/k-pi` on npm (NH-04). Executable: `kpi` / `k-pi`. Brand cell: **K-π**.
 - Everything under `packages/` is forked Pi source owned here. K-π's own runtime is `packages/coding-agent/src/kpi/`; K-π's node tests stay in root `test/` and import that path.
 - Upstream base: Pi `v0.84.4`, commit `b79e4cc834970cca69daebffab7df1da7d1e52c4`, remote `upstream` → `https://github.com/earendil-works/pi.git`. Machine-readable pin: `upstream.json`; drift report: `npm run upstream:check`.

@@ -18,7 +18,7 @@
 	],
 	"scripts": {
 		"clean": "node -e \"import('node:fs/promises').then(fs=>fs.rm('dist',{recursive:true,force:true}))\"",
-		"build": "tsgo -p tsconfig.build.json && node ./scripts/prepare-dist.mjs copy-sqlite-migrations",
+		"build": "tsc -p tsconfig.build.json && node ./scripts/prepare-dist.mjs copy-sqlite-migrations",
 		"test": "vitest --run",
 		"coverage": "vitest --run --coverage",
 		"prepublishOnly": "npm run clean && npm run build"
@@ -31,14 +31,14 @@
 		"directory": "packages/session-backends/sqlite-node"
 	},
 	"engines": {
-		"node": ">=22.19.0"
+		"node": ">=22.22.2"
 	},
 	"dependencies": {
 		"@earendil-works/pi-ai": "^0.84.4",
 		"@earendil-works/pi-agent-core": "^0.84.4"
 	},
 	"devDependencies": {
-		"@vitest/coverage-v8": "4.1.9",
-		"vitest": "4.1.9"
+		"@vitest/coverage-v8": "4.1.11",
+		"vitest": "4.1.11"
 	}
 }

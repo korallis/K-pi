@@ -112,6 +112,24 @@ Verified against `git diff b79e4cc..worktree`, upstream-owned paths only. `src/k
 | `vitest.config.ts` | Excludes the vendored K-stack subtree (its maintainer tests target Bun, not Vitest) and caps workers at four so filesystem-watcher contracts are not invalidated by per-process watcher exhaustion. |
 | `tsconfig.build.json` | Excludes `src/kpi/kstack/{generated,upstream,overlay,scripts}` from the package build. |
 
+**Dependency refresh (2026-09-02, `fixes.md` FX-04)**
+
+Every `packages/*/package.json`, the example-extension manifests and the root manifest pin newer versions than upstream `v0.84.4` (TypeScript 7 native `tsc` replaces `@typescript/native-preview`; openai 7, @google/genai 2, @anthropic-ai/sdk 0.122, highlight.js 11, diff 9, chalk 6, hosted-git-info 10, proxy agents 9, @xterm/headless 6, Biome 2.5, and every patch bump the registry's two-day release age allowed). On an upstream merge keep the higher version of each dependency and re-run FX-04's verification. Source patches the bump forced, all minimal:
+
+| File | Patch |
+|---|---|
+| `packages/ai/src/api/google-shared.ts` | `FinishReason.TOO_MANY_TOOL_CALLS` added to the exhaustive stop-reason switch (@google/genai 2). |
+| `packages/ai/src/api/openai-responses.ts` | Dropped the local `prompt_cache_options` type intersection; openai 7 types it. |
+| `packages/ai/src/api/openai-codex-responses.ts` | Request body typed `Uint8Array<ArrayBuffer>` so it satisfies `BodyInit` under the newer fetch typings. |
+| `packages/coding-agent/src/utils/syntax-highlight.ts` | highlight.js 11 `exports` subpaths (`lib/core`, `lib/languages/*`, root for the lazy all-languages load); `highlight-js.d.ts` deleted because v11 ships types. |
+| `scripts/build-coding-agent-bundle.mjs` | `kerberos` allowlisted as an optional native external (proxy agents 9); bundle target `node22.22`. |
+| `scripts/check-browser-smoke.mjs` | Stubs `node:fs`/`node:path` for `@anthropic-ai/sdk` only (its lazily imported credential-profile chain); K-π packages still must not touch Node builtins. |
+| `scripts/check-ts-relative-imports.mjs` | Scans source text instead of the compiler API, which TypeScript 7 does not ship. |
+| `tsconfig.base.json` | `target`/`lib` ES2024 (regex `v` flag under TS 7); unused `experimentalDecorators`/`emitDecoratorMetadata` removed. |
+| `biome.json` | Biome 2.5 migration; `complexity/useOptionalChain` and `correctness/noUnsafeOptionalChaining` off because they flag 38 sites in upstream-owned files. |
+| `package.json` `overrides.vitest` | One vitest for the whole tree; `vitest-evals` otherwise nests 4.1.9 and splits the `TaskMeta` augmentation. |
+| `packages/coding-agent/test/mermaid.test.ts` | The two fallback fixtures use the invisible link `~~~`, which grok-mermaid 0.2.3 still drops with a warning; it now renders the `:::class` syntax they used before. |
+
 **Root build system (medium risk: upstream edits these every release; resolve hunk-by-hunk, keeping K-π's workspace shape and the publish removals)**
 
 | File | Patch |
@@ -123,7 +141,7 @@ Verified against `git diff b79e4cc..worktree`, upstream-owned paths only. `src/k
 | `.gitignore` | Ignores `.kpi/` (and pre-rebrand `.pi/`) project-local runtime state instead of upstream's maintainer-specific entries. |
 | `.github/workflows/{ai-review,auto-merge,check,queue-stall-alarm,release,upstream-drift}.yml` | K-π-owned CI; the status context a workflow emits is its job name, which is what branch protection matches. `ai-review` → `AI review (advisory)`: z.ai review that comments and never blocks, and is never added to the required set. `auto-merge` → `enable`: green-only queued merge. `check` → `check`: adapted Ray Fernando hard verification on the self-hosted macOS runners, and the only required status check. `queue-stall-alarm` → `detect`: hosted watchdog for a stalled runner queue. `release` → `release`: tag-driven `@korallis/k-pi` publish with provenance from a GitHub-hosted runner. `upstream-drift` → `drift`: read-only weekly drift report. CI reads pre-provisioned GitHub secrets only (`ZAI_API_KEY`, variable `AI_REVIEW_MODEL`); it never calls 1Password or depends on an operator laptop. `scripts/check-ci-contract.mjs` keeps every write-enabled workflow on exact-path allowlists, forbids runtime 1Password access and obsolete Cursor credentials/workflows, and blocks pushes, long-lived registry tokens, `pull_request_target`, and upstream governance automation. Never merge upstream CI content into these files. |
 | `pi-test.sh` → `kpi-test.sh` (+ `.ps1`, `.bat`) | Source-runner rename; `.bat` also edited for the new name. Git tracks these as renames, so upstream changes to `pi-test.*` follow to the new names with `merge.renames` on. |
-| `packages/evals/package.json` | Workspace dependency range follows the fork version (`^0.1.0` instead of `^0.84.4`). |
+| `packages/evals/package.json` | Workspace dependency range follows the fork version (`^0.1.0` instead of `^0.84.4`); corrected 2026-09-02, it had silently stayed at `^0.84.4` and made `npm ls` report the workspace invalid. |
 | `AGENTS.md`, `README.md`, `packages/coding-agent/README.md` | Root docs replaced by K-π's authority docs; the package README keeps upstream's reference body under a fork banner (low risk — regenerate the banner side, take upstream's body updates). |
 
 **Deleted upstream files (§5 policy; on merge, resolve as deleted — do not resurrect)**

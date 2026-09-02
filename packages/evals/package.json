@@ -10,11 +10,11 @@
 	},
 	"devDependencies": {
 		"@earendil-works/pi-ai": "^0.84.4",
-		"@earendil-works/pi-coding-agent": "^0.84.4",
-		"@types/node": "22.19.19",
+		"@earendil-works/pi-coding-agent": "^0.1.0",
+		"@types/node": "22.20.1",
 		"shx": "0.4.0",
-		"typescript": "5.9.3",
-		"vitest-evals": "0.15.0",
-		"vitest": "4.1.9"
+		"typescript": "7.0.2",
+		"vitest-evals": "0.16.1",
+		"vitest": "4.1.11"
 	}
 }

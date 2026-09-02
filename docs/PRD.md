@@ -503,7 +503,7 @@ operator /k-mode <goal>
 
 ## 9. Constraints
 
-- Node `>= 22.19`.
+- Node `>= 22.22`.
 - Upstream base: Pi `v0.84.4`, commit `b79e4cc834970cca69daebffab7df1da7d1e52c4`, tracked via the `upstream` remote. Moving to a newer upstream release is a reviewed merge per `../UPSTREAM.md`, never an automated bump.
 - No peer dependencies. Workspace packages keep upstream `@earendil-works/pi-*` names for merge hygiene only; nothing is resolved from a registry under those names.
 - Secrets: `0600` files under `~/.kpi/agent/`, never in git.

@@ -589,5 +589,5 @@ function registerParentTools(pi: ExtensionAPI, options: BusRegistrationOptions):
 	}
 }
 
-export { defaultIsProcessAlive };
 export type { WorkerRole };
+export { defaultIsProcessAlive };
