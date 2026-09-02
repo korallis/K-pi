@@ -180,15 +180,15 @@ export function matchPlaybook(task: string, playbooks: readonly Playbook[]): Pla
  * reason, because a step silently missing from a todo list reads as work that was
  * never required.
  */
-export function renderTodos(playbook: Playbook): string[] {
-	return playbook.steps.map((step) =>
+export function renderTodos(steps: ReadonlyArray<{ node: string; text: string; skip?: string }>): string[] {
+	return steps.map((step) =>
 		step.skip === undefined ? `${step.node}: ${step.text}` : `${step.node}: ${step.text} — skip: ${step.skip}`,
 	);
 }
 
 export async function createKModePlan(task: string, directory = generatedSkillsDirectory()): Promise<KModePlan> {
 	const playbook = matchPlaybook(task, await loadPlaybooks(directory));
-	return { playbook: playbook.name, steps: playbook.steps, todos: renderTodos(playbook) };
+	return { playbook: playbook.name, steps: playbook.steps, todos: renderTodos(playbook.steps) };
 }
 
 export async function assertShipApproved(runDirectory: string): Promise<void> {

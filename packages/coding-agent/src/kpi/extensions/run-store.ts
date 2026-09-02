@@ -48,7 +48,17 @@ export interface Task {
 	ac: {
 		quality: "executable" | "partial" | "narrative";
 	};
+	/**
+	 * Frozen K-stack playbook name selected at job create. Immutable for the life
+	 * of the job: re-matching mid-run would change what the run was for.
+	 */
 	playbook?: string;
+	/**
+	 * Frozen ordered steps for `playbook`. Each entry is `{ node, text, skip? }`.
+	 * State rendering and resume read only this snapshot — never process-global
+	 * K-mode plan state or live generated skills.
+	 */
+	playbook_steps?: FrozenPlaybookStep[];
 	runtime_dependencies?: string[];
 	dependency_baseline?: string[];
 	/**
@@ -58,6 +68,13 @@ export interface Task {
 	limits?: GraphBudgetOverrides;
 	/** The one slice an implement round ships. Never inferred from modules[0]. */
 	current_module_id?: string;
+}
+
+/** One step frozen into `task.json` with the selected playbook. */
+export interface FrozenPlaybookStep {
+	node: string;
+	text: string;
+	skip?: string;
 }
 
 export function writeAllowForTask(task: Pick<Task, "acceptance">): string[] {
@@ -167,6 +184,7 @@ export async function atomicWrite(
 export async function createJob(projectRoot: string, task: Task, context = ""): Promise<Job> {
 	assertJobId(task.job_id);
 	validateBudgetOverrides(task.limits, `task ${task.job_id} limits`);
+	assertPlaybookFreeze(task);
 	const runsDirectory = join(projectRoot, CONFIG_DIR_NAME, "runs");
 	const directory = join(runsDirectory, task.job_id);
 	await mkdir(runsDirectory, { recursive: true });
@@ -195,17 +213,47 @@ export async function createJob(projectRoot: string, task: Task, context = ""): 
 /**
  * The hash of what the job must achieve.
  *
- * `current_module_id` and `playbook` are deliberately excluded. They select
- * which slice this round owns and which rigor playbook shapes its steps, and
- * both are set by an editor that runs while the job is already open - the plan
- * re-freezing the slice, the K-mode matcher naming the playbook. Folding them in
- * would make every selection look like a changed contract and stale the research
- * and stack bound to it. Goal, non-goals, acceptance, constraints, gates and
- * caps - the things the job is judged against - are all still covered.
+ * Only `current_module_id` is excluded: the plan may re-freeze which slice this
+ * round owns while the job is open. The selected playbook name and its ordered
+ * step snapshot are part of the contract — changing either means a different
+ * job. Goal, non-goals, acceptance, constraints, gates, caps, playbook and steps
+ * are all covered.
  */
 export function contractHash(task: Task): string {
-	const { current_module_id: _slice, playbook: _playbook, ...contract } = task;
+	const { current_module_id: _slice, ...contract } = task;
 	return `sha256:${createHash("sha256").update(JSON.stringify(contract)).digest("hex")}`;
+}
+
+/**
+ * Playbook name and steps travel together. Either both are absent, or the name
+ * is non-empty and every step is a schema-valid `{ node, text, skip? }` in order.
+ */
+export function assertPlaybookFreeze(task: Pick<Task, "playbook" | "playbook_steps">): void {
+	const name = task.playbook;
+	const steps = task.playbook_steps;
+	if (name === undefined && steps === undefined) {
+		return;
+	}
+	if (typeof name !== "string" || name.trim().length === 0) {
+		throw new Error("task.playbook must be a non-empty string when playbook_steps are frozen");
+	}
+	if (!Array.isArray(steps) || steps.length === 0) {
+		throw new Error(`task.playbook ${name} requires a non-empty playbook_steps snapshot`);
+	}
+	for (const [index, step] of steps.entries()) {
+		if (step === null || typeof step !== "object" || Array.isArray(step)) {
+			throw new Error(`task.playbook_steps[${index}] must be an object`);
+		}
+		if (typeof step.node !== "string" || step.node.trim().length === 0) {
+			throw new Error(`task.playbook_steps[${index}].node must be a non-empty string`);
+		}
+		if (typeof step.text !== "string" || step.text.trim().length === 0) {
+			throw new Error(`task.playbook_steps[${index}].text must be a non-empty string`);
+		}
+		if (step.skip !== undefined && (typeof step.skip !== "string" || step.skip.trim().length === 0)) {
+			throw new Error(`task.playbook_steps[${index}].skip must be a non-empty string when present`);
+		}
+	}
 }
 
 /** The frozen task contract for a job, without its context pack. */

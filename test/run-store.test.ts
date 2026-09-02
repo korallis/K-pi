@@ -48,6 +48,7 @@ const task: Task = {
 	quality_gates: ["pnpm test"],
 	ac: { quality: "executable" },
 	playbook: "coding-loop.gated",
+	playbook_steps: [{ node: "implement", text: "ship the coding loop gated path" }],
 	runtime_dependencies: ["node>=22.19"],
 	dependency_baseline: ["typescript@5.9.3"],
 	current_module_id: "run-store",

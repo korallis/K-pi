@@ -36,6 +36,10 @@ const task: Task = {
 	quality_gates: ["pnpm test"],
 	ac: { quality: "narrative" },
 	playbook: "feature",
+	playbook_steps: [
+		{ node: "plan", text: "scope the change" },
+		{ node: "implement", text: "write the code", skip: "demo skip" },
+	],
 	runtime_dependencies: [],
 	dependency_baseline: ["typescript"],
 	limits: { maxRounds: 5, maxCostUsd: 12.5 },

@@ -581,7 +581,7 @@ test("rendered todos carry the node that may complete them", async () => {
 	const playbooks = await loadPlaybooks();
 	const feature = playbooks.find((playbook) => playbook.name === "feature");
 	assert.ok(feature !== undefined);
-	const todos = renderTodos(feature);
+	const todos = renderTodos(feature.steps);
 	assert.equal(todos.length, feature.steps.length);
 	for (const [index, step] of feature.steps.entries()) {
 		assert.ok(todos[index].startsWith(`${step.node}: `), `todo ${index} names its node`);
@@ -1099,36 +1099,128 @@ test("attribution is complete: the full MIT text, the author, and the source", a
 });
 
 test("K-mode freezes the playbook into the job contract and renders its steps", async () => {
+	const { createJob, readTaskForJob, contractHash } = await import(
+		"../packages/coding-agent/src/kpi/extensions/run-store.ts"
+	);
+	const { writeState } = await import("../packages/coding-agent/src/kpi/extensions/gated-loop.ts");
+	const { createStopState } = await import("../packages/coding-agent/src/kpi/extensions/graph/stop.ts");
 	const { kModeState } = await import("../packages/coding-agent/src/kpi/kstack/mode.ts");
 	const previous = { enabled: kModeState.enabled, plan: kModeState.plan };
+	const root = await mkdtemp(join(tmpdir(), "kpi-playbook-freeze-"));
 	try {
-		// Off: a job records no playbook rather than guessing one.
+		kModeState.enabled = true;
+		kModeState.plan = await createKModePlan("investigate why the loop stalls");
+		assert.equal(kModeState.plan.playbook, "investigation");
+		const frozenSteps = kModeState.plan.steps.map((step) =>
+			step.skip === undefined
+				? { node: step.node, text: step.text }
+				: { node: step.node, text: step.text, skip: step.skip },
+		);
+		const expectedTodos = renderTodos(kModeState.plan.steps);
+		assert.ok(
+			expectedTodos.some((todo) => todo.includes("skip:")),
+			"investigation freezes at least one skip reason",
+		);
+		assert.equal(expectedTodos.length, frozenSteps.length);
+
+		const task = {
+			job_id: "freeze-investigation",
+			mode: "gated" as const,
+			goal: "investigate why the loop stalls",
+			nongoals: [] as string[],
+			acceptance: [{ id: "AC-01", statement: "root cause known", required: true }],
+			constraints: [] as string[],
+			quality_gates: [] as string[],
+			ac: { quality: "narrative" as const },
+			playbook: kModeState.plan.playbook,
+			playbook_steps: frozenSteps,
+		};
+		await createJob(root, task);
+
+		// Mutate and clear process-global plan: the freeze must not depend on it.
 		kModeState.enabled = false;
 		delete kModeState.plan;
 		assert.equal(kModeState.plan, undefined);
 
-		// On: the matched playbook and every step, skipped ones included.
-		kModeState.enabled = true;
-		kModeState.plan = await createKModePlan("investigate why the loop stalls");
-		assert.equal(kModeState.plan.playbook, "investigation");
-		assert.equal(kModeState.plan.todos.length, kModeState.plan.steps.length);
+		const reloaded = await readTaskForJob(root, task.job_id);
+		assert.equal(reloaded.playbook, "investigation");
+		assert.deepEqual(reloaded.playbook_steps, frozenSteps);
+		for (const [index, step] of frozenSteps.entries()) {
+			assert.equal(reloaded.playbook_steps?.[index]?.node, step.node, `step ${index} node`);
+			assert.equal(reloaded.playbook_steps?.[index]?.text, step.text, `step ${index} text`);
+			assert.equal(reloaded.playbook_steps?.[index]?.skip, step.skip, `step ${index} skip`);
+		}
 
-		// The contract hash deliberately excludes the playbook, so a job stays
-		// comparable across a K-mode change while the freeze still records it.
-		const runStore = await readFile(
-			new URL("../packages/coding-agent/src/kpi/extensions/run-store.ts", import.meta.url).pathname,
-			"utf8",
-		);
-		assert.match(runStore, /playbook: _playbook/u, "playbook is excluded from the contract hash");
-		assert.match(runStore, /playbook\?: string/u, "and is part of the task contract");
+		const runDirectory = join(root, ".kpi", "runs", task.job_id);
+		const graphState = {
+			graphId: "freeze",
+			jobId: task.job_id,
+			status: "running" as const,
+			superstep: 0,
+			active: ["implement"],
+			values: {},
+			nodes: {},
+			budget: {
+				limits: {},
+				startedAtMs: 0,
+				elapsedMs: 0,
+				costUsd: 0,
+				round: 0,
+				batches: 0,
+				steps: 0,
+				nodeRuns: {},
+			},
+		};
+		await writeState(runDirectory, reloaded, graphState as never, createStopState(8));
+		const state = JSON.parse(await readFile(join(runDirectory, "state.json"), "utf8")) as {
+			playbook?: string;
+			todos?: string[];
+		};
+		assert.equal(state.playbook, "investigation");
+		assert.deepEqual(state.todos, expectedTodos, "state todos come from the task snapshot only");
 
-		// The loop writes both the freeze and the rendered steps.
-		const loop = await readFile(
-			new URL("../packages/coding-agent/src/kpi/extensions/gated-loop.ts", import.meta.url).pathname,
-			"utf8",
+		// Editing the frozen snapshot changes the contract hash; slice id does not.
+		const baseHash = contractHash(reloaded);
+		assert.equal(contractHash({ ...reloaded, current_module_id: "other-slice" }), baseHash);
+		assert.notEqual(
+			contractHash({ ...reloaded, playbook: "feature" }),
+			baseHash,
+			"playbook name is in the contract hash",
 		);
-		assert.match(loop, /playbook: kModeState\.plan\.playbook/u, "the job freezes the matched playbook");
-		assert.match(loop, /todos: playbookTodos\(task\)/u, "and the run state renders its steps");
+		assert.notEqual(
+			contractHash({ ...reloaded, playbook_steps: [...frozenSteps].reverse() }),
+			baseHash,
+			"step order is in the contract hash",
+		);
+		assert.notEqual(
+			contractHash({
+				...reloaded,
+				playbook_steps: frozenSteps.map((step, index) =>
+					index === 0 ? { ...step, text: `${step.text} (edited)` } : step,
+				),
+			}),
+			baseHash,
+			"step text is in the contract hash",
+		);
+		assert.notEqual(
+			contractHash({
+				...reloaded,
+				playbook_steps: frozenSteps.map((step) =>
+					step.skip === undefined ? step : { ...step, skip: `${step.skip} (edited)` },
+				),
+			}),
+			baseHash,
+			"skip reason is in the contract hash",
+		);
+
+		// After rewriting task.json as a fresh process would read it, state still matches.
+		const again = await readTaskForJob(root, task.job_id);
+		assert.deepEqual(again.playbook_steps, frozenSteps);
+		await writeState(runDirectory, again, graphState as never, createStopState(8));
+		const resumed = JSON.parse(await readFile(join(runDirectory, "state.json"), "utf8")) as {
+			todos?: string[];
+		};
+		assert.deepEqual(resumed.todos, expectedTodos);
 	} finally {
 		kModeState.enabled = previous.enabled;
 		if (previous.plan === undefined) {
@@ -1136,5 +1228,6 @@ test("K-mode freezes the playbook into the job contract and renders its steps", 
 		} else {
 			kModeState.plan = previous.plan;
 		}
+		await rm(root, { recursive: true, force: true });
 	}
 });
