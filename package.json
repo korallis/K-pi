@@ -32,7 +32,8 @@
 		"test": "npm run test:scripts && npm run test:kpi && npm run test --workspaces --if-present",
 		"test:scripts": "node --test scripts/*.test.mjs",
 		"test:kpi": "node --test --experimental-strip-types test/*.test.ts",
-		"upstream:check": "node scripts/upstream-check.mjs"
+		"upstream:check": "node scripts/upstream-check.mjs",
+		"kstack:status": "node --experimental-strip-types packages/coding-agent/src/kpi/kstack/scripts/status.ts"
 	},
 	"devDependencies": {
 		"@anthropic-ai/sandbox-runtime": "0.0.26",

@@ -1,0 +1,17 @@
+{
+	"origin": {
+		"repository": "https://github.com/cursor/plugins.git",
+		"path": "pstack/",
+		"commit": "b9ddc83c32972210b8a94d389130713e8eed346e",
+		"treeOid": "950b90234c17babd00c43e32b19ae50abb4720f5"
+	},
+	"transformVersion": "88b49d11c120d0907f0d17f9593fff2a3cfbd51abbe9c0cd849e66b815377da2",
+	"patches": [],
+	"license": {
+		"path": "LICENSE",
+		"spdx": "MIT",
+		"holder": "Lauren Tan",
+		"sha256": "bc957ca6bee02792566a1a028d105e02e247c6e77cf057061674273da77b200e"
+	},
+	"overlayVersion": 1
+}

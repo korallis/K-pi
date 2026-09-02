@@ -1,0 +1,12 @@
+diff --git a/skills/fixture-skill/references/safe.md b/skills/fixture-skill/references/safe.md
+new file mode 100644
+--- /dev/null
++++ b/skills/fixture-skill/references/safe.md
+@@ -0,0 +1 @@
++safe
+diff --git "a/\056\056/escape.txt" "b/\056\056/escape.txt"
+new file mode 100644
+--- /dev/null
++++ "b/\056\056/escape.txt"
+@@ -0,0 +1 @@
++escaped

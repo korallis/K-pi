@@ -1,0 +1,11 @@
+diff --git a/skills/fixture-skill/references/notes.md b/skills/fixture-skill/references/notes.md
+new file mode 100644
+--- /dev/null
++++ b/skills/fixture-skill/references/notes.md
+@@ -0,0 +1,6 @@
++Example patch documentation:
++--- "a/quoted path.txt"
+++++ "b/quoted path.txt"
++diff --git "a/x y" "b/x y"
++rename to ../nowhere
++GIT binary patch

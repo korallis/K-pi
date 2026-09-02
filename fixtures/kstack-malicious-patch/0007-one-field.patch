@@ -1,0 +1,8 @@
+diff --git a/skills/fixture-skill/references/safe.md b/skills/fixture-skill/references/safe.md
+new file mode 100644
+--- /dev/null
++++ b/skills/fixture-skill/references/safe.md
+@@ -0,0 +1 @@
++safe
+diff --git a/only-one-field
+new file mode 100644

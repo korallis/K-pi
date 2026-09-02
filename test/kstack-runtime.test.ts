@@ -53,17 +53,30 @@ import {
 } from "../packages/coding-agent/src/kpi/kstack/overlay/transforms.ts";
 import {
 	buildGeneratedTree,
-	files,
 	readOverlayConfig,
+	textOf,
 } from "../packages/coding-agent/src/kpi/kstack/scripts/sync-kstack.ts";
+import { readTree } from "../packages/coding-agent/src/kpi/kstack/scripts/tree.ts";
 
 const KSTACK_ROOT = new URL("../packages/coding-agent/src/kpi/kstack/", import.meta.url).pathname;
 const GENERATED = join(KSTACK_ROOT, "generated");
 const OVERLAY = join(KSTACK_ROOT, "overlay");
 const UPSTREAM = join(KSTACK_ROOT, "upstream");
 
+/**
+ * A text view of the generated tree.
+ *
+ * RP-17 made the pipeline byte- and mode-faithful, so the tree is bytes now.
+ * These assertions are all about text, and a binary asset has nothing to say
+ * about frontmatter or residue, so they read the text view.
+ */
 async function generatedFiles(): Promise<Map<string, string>> {
-	return files(GENERATED);
+	return textOf(await readTree(GENERATED));
+}
+
+/** Every path, including the binary ones the text view leaves out. */
+async function generatedPaths(): Promise<string[]> {
+	return [...(await readTree(GENERATED)).keys()].sort();
 }
 
 // ---------------------------------------------------------------------------
@@ -73,7 +86,7 @@ async function generatedFiles(): Promise<Map<string, string>> {
 test("the generated tree is skills plus required attribution, and nothing else", async () => {
 	const tree = await generatedFiles();
 	assert.ok(tree.size > 0, "the generated runtime is not empty");
-	for (const path of tree.keys()) {
+	for (const path of await generatedPaths()) {
 		assert.ok(
 			path.startsWith("skills/") || path === "LICENSE" || path === "NOTICE",
 			`generated carries only the loadable runtime and its attribution: ${path}`,
@@ -112,7 +125,7 @@ test("no first-party K-stack truth is left standing beside the generated tree", 
 		);
 	}
 	// And the overlay owns them instead.
-	const overlaySource = await files(join(OVERLAY, "source"));
+	const overlaySource = textOf(await readTree(join(OVERLAY, "source")));
 	for (const required of ["skills/k-stack-principles/SKILL.md", "skills/k-agent/SKILL.md"]) {
 		assert.ok(overlaySource.has(required), `overlay owns ${required}`);
 	}
@@ -302,8 +315,8 @@ test("a glob matches path shapes and not neighbouring names", () => {
 // ---------------------------------------------------------------------------
 
 /** Every documented invalid shape, in one tree, with nothing else in it. */
-function residueFixture(): Map<string, string> {
-	return new Map<string, string>([
+function residueFixture(): Map<string, { bytes: Buffer; executable: boolean }> {
+	const entries = new Map<string, string>([
 		["skills/make-bot-ui/SKILL.md", "---\nname: make-bot-ui\ndescription: webhook bot\n---\nbody\n"],
 		["automations/benny/README.md", "Benny pack\n"],
 		["skills/automate-me/SKILL.md", "---\nname: automate-me\ndescription: personal mode\n---\nbody\n"],
@@ -333,6 +346,7 @@ function residueFixture(): Map<string, string> {
 			].join("\n"),
 		],
 	]);
+	return new Map([...entries].map(([path, text]) => [path, { bytes: Buffer.from(text, "utf8"), executable: false }]));
 }
 
 test("the residue fixture is either transformed correctly or refused with a location", async () => {
@@ -361,7 +375,7 @@ test("the residue fixture is either transformed correctly or refused with a loca
 	}
 
 	// The survivor kept its meaning and lost every Cursor contract.
-	const keeper = built.files.get("skills/keeper/SKILL.md");
+	const keeper = built.files.get("skills/keeper/SKILL.md")?.bytes.toString("utf8");
 	assert.ok(keeper !== undefined);
 	assert.match(keeper, /spawn_background tool/u);
 	assert.match(keeper, /role per reviewer/u);
@@ -375,18 +389,24 @@ test("the residue fixture is either transformed correctly or refused with a loca
 
 test("an unknown Cursor operator fails closed with a located diagnostic", async () => {
 	const config = await readOverlayConfig(OVERLAY);
-	const fixture = new Map<string, string>([
+	const fixture = new Map([
 		[
 			"skills/unknown/SKILL.md",
-			[
-				"---",
-				"name: unknown",
-				"description: uses an unmapped operator",
-				"---",
-				"",
-				"Wake the Cursor Cloud agent.",
-				"",
-			].join("\n"),
+			{
+				bytes: Buffer.from(
+					[
+						"---",
+						"name: unknown",
+						"description: uses an unmapped operator",
+						"---",
+						"",
+						"Wake the Cursor Cloud agent.",
+						"",
+					].join("\n"),
+					"utf8",
+				),
+				executable: false,
+			},
 		],
 	]);
 	await assert.rejects(buildGeneratedTree(fixture, new Map(), config), (error: unknown) => {
