@@ -87,7 +87,7 @@ function hueOf(rgb) {
 	return `unclassified(${rgb}@${angle}deg)`;
 }
 
-async function footerCapture(label, { promptTokens, slotKind = "local", outDir, extraScript = [], underKpiTheme = false }) {
+async function footerCapture(label, { promptTokens, slotKind = "local", outDir, extraScript = [], underKpiTheme = false, spinnerBody = false, spinnerWait = false }) {
 	const port = await freePort();
 	const box = sandbox(label, { baseUrl: `http://127.0.0.1:${port}/v1`, port });
 	if (slotKind === "oauth") {
@@ -137,6 +137,26 @@ async function footerCapture(label, { promptTokens, slotKind = "local", outDir, 
 		JSON.stringify({
 			models: [modelId],
 			scenes: [
+				// A turn with a tool round trip: request, tool call, the agent runs
+				// `read`, second request, answer. An instant single-request turn can
+				// finish between two render ticks, so the working brand would never be
+				// painted and catching the spinner would be luck rather than proof.
+				...(spinnerBody
+					? [
+							{
+								node: "tool-hop",
+								match: {},
+								once: true,
+								turns: [
+									{
+										tool_calls: [{ name: "read", arguments: { path: "README.md" } }],
+										finish_reason: "tool_calls",
+										usage: { prompt_tokens: promptTokens, completion_tokens: 4 },
+									},
+								],
+							},
+						]
+					: []),
 				{
 					node: "any",
 					match: {},
@@ -178,12 +198,20 @@ async function footerCapture(label, { promptTokens, slotKind = "local", outDir, 
 		env: box.env,
 		cwd: box.project,
 		cols: 160,
+		// A credentialed cloud pool resolves official model ids from the provider
+		// catalog on pi.dev. That is a real startup network operation the product
+		// lets an operator decline, unlike an install report, so the row declines
+		// it with the product's own flag rather than pretending it did not happen.
+		args: slotKind === "oauth" ? ["--offline"] : [],
 		script: [
 			{ expect: `⬡ ${modelCell}`, send: "/kpi off\r", timeout: 40 },
 			{ expect: "goal wrapping off", send: "say ok\r", timeout: 30 },
 			// The footer's four context colours resolve through the *active theme*,
 			// and K-π's own theme is only applied once the board is drawn. Grading
 			// the palette outside it would grade Pi's default dark theme instead.
+			...(spinnerWait
+				? [{ expect: "K-\u03c0 [\u2800-\u28ff] \\d+s", timeout: 45 }]
+				: []),
 			...(underKpiTheme
 				? [
 						{ expect: "TURNDONE", send: "/kpi status\r", timeout: 60 },
@@ -249,7 +277,15 @@ const oauthCapture = await footerCapture("u15-oauth", {
 const spinnerCapture = await footerCapture("u15-spin", {
 	promptTokens: 120,
 	outDir: join(EVIDENCE, "spinner"),
-	extraScript: [{ expect: "TURNDONE", send: "/statusbar\r", timeout: 20 }, { expect: "default footer restored", timeout: 25, drain: 2, after: 1.5 }],
+	spinnerBody: true,
+	// Waiting for the spinner IS the proof: the step only completes when a
+	// working brand frame with elapsed seconds is on screen, so a race cannot
+	// silently pass the assertion below.
+	spinnerWait: true,
+	extraScript: [
+		{ expect: "TURNDONE", send: "/statusbar\r", timeout: 40 },
+		{ expect: "default footer restored", timeout: 25, drain: 2, after: 1.5 },
+	],
 });
 
 const idleRow = footerRows(localCapture.text)[0] ?? "";
@@ -344,7 +380,13 @@ const checks = [
 		"egress",
 		[localCapture, oauthCapture, spinnerCapture].every((capture) => capture.egress.clean) &&
 			calibration.every((entry) => entry.egressClean),
-		"no outbound attempt",
+		[
+			...["local", "oauth", "spinner"].flatMap((name, index) => {
+				const capture = [localCapture, oauthCapture, spinnerCapture][index];
+				return capture.egress.clean ? [] : [`${name}: ${capture.egress.text.replace(/\s+/gu, " ").slice(0, 160)}`];
+			}),
+			...calibration.flatMap((entry) => (entry.egressClean ? [] : [`context-${entry.target}: outbound recorded`])),
+		].join(" | ") || "no outbound attempt",
 	),
 ];
 

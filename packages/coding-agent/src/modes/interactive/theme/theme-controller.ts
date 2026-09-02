@@ -54,20 +54,29 @@ export class InteractiveThemeController {
 		this.ui.setTerminalColorSchemeNotifications(this.autoSyncEnabled);
 	}
 
-	async applyFromSettings(): Promise<void> {
+	/**
+	 * Applies the operator's theme selection.
+	 *
+	 * `reportErrors` is false for the attempt that runs before extensions have
+	 * contributed their resources: a name that is not registered *yet* is not a
+	 * missing theme, and reporting it told the operator their perfectly good
+	 * `theme` setting did not exist while the startup banner listed it on the
+	 * next line. The attempt after resources are extended reports for real.
+	 */
+	async applyFromSettings({ reportErrors = true }: { reportErrors?: boolean } = {}): Promise<void> {
 		const settingsManager = this.getSettingsManager();
 		const themeSetting = this.currentThemeSetting ?? settingsManager.getThemeSetting();
 		const autoTheme = parseAutoThemeSetting(themeSetting);
 		if (autoTheme) {
 			this.terminalTheme = await detectTerminalThemeForAuto({ ui: this.ui, timeoutMs: 100 });
 			this.setAutoSync(true);
-			this.applyThemeName(this.terminalTheme === "light" ? autoTheme.lightTheme : autoTheme.darkTheme, true);
+			this.applyThemeName(this.terminalTheme === "light" ? autoTheme.lightTheme : autoTheme.darkTheme, reportErrors);
 			return;
 		}
 
 		this.setAutoSync(false);
 		if (themeSetting !== undefined) {
-			this.applyThemeName(themeSetting, true);
+			this.applyThemeName(themeSetting, reportErrors);
 			return;
 		}
 

@@ -151,11 +151,6 @@ export function sandbox(label, { baseUrl, port, contextModel = "uat-stub" } = {}
 		HOME: home,
 		KPI_CODING_AGENT_DIR: agentDir,
 		PI_SKIP_VERSION_CHECK: "1",
-		// A fresh HOME is a first run, and first run reports an install to
-		// pi.dev. That attempt is not a model call, but it is outbound, so it
-		// would make "loopback only" untrue for a reason the row is not about.
-		// `PI_OFFLINE` is the product's own switch for it.
-		PI_OFFLINE: "1",
 		CI: "",
 		UAT_EGRESS_LOG: egressLog,
 		NODE_OPTIONS: `--require ${guardPath}`,
@@ -192,7 +187,7 @@ export function seedRun(project, jobId, { state, task, files = {}, active = true
 }
 
 /** Drives the real TUI over a PTY and returns the bytes it painted. */
-export function drive({ env, cwd, cols, rows = 40, script, outDir, timeout = 90 }) {
+export function drive({ env, cwd, cols, rows = 40, script, outDir, timeout = 90, args: cliArgs = [] }) {
 	mkdirSync(outDir, { recursive: true });
 	const args = [
 		driverPath,
@@ -211,6 +206,7 @@ export function drive({ env, cwd, cols, rows = 40, script, outDir, timeout = 90 
 		"--",
 		process.execPath,
 		cliPath,
+		...cliArgs,
 	];
 	const child = spawn("python3", args, {
 		env: { ...process.env, ...env, COLUMNS: String(cols), LINES: String(rows) },

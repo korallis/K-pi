@@ -14,9 +14,11 @@ import {
 	resolveCurrentStageIndex,
 } from "../packages/coding-agent/src/kpi/extensions/board.ts";
 import {
+	applyBoardTheme,
 	buildBoardModel,
 	createStatusWidget,
 	isPausedHuman,
+	resetBoardThemeWarning,
 } from "../packages/coding-agent/src/kpi/extensions/control-plane.ts";
 import { writeState } from "../packages/coding-agent/src/kpi/extensions/gated-loop.ts";
 import { createStopState } from "../packages/coding-agent/src/kpi/extensions/graph/stop.ts";
@@ -583,6 +585,51 @@ test("the widget-sized board keeps STOP and the lamps a top-cut would drop", () 
 test("a running board already inside the budget is returned untouched", () => {
 	const running = renderBoard(boardModel({}));
 	assert.deepEqual(fitBoardHeight(running, EXTENSION_WIDGET_MAX_LINES), running);
+});
+
+test("a refused board theme is reported once instead of silently ignored", () => {
+	resetBoardThemeWarning();
+	const notices: Array<{ message: string; level: string }> = [];
+	const ctx = {
+		ui: {
+			setTheme: (name: string) => ({ success: false, error: `Theme not found: ${name}` }),
+			notify: (message: string, level: string) => notices.push({ message, level }),
+		},
+	} as unknown as Parameters<typeof applyBoardTheme>[0];
+
+	// Discarding this result is how the board came up colourless for a whole
+	// session with nothing said: the themes K-π ships were not registered when
+	// the first board was drawn, so every call failed quietly.
+	const first = applyBoardTheme(ctx, false);
+	assert.equal(first?.success, false);
+	assert.equal(notices.length, 1, JSON.stringify(notices));
+	assert.equal(notices[0]?.level, "warning");
+	assert.match(notices[0]?.message ?? "", /loop-amber was refused: Theme not found: loop-amber/u);
+
+	// Once, not once per repaint - the board is redrawn on every state change.
+	applyBoardTheme(ctx, true);
+	applyBoardTheme(ctx, false);
+	assert.equal(notices.length, 1, "the warning does not repeat");
+});
+
+test("an applied board theme says nothing and names the board it drew", () => {
+	resetBoardThemeWarning();
+	const notices: string[] = [];
+	const asked: string[] = [];
+	const ctx = {
+		ui: {
+			setTheme: (name: string) => {
+				asked.push(name);
+				return { success: true };
+			},
+			notify: (message: string) => notices.push(message),
+		},
+	} as unknown as Parameters<typeof applyBoardTheme>[0];
+
+	assert.equal(applyBoardTheme(ctx, false)?.success, true);
+	assert.equal(applyBoardTheme(ctx, true)?.success, true);
+	assert.deepEqual(asked, ["loop-amber", "protocol-blue"]);
+	assert.deepEqual(notices, []);
 });
 
 test("folding a lamp row preserves every lamp in order", () => {

@@ -251,6 +251,39 @@ export async function renderStatusOverlay(cwd: string, options: BoardBuildOption
 	return (await createStatusWidget(cwd, options)).join("\n");
 }
 
+/** Reported once per process: a repeated warning would be noise, silence was the bug. */
+let boardThemeWarned = false;
+
+/**
+ * Applies the board's colour identity and reports a refusal.
+ *
+ * `setTheme` returns a result, and discarding it is how the board came up
+ * colourless for a whole session without anyone noticing: the themes K-π ships
+ * were not registered when the first board was drawn, every call failed, and
+ * nothing said so. The board's colour is the operator's cue for whether the
+ * loop is running or waiting on them, so losing it is worth one warning.
+ */
+export function applyBoardTheme(
+	ctx: Pick<ExtensionContext, "ui">,
+	paused: boolean,
+): { success: boolean; error?: string } | undefined {
+	if (typeof ctx.ui.setTheme !== "function") {
+		return undefined;
+	}
+	const name = paused ? "protocol-blue" : "loop-amber";
+	const result = ctx.ui.setTheme(name);
+	if (result?.success === false && !boardThemeWarned) {
+		boardThemeWarned = true;
+		ctx.ui.notify(`K-π board theme ${name} was refused: ${result.error ?? "unknown reason"}`, "warning");
+	}
+	return result;
+}
+
+/** Test seam: the once-per-process warning must not leak between tests. */
+export function resetBoardThemeWarning(): void {
+	boardThemeWarned = false;
+}
+
 /**
  * The always-on board, fitted to the widget surface.
  *
@@ -266,10 +299,7 @@ async function installWidget(ctx: ExtensionContext): Promise<boolean> {
 		return false;
 	}
 	const job = await readActiveJob(ctx.cwd);
-	if (typeof ctx.ui.setTheme === "function") {
-		const paused = job !== undefined && isPausedHuman(job.state);
-		ctx.ui.setTheme(paused ? "protocol-blue" : "loop-amber");
-	}
+	applyBoardTheme(ctx, job !== undefined && isPausedHuman(job.state));
 	ctx.ui.setWidget("kpi", fitBoardHeight(lines, EXTENSION_WIDGET_MAX_LINES));
 	return true;
 }
@@ -283,10 +313,7 @@ async function showStatus(ctx: ExtensionCommandContext): Promise<void> {
 	}
 
 	const job = await readActiveJob(ctx.cwd);
-	if (typeof ctx.ui.setTheme === "function") {
-		const paused = job !== undefined && isPausedHuman(job.state);
-		ctx.ui.setTheme(paused ? "protocol-blue" : "loop-amber");
-	}
+	applyBoardTheme(ctx, job !== undefined && isPausedHuman(job.state));
 	// The widget is fitted; the overlay below renders every line.
 	ctx.ui.setWidget("kpi", fitBoardHeight(lines, EXTENSION_WIDGET_MAX_LINES));
 	if (ctx.mode !== "tui" || !ctx.hasUI) {

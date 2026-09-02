@@ -98,7 +98,7 @@ import { type SessionEntry, SessionManager, sessionEntryToContextMessages } from
 import type { FullscreenExitOutput, TuiMode } from "../../core/settings-manager.ts";
 import { BUILTIN_SLASH_COMMANDS } from "../../core/slash-commands.ts";
 import type { SourceInfo } from "../../core/source-info.ts";
-import { isInstallTelemetryEnabled } from "../../core/telemetry.ts";
+import { isInstallReportAllowed } from "../../core/telemetry.ts";
 import type { TruncationResult } from "../../core/tools/truncate.ts";
 import { hasTrustRequiringProjectResources, ProjectTrustStore } from "../../core/trust-manager.ts";
 import { getUsageCostBreakdown } from "../../core/usage-totals.ts";
@@ -958,7 +958,10 @@ export class InteractiveMode {
 		this.ui.start();
 		this.isInitialized = true;
 
-		await this.themeController.applyFromSettings();
+		// Extensions have not contributed their resources yet, so a theme name they
+		// ship is not resolvable here. Apply what is available and stay quiet; the
+		// attempt in `onResourcesExtended` is the one that reports.
+		await this.themeController.applyFromSettings({ reportErrors: false });
 
 		// Add header with keybindings from config (unless silenced)
 		if (this.options.verbose || !this.settingsManager.getQuietStartup()) {
@@ -1293,7 +1296,8 @@ export class InteractiveMode {
 			return;
 		}
 
-		if (!isInstallTelemetryEnabled(this.settingsManager)) {
+		// A fork does not ship through pi.dev, so it never reports an install there.
+		if (!isInstallReportAllowed(this.settingsManager)) {
 			return;
 		}
 
@@ -1912,6 +1916,15 @@ export class InteractiveMode {
 		await this.session.bindExtensions({
 			uiContext,
 			mode: "tui",
+			// Resource-provided themes reach the loader during `resources_discover`,
+			// which now runs before `session_start`. Mirroring them into the theme
+			// registry here - and re-applying the operator's selection - is what
+			// lets an extension select a theme it ships, and what makes a `theme`
+			// setting naming one resolve instead of falling back to dark.
+			onResourcesExtended: async () => {
+				setRegisteredThemes(this.session.resourceLoader.getThemes().themes);
+				await this.themeController.applyFromSettings();
+			},
 			abortHandler: () => {
 				this.restoreQueuedMessagesToEditor({ abort: true });
 			},

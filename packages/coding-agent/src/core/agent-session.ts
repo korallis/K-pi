@@ -237,6 +237,17 @@ export interface ExtensionBindings {
 	abortHandler?: () => void;
 	shutdownHandler?: ShutdownHandler;
 	onError?: ExtensionErrorListener;
+	/**
+	 * Called after `resources_discover` has extended the resource loader and
+	 * before `session_start` is emitted.
+	 *
+	 * Resources an extension ships are only in the loader once that hook has
+	 * run, and a host that mirrors them into its own registries - themes, in
+	 * particular - has to do so before extensions start asking for them.
+	 * Without this, an extension could ship a theme and never be able to select
+	 * it from its own `session_start` handler.
+	 */
+	onResourcesExtended?: () => void | Promise<void>;
 }
 
 /** Options for AgentSession.prompt() */
@@ -2466,8 +2477,15 @@ export class AgentSession {
 		}
 
 		this._applyExtensionBindings(this._extensionRunner);
-		await this._extensionRunner.emit(this._sessionStartEvent);
+		// Discovery first, then the host mirrors what was discovered, then the
+		// handlers run. `resources_discover` only reports paths, so it has nothing
+		// to learn from `session_start`; reversing these two made every resource an
+		// extension ships invisible to its own startup handler - a shipped theme
+		// could never be selected, and the operator's `theme` setting for one
+		// failed with "Theme not found" while the startup banner listed it.
 		await this.extendResourcesFromExtensions(this._sessionStartEvent.reason === "reload" ? "reload" : "startup");
+		await bindings.onResourcesExtended?.();
+		await this._extensionRunner.emit(this._sessionStartEvent);
 	}
 
 	private async extendResourcesFromExtensions(reason: "startup" | "reload"): Promise<void> {

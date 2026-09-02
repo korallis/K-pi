@@ -1,9 +1,9 @@
 # PTY rows: product findings
 
 Everything below was found by driving `packages/coding-agent/dist/bundle/cli.js`
-over a real PTY and grading `frame.raw`. Two defects are fixed in this commit
-with tests; two are reported with locators and reproductions, because no row's
-documented action exposes them and fixing them means reordering harness startup.
+over a real PTY (UAT-06, 15, 16, 25) or its RPC surface (UAT-07) and grading the
+bytes it wrote. All four are fixed with tests and a
+control: the first two in the row commit, the last two in the follow-up.
 
 ## Fixed
 
@@ -56,7 +56,7 @@ how a multi-line status becomes one row.
 extension statuses it took over", with a control that a footer with no statuses
 stays a single row.
 
-## Reported, not fixed
+## Fixed in the follow-up commit
 
 ### 3. An extension cannot select a theme it ships, on `session_start`
 
@@ -86,11 +86,25 @@ UAT-06 and UAT-16 pass because their documented actions ("start a job", "run
 `/kpi status`") happen after startup, when the themes are registered — verified:
 amber and protocol-blue are both on the wire in `evidence/UAT-06/`.
 
-**Why not fixed here:** the ordering is harness startup, and a correct fix needs
-the theme registry refreshed between resource extension and the `session_start`
-emit — a third party (interactive mode) must be notified mid-`bindExtensions`.
-That is a session-lifecycle change, not a TUI change, and it deserves its own
-ticket rather than being folded into a UAT row.
+**Fix:** `bindExtensions` now discovers resources, hands off to the host, then
+emits `session_start`. `ExtensionBindings.onResourcesExtended` is that hand-off;
+interactive mode uses it to mirror the loader's themes into the theme registry
+and re-apply the operator's selection. The pre-extension apply no longer reports
+errors, because a name that is not registered *yet* is not a missing theme — the
+attempt after resources are extended is the one that reports. K-π's
+`applyBoardTheme` now reads the `ThemeResult` and warns once if the board's
+colour is refused; discarding it is what let this hide for a whole session.
+
+**Tests:** `packages/coding-agent/test/session-start-resource-order.test.ts`
+pins the order and asserts a theme the extension ships is in the loader when its
+own `session_start` handler runs. `test/operator-ui.test.ts` covers the warning
+and its absence on success.
+
+**Built-binary evidence:** with nothing typed, a resumed session with a running
+job comes up amber and a paused one protocol-blue, and `"theme": "loop-amber"`
+in `settings.json` resolves with no error. Reverting the three files reproduces
+all of it — no amber, no blue, `Theme not found`, and the new warning firing,
+which is also the control for the warning.
 
 ### 4. A first run reports an install to `pi.dev`
 
@@ -107,9 +121,33 @@ ticket rather than being folded into a UAT row.
 through pi.dev", so this reports an install of something pi.dev did not ship,
 from a first run the operator did not opt into.
 
-**Handling here:** the row sandboxes set `PI_OFFLINE=1`, which is the product's
-own switch, so `loopback-only` measures what the rows are about — no model call —
-rather than failing on an unrelated outbound attempt.
+**Fix:** a new `isInstallReportAllowed` returns false unless the build is the
+upstream product, so no setting and no env flag can turn the report back on for
+a fork. `reportInstallTelemetry` is its only caller. Upstream keeps both
+switches.
+
+Deliberately narrow: `isInstallTelemetryEnabled` is untouched, because it also
+governs `getDefaultAttributionHeaders`. Gating the shared predicate would have
+withheld `HTTP-Referer: https://pi.dev` and `X-OpenRouter-Title: pi` as well — a
+defensible question, but a different one, and it would have gutted three
+upstream tests whose real subject is which providers count as OpenRouter. That
+question belongs to whoever owns fork attribution policy, not to a side effect
+of stopping an install report.
+
+**Tests:** `test/fork-telemetry.test.ts`, including that the shared preference
+still behaves exactly as before.
+
+**Built-binary evidence:** a genuinely clean HOME with `PI_OFFLINE` unset
+produces no egress log at all; reverting `telemetry.ts` reproduces
+`{"kind":"connect","host":"pi.dev","port":443}`. The row sandboxes no longer set
+`PI_OFFLINE`.
+
+**One legitimate outbound remains, and is not a defect:** a credentialed cloud
+pool resolves official model ids from the provider catalog on `pi.dev`. That
+serves the operator, `AGENTS.md` forbids hard-coding official ids, and the
+product exposes `--offline`/`PI_OFFLINE` to decline it. Only UAT-15's `oauth`
+capture passes `--offline`, for that reason; every other capture proves no
+outbound attempt with no flags at all.
 
 ## Notes for the `uat/**` owner
 
