@@ -508,7 +508,7 @@ operator /k-mode <goal>
 
 | ID | Question | Default until answered |
 |---|---|---|
-| Q-01 | Distribution beyond a source build | source build only; never published |
+| Q-01 | Distribution beyond a source build | `@korallis/k-pi` on npm, tag-driven release; install with `npm i -g @korallis/k-pi` or `bun add -g @korallis/k-pi`, or keep building from source |
 | Q-02 | Cursor stream transport: OpenAI-shaped vs `streamSimple` | try OpenAI-compatible first, fall back to `streamSimple` |
 | Q-03 | Worktree isolation per job | v1 same tree + one writer + `claim_path` (US-23.7/8) |
 | Q-04 | Cross-process in-flight cap across two K-π processes | v1 in-process only |

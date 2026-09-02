@@ -28,7 +28,7 @@ K-π extends the forked base through the base's own extension surface. Forking i
 
 ## 2. Distribution and layout
 
-K-π is **not** a package and is never published. There is no `pi install`, no `keywords: ["pi-package"]`, no `package.json#pi` manifest, and no `peerDependencies` on `@earendil-works/pi-*`.
+K-π is not a Pi extension package. There is no `pi install`, no `keywords: ["pi-package"]`, no `package.json#pi` manifest, and no `peerDependencies` on `@earendil-works/pi-*`. It is distributed as its own CLI: exactly one published npm package, `@korallis/k-pi` (NH-04).
 
 Root `package.json` is `k-pi-monorepo`, private, using npm workspaces. `packages/coding-agent/package.json` MUST contain:
 
@@ -55,7 +55,7 @@ REQ-DIST-03. `piConfig` yields `APP_NAME = kpi`, `APP_TITLE = K-π`, `CONFIG_DIR
 
 REQ-DIST-04. The K-π extension factory is registered as a **visible built-in**. Its skills, prompts, themes, and graphs are declared by that built-in through resource discovery and copied into `dist` at build time. K-π's own commands are available at startup with no install and no project-trust decision. Project trust continues to govern a user's repo-local resources, unchanged from the base.
 
-REQ-DIST-05. No publish, release, or version automation exists in this repository.
+REQ-DIST-05. Exactly one artifact is published: `@korallis/k-pi`. It is assembled by `scripts/pack-kpi.mjs` from the built CLI, and its payload is `dist/bundle`, `dist/modes/interactive/{theme,assets}`, `dist/core/export-html`, `dist/kpi`, `docs`, `examples`, and `README.md` / `CHANGELOG.md` / `LICENSE` / `NOTICE`. Its runtime dependencies are only `@silvia-odwyer/photon-node` and `jiti`, with `@mariozechner/clipboard` optional; the published manifest MUST NOT depend on any `@earendil-works/*` package. It declares the bins `kpi` and `k-pi`, and carries `piConfig` and `version` verbatim from `packages/coding-agent/package.json`. Publishing happens only in `.github/workflows/release.yml`, on the tag `v<version>`, through npm trusted publishing with provenance. Every workspace manifest, including `packages/coding-agent/package.json`, still carries no publish, prepublish, or shrinkwrap script, and no workspace name ever reaches the registry.
 
 Forbidden runtime dependencies: `oh-my-pi`, `@oh-my-pi/*`, `atomic`, `pi-graph`, `@shying/pi-graph`, `pi-multi-account`, `pi-multi-pass`, `pi-cursor-oauth`, `pi-cursor-provider`, `@pi-stef/cursor`, `pi-kimi-coder`, `pi-moonshot`, `@czottmann/pi-zai-api`, `pi-ollama`, `@jamesjfoong/pi-ollama`, `pi-ollama-keyring`, `pi-ollama-cloud-provider`, `exa-js`, `@perplexity-ai/perplexity_ai`.
 

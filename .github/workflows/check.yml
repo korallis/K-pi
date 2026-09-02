@@ -1,12 +1,17 @@
-# Adapted from Ray Fernando's Actions templates (`workflows/check.yml`): the hard
-# verify gate on a persistent self-hosted macOS runner.
+# The one required status check for K-π. Job id and check name are both `check`.
 #
-# What this gate proves for K-π, which is its own coding-agent harness built from
-# its own vendored source: install from the committed lockfile with no lifecycle
-# scripts, build the vendored packages offline, then run the fork-integrity
-# guard, the repository gates, the K-π suites, and the K-stack sync check. Pi is
-# never installed from a registry and is never a peer dependency, and nothing
-# here publishes, releases, or pushes.
+# What this gate proves, in order: the committed lockfile installs with no
+# lifecycle scripts and is not rewritten by installing; the vendored harness
+# builds offline from its own source; the fork-integrity contract still holds;
+# the upstream pin is honest; the repository gates, the workspace suites, the K-π
+# suites and the K-stack sync check all pass; the built `kpi` binary starts from a
+# clean HOME; the `@korallis/k-pi` publish payload packs and installs; and none
+# of the above modified the working tree.
+#
+# The pack step is deliberate: `@korallis/k-pi` is built from the CLI bundle, so
+# the publish payload is a build artifact like any other. Proving it packs and
+# installs on every gate run means a tag push cannot be the first time anyone
+# finds out it does not.
 #
 # Self-hosted trust boundary:
 #   - This job runs on a persistent Mac runner. Fork pull_request code must never
@@ -18,9 +23,9 @@
 #   - External fork contributions therefore require a maintainer-owned branch
 #     (push to a branch in korallis/K-pi, or an internal PR from that branch).
 #   - Never switch this workflow to `pull_request_target` and never expose secrets
-#     to PR-controlled code.
+#     to PR-controlled code. This gate needs no secret at all.
 #
-# Deliberate deviations from the template:
+# Deliberate deviations from Ray Fernando's `workflows/check.yml` template:
 #   - No `paths-ignore` for `**/*.md` / `docs/**`. In this repo docs are
 #     executable product contracts: AGENTS.md and the K-stack docs are inputs to
 #     `npm run check`, `npm run kstack:sync:check`, and the K-π suites, so a
@@ -28,10 +33,10 @@
 #   - No Rust/cargo/ffmpeg steps and no cargo target cache: this fork is Node and
 #     TypeScript only, so the template's toolchain pinning and cache-wipe input
 #     have nothing to pin or wipe.
-#   - `timeout-minutes: 60` rather than 45 — build + four suites on one runner.
+#   - `timeout-minutes: 60` rather than 45 — build, four suites and a pack on one
+#     runner.
 #
 # See ../../UPSTREAM.md (fork patch register) and AGENTS.md.
-
 
 name: check
 
@@ -86,7 +91,6 @@ jobs:
           # Dependency caches already survive on a persistent runner.
           package-manager-cache: false
 
-
       - name: Verify runner toolchain
         # The agent's find/grep tools shell out to these. Fail loudly here so a
         # soft skip inside a test harness cannot greenwash the run.
@@ -112,8 +116,9 @@ jobs:
       - name: Model catalog data
         id: model_data
         # `build:offline` compiles without a network but refuses to run against
-        # missing or stale provider data. Use the vendored data when this fork
-        # carries it, otherwise hydrate it with the in-repo generator. Either way
+        # missing or stale provider data. The vendored data this fork commits is
+        # the source of truth; the in-repo generator is the fallback for a
+        # checkout that does not carry it, and it needs the network. Either way
         # the check inside build:offline is the real assertion. Hydrate may write
         # provider data; the final dirty-tree step restores those paths.
         run: |
@@ -129,8 +134,9 @@ jobs:
         run: npm run build:offline
 
       - name: Fork integrity
-        # Required gates exist, no manifest points at a deleted script, and no
-        # publish/release/registry/governance automation has crept back in.
+        # Required workflows exist, no manifest points at a deleted script, and
+        # no publish/registry/governance automation has crept in outside the
+        # reviewed release and review workflows.
         run: node scripts/check-ci-contract.mjs
 
       - name: Upstream pin integrity
@@ -165,16 +171,21 @@ jobs:
           --metrics M-01,M-02,M-03,M-04,M-05,M-06
           --json "${RUNNER_TEMP}/remediation-proof.json"
 
+      - name: Pack the publish payload
+        # Same command the release workflow runs. Packs the CLI bundle into
+        # `@korallis/k-pi`, installs the tarball under a temp prefix and asserts
+        # `kpi --version`. Writes outside the checkout so the tree stays clean.
+        run: npm run pack -- --out "${RUNNER_TEMP}/release"
 
       - name: Working tree clean after gates
         # Every gate is read-only, and the sync check must not regenerate
         # anything. A dirty tree here is a real failure — including untracked files.
-        # Exception: intentional model-data hydrate fallback is restored first so
-        # that path can go green when vendored data was missing.
+        # Exception: the intentional model-data hydrate fallback is restored first
+        # so that path can go green when vendored data was missing.
         run: |
           if [ "${{ steps.model_data.outputs.hydrated }}" = "true" ]; then
             git checkout -- packages/ai/src/providers/data 2>/dev/null || true
-            git clean -fd -- packages/ai/src/providers/data
+            git clean -fdq -- packages/ai/src/providers/data
           fi
           git diff --exit-code
           if [ -n "$(git status --porcelain)" ]; then

@@ -27,6 +27,7 @@
 		"check:pinned-deps": "node scripts/check-pinned-deps.mjs",
 		"check:ts-imports": "node scripts/check-ts-relative-imports.mjs",
 		"kpi": "node scripts/run-kpi-test.mjs",
+		"pack": "node scripts/pack-kpi.mjs",
 		"kstack:sync": "node --experimental-strip-types packages/coding-agent/src/kpi/kstack/scripts/sync-kstack.ts",
 		"kstack:sync:check": "node --experimental-strip-types packages/coding-agent/src/kpi/kstack/scripts/sync-kstack.ts --check",
 		"test": "npm run test:scripts && npm run test:kpi && npm run test --workspaces --if-present",

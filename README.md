@@ -4,7 +4,7 @@
 
 This repository is the whole harness: TUI, agent loop, providers, sessions, tools, RPC. On top of that base, K-π compiles in its own gated or autonomous engineering loop — specify, research, plan, implement, test, bounds, isolated review, and one local ship commit.
 
-You do not install Pi. There is no `pi install`, no peer dependency, and no package to trust. You build this repository and run `kpi`.
+You do not install Pi. There is no `pi install`, no peer dependency, and no Pi package to trust. You install `@korallis/k-pi`, or build this repository, and run `kpi`.
 
 | | |
 |---|---|
@@ -15,6 +15,24 @@ You do not install Pi. There is no `pi install`, no peer dependency, and no pack
 | Upstream base | Pi `v0.84.4`, commit `b79e4cc834970cca69daebffab7df1da7d1e52c4` |
 | Upstream remote | `upstream` → `https://github.com/earendil-works/pi.git` |
 | Licence | MIT — see [`LICENSE`](LICENSE), [`NOTICE`](NOTICE), [`UPSTREAM.md`](UPSTREAM.md) |
+
+## Install
+
+```sh
+npm install -g @korallis/k-pi     # then run: kpi
+bun add -g @korallis/k-pi         # then run: kpi
+```
+
+Without installing anything:
+
+```sh
+npx @korallis/k-pi
+bunx @korallis/k-pi
+```
+
+`@korallis/k-pi` is the only published package. It carries the built CLI plus K-π's
+own runtime resources, and it is cut from a `v<version>` tag. To build from source
+instead, follow [§2 Clone, install, build](#2-clone-install-build).
 
 Everything in the operator manual below was run against the built binary from this
 repository. Where a command's output is quoted, that is the text it printed.
@@ -967,7 +985,9 @@ attribution stays with the upstream preference it inherited.
 ## Non-goals
 
 K-π does not install community account or provider packs, replace official model
-catalogues, run remote hosted workers, merge origin branches, publish itself to
-npm, or claim in-process hooks are an OS sandbox. It is a fork, so it also does
-not pretend to be the official Pi distribution: bugs found here go to this
-repository, not upstream.
+catalogues, run remote hosted workers, merge origin branches, or claim in-process
+hooks are an OS sandbox. The one artifact it publishes is `@korallis/k-pi`, the CLI
+itself, released from a `v<version>` tag by `.github/workflows/release.yml`; no
+workspace package and nothing else in this repository is published. It is a fork, so
+it also does not pretend to be the official Pi distribution: bugs found here go to
+this repository, not upstream.

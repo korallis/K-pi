@@ -70,7 +70,7 @@ npm test               # script tests + workspace tests
 npm run test:kpi       # node --test --experimental-strip-types test/*.test.ts
 ```
 
-CI is the fail-closed authority. `check` and `Grok review` are required checks and nothing merges without both. The required-check set, its `Active` enforcement, and its bypass list are part of the gate: a bypass entry defeats it silently.
+CI is the fail-closed authority. `check` is the only required status check and nothing merges without it; `ai-review` is advisory and never required. The required-check set, its `Active` enforcement, and its bypass list are part of the gate: a bypass entry defeats it silently.
 
 Evidence is a command, its exit code, its output, and the `git rev-parse HEAD` it ran against. It lives in the package's evidence, never in chat.
 
@@ -92,11 +92,12 @@ These are the only process rules. There is no principle preamble to read first.
 ## Stack (this repo)
 
 - TypeScript, Node `>= 22.19`. npm workspaces. Not pnpm.
-- Repository: `k-pi-monorepo` (private, never published). Executable: `kpi` / `k-pi`. Brand cell: **K-π**.
+- Repository: `k-pi-monorepo` (private root). Published artifact: `@korallis/k-pi` on npm (NH-04). Executable: `kpi` / `k-pi`. Brand cell: **K-π**.
 - Everything under `packages/` is forked Pi source owned here. K-π's own runtime is `packages/coding-agent/src/kpi/`; K-π's node tests stay in root `test/` and import that path.
 - Upstream base: Pi `v0.84.4`, commit `b79e4cc834970cca69daebffab7df1da7d1e52c4`, remote `upstream` → `https://github.com/earendil-works/pi.git`. Machine-readable pin: `upstream.json`; drift report: `npm run upstream:check`.
 - Build: `npm install` then `npm run build` (`npm run build:offline` for the offline path). Run: `node packages/coding-agent/dist/bundle/cli.js`, or `npm link --workspace @earendil-works/pi-coding-agent` then `kpi`. From source without building: `./kpi-test.sh`.
 - Moving to a newer upstream release is a reviewed merge per `UPSTREAM.md`, never an automated bump.
+- Cutting a release: `npm run pack` proves the payload locally (packs, installs the tarball, runs `kpi --version`); then tag `v<version>` matching `packages/coding-agent/package.json#version` and push the tag; `.github/workflows/release.yml` publishes `@korallis/k-pi` with provenance. The first publish of the package is manual.
 
 ## Do not
 
@@ -105,7 +106,8 @@ These are the only process rules. There is no principle preamble to read first.
 - Skip the Anthropic extra-usage confirm dialog
 - Mark autopilot DONE because an LLM said the tests passed
 - Commit secrets, `.env`, `accounts.secrets.json`, or `auth.json`
-- Reintroduce `pi install`, a `package.json#pi` manifest, peer dependencies on `@earendil-works/pi-*`, or publish/release automation
+- Reintroduce `pi install`, a `package.json#pi` manifest, or peer dependencies on `@earendil-works/pi-*`
+- Publish any workspace package, or publish from anywhere but `release.yml`
 - Describe K-π as a Pi package, or Pi as the host process
 
 ## Best practices, with sources

@@ -1,0 +1,151 @@
+# Publish `@korallis/k-pi` to npm and attach the tarball to a GitHub release.
+#
+# How to cut a release:
+#   1. Bump `packages/coding-agent/package.json#version` on `main` and let `check` go green.
+#   2. `git tag v<version>`, then push that tag to `origin`.
+#   That tag push is the only trigger. `workflow_dispatch` takes no inputs: to
+#   re-run a release, dispatch this workflow on the tag ref itself.
+#
+# The tag is the contract. This job derives the version from
+# `packages/coding-agent/package.json` and refuses to run when the tag is not
+# exactly `v<that version>`, so a mistyped tag can never publish a mismatched
+# package.
+#
+# Trusted publishing (OIDC), not a token:
+#   - `id-token: write` mints a short-lived OIDC token; npm >= 11.5.1 exchanges it
+#     for publish rights. There is no npm credential anywhere in this repository,
+#     and `scripts/check-ci-contract.mjs` keeps it that way.
+#   - Node 22.19 bundles npm 10, which cannot do this, hence `npm install -g npm@11`.
+#   - Trusted publishing and `--provenance` both require a GitHub-hosted runner,
+#     so this job runs on `ubuntu-latest` rather than the self-hosted Macs.
+#   - Trusted-publisher fields to set in the npm package settings:
+#       organization/user: korallis    repository: K-pi
+#       workflow filename: release.yml    environment: (none)
+#
+# First-publish bootstrap: npm configures trusted publishers per *package*, which
+# requires the package to already exist. The first `@korallis/k-pi` version is
+# therefore published by hand from a maintainer machine (`npm run pack`, then
+# publish the resulting tarball). Because of that, and because a tag can
+# legitimately be re-run, the publish step is idempotent: a version already on the
+# registry is reported and skipped, not failed.
+#
+# This workflow never pushes, never merges, and never holds a long-lived secret.
+# The only token it uses is the run-scoped `GITHUB_TOKEN`, introduced on the
+# single step that creates the GitHub release.
+#
+# See ../../UPSTREAM.md (fork patch register) and AGENTS.md.
+
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  # Never cancel a publish mid-flight.
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      # GitHub release + asset upload.
+      contents: write
+      # OIDC for npm trusted publishing.
+      id-token: write
+    env:
+      CI: "1"
+      GIT_CONFIG_GLOBAL: /dev/null
+      GIT_CONFIG_SYSTEM: /dev/null
+      GIT_TERMINAL_PROMPT: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 22.19.0
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      - name: Upgrade npm for trusted publishing
+        # Trusted publishing needs npm >= 11.5.1; Node 22.19 ships npm 10.
+        run: |
+          npm install -g npm@11
+          npm --version
+
+      - name: Resolve the release version from the tag
+        id: version
+        run: |
+          version=$(node -p "require('./packages/coding-agent/package.json').version")
+          if [ "$GITHUB_REF_NAME" != "v${version}" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} does not match packages/coding-agent/package.json version ${version} (expected tag v${version})"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "releasing @korallis/k-pi ${version} from tag ${GITHUB_REF_NAME}"
+
+      - name: Install from the committed lockfile
+        run: npm ci --ignore-scripts --no-audit --fund=false
+
+      - name: Model catalog data
+        # Same contract as the `check` gate: the vendored provider data is the
+        # source of truth, and the in-repo generator is the fallback for a
+        # checkout that does not carry it. `build:offline` asserts either way.
+        run: |
+          if [ -f packages/ai/src/providers/data/.manifest.json ]; then
+            echo "vendored provider data present"
+          else
+            npm --prefix packages/ai run hydrate-model-data
+          fi
+
+      - name: Build the harness from source
+        run: npm run build:offline
+
+      - name: Repository gates
+        run: npm run check
+
+      - name: Built harness smoke
+        run: npm run verify:built
+
+      - name: Pack the publish payload
+        run: npm run pack -- --out "${RUNNER_TEMP}/release"
+
+      - name: Publish to npm
+        # `npm run pack` already proved this exact tarball installs and that the
+        # installed `kpi --version` matches. Re-running a tag must not fail, so a
+        # version already on the registry is skipped (see the bootstrap note above).
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          TARBALL=$(jq -r '.tarball' "${RUNNER_TEMP}/release/pack-meta.json")
+          test -f "$TARBALL"
+          if npm view "@korallis/k-pi@${VERSION}" version >/dev/null 2>&1; then
+            echo "@korallis/k-pi@${VERSION} is already on the registry, skipping publish"
+          else
+            npm publish --provenance --access public "$TARBALL"
+          fi
+
+      - name: Publish the GitHub release
+        # The only step with a repository token. `--verify-tag` refuses to invent a
+        # tag; `upload --clobber` makes a re-run replace the asset instead of failing.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          TARBALL=$(jq -r '.tarball' "${RUNNER_TEMP}/release/pack-meta.json")
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "$TARBALL" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "$TARBALL" \
+              --title "K-π ${VERSION}" \
+              --generate-notes \
+              --verify-tag
+          fi
