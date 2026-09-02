@@ -19,6 +19,7 @@ import { fileURLToPath } from "node:url";
 import {
 	DEFAULT_MAX_CHUNK_BYTES,
 	HARD_MAX_CHUNK_BYTES,
+	MIN_CHUNK_BYTES,
 	PROMPT_ARGV_TEST_CEILING_BYTES,
 	adaptiveMaxChunkBytes,
 	parseChunkLocationIndex,
@@ -397,11 +398,12 @@ export async function runChunkedGrokReview(options, hooks = {}) {
 			`inventory+framing leave only ${argvRoomForChunk} bytes for diff chunks under argv ceiling ${PROMPT_ARGV_TEST_CEILING_BYTES}; fails closed`,
 		);
 	}
-	const chunkFloor = Math.min(options.maxChunkBytes, argvRoomForChunk, HARD_MAX_CHUNK_BYTES);
+	const hardMax = Math.min(options.maxChunkBytes ?? HARD_MAX_CHUNK_BYTES, argvRoomForChunk, HARD_MAX_CHUNK_BYTES);
 	const maxChunkBytes = adaptiveMaxChunkBytes(selectedBytes, {
-		floor: chunkFloor,
-		hardMax: Math.min(HARD_MAX_CHUNK_BYTES, argvRoomForChunk),
-		waveSlots: options.maxConcurrency,
+		floor: Math.min(MIN_CHUNK_BYTES, hardMax),
+		hardMax,
+		// Local one-shot path: concurrency is the wave width (not full matrix).
+		waveSlots: Math.max(1, options.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY),
 	});
 	const chunks = partitionUnifiedDiff(diffText, { maxChunkBytes });
 	writeDiffChunks(diffText, join(options.workDir, "chunks"), { maxChunkBytes });

@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 import {
 	DEFAULT_MAX_CHUNK_BYTES,
 	HARD_MAX_CHUNK_BYTES,
+	MIN_CHUNK_BYTES,
 	PROMPT_ARGV_TEST_CEILING_BYTES,
 	adaptiveMaxChunkBytes,
 	partitionUnifiedDiff,
@@ -22,6 +23,7 @@ import {
 import {
 	DEFAULT_MAX_CHUNKS_PER_GROUP,
 	DEFAULT_MAX_GROUPS,
+	MATRIX_CAPACITY,
 	writeGrokChunkGroups,
 } from "./group-grok-chunks.mjs";
 import {
@@ -31,7 +33,7 @@ import {
 	measurePromptFramingBytes,
 } from "./run-chunked-grok-review.mjs";
 
-export { DEFAULT_MAX_GROUPS, DEFAULT_MAX_CHUNKS_PER_GROUP };
+export { DEFAULT_MAX_GROUPS, DEFAULT_MAX_CHUNKS_PER_GROUP, MATRIX_CAPACITY };
 
 /**
  * @param {object} options
@@ -68,6 +70,7 @@ export function prepareGrokReview(options) {
 	const maxGroups = options.maxGroups ?? DEFAULT_MAX_GROUPS;
 	const maxChunksPerGroup = options.maxChunksPerGroup ?? DEFAULT_MAX_CHUNKS_PER_GROUP;
 	const maxConcurrency = options.maxConcurrency ?? maxChunksPerGroup;
+	const matrixSlots = maxGroups * maxChunksPerGroup;
 
 	const framingBytes = measurePromptFramingBytes(inventoryText);
 	const argvRoomForChunk = PROMPT_ARGV_TEST_CEILING_BYTES - framingBytes;
@@ -77,18 +80,28 @@ export function prepareGrokReview(options) {
 		);
 	}
 
-	const floor = Math.min(
-		options.maxChunkBytes ?? DEFAULT_MAX_CHUNK_BYTES,
+	// --max-chunk-bytes is an optional hard ceiling (default argv-safe 96 KiB),
+	// not a lock. Adaptive packing targets ceil(selected / matrixSlots) with slack.
+	const hardMax = Math.min(
+		options.maxChunkBytes ?? HARD_MAX_CHUNK_BYTES,
 		argvRoomForChunk,
 		HARD_MAX_CHUNK_BYTES,
 	);
-	const maxChunkBytes = adaptiveMaxChunkBytes(selectedBytes, {
-		floor,
-		hardMax: Math.min(HARD_MAX_CHUNK_BYTES, argvRoomForChunk),
-		waveSlots: maxConcurrency,
+	let maxChunkBytes = adaptiveMaxChunkBytes(selectedBytes, {
+		floor: Math.min(MIN_CHUNK_BYTES, hardMax),
+		hardMax,
+		waveSlots: matrixSlots,
 	});
 
-	const chunks = partitionUnifiedDiff(diffText, { maxChunkBytes });
+	let chunks = partitionUnifiedDiff(diffText, { maxChunkBytes });
+	// If greedy packing still overshoots capacity, raise to the argv-safe hard
+	// max once. Byte budget 128×96KiB > 8MiB select cap; remaining overflow is
+	// a genuine fail-closed case (pathological section shapes).
+	if (chunks.length > matrixSlots && maxChunkBytes < hardMax) {
+		maxChunkBytes = hardMax;
+		chunks = partitionUnifiedDiff(diffText, { maxChunkBytes });
+	}
+
 	mkdirSync(options.outDir, { recursive: true });
 	const chunksDir = join(options.outDir, "chunks");
 	writeDiffChunks(diffText, chunksDir, { maxChunkBytes });

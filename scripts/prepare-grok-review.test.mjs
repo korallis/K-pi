@@ -3,9 +3,14 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { PROMPT_ARGV_TEST_CEILING_BYTES } from "./partition-pr-diff.mjs";
-import { prepareGrokReview } from "./prepare-grok-review.mjs";
+import {
+	HARD_MAX_CHUNK_BYTES,
+	MIN_CHUNK_BYTES,
+	PROMPT_ARGV_TEST_CEILING_BYTES,
+} from "./partition-pr-diff.mjs";
+import { MATRIX_CAPACITY, prepareGrokReview } from "./prepare-grok-review.mjs";
 import { buildPrompt } from "./run-chunked-grok-review.mjs";
+import { MAX_SELECTED_DIFF_BYTES } from "./select-grok-review-input.mjs";
 
 function makeDiff(fileCount, bodyBytes = 800) {
 	const parts = [];
@@ -103,6 +108,82 @@ test("prepare fails closed when chunk count exceeds matrix capacity", () => {
 					maxConcurrency: 2,
 				}),
 			/exceeds matrix capacity|grouping overflowed/,
+		);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("matrix byte capacity exceeds the selection byte cap (invariant)", () => {
+	// 128 × 96 KiB = 12.2 MiB > 8 MiB select cap → once selection passes,
+	// adaptive packing at hard max has enough room in the byte budget.
+	assert.equal(MATRIX_CAPACITY, 128);
+	assert.equal(HARD_MAX_CHUNK_BYTES, 96_000);
+	assert.ok(
+		MATRIX_CAPACITY * HARD_MAX_CHUNK_BYTES >= MAX_SELECTED_DIFF_BYTES,
+		`matrix capacity bytes ${MATRIX_CAPACITY * HARD_MAX_CHUNK_BYTES} < select cap ${MAX_SELECTED_DIFF_BYTES}`,
+	);
+});
+
+test("adaptive prepare packs a real-PR-sized selection into ≤128 chunks", () => {
+	const dir = mkdtempSync(join(tmpdir(), "grok-prep-large-"));
+	try {
+		const diffPath = join(dir, "pr.diff");
+		const outDir = join(dir, "out");
+		// ~4.7 MiB multi-file selected-diff shape (mirrors current fork PR).
+		writeFileSync(diffPath, makeDiff(520, 8_800));
+		const selectedBytes = Buffer.byteLength(readFileSync(diffPath));
+		assert.ok(selectedBytes > 4_000_000, `expected multi-MiB fixture, got ${selectedBytes}`);
+		assert.ok(selectedBytes <= MAX_SELECTED_DIFF_BYTES, `fixture ${selectedBytes} exceeds select cap`);
+
+		const meta = prepareGrokReview({
+			diffPath,
+			outDir,
+			maxGroups: 8,
+			maxChunksPerGroup: 16,
+		});
+
+		const target = Math.ceil(selectedBytes / MATRIX_CAPACITY);
+		assert.ok(meta.maxChunkBytes >= Math.min(target, HARD_MAX_CHUNK_BYTES));
+		assert.ok(meta.maxChunkBytes <= HARD_MAX_CHUNK_BYTES);
+		assert.ok(meta.maxChunkBytes >= MIN_CHUNK_BYTES);
+		assert.ok(
+			meta.chunkCount <= MATRIX_CAPACITY,
+			`chunkCount ${meta.chunkCount} exceeds capacity ${MATRIX_CAPACITY} at maxChunkBytes=${meta.maxChunkBytes}`,
+		);
+		assert.equal(
+			meta.groups.reduce((n, g) => n + g.chunkCount, 0),
+			meta.chunkCount,
+		);
+		const plan = JSON.parse(readFileSync(join(outDir, "group-plan.json"), "utf8"));
+		const assigned = plan.groups.flatMap((g) => g.chunkIndexes);
+		assert.equal(new Set(assigned).size, assigned.length);
+		assert.equal(assigned.length, meta.chunkCount);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("adaptive prepare packs an 8 MiB boundary selection into ≤128 chunks", () => {
+	const dir = mkdtempSync(join(tmpdir(), "grok-prep-8m-"));
+	try {
+		const diffPath = join(dir, "pr.diff");
+		const outDir = join(dir, "out");
+		// Build just under the select cap with many mid-size files.
+		writeFileSync(diffPath, makeDiff(900, 9_000));
+		const selectedBytes = Buffer.byteLength(readFileSync(diffPath));
+		assert.ok(selectedBytes > 7_000_000);
+		assert.ok(selectedBytes <= MAX_SELECTED_DIFF_BYTES);
+
+		const meta = prepareGrokReview({
+			diffPath,
+			outDir,
+			maxGroups: 8,
+			maxChunksPerGroup: 16,
+		});
+		assert.ok(
+			meta.chunkCount <= MATRIX_CAPACITY,
+			`chunkCount ${meta.chunkCount} exceeds capacity at 8MiB boundary (selected=${selectedBytes}, maxChunk=${meta.maxChunkBytes})`,
 		);
 	} finally {
 		rmSync(dir, { recursive: true, force: true });

@@ -186,12 +186,12 @@ jobs:
             --out-exclusion-summary "$RUNNER_TEMP/prepare/exclusion-summary.txt"
 
           # Partition + group into one-wave matrix (≤8×16; capacity 128).
+          # Chunk size is adaptive: ceil(selected / 128) up to argv-safe 96 KiB.
           env -u GITHUB_TOKEN -u GH_TOKEN \
             node "$RUNNER_TEMP/gate-scripts/prepare-grok-review.mjs" \
             --diff "$RUNNER_TEMP/prepare/pr.diff" \
             --inventory "$RUNNER_TEMP/prepare/pr-inventory-prompt.txt" \
             --out-dir "$RUNNER_TEMP/prepare" \
-            --max-chunk-bytes 32000 \
             --max-groups 8 \
             --max-chunks-per-group 16 \
             --max-concurrency 16

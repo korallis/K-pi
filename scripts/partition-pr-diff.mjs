@@ -24,21 +24,34 @@ export const DEFAULT_MAX_CHUNK_BYTES = 96_000;
 export const HARD_MAX_CHUNK_BYTES = 96_000;
 
 /**
+ * Sane packing floor. Adaptive sizing may grow above this toward
+ * `ceil(selectedBytes / waveSlots)`, but never below it (except when
+ * hardMax is tighter).
+ */
+export const MIN_CHUNK_BYTES = 4_096;
+
+/**
  * Conservative test ceiling for prompt argv bytes (chunk + preamble margin).
  * Must stay below Linux MAX_ARG_STRLEN (~128 KiB).
  */
 export const PROMPT_ARGV_TEST_CEILING_BYTES = 100_000;
 
 /**
- * Resolve the pack cap: never above the argv-safe hard max, never above the
- * caller floor request. Adaptive growth past 96 KiB is forbidden (E2BIG).
+ * Resolve the pack cap for one-wave review.
+ *
+ * Target roughly `ceil(selectedBytes / waveSlots)` so a selection that fits
+ * under the select-byte cap can pack into the matrix when waveSlots is the
+ * matrix capacity (128 × 96 KiB = 12.2 MiB > 8 MiB select cap). Apply a small
+ * packing-slack factor because greedy file-boundary packing under-fills
+ * chunks. Clamp to a sane floor and the argv-safe hard max. Never inflate
+ * past hardMax.
  *
  * @param {number} selectedBytes
  * @param {{ floor?: number, hardMax?: number, waveSlots?: number }} [opts]
  */
 export function adaptiveMaxChunkBytes(
 	selectedBytes,
-	{ floor = DEFAULT_MAX_CHUNK_BYTES, hardMax = HARD_MAX_CHUNK_BYTES, waveSlots = 16 } = {},
+	{ floor = MIN_CHUNK_BYTES, hardMax = HARD_MAX_CHUNK_BYTES, waveSlots = 128 } = {},
 ) {
 	if (!Number.isSafeInteger(selectedBytes) || selectedBytes < 0) {
 		throw new Error("selectedBytes must be a non-negative integer");
@@ -52,8 +65,14 @@ export function adaptiveMaxChunkBytes(
 	if (!Number.isSafeInteger(hardMax) || hardMax < 1) {
 		throw new Error("hardMax must be a positive integer");
 	}
-	// Cap only — never inflate past the argv-safe hard max to "fit" a wave.
-	return Math.min(floor, hardMax, DEFAULT_MAX_CHUNK_BYTES);
+	const effectiveHard = Math.min(hardMax, HARD_MAX_CHUNK_BYTES);
+	const effectiveFloor = Math.min(Math.max(1, floor), effectiveHard);
+	if (selectedBytes === 0) return effectiveFloor;
+	// Greedy boundary packing leaves residual free space per chunk; budget 20%.
+	const PACK_SLACK_NUM = 6;
+	const PACK_SLACK_DEN = 5; // 1.2×
+	const target = Math.ceil((selectedBytes * PACK_SLACK_NUM) / (waveSlots * PACK_SLACK_DEN));
+	return Math.min(effectiveHard, Math.max(effectiveFloor, target));
 }
 
 
