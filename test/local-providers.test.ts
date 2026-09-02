@@ -310,7 +310,7 @@ test("AC-27.6 the accounts widget shows no quota percentage for a local slot", (
 		{ now: 0 },
 	);
 
-	assert.match(widget, /OLLAMA {2}default \(local\)/u);
+	assert.match(widget, /OLLAMA {2}default \(local\) \$0/u);
 	assert.doesNotMatch(widget, /default \?%/u, "a local slot has no quota to be unknown about");
 	assert.match(widget, /home \?%/u, "a cloud slot still reports unknown usage");
 });

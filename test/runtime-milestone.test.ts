@@ -93,7 +93,7 @@ test("human pause selects protocol-blue and running selects loop-amber", async (
 			join(run, "state.json"),
 			JSON.stringify({
 				job_id: "active",
-				status: "APPROVAL",
+				status: "RUNNING",
 				graph_status: "interrupted",
 				pending_question: "Ship?",
 			}),

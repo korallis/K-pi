@@ -7,28 +7,20 @@ import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "..
 import { kModeState } from "../kstack/mode.ts";
 
 import { appendEvent, type JsonValue } from "./append-log.ts";
+import {
+	type BoardModel,
+	normalizeStop,
+	RUN_FILE_NAMES,
+	renderBoard,
+	researchCellFromDocument,
+	type StopDisplay,
+} from "./board.ts";
+import { liveWorkerCount } from "./bus/live-snapshot.ts";
 import { type LoopDependencies, type LoopOutcome, parseLoopInvocation, resumeLoop, runLoop } from "./gated-loop.ts";
 import { atomicWrite, type RunState, readActiveJob } from "./run-store.ts";
 import { autoWrapState } from "./settings.ts";
-
-const STAGES = [
-	"01 ac-compile",
-	"02 specify",
-	"03 plan",
-	"04 implement",
-	"05 test",
-	"06 bounds",
-	"07 review",
-	"08 ship",
-] as const;
-const RUN_FILES = [
-	"task.json",
-	"context.md",
-	"candidate.json",
-	"evidence.json",
-	"verdict.json",
-	"events.jsonl",
-] as const;
+import { getFooterRouteSnapshot } from "./status-line/route-snapshot.ts";
+import { formatUsage } from "./status-line/segments.ts";
 
 function nestedValue(state: RunState, parent: string, child: string): JsonValue | undefined {
 	const value = state[parent];
@@ -46,54 +38,216 @@ function numberValue(value: JsonValue | undefined, fallback: number): number {
 	return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
 
-function verifierLabel(state: RunState): string {
-	const passed = typeof state.passed === "boolean" ? state.passed : nestedValue(state, "test", "passed");
-	return passed === true ? "PASS" : passed === false ? "FAIL" : "PASS/FAIL";
+function booleanValue(value: JsonValue | undefined): boolean | undefined {
+	return typeof value === "boolean" ? value : undefined;
 }
 
-async function fileLamps(directory: string): Promise<string> {
-	const lamps = await Promise.all(
-		RUN_FILES.map(async (name) => {
+/**
+ * Paused human node: graph interrupted and/or a pending operator question.
+ * Never derived from a persisted APPROVAL stop status.
+ */
+export function isPausedHuman(state: RunState): boolean {
+	if (state.graph_status === "interrupted") return true;
+	const question = state.pending_question;
+	if (typeof question === "string" && question.trim().length > 0) return true;
+	const pending = state.pending_human ?? state.pendingHuman;
+	if (pending !== null && typeof pending === "object" && !Array.isArray(pending)) {
+		return true;
+	}
+	return false;
+}
+
+export function displayStop(state: RunState): StopDisplay {
+	return normalizeStop(stringValue(state.status ?? state.stop, "RUNNING"));
+}
+
+async function fileLitMap(directory: string): Promise<Record<string, boolean>> {
+	const entries = await Promise.all(
+		RUN_FILE_NAMES.map(async (name) => {
 			try {
 				const metadata = await stat(join(directory, name));
-				return `${metadata.isFile() && metadata.size > 0 ? "●" : "○"} ${name}`;
+				return [name, metadata.isFile() && metadata.size > 0] as const;
 			} catch (error) {
 				if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-					return `○ ${name}`;
+					return [name, false] as const;
 				}
 				throw error;
 			}
 		}),
 	);
-	return lamps.join("  ");
+	return Object.fromEntries(entries);
 }
 
-export async function createStatusWidget(cwd: string): Promise<string[]> {
-	const job = await readActiveJob(cwd);
-	if (job === undefined) {
-		return ["no active job"];
+/** BUS lamp: lit when the run has a non-empty bus.jsonl history, not by live agent count. */
+async function busLogLit(directory: string): Promise<boolean> {
+	try {
+		const metadata = await stat(join(directory, "bus.jsonl"));
+		return metadata.isFile() && metadata.size > 0;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+			return false;
+		}
+		throw error;
+	}
+}
+
+/**
+ * Playbook name + progress todos from the active job only (state.json, else task.json).
+ * Never kModeState.plan — a later sticky match must not relabel an open job.
+ */
+async function jobPlaybookFreeze(
+	runDirectory: string,
+	state: RunState,
+): Promise<{ playbook: string; todos: string[] } | undefined> {
+	const statePlaybook =
+		typeof state.playbook === "string" && state.playbook.trim().length > 0 ? state.playbook : undefined;
+	const stateTodos = Array.isArray(state.todos)
+		? state.todos.filter((entry): entry is string => typeof entry === "string")
+		: undefined;
+
+	if (statePlaybook !== undefined) {
+		return { playbook: statePlaybook, todos: stateTodos ?? [] };
 	}
 
-	const mode = stringValue(job.state.mode, "gated");
-	const round = numberValue(job.state.round, 0);
-	const maxRounds = numberValue(job.state.maxRounds ?? nestedValue(job.state, "limits", "maxRounds"), 3);
-	const stage = stringValue(job.state.stage, "unknown");
-	const node = stringValue(job.state.node, "unknown");
-	const stop = stringValue(job.state.status ?? job.state.stop, "RUNNING").toUpperCase();
-	const paused = stop === "APPROVAL" || job.state.graph_status === "interrupted";
-	const question = stringValue(job.state.pending_question, "");
-	return [
-		`K-π  LOOP ${job.jobId}  MODE ${mode}  JOB ${job.jobId}${kModeState.enabled ? "  K-STACK on" : ""}`,
-		`STAGES  ${STAGES.join("   ")}`,
-		`ROUND ${round}/${maxRounds}  STAGE ${stage}  NODE ${node}  ${verifierLabel(job.state)}`,
-		`GATE ${paused ? "human" : "machine"}${paused ? `  WAITING ON OPERATOR ${question}` : ""}`,
-		`FILES  ${await fileLamps(job.directory)}`,
-		`STOP ${stop}`,
-	];
+	try {
+		const task = JSON.parse(await readFile(join(runDirectory, "task.json"), "utf8")) as {
+			playbook?: unknown;
+			playbook_steps?: Array<{ node?: unknown; text?: unknown; skip?: unknown }>;
+		};
+		if (typeof task.playbook !== "string" || task.playbook.trim().length === 0) {
+			return undefined;
+		}
+		const todos =
+			stateTodos ??
+			(Array.isArray(task.playbook_steps)
+				? task.playbook_steps
+						.filter(
+							(step): step is { node: string; text: string; skip?: string } =>
+								typeof step?.node === "string" &&
+								step.node.trim().length > 0 &&
+								typeof step?.text === "string" &&
+								step.text.trim().length > 0,
+						)
+						.map((step) =>
+							typeof step.skip === "string" && step.skip.trim().length > 0
+								? `${step.node}: ${step.text} — skip: ${step.skip}`
+								: `${step.node}: ${step.text}`,
+						)
+				: []);
+		return { playbook: task.playbook, todos };
+	} catch {
+		return undefined;
+	}
 }
 
-export async function renderStatusOverlay(cwd: string): Promise<string> {
-	return (await createStatusWidget(cwd)).join("\n");
+async function contextPackLamps(cwd: string, runDirectory: string): Promise<BoardModel["contextPack"]> {
+	const roots = [join(cwd, CONFIG_DIR_NAME, "context"), join(runDirectory, "context"), runDirectory];
+	const names = ["product.md", "structure.md", "tech.md"] as const;
+	const lit = { product: false, structure: false, tech: false };
+	for (const root of roots) {
+		for (const name of names) {
+			const key = name.replace(/\.md$/, "") as keyof typeof lit;
+			if (lit[key]) continue;
+			try {
+				const metadata = await stat(join(root, name));
+				if (metadata.isFile() && metadata.size > 0) lit[key] = true;
+			} catch {
+				// missing is dark
+			}
+		}
+	}
+	return lit;
+}
+
+async function loadResearchCell(runDirectory: string): Promise<BoardModel["research"]> {
+	try {
+		const raw = JSON.parse(await readFile(join(runDirectory, "research.json"), "utf8")) as Record<string, unknown>;
+		return researchCellFromDocument(raw as Parameters<typeof researchCellFromDocument>[0]);
+	} catch {
+		return undefined;
+	}
+}
+
+function fingerprintFromState(state: RunState): string | undefined {
+	const direct = state.output_fingerprint ?? state.fingerprint;
+	if (typeof direct === "string") return direct;
+	const fingerprints = state.output_fingerprints;
+	if (Array.isArray(fingerprints) && fingerprints.length > 0) {
+		const last = fingerprints.at(-1);
+		return typeof last === "string" ? last : undefined;
+	}
+	return undefined;
+}
+
+export interface BoardBuildOptions {
+	/** Terminal width for narrow fit. */
+	width?: number;
+	/**
+	 * Injected live worker count. Production reads the bus snapshot; tests inject.
+	 * Never starts workers.
+	 */
+	agents?: number;
+}
+
+/**
+ * Builds the operator board from run files and process-local snapshots only.
+ * Must not call a model client or createAgentSession.
+ */
+export async function buildBoardModel(cwd: string, options: BoardBuildOptions = {}): Promise<BoardModel | undefined> {
+	const job = await readActiveJob(cwd);
+	if (job === undefined) return undefined;
+
+	const state = job.state;
+	const paused = isPausedHuman(state);
+	const route = getFooterRouteSnapshot();
+	const usage = formatUsage(route.remainingPercent, route.slotKind);
+	const freeze = await jobPlaybookFreeze(job.directory, state);
+	const agents = options.agents ?? liveWorkerCount();
+	const busLit = await busLogLit(job.directory);
+
+	return {
+		jobId: job.jobId,
+		mode: stringValue(state.mode, "gated"),
+		round: numberValue(state.round, 0),
+		maxRounds: numberValue(state.maxRounds ?? nestedValue(state, "limits", "maxRounds"), 3),
+		stage: stringValue(state.stage, "unknown"),
+		node: stringValue(state.node, "unknown"),
+		stop: displayStop(state),
+		paused,
+		...(typeof state.pending_question === "string" ? { pendingQuestion: state.pending_question } : {}),
+		passed: booleanValue(typeof state.passed === "boolean" ? state.passed : nestedValue(state, "test", "passed")),
+		fingerprint: fingerprintFromState(state),
+		fileLit: await fileLitMap(job.directory),
+		contextPack: await contextPackLamps(cwd, job.directory),
+		research: await loadResearchCell(job.directory),
+		agents,
+		// Sticky K-mode only — never the mutable plan match for an open job.
+		kModeEnabled: kModeState.enabled,
+		busLit,
+		...(freeze === undefined
+			? {}
+			: {
+					kstack: {
+						playbook: freeze.playbook,
+						todos: freeze.todos,
+					},
+				}),
+		...(route.route === undefined ? {} : { route: route.route }),
+		...(usage === undefined ? {} : { usage }),
+		...(options.width === undefined ? {} : { width: options.width }),
+	};
+}
+
+export async function createStatusWidget(cwd: string, options: BoardBuildOptions = {}): Promise<string[]> {
+	const model = await buildBoardModel(cwd, options);
+	if (model === undefined) {
+		return ["no active job"];
+	}
+	return renderBoard(model);
+}
+
+export async function renderStatusOverlay(cwd: string, options: BoardBuildOptions = {}): Promise<string> {
+	return (await createStatusWidget(cwd, options)).join("\n");
 }
 
 async function installWidget(ctx: ExtensionContext): Promise<boolean> {
@@ -104,9 +258,8 @@ async function installWidget(ctx: ExtensionContext): Promise<boolean> {
 	}
 	const job = await readActiveJob(ctx.cwd);
 	if (typeof ctx.ui.setTheme === "function") {
-		ctx.ui.setTheme(
-			job?.state.status === "APPROVAL" || job?.state.graph_status === "interrupted" ? "protocol-blue" : "loop-amber",
-		);
+		const paused = job !== undefined && isPausedHuman(job.state);
+		ctx.ui.setTheme(paused ? "protocol-blue" : "loop-amber");
 	}
 	ctx.ui.setWidget("kpi", lines);
 	return true;
@@ -120,6 +273,11 @@ async function showStatus(ctx: ExtensionCommandContext): Promise<void> {
 		return;
 	}
 
+	const job = await readActiveJob(ctx.cwd);
+	if (typeof ctx.ui.setTheme === "function") {
+		const paused = job !== undefined && isPausedHuman(job.state);
+		ctx.ui.setTheme(paused ? "protocol-blue" : "loop-amber");
+	}
 	ctx.ui.setWidget("kpi", lines);
 	if (ctx.mode !== "tui" || !ctx.hasUI) {
 		ctx.ui.notify(lines.join("\n"), "info");

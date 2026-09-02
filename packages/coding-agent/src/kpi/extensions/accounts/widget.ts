@@ -35,11 +35,10 @@ export function renderAccountsWidget(document: AccountsDocument, options: Accoun
 		}
 		const slots = pool.slots.map((slot) => {
 			const snapshot = options.usage?.get(poolId as PoolId, slot.id);
-			// AC-27.6: a local slot has no quota, so it shows no percentage at all
-			// rather than an unknown one.
+			// AC-27.6 / NH-01: local has no quota; cost cell is exactly "(local) $0".
 			const percent =
 				slot.kind === "local"
-					? "(local)"
+					? "(local) $0"
 					: snapshot?.remainingPercent === undefined
 						? "?%"
 						: `${snapshot.remainingPercent}%`;

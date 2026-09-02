@@ -266,10 +266,12 @@ function stateDocument(
 		status:
 			terminalStatus ??
 			(state.status === "interrupted"
-				? "APPROVAL"
+				? "RUNNING"
 				: state.status === "completed"
 					? "DONE"
-					: state.status.toUpperCase()),
+					: state.status === "running"
+						? "RUNNING"
+						: state.status.toUpperCase()),
 		reason,
 		graph_status: state.status,
 		superstep: state.superstep,

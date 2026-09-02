@@ -16,6 +16,7 @@ import {
 	type WorkerIdentity,
 } from "./identity.ts";
 import { claimLease, defaultIsProcessAlive, type LeaseDependencies, releaseLease } from "./leases.ts";
+import { setLiveWorkerCountProvider } from "./live-snapshot.ts";
 import {
 	hasTestShellOnly,
 	isWorkerRole,
@@ -253,6 +254,13 @@ export function evaluateWorkerToolCall(
 /** Tools that manage workers. They exist only in a parent session. */
 function registerParentTools(pi: ExtensionAPI, options: BusRegistrationOptions): void {
 	const buses = new Map<string, BackgroundBus>();
+	setLiveWorkerCountProvider(() => {
+		let count = 0;
+		for (const bus of buses.values()) {
+			count += bus.live;
+		}
+		return count;
+	});
 	/**
 	 * One parent-level queue for spawn and stop-all.
 	 *

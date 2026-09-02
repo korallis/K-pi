@@ -6,6 +6,7 @@ import type { ResearchService } from "../research/session.ts";
 import { removeResearchKey, saveResearchKeys } from "../research/setup.ts";
 import { readActiveJob } from "../run-store.ts";
 import { writeResearchMode } from "../settings.ts";
+import { setFooterRouteSnapshot } from "../status-line/route-snapshot.ts";
 import { AccountBalancer, type SelectedSlot } from "./balancer.ts";
 import { classifyProviderFailure } from "./errors.ts";
 import {
@@ -521,16 +522,29 @@ export function registerAccounts(pi: ExtensionAPI, dependencies: AccountsDepende
 		context: { ui: { setStatus: (key: string, value?: string) => void } },
 		accounts?: AccountsDocument,
 	): Promise<void> => {
-		const widget = renderAccountsWidget(accounts ?? (await resolved.store.read()), {
+		const doc = accounts ?? (await resolved.store.read());
+		const route =
+			active === undefined || activeModel === undefined
+				? undefined
+				: { provider: active.poolId, model: activeModel, slot: active.slot.id };
+		const widget = renderAccountsWidget(doc, {
 			usage,
 			health: balancer,
-			route:
-				active === undefined || activeModel === undefined
-					? undefined
-					: { provider: active.poolId, model: activeModel, slot: active.slot.id },
+			route,
 			now: nowMs(),
 		});
 		context.ui.setStatus("accounts", widget === "ACCOUNTS" ? undefined : widget);
+		// Footer/board consume slot kind without starting a model.
+		if (active !== undefined) {
+			const snapshot = usage.get(active.poolId, active.slot.id);
+			setFooterRouteSnapshot({
+				slotKind: active.slot.kind,
+				...(route === undefined ? {} : { route: `${route.provider}/${route.model}` }),
+				...(active.slot.kind === "local" || snapshot?.remainingPercent === undefined
+					? {}
+					: { remainingPercent: snapshot.remainingPercent }),
+			});
+		}
 	};
 
 	/**

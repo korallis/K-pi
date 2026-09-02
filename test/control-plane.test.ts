@@ -127,6 +127,9 @@ test("job overlay includes the K-π brand and stages 01 through 08", async () =>
 		for (const stage of ["01", "02", "03", "04", "05", "06", "07", "08"]) {
 			assert.match(overlay, new RegExp(`\\b${stage}\\b`));
 		}
+		assert.match(overlay, /04 implement CURRENT/);
+		assert.equal((overlay.match(/CURRENT/g) ?? []).length, 1);
+		assert.match(overlay, /STOP RUNNING/);
 	});
 });
 
