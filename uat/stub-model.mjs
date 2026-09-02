@@ -289,6 +289,14 @@ function dynamicLoopTurns(body) {
 				},
 			];
 		}
+		if (assistantToolTurns === 2) {
+			return [
+				{
+					tool_calls: [{ name: "bash", arguments: { command: "npm run lint" } }],
+					finish_reason: "tool_calls",
+				},
+			];
+		}
 		const head = sha || "0".repeat(40);
 		const blobTexts = texts.join("\n");
 		const failed =
@@ -306,7 +314,10 @@ function dynamicLoopTurns(body) {
 			head,
 			commands: [
 				{ cmd: "git rev-parse HEAD", exit: sha ? 0 : 1, excerpt: sha || "unavailable" },
-				{ cmd: "npm test", exit: testExit, excerpt: testExit === 0 ? "ok" : "failed" },
+				// TDD receipt: red before green (latest exit for npm test remains 0 for evidencePasses)
+				{ cmd: "npm test", exit: 1, excerpt: "red: baseline failing before production fix" },
+				{ cmd: "npm test", exit: testExit === 0 ? 0 : 1, excerpt: testExit === 0 ? "green: ok" : "failed" },
+				{ cmd: "npm run lint", exit: 0, excerpt: "lint ok" },
 			],
 			ac_results,
 		};
@@ -393,6 +404,26 @@ export function createApp() {
 		/stack\.schema\.json/i.test(blob) ||
 		(/stack\.json/i.test(blob) && /Return only JSON matching/i.test(blob))
 	) {
+		const stackFile = process.env.UAT_PLAN_STACK_FILE;
+		if (stackFile) {
+			try {
+				const raw = readFileSync(stackFile, "utf8");
+				if (raw.trim() === "__EMPTY__") {
+					return [{ content: "", finish_reason: "stop" }];
+				}
+				if (raw.trim()) {
+					return [{ content: raw.trim(), finish_reason: "stop" }];
+				}
+			} catch {
+				/* fall through to default stack */
+			}
+		}
+		if (process.env.UAT_PLAN_STACK === "__EMPTY__") {
+			return [{ content: "", finish_reason: "stop" }];
+		}
+		if (process.env.UAT_PLAN_STACK && process.env.UAT_PLAN_STACK.trim()) {
+			return [{ content: process.env.UAT_PLAN_STACK.trim(), finish_reason: "stop" }];
+		}
 		const stack = {
 			version: 1,
 			shape: "dune",

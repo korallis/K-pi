@@ -5,6 +5,8 @@
  *
  *   node uat/run-row.mjs --row UAT-01
  *   node uat/run-row.mjs --row all-batch1
+ *   node uat/run-row.mjs --row all-batch2
+ *   node uat/run-row.mjs --row all-batch3
  */
 import {
 	cpSync,
@@ -24,6 +26,7 @@ import { fileURLToPath } from "node:url";
 import { spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:net";
 import { writeGrade } from "./grade.mjs";
+import { createBatch23Runners } from "./batch23-rows.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "..");
@@ -85,11 +88,14 @@ function pinAgentDir(agentDir, baseUrl, extraSettings = {}) {
 	);
 }
 
-function startStub(port, logFile, screenplayPath) {
+function startStub(port, logFile, screenplayPath, stubEnv = {}) {
 	return new Promise((resolveStub, reject) => {
 		const args = [stubPath, "--port", String(port), "--log", logFile];
 		if (screenplayPath) args.push("--screenplay", screenplayPath);
-		const child = spawn(process.execPath, args, { stdio: ["ignore", "pipe", "pipe"] });
+		const child = spawn(process.execPath, args, {
+			stdio: ["ignore", "pipe", "pipe"],
+			env: { ...process.env, ...stubEnv },
+		});
 		let buf = "";
 		const timer = setTimeout(() => {
 			child.kill("SIGTERM");
@@ -490,14 +496,31 @@ async function prepareSandbox(rowId, { fixture } = {}) {
 	writeFileSync(modelLog, "");
 	const egressLog = join(rowDir, "egress.log");
 	writeFileSync(egressLog, "");
+	const planStackFile = join(rowDir, "artifacts", "plan-stack-override.json");
+	writeFileSync(planStackFile, ""); // empty = use stub default health stack
 	const port = await freePort();
 	const baseUrl = `http://127.0.0.1:${port}/v1`;
 	pinAgentDir(agentDir, baseUrl);
 	const screenplay = join(here, "fixtures", `${rowId.toLowerCase()}-screenplay.json`);
-	const sp = existsSync(screenplay) ? screenplay : join(here, "fixtures/e0-screenplay.json");
-	const { child: stub, info } = await startStub(port, modelLog, sp);
+	const sp = existsSync(screenplay) ? screenplay : join(here, "fixtures/loop-agent-screenplay.json");
+	const { child: stub, info } = await startStub(port, modelLog, sp, {
+		UAT_PLAN_STACK_FILE: planStackFile,
+	});
 	const env = baseEnv({ home, agentDir, egressLog });
-	return { rowDir, home, agentDir, subject, modelLog, egressLog, port, baseUrl, stub, info, env };
+	return {
+		rowDir,
+		home,
+		agentDir,
+		subject,
+		modelLog,
+		egressLog,
+		port,
+		baseUrl,
+		stub,
+		info,
+		env,
+		planStackFile,
+	};
 }
 
 function cleanupSandbox(box) {
@@ -1077,13 +1100,34 @@ async function runUat24() {
 	}
 }
 
-const ROWS = {
+const BATCH1 = {
 	"UAT-01": runUat01,
 	"UAT-02": runUat02,
 	"UAT-04": runUat04,
 	"UAT-13": runUat13,
 	"UAT-24": runUat24,
 };
+
+const BATCH23 = createBatch23Runners({
+	prepareSandbox,
+	cleanupSandbox,
+	runRpc,
+	finishRow,
+	fixtureGoal,
+	gitSnapshot,
+	initGit,
+	cliPath,
+	repoRoot,
+});
+
+const ROWS = {
+	...BATCH1,
+	...BATCH23,
+};
+
+const BATCH1_IDS = Object.keys(BATCH1);
+const BATCH2_IDS = ["UAT-03", "UAT-05", "UAT-08", "UAT-22", "UAT-30"];
+const BATCH3_IDS = ["UAT-09", "UAT-14", "UAT-23"];
 
 async function main() {
 	ensureCli();
@@ -1092,11 +1136,15 @@ async function main() {
 	for (let i = 0; i < args.length; i++) {
 		if (args[i] === "--row") {
 			const v = args[++i] || "";
-			list = v === "all-batch1" ? Object.keys(ROWS) : v.split(",").map((s) => s.trim()).filter(Boolean);
+			if (v === "all-batch1") list = [...BATCH1_IDS];
+			else if (v === "all-batch2") list = [...BATCH2_IDS];
+			else if (v === "all-batch3") list = [...BATCH3_IDS];
+			else if (v === "all") list = [...BATCH1_IDS, ...BATCH2_IDS, ...BATCH3_IDS];
+			else list = v.split(",").map((s) => s.trim()).filter(Boolean);
 		}
 	}
 	if (!list.length) {
-		console.error("usage: node uat/run-row.mjs --row UAT-01[,...] | all-batch1");
+		console.error("usage: node uat/run-row.mjs --row UAT-01[,...] | all-batch1|all-batch2|all-batch3|all");
 		process.exit(2);
 	}
 	const summary = [];
@@ -1124,7 +1172,14 @@ async function main() {
 			summary.push({ row: id, verdict: "FAIL", error: String(e && e.message ? e.message : e) });
 		}
 	}
-	const out = join(repoRoot, ".kpi/uat/batch1-summary.json");
+	const tag = list.every((id) => BATCH2_IDS.includes(id))
+		? "batch2"
+		: list.every((id) => BATCH3_IDS.includes(id))
+			? "batch3"
+			: list.every((id) => BATCH1_IDS.includes(id))
+				? "batch1"
+				: "mixed";
+	const out = join(repoRoot, `.kpi/uat/${tag}-summary.json`);
 	mkdirSync(dirname(out), { recursive: true });
 	writeFileSync(out, `${JSON.stringify({ at: new Date().toISOString(), summary }, null, 2)}\n`);
 	console.log(JSON.stringify({ summary }, null, 2));
