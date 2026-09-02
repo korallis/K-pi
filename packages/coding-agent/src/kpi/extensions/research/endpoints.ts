@@ -170,14 +170,16 @@ export interface BoundedFetchOptions {
  * armed and the reason they fire for is kept distinct: a deadline is a recorded
  * `timeout`, a caller abort stays an `abort`. The timer is always cleared, so a
  * fast answer does not keep the process alive for the rest of the window.
+ *
+ * Do not `unref` the deadline timer. Callers await this promise; the timer is
+ * the only thing that can settle a hanging transport. An unref'd timer lets the
+ * event loop drain while the await is still pending, which cancels sibling
+ * tests under the workspace runner and would strand real callers the same way.
  */
 export async function fetchBounded(url: string, init: RequestInit, options: BoundedFetchOptions): Promise<Response> {
 	const timeoutMs = options.timeoutMs ?? DEFAULT_RESEARCH_TIMEOUT_MS;
 	const deadline = new AbortController();
 	const timer = setTimeout(() => deadline.abort(), timeoutMs);
-	// `unref` where the runtime offers it: a pending research deadline is not a
-	// reason for the process to stay up.
-	(timer as unknown as { unref?: () => void }).unref?.();
 	const signals = options.signal === undefined ? [deadline.signal] : [deadline.signal, options.signal];
 	try {
 		return await (options.fetch ?? fetch)(url, { ...init, signal: AbortSignal.any(signals) });
