@@ -1036,7 +1036,7 @@ From RP-02 onward, a source path written `extensions/…`, `graphs/…`, `prompt
 
 ## Definition of done for the whole product
 
-Remediation packages RP-00–RP-19 are closed. Items 1–7 below are satisfied by that scoped evidence plus `.kpi/remediation-proof.json`. **Item 8 (UAT) is still open** — the product is not finished until every `uat.md` row passes.
+Remediation packages RP-00–RP-19 are closed. Items 1–7 below are satisfied by that scoped evidence plus `.kpi/remediation-proof.json`. **Item 8 (UAT)** machine rows are green on the tip binary; one attended residual remains (see below). The product is not finished until that residual is closed too.
 
 All of:
 
@@ -1047,4 +1047,4 @@ All of:
 5. [x] Fixtures run against that binary cover gated, autopilot, policy, accounts, local providers, research, Dune, KG, bus/reviewer, K-stack, footer, and both boards.
 6. [x] M-01–M-07 are true in `.kpi/remediation-proof.json`.
 7. [x] Docs match the built behavior; historical plan/roadmap remain clearly non-authoritative.
-8. [ ] Every row of [`uat.md`](uat.md) — US-01 through US-30 — passes against the built binary, with evidence a human can read, and M-01–M-07 pass alongside them. The product is finished at this line and not before.
+8. [~] Every machine-drivable row of [`uat.md`](uat.md) — US-01 through US-30 — **PASS** against the built binary under `.kpi/uat/UAT-*/result.json`, rolled into `.kpi/remediation-proof.json` with `uat.rows_executed=true` and `uat.all_pass=true` for those machine verdicts. **Still open (attended-only):** **AC-10.2** on UAT-10 — live `/accounts login anthropic` twice (stacked OAuth slots) needs a human with real Anthropic credentials and network; the machine half (loopback z.ai pool, 429 sibling failover, cooled-never-reselected) already passes. Do not mark this line `[x]` until AC-10.2 is attended and evidence is filed. The product is finished at this line and not before.
