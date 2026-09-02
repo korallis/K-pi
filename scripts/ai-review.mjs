@@ -52,7 +52,8 @@ export const STICKY_MARKER = "<!-- kpi-ai-review -->";
 /**
  * Per-attempt wall clock. A timeout is terminal (the same prompt would only
  * time out again); 429, 5xx and transport errors get MAX_ATTEMPTS in total.
- * 300s plus fast retries stays inside the workflow's 15-minute job budget.
+ * Worst case is MAX_ATTEMPTS × 300s plus at most 60s of backoff, about 16
+ * minutes, which the workflow's 20-minute job budget covers.
  */
 export const REQUEST_TIMEOUT_MS = 300_000;
 export const MAX_ATTEMPTS = 3;
@@ -224,19 +225,20 @@ const sleep = (ms) => new Promise((done) => setTimeout(done, Math.max(0, ms)));
 /**
  * Runs the review request with bounded retries on 429, 5xx and transport errors.
  *
- * @param {{ url: string, body: unknown, apiKey: string, fetchImpl?: typeof fetch, sleepImpl?: (ms: number) => Promise<void>, attempts?: number }} config
+ * @param {{ url: string, body: unknown, apiKey: string, fetchImpl?: typeof fetch, sleepImpl?: (ms: number) => Promise<void>, attempts?: number, timeoutMs?: number }} config
  * @returns {Promise<string>} the review text
  */
 export async function requestReview(config) {
 	const fetchImpl = config.fetchImpl ?? globalThis.fetch;
 	const sleepImpl = config.sleepImpl ?? sleep;
 	const attempts = config.attempts ?? MAX_ATTEMPTS;
+	const timeoutMs = config.timeoutMs ?? REQUEST_TIMEOUT_MS;
 	let lastFailure = "no attempt was made";
 
 	for (let attempt = 0; attempt < attempts; attempt++) {
 		if (attempt > 0) await sleepImpl(backoffMs(attempt - 1));
 		const controller = new AbortController();
-		const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+		const timer = setTimeout(() => controller.abort(), timeoutMs);
 		try {
 			const response = await fetchImpl(config.url, {
 				method: "POST",
@@ -268,9 +270,7 @@ export async function requestReview(config) {
 			return content.trim();
 		} catch (error) {
 			if (controller.signal.aborted) {
-				throw new Error(
-					`z.ai request timed out after ${REQUEST_TIMEOUT_MS / 1000}s on attempt ${attempt + 1}; not retried`,
-				);
+				throw new Error(`z.ai request timed out after ${timeoutMs / 1000}s on attempt ${attempt + 1}; not retried`);
 			}
 			if (isRetryableNetworkError(error)) {
 				lastFailure = error instanceof Error ? error.message : String(error);

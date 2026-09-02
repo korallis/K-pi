@@ -52,7 +52,8 @@ jobs:
   review:
     name: AI review (advisory)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # Covers the reviewer's worst case: three 300s attempts plus backoff (~16 min).
+    timeout-minutes: 20
     if: >-
       github.event.pull_request.draft == false
       && github.event.pull_request.head.repo.full_name == github.repository

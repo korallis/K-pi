@@ -281,16 +281,16 @@ test("a timed-out attempt is terminal: the same prompt is never retried", async 
 			url: ZAI_CHAT_COMPLETIONS_URL,
 			body: { model: "m" },
 			apiKey: "k",
-			fetchImpl: async (_url, init) => {
-				calls++;
-				// Simulate the abort the 300s timer would fire, without waiting for it.
-				init.signal.dispatchEvent(new Event("abort"));
-				Object.defineProperty(init.signal, "aborted", { value: true });
-				throw new DOMException("The operation was aborted.", "AbortError");
-			},
+			timeoutMs: 5,
+			// Behaves like fetch: settles only when the request's own signal aborts.
+			fetchImpl: (_url, init) =>
+				new Promise((_resolve, reject) => {
+					calls++;
+					init.signal.addEventListener("abort", () => reject(new DOMException("The operation was aborted.", "AbortError")));
+				}),
 			sleepImpl: async () => {},
 		}),
-		/timed out after 300s on attempt 1; not retried/,
+		/timed out after 0\.005s on attempt 1; not retried/,
 	);
 	assert.equal(calls, 1);
 });
