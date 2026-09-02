@@ -409,8 +409,8 @@ test("a candidate is built entirely outside the repository", async () => {
 		assert.deepEqual(candidate.dropped, []);
 		assert.deepEqual([...candidate.tree.keys()].sort(), [
 			"LICENSE",
-			"assets/pixel.png",
 			"skills/fixture-skill/SKILL.md",
+			"skills/fixture-skill/references/pixel.png",
 			"skills/fixture-skill/scripts/run.sh",
 		]);
 		// Building a candidate creates nothing in the live layout.
@@ -481,11 +481,12 @@ test("modes and binary bytes survive staging and promotion unchanged", async () 
 			"and the bit is on the file itself, not only in the model",
 		);
 
-		const png = generated.get("assets/pixel.png");
+		const binary = "skills/fixture-skill/references/pixel.png";
+		const png = generated.get(binary);
 		const source = await readTree(layout.upstream);
 		assert.ok(png !== undefined, "the binary shipped");
-		assert.equal(png.bytes.equals(source.get("assets/pixel.png")!.bytes), true, "byte for byte");
-		assert.equal(isTextFile("assets/pixel.png", png.bytes), false, "and it was never treated as text");
+		assert.equal(png.bytes.equals(source.get(binary)!.bytes), true, "byte for byte");
+		assert.equal(isTextFile(binary, png.bytes), false, "and it was never treated as text");
 		assert.equal(png.bytes.includes(0), true, "a utf8 round trip would have destroyed these bytes");
 	} finally {
 		await layout.cleanup();
@@ -990,7 +991,8 @@ test("a file deleted upstream is removed from generated", async () => {
 	const layout = await makeLayout();
 	try {
 		await runSync(optionsFor(layout));
-		assert.ok((await readTree(layout.generated)).has("assets/pixel.png"), "the file shipped first");
+		const binary = "skills/fixture-skill/references/pixel.png";
+		assert.ok((await readTree(layout.generated)).has(binary), "the file shipped first");
 
 		// Swap in the pinned tree that no longer has it, and move the pin honestly.
 		await rm(layout.upstream, { recursive: true, force: true });
@@ -1000,15 +1002,15 @@ test("a file deleted upstream is removed from generated", async () => {
 		const report = await runSync(optionsFor(layout));
 		assert.equal(report.status, "promoted");
 		const generated = await readTree(layout.generated);
-		assert.equal(generated.has("assets/pixel.png"), false, "the stale file is gone, not merged forward");
+		assert.equal(generated.has(binary), false, "the stale file is gone, not merged forward");
 		assert.equal(
 			generated.get("skills/fixture-skill/references/added.md")?.bytes.toString("utf8"),
 			"# added upstream\n",
 		);
 		assert.equal(
-			await stat(join(layout.generated, "assets")).catch(() => undefined),
+			await stat(join(layout.generated, "skills/fixture-skill/references/pixel.png")).catch(() => undefined),
 			undefined,
-			"and so is its folder",
+			"and nothing was merged forward in its place",
 		);
 	} finally {
 		await layout.cleanup();

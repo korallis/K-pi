@@ -2,10 +2,10 @@
 	"origin": {
 		"repository": "https://github.com/cursor/plugins.git",
 		"path": "pstack/",
-		"commit": "b9ddc83c32972210b8a94d389130713e8eed346e",
-		"treeOid": "950b90234c17babd00c43e32b19ae50abb4720f5"
+		"commit": "efa2a531985e0a8084d36ff3cf87233be8a9f34b",
+		"treeOid": "1c625329e71538629f087374daa71293a498089f"
 	},
-	"transformVersion": "da0fc1e1aa3780e78913c9122ccd727f7622020178c2099f6e800b7b19890f0d",
+	"transformVersion": "1b86ea71f862661208be21916b5a12aa9024b96253890da40dd8e1ff677aa1c2",
 	"patches": [],
 	"license": {
 		"path": "LICENSE",

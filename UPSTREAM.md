@@ -136,7 +136,61 @@ The generated model-data snapshot under `packages/ai` is **unchanged** from the 
 
 Keep this register honest. An undocumented upstream patch is a merge trap for the next person: verify it after every upstream merge with `git diff <base-tag> --name-status` filtered to upstream-owned paths.
 
-## 7. Divergence budget
+## 7. Base drift assessment
+
+Standing assessment of the pin against upstream. Re-run the commands and rewrite
+this section whenever the pin is considered; it is a dated reading, not a policy.
+
+**As of 2026-09-02, against `upstream/main` at `96317e50b8d6e7f6d0e47fd29122baf1461c00f5`.**
+
+`v0.84.4` is still the newest upstream release tag. `git fetch upstream --tags`
+then `git tag -l --sort=-v:refname | head -3` returns `v0.84.4`, `v0.84.3`,
+`v0.84.2`; there is no `v0.85`. The pin is on the latest release, and the 13
+commits `main` carries beyond it are unreleased work behind an open
+`[Unreleased]` changelog heading. Moving to them would pin the fork to an
+untagged commit, which §1 and `upstream.json` do not describe and §6 step 6 does
+not permit.
+
+**Distance.** 13 commits, 49 files, +1024/-104, spanning 2026-08-28 to
+2026-09-02.
+
+**Overridden surfaces.** Of the surfaces K-π reaches into, the delta touches
+only provider transport and the interactive component tree:
+
+| Surface | Touched | Collides with a K-π patch |
+|---|---|---|
+| Provider transport (`packages/ai/src/api/**`, proxy, dispatcher) | yes | 3 files, non-overlapping hunks |
+| Interactive components (`modes/interactive/components/**`) | yes, 5 selectors | no — K-π patches `interactive-mode.ts` and `theme/theme-controller.ts` |
+| Agent session | `agent-session-runtime.ts`, 4 lines | no — K-π patches `agent-session.ts` |
+| Resource loader | no | — |
+| Footer and theme lifecycle | only the theme picker's list rendering | no |
+| RPC | no | — |
+
+**Dry merge.** `git merge-tree --write-tree --messages HEAD upstream/main`
+reports exactly one conflict: `.github/APPROVED_CONTRIBUTORS`, modify/delete.
+§6 already resolves it — upstream `.github/**` is deleted in full, including the
+approved-contributors gate, and is not resurrected. The three provider-transport
+files auto-merge: K-π's edits there thread the `onResponse` callback, upstream's
+bump a user-agent constant and add a `supportsMaxOutputTokens` compat flag, and
+the two sets never touch the same lines. Everything else merges clean.
+
+**What a bump would buy.** Two items earn their keep. `fix(tui): wrap SIGWINCH
+self-signal` stops a startup crash under restricted seccomp, which K-π's own
+operator manual invites by recommending Docker or Gondolin for isolation.
+`supportsMaxOutputTokens` unblocks Codex-protocol gateways that reject
+`max_output_tokens`, which reaches K-π's `openai-codex` pool — local pools are on
+the `openai-completions` client and are unaffected. The rest is proxy matching,
+terminal detection, tool `cwd` handling, selector polish, and a theme-picker
+checkmark that happens to suit a fork shipping two themes.
+
+**Recommendation: hold the pin.** Nothing here is a security fix, and none of it
+is release-tagged. Bump when upstream tags `v0.85.0`, take the whole tagged tree
+in one reviewed merge per §6, and treat the SIGWINCH fix as the reason to do it
+promptly rather than to do it early. If a container operator hits the seccomp
+crash before that tag lands, cherry-picking `605a1b038` alone is a narrower and
+more honest change than moving the base.
+
+## 8. Divergence budget
 
 Fork upstream files only when the alternative is worse. In order of preference:
 
@@ -147,6 +201,6 @@ Fork upstream files only when the alternative is worse. In order of preference:
 
 Every entry in §6 is a recurring cost paid on every upstream release.
 
-## 8. Attribution
+## 9. Attribution
 
 Pi is MIT-licensed. The upstream copyright and licence text are preserved in `LICENSE`, and attribution is recorded in `NOTICE`. Removing either is a licence violation. K-π is not affiliated with, endorsed by, or supported by the Pi maintainers; do not file K-π issues upstream.

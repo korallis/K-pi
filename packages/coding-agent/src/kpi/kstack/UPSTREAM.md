@@ -3,8 +3,8 @@
 | Source | https://github.com/cursor/plugins.git |
 |---|---|
 | Path | pstack/ |
-| Commit | b9ddc83c32972210b8a94d389130713e8eed346e |
-| pstack tree | 950b90234c17babd00c43e32b19ae50abb4720f5 |
+| Commit | efa2a531985e0a8084d36ff3cf87233be8a9f34b |
+| pstack tree | 1c625329e71538629f087374daa71293a498089f |
 | Upstream version | main snapshot 2026-08-31 |
 | K-stack overlay | 1 |
 

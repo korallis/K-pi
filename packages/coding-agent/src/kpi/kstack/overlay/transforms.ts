@@ -81,6 +81,15 @@ export interface OverlayConfig {
 	readonly pathRenames: readonly PathRename[];
 	readonly tokenRenames: readonly TokenRename[];
 	readonly dropPaths: readonly DropPath[];
+	/**
+	 * What the generated runtime is allowed to contain, as an allow-list.
+	 *
+	 * `dropPaths` answers "which upstream content do we deliberately exclude",
+	 * which only covers paths upstream had when the rule was written. This
+	 * answers the question that survives a bump: a path upstream adds later is
+	 * neither dropped nor recognised, so it fails closed instead of shipping.
+	 */
+	readonly allowedPaths: readonly DropPath[];
 	readonly dropLines: readonly DropLine[];
 	readonly operators: readonly OperatorRule[];
 	readonly unknownOperatorSentinels: readonly SentinelRule[];
@@ -436,6 +445,42 @@ function hasDirectory(files: ReadonlyMap<string, string>, target: string): boole
 /** Throws unless the generated tree is clean. */
 export function assertGeneratedTree(files: ReadonlyMap<string, string>, config: OverlayConfig): void {
 	const diagnostics = validateGeneratedTree(files, config);
+	if (diagnostics.length > 0) {
+		throw new KStackTransformError(diagnostics);
+	}
+}
+
+/**
+ * Every path the generated runtime ships, checked against the allow-list.
+ *
+ * This runs over the whole tree rather than the text view, because the content
+ * that most needs the question asked is the content the text transforms never
+ * see: a binary upstream adds is not scanned for residue, carries no
+ * frontmatter, and matches no sentinel, so nothing else in the pipeline has an
+ * opinion about it.
+ */
+export function validateTreePaths(paths: Iterable<string>, config: OverlayConfig): KStackDiagnostic[] {
+	const diagnostics: KStackDiagnostic[] = [];
+	for (const path of paths) {
+		if (config.allowedPaths.some((rule) => matchesGlob(path, rule.pattern))) {
+			continue;
+		}
+		diagnostics.push({
+			path,
+			line: 1,
+			column: 1,
+			rule: "unknown-path",
+			message:
+				"path is not in the overlay's allowedPaths: drop it in config.json, or allow it and say why it belongs in a loadable runtime",
+			excerpt: "",
+		});
+	}
+	return diagnostics;
+}
+
+/** Throws unless every shipped path is one the overlay recognises. */
+export function assertTreePaths(paths: Iterable<string>, config: OverlayConfig): void {
+	const diagnostics = validateTreePaths(paths, config);
 	if (diagnostics.length > 0) {
 		throw new KStackTransformError(diagnostics);
 	}

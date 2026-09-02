@@ -55,6 +55,20 @@
 		{
 			"pattern": "**/worktree-cleanup.md",
 			"reason": "kstack.md §5 defers worktree cleanup; v1 works in-tree on a feature branch"
+		},
+		{
+			"pattern": "assets/**",
+			"reason": "Cursor plugin marketplace artwork; K-π ships no images in a loadable skill tree"
+		}
+	],
+	"allowedPaths": [
+		{
+			"pattern": "LICENSE",
+			"reason": "the upstream MIT licence, required attribution for the vendored subtree"
+		},
+		{
+			"pattern": "skills/**",
+			"reason": "the loadable runtime: every generated path a K-π session can discover"
 		}
 	],
 	"dropLines": [
@@ -65,6 +79,13 @@
 				"docs/**"
 			],
 			"reason": "upstream author self-branding in prose; attribution lives in LICENSE and NOTICE"
+		},
+		{
+			"pattern": "^paths: \\[",
+			"scope": [
+				"skills/**/SKILL.md"
+			],
+			"reason": "a Cursor file-glob auto-attach trigger; K-π's loader reads name, description, and disable-model-invocation, so a paths key would promise a trigger nothing fires"
 		}
 	],
 	"operators": [

@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 
 import {
 	assertGeneratedTree,
+	assertTreePaths,
 	KStackTransformError,
 	MAINTAINER_TEST_FILE,
 	matchesGlob,
@@ -349,6 +350,8 @@ export async function buildCandidate(options: SyncOptions, work: string): Promis
 	await applyPatches(candidateDirectory, patchDirectory, ordered);
 
 	const finalTree = await readTree(candidateDirectory);
+	// Before anything reads the contents: is every shipped path one we recognise?
+	assertTreePaths(finalTree.keys(), config);
 	assertGeneratedTree(textOf(finalTree), config);
 	assertLicense(finalTree, provenance);
 	assertModelsJson(finalTree);
