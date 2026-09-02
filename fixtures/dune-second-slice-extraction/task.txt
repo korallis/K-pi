@@ -1,0 +1,1 @@
+Extract the shared session and money types first; cmd npm test exits 0; writes only src/shared/** and test/shared/**

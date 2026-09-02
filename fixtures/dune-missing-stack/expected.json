@@ -1,0 +1,6 @@
+{
+  "case": "dune-missing-stack",
+  "outcome": "unsafe",
+  "reason": "stack.json is missing; implement has no frozen map to read",
+  "note": "The run directory holds task.json and no stack.json. A missing map is the absence of the precondition: there is no default shape and no on-the-fly regeneration, so implement stops before its first write."
+}

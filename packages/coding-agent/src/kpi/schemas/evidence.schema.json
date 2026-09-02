@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "evidence.schema.json",
+  "title": "K-pi evidence",
+  "type": "object",
+  "required": ["head", "commands", "ac_results"],
+  "properties": {
+    "head": {
+      "type": "string",
+      "minLength": 1
+    },
+    "commands": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/commandRecord" }
+    },
+    "ac_results": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/acResult" }
+    }
+  },
+  "$defs": {
+    "commandRecord": {
+      "type": "object",
+      "required": ["cmd", "exit"],
+      "properties": {
+        "cmd": { "type": "string", "minLength": 1 },
+        "exit": { "type": "integer" },
+        "excerpt": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "acResult": {
+      "type": "object",
+      "required": ["id", "passed"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "passed": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

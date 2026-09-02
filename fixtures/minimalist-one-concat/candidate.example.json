@@ -1,0 +1,5 @@
+{
+  "ladder": "one-liner",
+  "used": "template literal concat in src/join.js",
+  "skipped": "join helper module, utility class, new dependency"
+}

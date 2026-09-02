@@ -1,0 +1,8 @@
+diff --git a/skills/fixture-skill/references/safe.md b/skills/fixture-skill/references/safe.md
+new file mode 100644
+--- /dev/null
++++ b/skills/fixture-skill/references/safe.md
+@@ -0,0 +1 @@
++safe
+diff --git a/assets/pixel.png b/assets/pixel.png
+Binary files a/assets/pixel.png and b/assets/pixel.png differ

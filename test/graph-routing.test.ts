@@ -1,0 +1,481 @@
+import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test from "node:test";
+
+import {
+	GraphEngine,
+	loadNamedGraph,
+	validateGraphDefinition,
+} from "../packages/coding-agent/src/kpi/extensions/graph/engine.ts";
+import type {
+	GraphDefinition,
+	GraphEdge,
+	JsonObject,
+} from "../packages/coding-agent/src/kpi/extensions/graph/schema.ts";
+
+const projectRoot = new URL("..", import.meta.url).pathname;
+
+async function graph(name: string): Promise<GraphDefinition> {
+	return loadNamedGraph(projectRoot, name);
+}
+
+/** Every state path an edge in this graph reads. */
+function conditionPaths(definition: GraphDefinition): Set<string> {
+	const paths = new Set<string>();
+	for (const edge of definition.edges) {
+		for (const condition of edge.when === undefined ? [] : Array.isArray(edge.when) ? edge.when : [edge.when]) {
+			paths.add(condition.path);
+		}
+	}
+	return paths;
+}
+
+function setPath(values: JsonObject, path: string, value: unknown): void {
+	const parts = path.split(".");
+	let current = values;
+	for (const part of parts.slice(0, -1)) {
+		if (typeof current[part] !== "object" || current[part] === null || Array.isArray(current[part])) {
+			current[part] = {};
+		}
+		current = current[part] as JsonObject;
+	}
+	current[parts.at(-1) as string] = value as never;
+}
+
+/**
+ * Resolves the edges a node takes for a given state, mirroring the engine: a
+ * list of conditions is a conjunction, and a terminal target ends the run.
+ */
+function fired(definition: GraphDefinition, from: string, values: JsonObject): string[] {
+	const nodes = new Map(definition.nodes.map((node) => [node.id, node]));
+	const targets: string[] = [];
+	for (const edge of definition.edges.filter((candidate: GraphEdge) => candidate.from === from)) {
+		const conditions = edge.when === undefined ? [] : Array.isArray(edge.when) ? edge.when : [edge.when];
+		const matches = conditions.every((condition) => {
+			const parts = condition.path.split(".");
+			let current: unknown = values;
+			for (const part of parts) {
+				if (typeof current !== "object" || current === null) return false;
+				current = (current as Record<string, unknown>)[part];
+			}
+			return current === condition.equals;
+		});
+		if (matches) {
+			targets.push(nodes.get(edge.to)?.type === "terminal" ? `${edge.to}!` : edge.to);
+		}
+	}
+	return targets;
+}
+
+function state(facts: Record<string, unknown>): JsonObject {
+	const values: JsonObject = { policy: { onHumanDeny: "revise" } };
+	for (const [path, value] of Object.entries(facts)) {
+		setPath(values, path, value);
+	}
+	return values;
+}
+
+interface RoutingCase {
+	name: string;
+	from: string;
+	facts: Record<string, unknown>;
+	expect: string[];
+}
+
+const gatedCases: RoutingCase[] = [
+	{
+		name: "no frozen plan specifies first",
+		from: "ac-compiler",
+		facts: { "plan.provided": false },
+		expect: ["specify"],
+	},
+	{
+		name: "a frozen plan skips specify and checks the plan",
+		from: "ac-compiler",
+		facts: { "plan.provided": true },
+		expect: ["plan-check"],
+	},
+	{
+		name: "red tests go back to implement",
+		from: "test",
+		facts: { "bounds.held": true, "test.passed": false },
+		expect: ["implement"],
+	},
+	{
+		name: "green tests inside bounds reach review",
+		from: "test",
+		facts: { "bounds.held": true, "test.passed": true },
+		expect: ["review"],
+	},
+	{
+		name: "a write outside bounds is UNSAFE, whatever the tests said",
+		from: "test",
+		facts: { "bounds.held": false, "test.passed": true },
+		expect: ["unsafe!"],
+	},
+	{
+		name: "an approved review over green, fresh receipts asks the human",
+		from: "review",
+		facts: { "bounds.held": true, "review.approved": true, "test.passed": true, "fingerprints.fresh": true },
+		expect: ["human"],
+	},
+	{
+		name: "an approved review over red receipts never reaches the human",
+		from: "review",
+		facts: { "bounds.held": true, "review.approved": true, "test.passed": false, "fingerprints.fresh": true },
+		expect: ["needs-human!"],
+	},
+	{
+		name: "an approved review over stale receipts never reaches the human",
+		from: "review",
+		facts: { "bounds.held": true, "review.approved": true, "test.passed": true, "fingerprints.fresh": false },
+		expect: ["needs-human!"],
+	},
+	{
+		name: "a testable red review revises",
+		from: "review",
+		facts: { "bounds.held": true, "review.approved": false, "review.status": "REVISE" },
+		expect: ["implement"],
+	},
+	{
+		name: "an untestable red review needs a human",
+		from: "review",
+		facts: { "bounds.held": true, "review.approved": false, "review.status": "BLOCKED" },
+		expect: ["needs-human!"],
+	},
+	{
+		name: "bounds broken by the time review ran is still UNSAFE",
+		from: "review",
+		facts: { "bounds.held": false, "review.approved": true, "test.passed": true, "fingerprints.fresh": true },
+		expect: ["unsafe!"],
+	},
+	{
+		name: "human approval ships when the job has not shipped",
+		from: "human",
+		facts: { "release.approved": true, "ship.shipped": false },
+		expect: ["ship"],
+	},
+	{
+		name: "human approval on an already shipped job ends without a second commit",
+		from: "human",
+		facts: { "release.approved": true, "ship.shipped": true },
+		expect: ["__end__"],
+	},
+	{
+		name: "a denied release revises when the graph is configured to retry",
+		from: "human",
+		facts: { "release.approved": false, "policy.onHumanDeny": "revise" },
+		expect: ["implement"],
+	},
+	{
+		name: "a denied release ends when the graph is configured to end",
+		from: "human",
+		facts: { "release.approved": false, "policy.onHumanDeny": "end" },
+		expect: ["__end__"],
+	},
+];
+
+const autoCases: RoutingCase[] = [
+	{
+		name: "red tests go back to implement",
+		from: "test",
+		facts: { "bounds.held": true, "test.passed": false },
+		expect: ["implement"],
+	},
+	{
+		name: "a write outside bounds is UNSAFE",
+		from: "test",
+		facts: { "bounds.held": false, "test.passed": true },
+		expect: ["unsafe!"],
+	},
+	{
+		name: "release needs an approved review, green tests, held bounds and fresh receipts",
+		from: "review",
+		facts: {
+			"bounds.held": true,
+			"review.approved": true,
+			"test.passed": true,
+			"fingerprints.fresh": true,
+		},
+		expect: ["release.set"],
+	},
+	{
+		name: "stale receipts never release, even with an approved review",
+		from: "review",
+		facts: {
+			"bounds.held": true,
+			"review.approved": true,
+			"test.passed": true,
+			"fingerprints.fresh": false,
+		},
+		expect: ["needs-human!"],
+	},
+	{
+		name: "an approved review over red tests never releases",
+		from: "review",
+		facts: {
+			"bounds.held": true,
+			"review.approved": true,
+			"test.passed": false,
+			"fingerprints.fresh": true,
+		},
+		expect: ["needs-human!"],
+	},
+	{
+		name: "a testable red review revises",
+		from: "review",
+		facts: { "bounds.held": true, "review.approved": false, "review.status": "REVISE" },
+		expect: ["implement"],
+	},
+	{
+		name: "an untestable red review needs a human",
+		from: "review",
+		facts: { "bounds.held": true, "review.approved": false, "review.status": "BLOCKED" },
+		expect: ["needs-human!"],
+	},
+	{
+		name: "release ships once",
+		from: "release.set",
+		facts: { "ship.shipped": false },
+		expect: ["ship"],
+	},
+	{
+		name: "a replayed release makes no second commit",
+		from: "release.set",
+		facts: { "ship.shipped": true },
+		expect: ["__end__"],
+	},
+];
+
+test("the gated graph routes every conditional branch as data", async () => {
+	const definition = await graph("coding-loop.gated");
+	for (const scenario of gatedCases) {
+		assert.deepEqual(fired(definition, scenario.from, state(scenario.facts)), scenario.expect, scenario.name);
+	}
+});
+
+test("the autopilot graph routes every conditional branch as data", async () => {
+	const definition = await graph("coding-loop.auto");
+	for (const scenario of autoCases) {
+		assert.deepEqual(fired(definition, scenario.from, state(scenario.facts)), scenario.expect, scenario.name);
+	}
+});
+
+test("no shipped graph manufactures green test, bounds or freshness state", async () => {
+	for (const name of ["coding-loop.gated", "coding-loop.auto", "spec-first"]) {
+		const definition = await graph(name);
+		for (const node of definition.nodes) {
+			if (node.type !== "set") {
+				continue;
+			}
+			for (const path of Object.keys(node.assignments)) {
+				assert.doesNotMatch(
+					path,
+					/^(?:test|bounds|fingerprints|evidence)\./u,
+					`${name}: set node ${node.id} may not manufacture ${path}`,
+				);
+			}
+		}
+	}
+});
+
+test("release is reachable only from evidence, and only in one place", async () => {
+	const definition = await graph("coding-loop.auto");
+	const releaseNodes = definition.nodes.filter(
+		(node) => node.type === "set" && Object.keys(node.assignments).includes("release.approved"),
+	);
+	assert.equal(releaseNodes.length, 1, "exactly one node decides release");
+
+	const inbound = definition.edges.filter((edge) => edge.to === releaseNodes[0].id);
+	assert.equal(inbound.length, 1, "one way in");
+	const conditions = Array.isArray(inbound[0].when) ? inbound[0].when : [inbound[0].when];
+	assert.deepEqual(
+		conditions.map((condition) => `${condition?.path}=${String(condition?.equals)}`).sort(),
+		["bounds.held=true", "fingerprints.fresh=true", "review.approved=true", "test.passed=true"],
+		"release requires an approved review, green receipts, held bounds and freshness",
+	);
+});
+
+test("an autopilot graph cannot contain a human node", async () => {
+	const definition = await graph("coding-loop.auto");
+	assert.equal(definition.policy.allowNonInteractive, true);
+	assert.equal(
+		definition.nodes.some((node) => node.type === "human"),
+		false,
+		"the shipped autopilot graph has no human node",
+	);
+
+	// And the rule is executable, not just a property of today's file.
+	assert.throws(
+		() =>
+			validateGraphDefinition({
+				...definition,
+				nodes: [
+					...definition.nodes,
+					{ id: "sneaky", type: "human", title: "t", question: "q", statePath: "release.approved" },
+				],
+			}),
+		/non-interactive graph .* cannot contain human node sneaky/u,
+	);
+});
+
+test("a terminal node is a sink and cannot be scheduled past", async () => {
+	const definition = await graph("coding-loop.gated");
+	for (const node of definition.nodes.filter((candidate) => candidate.type === "terminal")) {
+		assert.equal(
+			definition.edges.some((edge) => edge.from === node.id),
+			false,
+			`${node.id} has no outgoing edge`,
+		);
+	}
+
+	assert.throws(
+		() =>
+			validateGraphDefinition({
+				...definition,
+				edges: [...definition.edges, { from: "unsafe", to: "implement" }],
+			}),
+		/terminal node unsafe cannot have outgoing edges/u,
+	);
+});
+
+test("every fact a shipped graph routes on is one the loop supplies", async () => {
+	// The loop's fact source is the only writer of these paths; a graph that read
+	// anything else would route on state nobody produces.
+	const supplied = new Set([
+		"plan.provided",
+		"test.passed",
+		"bounds.held",
+		"fingerprints.fresh",
+		"ship.shipped",
+		"policy.onHumanDeny",
+		"release.approved",
+		"review.approved",
+		"review.status",
+	]);
+	for (const name of ["coding-loop.gated", "coding-loop.auto"]) {
+		for (const path of conditionPaths(await graph(name))) {
+			assert.ok(supplied.has(path), `${name} routes on ${path}, which nothing supplies`);
+		}
+	}
+});
+
+test("a routed terminal stops the run with one terminal event and a durable record", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "kpi-terminal-"));
+	try {
+		const definition: GraphDefinition = {
+			schemaVersion: 2,
+			id: "terminal-route",
+			entry: "work",
+			nodes: [
+				{
+					id: "work",
+					type: "agent",
+					prompt: "work",
+					context: { mode: "isolated" },
+					tools: ["read"],
+					readOnly: true,
+				},
+				{ id: "next", type: "set", assignments: { reached: true } },
+				{ id: "stop", type: "terminal", status: "UNSAFE", reason: "bounds left the task" },
+			],
+			edges: [
+				{ from: "work", to: "stop", when: { path: "bounds.held", equals: false } },
+				{ from: "work", to: "next", when: { path: "bounds.held", equals: true } },
+				{ from: "next", to: "__end__" },
+			],
+			limits: { maxSteps: 8, maxNodeRuns: 4, maxConcurrency: 1, maxCostUsd: 5, timeoutMs: 60_000 },
+			policy: {
+				allowNonInteractive: true,
+				allowNonInteractiveMutations: false,
+				confirmProjectGraph: false,
+				confirmMutatingNodes: false,
+			},
+		};
+
+		const terminals: unknown[] = [];
+		const engine = new GraphEngine(definition, {
+			projectRoot: directory,
+			jobId: "terminal-job",
+			createAgentSession: async () => ({
+				session: {
+					sessionId: "s",
+					async prompt() {},
+					getActiveToolNames: () => ["read"],
+					dispose() {},
+				},
+			}),
+			resolveFacts: async () => ({ "bounds.held": false }),
+			emitTerminal: async (terminal) => {
+				terminals.push(terminal);
+			},
+		});
+
+		const stopped = await engine.runUntilPause();
+		engine.dispose();
+
+		assert.equal(stopped.status, "terminated");
+		assert.equal(stopped.terminal?.status, "UNSAFE");
+		assert.equal(stopped.terminal?.reason, "bounds left the task");
+		assert.equal(terminals.length, 1, "exactly one terminal event");
+		assert.equal(stopped.nodes.next.runs, 0, "the run never scheduled past its own end");
+		assert.equal(stopped.values.reached, undefined);
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("a node whose branches all miss fails instead of reporting success", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "kpi-routing-gap-"));
+	try {
+		const definition: GraphDefinition = {
+			schemaVersion: 2,
+			id: "routing-gap",
+			entry: "work",
+			nodes: [
+				{
+					id: "work",
+					type: "agent",
+					prompt: "work",
+					context: { mode: "isolated" },
+					tools: ["read"],
+					readOnly: true,
+				},
+				{ id: "next", type: "set", assignments: { reached: true } },
+			],
+			edges: [{ from: "work", to: "next", when: { path: "never.true", equals: true } }],
+			limits: { maxSteps: 8, maxNodeRuns: 4, maxConcurrency: 1, maxCostUsd: 5, timeoutMs: 60_000 },
+			policy: {
+				allowNonInteractive: true,
+				allowNonInteractiveMutations: false,
+				confirmProjectGraph: false,
+				confirmMutatingNodes: false,
+			},
+		};
+		const engine = new GraphEngine(definition, {
+			projectRoot: directory,
+			jobId: "gap-job",
+			createAgentSession: async () => ({
+				session: {
+					sessionId: "s",
+					async prompt() {},
+					getActiveToolNames: () => ["read"],
+					dispose() {},
+				},
+			}),
+		});
+
+		// `fail` throws after writing the durable record: a routing gap is a defect
+		// in the graph, not a product outcome.
+		await assert.rejects(engine.runSuperstep(), /no graph edge from work matched/u);
+		const stopped = engine.state;
+		engine.dispose();
+		assert.equal(stopped.status, "failed");
+		assert.match(stopped.nodes.work.error ?? "", /no graph edge from work matched/u);
+		assert.equal(stopped.values.reached, undefined);
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});

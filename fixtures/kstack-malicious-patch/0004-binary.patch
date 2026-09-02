@@ -1,0 +1,12 @@
+diff --git a/skills/fixture-skill/references/safe.md b/skills/fixture-skill/references/safe.md
+new file mode 100644
+--- /dev/null
++++ b/skills/fixture-skill/references/safe.md
+@@ -0,0 +1 @@
++safe
+diff --git a/assets/pixel.png b/assets/pixel.png
+index 1111111..2222222 100644
+GIT binary patch
+literal 8
+Mc$~aOWB>pF000mG
+

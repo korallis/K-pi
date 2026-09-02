@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "stack.schema.json",
+  "title": "K-pi Dune stack",
+  "type": "object",
+  "required": [
+    "version",
+    "shape",
+    "delivery",
+    "root",
+    "modules",
+    "scaffold_first"
+  ],
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "shape": {
+      "const": "dune"
+    },
+    "delivery": {
+      "enum": [
+        "vertical",
+        "horizontal"
+      ]
+    },
+    "delivery_reason": {
+      "type": "string",
+      "minLength": 1
+    },
+    "root": {
+      "type": "string",
+      "minLength": 1
+    },
+    "scaffold_first": {
+      "const": true
+    },
+    "task_hash": {
+      "type": "string",
+      "minLength": 1
+    },
+    "current_module_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "modules": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/module"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "module": {
+      "type": "object",
+      "required": [
+        "id",
+        "purpose",
+        "folder",
+        "interface",
+        "allowed_paths",
+        "depends_on"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "purpose": {
+          "type": "string",
+          "minLength": 1
+        },
+        "folder": {
+          "type": "string",
+          "minLength": 1
+        },
+        "interface": {
+          "type": "string",
+          "minLength": 1
+        },
+        "allowed_paths": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "depends_on": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

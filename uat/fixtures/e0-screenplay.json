@@ -1,0 +1,138 @@
+{
+  "models": [
+    "uat-stub"
+  ],
+  "scenes": [
+    {
+      "match": {
+        "node": "e0-tool",
+        "promptIncludes": [
+          "E0_TOOL_ROUNDTRIP"
+        ],
+        "toolsAny": [
+          "read"
+        ]
+      },
+      "turns": [
+        {
+          "tool_calls": [
+            {
+              "name": "read",
+              "arguments": {
+                "path": "README.md"
+              }
+            }
+          ],
+          "finish_reason": "tool_calls",
+          "usage": {
+            "prompt_tokens": 24,
+            "completion_tokens": 12
+          }
+        }
+      ]
+    },
+    {
+      "match": {
+        "promptIncludes": [
+          "E0_TOOL_ROUNDTRIP",
+          "tool"
+        ]
+      },
+      "turns": [
+        {
+          "content": "E0 stub saw the tool result and finished cleanly.",
+          "finish_reason": "stop",
+          "usage": {
+            "prompt_tokens": 40,
+            "completion_tokens": 16
+          }
+        }
+      ]
+    },
+    {
+      "match": {
+        "promptIncludes": [
+          "E0_SIMPLE"
+        ]
+      },
+      "turns": [
+        {
+          "content": "E0 simple completion ok",
+          "finish_reason": "stop",
+          "usage": {
+            "prompt_tokens": 8,
+            "completion_tokens": 6
+          }
+        }
+      ]
+    },
+    {
+      "match": {},
+      "turns": [
+        {
+          "content": "uat-stub default",
+          "finish_reason": "stop",
+          "usage": {
+            "prompt_tokens": 4,
+            "completion_tokens": 2
+          }
+        }
+      ]
+    }
+  ],
+  "schema_payloads": [
+    {
+      "schema": "task.schema.json",
+      "payload": {
+        "job_id": "e0-preflight",
+        "mode": "gated",
+        "goal": "E0 harness preflight",
+        "nongoals": [],
+        "acceptance": [
+          {
+            "id": "AC-E0.1",
+            "statement": "stub round-trips through the built bundle",
+            "required": true
+          }
+        ],
+        "constraints": [
+          "offline",
+          "loopback-only"
+        ],
+        "quality_gates": [
+          "node uat/preflight.mjs"
+        ],
+        "ac": {
+          "quality": "executable"
+        }
+      }
+    },
+    {
+      "schema": "verdict.schema.json",
+      "payload": {
+        "status": "PASS",
+        "approved": true,
+        "blockingIssues": [],
+        "nonBlockingIssues": [],
+        "evidence": [
+          "e0-preflight"
+        ],
+        "round": 0,
+        "output_fingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    {
+      "schema": "evidence.schema.json",
+      "payload": {
+        "head": "e0preflight0000000000000000000000000000",
+        "commands": [],
+        "ac_results": [
+          {
+            "id": "AC-E0.1",
+            "passed": true
+          }
+        ]
+      }
+    }
+  ]
+}

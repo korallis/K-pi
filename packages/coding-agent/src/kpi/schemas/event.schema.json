@@ -1,0 +1,1314 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "event.schema.json",
+  "title": "K-pi event",
+  "type": "object",
+  "required": [
+    "ts",
+    "type",
+    "job_id",
+    "round",
+    "node",
+    "prev_hash",
+    "record_hash"
+  ],
+  "oneOf": [
+    {
+      "$ref": "#/$defs/handoffCreated"
+    },
+    {
+      "$ref": "#/$defs/toolRequest"
+    },
+    {
+      "$ref": "#/$defs/approvalResult"
+    },
+    {
+      "$ref": "#/$defs/toolResult"
+    },
+    {
+      "$ref": "#/$defs/checkpoint"
+    },
+    {
+      "$ref": "#/$defs/handoffCompleted"
+    },
+    {
+      "$ref": "#/$defs/recoveryStarted"
+    },
+    {
+      "$ref": "#/$defs/recoveryCompleted"
+    },
+    {
+      "$ref": "#/$defs/kgPatchProposed"
+    },
+    {
+      "$ref": "#/$defs/kgPatchAccepted"
+    },
+    {
+      "$ref": "#/$defs/accountsFailover"
+    },
+    {
+      "$ref": "#/$defs/acRefused"
+    },
+    {
+      "$ref": "#/$defs/loopTerminal"
+    },
+    {
+      "$ref": "#/$defs/reviewVerdict"
+    },
+    {
+      "$ref": "#/$defs/researchStarted"
+    },
+    {
+      "$ref": "#/$defs/researchQuery"
+    },
+    {
+      "$ref": "#/$defs/researchCall"
+    },
+    {
+      "$ref": "#/$defs/researchResult"
+    },
+    {
+      "$ref": "#/$defs/researchFallback"
+    },
+    {
+      "$ref": "#/$defs/researchCompleted"
+    },
+    {
+      "$ref": "#/$defs/agentSpawned"
+    },
+    {
+      "$ref": "#/$defs/agentMessage"
+    },
+    {
+      "$ref": "#/$defs/agentDenied"
+    }
+  ],
+  "$defs": {
+    "hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "jobId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "round": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "node": {
+      "type": "string",
+      "minLength": 1
+    },
+    "text": {
+      "type": "string"
+    },
+    "identifier": {
+      "type": "string",
+      "minLength": 1
+    },
+    "service": {
+      "enum": [
+        "exa",
+        "perplexity",
+        "local"
+      ]
+    },
+    "researchMode": {
+      "enum": [
+        "exa",
+        "perplexity",
+        "auto",
+        "local"
+      ]
+    },
+    "networkState": {
+      "enum": [
+        "online",
+        "no-network"
+      ]
+    },
+    "attempt": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "resultCount": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "sourceRefs": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/identifier"
+      }
+    },
+    "pid": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "handoffCreated": {
+      "type": "object",
+      "required": [
+        "ts",
+        "type",
+        "job_id",
+        "round",
+        "node",
+        "prev_hash",
+        "record_hash",
+        "mode"
+      ],
+      "properties": {
+        "ts": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "type": {
+          "const": "handoff.created"
+        },
+        "job_id": {
+          "$ref": "#/$defs/jobId"
+        },
+        "round": {
+          "$ref": "#/$defs/round"
+        },
+        "node": {
+          "$ref": "#/$defs/node"
+        },
+        "prev_hash": {
+          "$ref": "#/$defs/hash"
+        },
+        "record_hash": {
+          "$ref": "#/$defs/hash"
+        },
+        "mode": {
+          "enum": [
+            "gated",
+            "autopilot"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "toolRequest": {
+      "type": "object",
+      "required": [
+        "ts",
+        "type",
+        "job_id",
+        "round",
+        "node",
+        "prev_hash",
+        "record_hash",
+        "tool",
+        "decision"
+      ],
+      "properties": {
+        "ts": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "type": {
+          "const": "tool.request"
+        },
+        "job_id": {
+          "$ref": "#/$defs/jobId"
+        },
+        "round": {
+          "$ref": "#/$defs/round"
+        },
+        "node": {
+          "$ref": "#/$defs/node"
+        },
+        "prev_hash": {
+          "$ref": "#/$defs/hash"
+        },
+        "record_hash": {
+          "$ref": "#/$defs/hash"
+        },
+        "tool": {
+          "$ref": "#/$defs/identifier"
+        },
+        "decision": {
+          "enum": ["allow", "confirm", "deny"]
+        },
+        "path": {
+          "$ref": "#/$defs/text"
+        },
+        "reason": {
+          "$ref": "#/$defs/text"
+        }
+      },
+      "additionalProperties": false
+    },
+    "agentDenied": {
+      "type": "object",
+      "required": [
+        "ts",
+        "type",
+        "job_id",
+        "round",
+        "node",
+        "prev_hash",
+        "record_hash",
+        "reason"
+      ],
+      "properties": {
+        "ts": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "type": {
+          "const": "agent.denied"
+        },
+        "job_id": {
+          "$ref": "#/$defs/jobId"
+        },
+        "round": {
+          "$ref": "#/$defs/round"
+        },
+        "node": {
+          "$ref": "#/$defs/node"
+        },
+        "prev_hash": {
+          "$ref": "#/$defs/hash"
+        },
+        "record_hash": {
+          "$ref": "#/$defs/hash"
+        },
+        "reason": {
+          "enum": ["worker-limit", "writer-live", "admission-held", "claim-held", "role-tool"]
+        },
+        "role": {
+          "$ref": "#/$defs/text"
+        },
+        "agent_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "key": {
+          "$ref": "#/$defs/text"
+        },
+        "holder": {
+          "$ref": "#/$defs/text"
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "approvalResult": {
+      "type": "object",
+      "required": [
+        "ts",
+        "type",
+        "job_id",
+        "round",
+        "node",
+        "prev_hash",
+        "record_hash",
+        "approved"
+      ],
+      "properties": {
+        "ts": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "type": {
+          "const": "approval.result"
+        },
+        "job_id": {
+          "$ref": "#/$defs/jobId"
+        },
+        "round": {
+          "$ref": "#/$defs/round"
+        },
+        "node": {
+          "$ref": "#/$defs/node"
+        },
+        "prev_hash": {
+          "$ref": "#/$defs/hash"
+        },
+        "record_hash": {
+          "$ref": "#/$defs/hash"
+        },
+        "approved": {
+          "type": "boolean"
+        },
+        "question": {
+          "$ref": "#/$defs/text"
+        }
+      },
+      "additionalProperties": false
+    },
+    "toolResult": {
+      "type": "object",
+      "required": [
+        "ts",
+        "type",
+        "job_id",
+        "round",
+        "node",
+        "prev_hash",
+        "record_hash"
+      ],
+      "properties": {
+        "ts": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "type": {
+          "const": "tool.result"
+        },
+        "job_id": {
+          "$ref": "#/$defs/jobId"
+        },
+        "round": {
+          "$ref": "#/$defs/round"
+        },
+        "node": {
+          "$ref": "#/$defs/node"
+        },
+        "prev_hash": {
+          "$ref": "#/$defs/hash"
+        },
+        "record_hash": {
+          "$ref": "#/$defs/hash"
+        }
+      },
+      "additionalProperties": false
+    },
+    "checkpoint": {
+      "type": "object",
+      "required": [
+        "ts",
+        "type",
+        "job_id",
+        "round",
+        "node",
+        "prev_hash",
+        "record_hash"
+      ],
+      "properties": {
+        "ts": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "type": {
+          "const": "checkpoint"
+        },
+        "job_id": {
+          "$ref": "#/$defs/jobId"
+        },
+        "round": {
+          "$ref": "#/$defs/round"
+        },
+        "node": {
+          "$ref": "#/$defs/node"
+        },
+        "prev_hash": {
+          "$ref": "#/$defs/hash"
+        },
+        "record_hash": {
+          "$ref": "#/$defs/hash"
+        },
+        "detail": {
+          "$ref": "#/$defs/text"
+        }
+      },
+      "additionalProperties": false
+    },
+    "handoffCompleted": {
+      "type": "object",
+      "required": [
+        "ts",
+        "type",
+        "job_id",
+        "round",
+        "node",
+        "prev_hash",
+        "record_hash"
+      ],
+      "properties": {
+        "ts": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "type": {
+          "const": "handoff.completed"
+        },
+        "job_id": {
+          "$ref": "#/$defs/jobId"
+        },
+        "round": {
+          "$ref": "#/$defs/round"
+        },
+        "node": {
+          "$ref": "#/$defs/node"
+        },
+        "prev_hash": {
+          "$ref": "#/$defs/hash"
+        },
+        "record_hash": {
+          "$ref": "#/$defs/hash"
+        }
+      },
+      "additionalProperties": false
+    },
+    "recoveryStarted": {
+      "type": "object",
+      "required": [
+        "ts",
+        "type",
+        "job_id",
+        "round",
+        "node",
+        "prev_hash",
+        "record_hash"
+      ],
+      "properties": {
+        "ts": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "type": {
+          "const": "recovery.started"
+        },
+        "job_id": {
+          "$ref": "#/$defs/jobId"
+        },
+        "round": {
+          "$ref": "#/$defs/round"
+        },
+        "node": {
+          "$ref": "#/$defs/node"
+        },
+        "prev_hash": {
+          "$ref": "#/$defs/hash"
+        },
+        "record_hash": {
+          "$ref": "#/$defs/hash"
+        }
+      },
+      "additionalProperties": false
+    },
+    "recoveryCompleted": {
+      "type": "object",
+      "required": [
+        "ts",
+        "type",
+        "job_id",
+        "round",
+        "node",
+        "prev_hash",
+        "record_hash"
+      ],
+      "properties": {
+        "ts": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "type": {
+          "const": "recovery.completed"
+        },
+        "job_id": {
+          "$ref": "#/$defs/jobId"
+        },
+        "round": {
+          "$ref": "#/$defs/round"
+        },
+        "node": {
+          "$ref": "#/$defs/node"
+        },
+        "prev_hash": {
+          "$ref": "#/$defs/hash"
+        },
+        "record_hash": {
+          "$ref": "#/$defs/hash"
+        }
+      },
+      "additionalProperties": false
+    },
+    "kgPatchProposed": {
+      "type": "object",
+      "required": [
+        "ts",
+        "type",
+        "job_id",
+        "round",
+        "node",
+        "prev_hash",
+        "record_hash"
+      ],
+      "properties": {
+        "ts": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "type": {
+          "const": "kg.patch.proposed"
+        },
+        "job_id": {
+          "$ref": "#/$defs/jobId"
+        },
+        "round": {
+          "$ref": "#/$defs/round"
+        },
+        "node": {
+          "$ref": "#/$defs/node"
+        },
+        "prev_hash": {
+          "$ref": "#/$defs/hash"
+        },
+        "record_hash": {
+          "$ref": "#/$defs/hash"
+        }
+      },
+      "additionalProperties": false
+    },
+    "kgPatchAccepted": {
+      "type": "object",
+      "required": [
+        "ts",
+        "type",
+        "job_id",
+        "round",
+        "node",
+        "prev_hash",
+        "record_hash"
+      ],
+      "properties": {
+        "ts": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "type": {
+          "const": "kg.patch.accepted"
+        },
+        "job_id": {
+          "$ref": "#/$defs/jobId"
+        },
+        "round": {
+          "$ref": "#/$defs/round"
+        },
+        "node": {
+          "$ref": "#/$defs/node"
+        },
+        "prev_hash": {
+          "$ref": "#/$defs/hash"
+        },
+        "record_hash": {
+          "$ref": "#/$defs/hash"
+        }
+      },
+      "additionalProperties": false
+    },
+    "accountsFailover": {
+      "type": "object",
+      "required": [
+        "ts",
+        "type",
+        "job_id",
+        "round",
+        "node",
+        "prev_hash",
+        "record_hash",
+        "from",
+        "to"
+      ],
+      "properties": {
+        "ts": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "type": {
+          "const": "accounts.failover"
+        },
+        "job_id": {
+          "$ref": "#/$defs/jobId"
+        },
+        "round": {
+          "$ref": "#/$defs/round"
+        },
+        "node": {
+          "$ref": "#/$defs/node"
+        },
+        "prev_hash": {
+          "$ref": "#/$defs/hash"
+        },
+        "record_hash": {
+          "$ref": "#/$defs/hash"
+        },
+        "from": {
+          "$ref": "#/$defs/identifier"
+        },
+        "to": {
+          "$ref": "#/$defs/identifier"
+        },
+        "reason": {
+          "$ref": "#/$defs/text"
+        }
+      },
+      "additionalProperties": false
+    },
+    "acRefused": {
+      "type": "object",
+      "required": [
+        "ts",
+        "type",
+        "job_id",
+        "round",
+        "node",
+        "prev_hash",
+        "record_hash",
+        "quality",
+        "reason"
+      ],
+      "properties": {
+        "ts": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "type": {
+          "const": "ac.refused"
+        },
+        "job_id": {
+          "$ref": "#/$defs/jobId"
+        },
+        "round": {
+          "$ref": "#/$defs/round"
+        },
+        "node": {
+          "$ref": "#/$defs/node"
+        },
+        "prev_hash": {
+          "$ref": "#/$defs/hash"
+        },
+        "record_hash": {
+          "$ref": "#/$defs/hash"
+        },
+        "quality": {
+          "enum": [
+            "executable",
+            "partial",
+            "narrative"
+          ]
+        },
+        "reason": {
+          "$ref": "#/$defs/text"
+        }
+      },
+      "additionalProperties": false
+    },
+    "loopTerminal": {
+      "type": "object",
+      "required": [
+        "ts",
+        "type",
+        "job_id",
+        "round",
+        "node",
+        "prev_hash",
+        "record_hash",
+        "status"
+      ],
+      "properties": {
+        "ts": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "type": {
+          "const": "loop.terminal"
+        },
+        "job_id": {
+          "$ref": "#/$defs/jobId"
+        },
+        "round": {
+          "$ref": "#/$defs/round"
+        },
+        "node": {
+          "$ref": "#/$defs/node"
+        },
+        "prev_hash": {
+          "$ref": "#/$defs/hash"
+        },
+        "record_hash": {
+          "$ref": "#/$defs/hash"
+        },
+        "status": {
+          "enum": [
+            "DONE",
+            "BLOCKED",
+            "EXHAUSTED",
+            "NO_PROGRESS",
+            "UNSAFE",
+            "NEEDS_HUMAN"
+          ]
+        },
+        "reason": {
+          "$ref": "#/$defs/text"
+        }
+      },
+      "additionalProperties": false
+    },
+    "researchStarted": {
+      "type": "object",
+      "required": [
+        "ts",
+        "type",
+        "job_id",
+        "round",
+        "node",
+        "prev_hash",
+        "record_hash"
+      ],
+      "properties": {
+        "ts": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "type": {
+          "const": "research.started"
+        },
+        "job_id": {
+          "$ref": "#/$defs/jobId"
+        },
+        "round": {
+          "$ref": "#/$defs/round"
+        },
+        "node": {
+          "$ref": "#/$defs/node"
+        },
+        "prev_hash": {
+          "$ref": "#/$defs/hash"
+        },
+        "record_hash": {
+          "$ref": "#/$defs/hash"
+        },
+        "service": {
+          "$ref": "#/$defs/service"
+        },
+        "query": {
+          "$ref": "#/$defs/text"
+        },
+        "attempt": {
+          "$ref": "#/$defs/attempt"
+        },
+        "result_count": {
+          "$ref": "#/$defs/resultCount"
+        },
+        "source_refs": {
+          "$ref": "#/$defs/sourceRefs"
+        },
+        "from": {
+          "$ref": "#/$defs/identifier"
+        },
+        "to": {
+          "$ref": "#/$defs/identifier"
+        },
+        "reason": {
+          "$ref": "#/$defs/text"
+        },
+        "mode": {
+          "$ref": "#/$defs/researchMode"
+        },
+        "network_state": {
+          "$ref": "#/$defs/networkState"
+        }
+      },
+      "additionalProperties": false
+    },
+    "researchQuery": {
+      "type": "object",
+      "required": [
+        "ts",
+        "type",
+        "job_id",
+        "round",
+        "node",
+        "prev_hash",
+        "record_hash"
+      ],
+      "properties": {
+        "ts": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "type": {
+          "const": "research.query"
+        },
+        "job_id": {
+          "$ref": "#/$defs/jobId"
+        },
+        "round": {
+          "$ref": "#/$defs/round"
+        },
+        "node": {
+          "$ref": "#/$defs/node"
+        },
+        "prev_hash": {
+          "$ref": "#/$defs/hash"
+        },
+        "record_hash": {
+          "$ref": "#/$defs/hash"
+        },
+        "service": {
+          "$ref": "#/$defs/service"
+        },
+        "query": {
+          "$ref": "#/$defs/text"
+        },
+        "attempt": {
+          "$ref": "#/$defs/attempt"
+        },
+        "result_count": {
+          "$ref": "#/$defs/resultCount"
+        },
+        "source_refs": {
+          "$ref": "#/$defs/sourceRefs"
+        },
+        "from": {
+          "$ref": "#/$defs/identifier"
+        },
+        "to": {
+          "$ref": "#/$defs/identifier"
+        },
+        "reason": {
+          "$ref": "#/$defs/text"
+        },
+        "mode": {
+          "$ref": "#/$defs/researchMode"
+        },
+        "network_state": {
+          "$ref": "#/$defs/networkState"
+        }
+      },
+      "additionalProperties": false
+    },
+    "researchCall": {
+      "type": "object",
+      "required": [
+        "ts",
+        "type",
+        "job_id",
+        "round",
+        "node",
+        "prev_hash",
+        "record_hash"
+      ],
+      "properties": {
+        "ts": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "type": {
+          "const": "research.call"
+        },
+        "job_id": {
+          "$ref": "#/$defs/jobId"
+        },
+        "round": {
+          "$ref": "#/$defs/round"
+        },
+        "node": {
+          "$ref": "#/$defs/node"
+        },
+        "prev_hash": {
+          "$ref": "#/$defs/hash"
+        },
+        "record_hash": {
+          "$ref": "#/$defs/hash"
+        },
+        "service": {
+          "$ref": "#/$defs/service"
+        },
+        "query": {
+          "$ref": "#/$defs/text"
+        },
+        "attempt": {
+          "$ref": "#/$defs/attempt"
+        },
+        "result_count": {
+          "$ref": "#/$defs/resultCount"
+        },
+        "source_refs": {
+          "$ref": "#/$defs/sourceRefs"
+        },
+        "from": {
+          "$ref": "#/$defs/identifier"
+        },
+        "to": {
+          "$ref": "#/$defs/identifier"
+        },
+        "reason": {
+          "$ref": "#/$defs/text"
+        },
+        "mode": {
+          "$ref": "#/$defs/researchMode"
+        },
+        "network_state": {
+          "$ref": "#/$defs/networkState"
+        }
+      },
+      "additionalProperties": false
+    },
+    "researchResult": {
+      "type": "object",
+      "required": [
+        "ts",
+        "type",
+        "job_id",
+        "round",
+        "node",
+        "prev_hash",
+        "record_hash"
+      ],
+      "properties": {
+        "ts": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "type": {
+          "const": "research.result"
+        },
+        "job_id": {
+          "$ref": "#/$defs/jobId"
+        },
+        "round": {
+          "$ref": "#/$defs/round"
+        },
+        "node": {
+          "$ref": "#/$defs/node"
+        },
+        "prev_hash": {
+          "$ref": "#/$defs/hash"
+        },
+        "record_hash": {
+          "$ref": "#/$defs/hash"
+        },
+        "service": {
+          "$ref": "#/$defs/service"
+        },
+        "query": {
+          "$ref": "#/$defs/text"
+        },
+        "attempt": {
+          "$ref": "#/$defs/attempt"
+        },
+        "result_count": {
+          "$ref": "#/$defs/resultCount"
+        },
+        "source_refs": {
+          "$ref": "#/$defs/sourceRefs"
+        },
+        "from": {
+          "$ref": "#/$defs/identifier"
+        },
+        "to": {
+          "$ref": "#/$defs/identifier"
+        },
+        "reason": {
+          "$ref": "#/$defs/text"
+        },
+        "mode": {
+          "$ref": "#/$defs/researchMode"
+        },
+        "network_state": {
+          "$ref": "#/$defs/networkState"
+        }
+      },
+      "additionalProperties": false
+    },
+    "researchFallback": {
+      "type": "object",
+      "required": [
+        "ts",
+        "type",
+        "job_id",
+        "round",
+        "node",
+        "prev_hash",
+        "record_hash"
+      ],
+      "properties": {
+        "ts": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "type": {
+          "const": "research.fallback"
+        },
+        "job_id": {
+          "$ref": "#/$defs/jobId"
+        },
+        "round": {
+          "$ref": "#/$defs/round"
+        },
+        "node": {
+          "$ref": "#/$defs/node"
+        },
+        "prev_hash": {
+          "$ref": "#/$defs/hash"
+        },
+        "record_hash": {
+          "$ref": "#/$defs/hash"
+        },
+        "service": {
+          "$ref": "#/$defs/service"
+        },
+        "query": {
+          "$ref": "#/$defs/text"
+        },
+        "attempt": {
+          "$ref": "#/$defs/attempt"
+        },
+        "result_count": {
+          "$ref": "#/$defs/resultCount"
+        },
+        "source_refs": {
+          "$ref": "#/$defs/sourceRefs"
+        },
+        "from": {
+          "$ref": "#/$defs/identifier"
+        },
+        "to": {
+          "$ref": "#/$defs/identifier"
+        },
+        "reason": {
+          "$ref": "#/$defs/text"
+        },
+        "mode": {
+          "$ref": "#/$defs/researchMode"
+        },
+        "network_state": {
+          "$ref": "#/$defs/networkState"
+        }
+      },
+      "additionalProperties": false
+    },
+    "researchCompleted": {
+      "type": "object",
+      "required": [
+        "ts",
+        "type",
+        "job_id",
+        "round",
+        "node",
+        "prev_hash",
+        "record_hash"
+      ],
+      "properties": {
+        "ts": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "type": {
+          "const": "research.completed"
+        },
+        "job_id": {
+          "$ref": "#/$defs/jobId"
+        },
+        "round": {
+          "$ref": "#/$defs/round"
+        },
+        "node": {
+          "$ref": "#/$defs/node"
+        },
+        "prev_hash": {
+          "$ref": "#/$defs/hash"
+        },
+        "record_hash": {
+          "$ref": "#/$defs/hash"
+        },
+        "service": {
+          "$ref": "#/$defs/service"
+        },
+        "query": {
+          "$ref": "#/$defs/text"
+        },
+        "attempt": {
+          "$ref": "#/$defs/attempt"
+        },
+        "result_count": {
+          "$ref": "#/$defs/resultCount"
+        },
+        "source_refs": {
+          "$ref": "#/$defs/sourceRefs"
+        },
+        "from": {
+          "$ref": "#/$defs/identifier"
+        },
+        "to": {
+          "$ref": "#/$defs/identifier"
+        },
+        "reason": {
+          "$ref": "#/$defs/text"
+        },
+        "mode": {
+          "$ref": "#/$defs/researchMode"
+        },
+        "network_state": {
+          "$ref": "#/$defs/networkState"
+        }
+      },
+      "additionalProperties": false
+    },
+    "agentSpawned": {
+      "type": "object",
+      "required": [
+        "ts",
+        "type",
+        "job_id",
+        "round",
+        "node",
+        "prev_hash",
+        "record_hash",
+        "agent_id",
+        "role",
+        "pid"
+      ],
+      "properties": {
+        "ts": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "type": {
+          "const": "agent.spawned"
+        },
+        "job_id": {
+          "$ref": "#/$defs/jobId"
+        },
+        "round": {
+          "$ref": "#/$defs/round"
+        },
+        "node": {
+          "$ref": "#/$defs/node"
+        },
+        "prev_hash": {
+          "$ref": "#/$defs/hash"
+        },
+        "record_hash": {
+          "$ref": "#/$defs/hash"
+        },
+        "agent_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "role": {
+          "$ref": "#/$defs/text"
+        },
+        "pid": {
+          "$ref": "#/$defs/pid"
+        },
+        "session_path": {
+          "$ref": "#/$defs/identifier"
+        },
+        "status": {
+          "$ref": "#/$defs/text"
+        }
+      },
+      "additionalProperties": false
+    },
+    "agentMessage": {
+      "type": "object",
+      "required": [
+        "ts",
+        "type",
+        "job_id",
+        "round",
+        "node",
+        "prev_hash",
+        "record_hash",
+        "agent_id"
+      ],
+      "properties": {
+        "ts": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "type": {
+          "const": "agent.message"
+        },
+        "job_id": {
+          "$ref": "#/$defs/jobId"
+        },
+        "round": {
+          "$ref": "#/$defs/round"
+        },
+        "node": {
+          "$ref": "#/$defs/node"
+        },
+        "prev_hash": {
+          "$ref": "#/$defs/hash"
+        },
+        "record_hash": {
+          "$ref": "#/$defs/hash"
+        },
+        "agent_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "message_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "deliver_as": {
+          "enum": [
+            "steer",
+            "followUp"
+          ]
+        },
+        "expect": {
+          "$ref": "#/$defs/text"
+        },
+        "status": {
+          "$ref": "#/$defs/text"
+        }
+      },
+      "additionalProperties": false
+    },
+    "reviewVerdict": {
+      "type": "object",
+      "required": [
+        "ts",
+        "type",
+        "job_id",
+        "round",
+        "node",
+        "prev_hash",
+        "record_hash",
+        "status",
+        "approved",
+        "blocking_count"
+      ],
+      "properties": {
+        "ts": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "type": {
+          "const": "review.verdict"
+        },
+        "job_id": {
+          "$ref": "#/$defs/jobId"
+        },
+        "round": {
+          "$ref": "#/$defs/round"
+        },
+        "node": {
+          "$ref": "#/$defs/node"
+        },
+        "prev_hash": {
+          "$ref": "#/$defs/hash"
+        },
+        "record_hash": {
+          "$ref": "#/$defs/hash"
+        },
+        "status": {
+          "enum": [
+            "PASS",
+            "REVISE",
+            "BLOCKED"
+          ]
+        },
+        "approved": {
+          "type": "boolean"
+        },
+        "blocking_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "nonblocking_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "fingerprint": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

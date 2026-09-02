@@ -1,0 +1,8 @@
+{
+  "name": "dune-one-consumer-shared-fixture",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test"
+  }
+}

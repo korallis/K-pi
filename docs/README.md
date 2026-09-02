@@ -1,15 +1,15 @@
-# k-pi — agent document set
+# K-π — agent document set
 
-Product: **k-pi**. Brand: **K-π**. Package id: `k-pi`.
+Product: **K-π**, a standalone coding-agent harness maintained as a fork of Pi. Brand: **K-π**. Executable: `kpi` (alias `k-pi`). Not a Pi package; see [`../UPSTREAM.md`](../UPSTREAM.md) for the fork base and sync policy.
 
-**Humans start at `START-HERE.md`.**  
-**Agents get `BUILD-PROMPT.md` pasted as the first message.**
+**Humans start at [`../START-HERE.md`](../START-HERE.md).**  
+**Agents start at [`../AGENTS.md`](../AGENTS.md); [`BUILD-PROMPT.md`](BUILD-PROMPT.md) is the paste-ready kickoff.**
 
 | File | Role |
 |---|---|
-| `START-HERE.md` | Onboarding. What this is and how to begin. |
+| `../START-HERE.md` | Onboarding. What this is and how to begin. `START-HERE.md` here is a pointer to it. |
 | `BUILD-PROMPT.md` | Paste-ready kickoff for an implementing agent. |
-| `AGENTS.md` | Hard rules and gates. |
+| `../AGENTS.md` | The only normative project contract: rules, gates, read-on-demand table. `AGENTS.md` here is a pointer to it. |
 | `PRD.md` | Stories US-01–US-30 |
 | `spec.md` | Architecture and contracts |
 | `kstack.md` | Vendored pstack overlay |
@@ -22,6 +22,10 @@ Product: **k-pi**. Brand: **K-π**. Package id: `k-pi`.
 | `roadmap.md` | Historical M0–M9 milestone record |
 | `implementation-plan.md` | Historical WP-00–WP-23 build record |
 | `remediation-research.md` | Cited completion audit and gap register |
-| `remediation-plan.md` | Active RP-00–RP-19 implementation queue |
+| `remediation-plan.md` | Active implementation queue and the only completion authority. It names the current package itself. |
+| `traceability-map.json` | Machine-readable requirement→check ownership (RP-19) |
+| `uat.md` | Feature acceptance: one row per US-01–US-30 plus the seven PRD metrics. Runs after every package and the full gates. |
+| `../UPSTREAM.md` | Fork base, upstream remote, sync procedure, patched-file register |
+| `../NOTICE` | MIT attribution for the upstream base and the vendored pstack overlay |
 
 Visual source: https://x.com/av1dlive/status/2092622516544270781

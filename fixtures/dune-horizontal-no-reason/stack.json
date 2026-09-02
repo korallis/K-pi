@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "shape": "dune",
+  "delivery": "horizontal",
+  "root": "src",
+  "modules": [
+    {
+      "id": "checkout",
+      "purpose": "all the endpoints for checkout, ahead of its screens",
+      "folder": "src/checkout",
+      "interface": "src/checkout/api.ts",
+      "allowed_paths": [
+        "src/checkout/**",
+        "test/checkout/**"
+      ],
+      "depends_on": []
+    },
+    {
+      "id": "catalog",
+      "purpose": "all the endpoints for catalog, ahead of its screens",
+      "folder": "src/catalog",
+      "interface": "src/catalog/api.ts",
+      "allowed_paths": [
+        "src/catalog/**",
+        "test/catalog/**"
+      ],
+      "depends_on": []
+    }
+  ],
+  "scaffold_first": true,
+  "current_module_id": "checkout"
+}

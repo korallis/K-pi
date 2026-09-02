@@ -1,0 +1,5 @@
+{
+  "case": "dune-no-stack-exemption",
+  "outcome": "implement",
+  "note": "There is no stack.json and none is required: typo is a named no-stack playbook, so stackRequiredFor is false and implement runs with no frozen map and no current slice. Every playbook outside that named set still needs one."
+}

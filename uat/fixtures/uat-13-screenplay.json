@@ -1,0 +1,177 @@
+{
+  "models": [
+    "uat-stub"
+  ],
+  "scenes": [
+    {
+      "match": {
+        "lastUserIncludes": [
+          "UAT13_POLICY_PUSH"
+        ],
+        "once": true
+      },
+      "turns": [
+        {
+          "tool_calls": [
+            {
+              "name": "bash",
+              "arguments": {
+                "command": "git push origin HEAD"
+              }
+            }
+          ],
+          "finish_reason": "tool_calls"
+        }
+      ]
+    },
+    {
+      "match": {
+        "lastUserIncludes": [
+          "UAT13_POLICY_PUSH"
+        ]
+      },
+      "turns": [
+        {
+          "content": "policy path exercised for git push origin HEAD",
+          "finish_reason": "stop"
+        }
+      ]
+    },
+    {
+      "match": {
+        "lastUserIncludes": [
+          "UAT13_POLICY_FORCE"
+        ],
+        "once": true
+      },
+      "turns": [
+        {
+          "tool_calls": [
+            {
+              "name": "bash",
+              "arguments": {
+                "command": "git push --force origin HEAD"
+              }
+            }
+          ],
+          "finish_reason": "tool_calls"
+        }
+      ]
+    },
+    {
+      "match": {
+        "lastUserIncludes": [
+          "UAT13_POLICY_FORCE"
+        ]
+      },
+      "turns": [
+        {
+          "content": "policy path exercised for git push --force origin HEAD",
+          "finish_reason": "stop"
+        }
+      ]
+    },
+    {
+      "match": {
+        "lastUserIncludes": [
+          "UAT13_POLICY_RM"
+        ],
+        "once": true
+      },
+      "turns": [
+        {
+          "tool_calls": [
+            {
+              "name": "bash",
+              "arguments": {
+                "command": "rm -rf /tmp/uat-should-not-matter-but-deny"
+              }
+            }
+          ],
+          "finish_reason": "tool_calls"
+        }
+      ]
+    },
+    {
+      "match": {
+        "lastUserIncludes": [
+          "UAT13_POLICY_RM"
+        ]
+      },
+      "turns": [
+        {
+          "content": "policy path exercised for rm -rf /tmp/uat-should-not-matter-but-deny",
+          "finish_reason": "stop"
+        }
+      ]
+    },
+    {
+      "match": {
+        "lastUserIncludes": [
+          "UAT13_POLICY_DEPLOY"
+        ],
+        "once": true
+      },
+      "turns": [
+        {
+          "tool_calls": [
+            {
+              "name": "bash",
+              "arguments": {
+                "command": "kubectl apply -f deploy.yaml"
+              }
+            }
+          ],
+          "finish_reason": "tool_calls"
+        }
+      ]
+    },
+    {
+      "match": {
+        "lastUserIncludes": [
+          "UAT13_POLICY_DEPLOY"
+        ]
+      },
+      "turns": [
+        {
+          "content": "policy path exercised for kubectl apply -f deploy.yaml",
+          "finish_reason": "stop"
+        }
+      ]
+    },
+    {
+      "match": {
+        "lastUserIncludes": [
+          "UAT13_POLICY_UNKNOWN"
+        ],
+        "once": true
+      },
+      "turns": [
+        {
+          "tool_calls": [
+            {
+              "name": "bash",
+              "arguments": {
+                "command": "totally-unknown-bin-xyz --force"
+              }
+            }
+          ],
+          "finish_reason": "tool_calls"
+        }
+      ]
+    },
+    {
+      "match": {
+        "lastUserIncludes": [
+          "UAT13_POLICY_UNKNOWN"
+        ]
+      },
+      "turns": [
+        {
+          "content": "policy path exercised for totally-unknown-bin-xyz --force",
+          "finish_reason": "stop"
+        }
+      ]
+    }
+  ]
+}

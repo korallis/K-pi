@@ -1,0 +1,66 @@
+NOTICE
+======
+
+K-π (`kpi`)
+Copyright (c) 2026 korallis
+
+This product is a fork of, and includes substantial source from, the projects
+below. Their copyright notices and licence terms are preserved here as required
+by their licences.
+
+--------------------------------------------------------------------------------
+1. Pi — the upstream harness K-π is forked from
+--------------------------------------------------------------------------------
+
+Project:   Pi (`@earendil-works/pi-coding-agent` and sibling packages)
+Authors:   Mario Zechner / Earendil Works
+Source:    https://github.com/earendil-works/pi
+Base:      v0.84.4, commit b79e4cc834970cca69daebffab7df1da7d1e52c4
+Licence:   MIT — full text in `LICENSE`
+
+    Copyright (c) 2025 Mario Zechner
+
+    Permission is hereby granted, free of charge, to any person obtaining a copy
+    of this software and associated documentation files (the "Software"), to deal
+    in the Software without restriction, including without limitation the rights
+    to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+    copies of the Software, and to permit persons to whom the Software is
+    furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in
+    all copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+    FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+    DEALINGS IN THE SOFTWARE.
+
+Everything under `packages/` originates from this project and is maintained here
+as K-π source. See `UPSTREAM.md` for the fork, sync, and divergence policy.
+
+K-π is not affiliated with, endorsed by, or supported by the Pi maintainers.
+
+--------------------------------------------------------------------------------
+2. pstack — the upstream K-stack skill pack is derived from
+--------------------------------------------------------------------------------
+
+Project:   pstack (`cursor/plugins`)
+Author:    Lauren Tan (@poteto), Cursor
+Source:    https://github.com/cursor/plugins/tree/main/pstack
+Licence:   MIT
+
+K-π's K-stack (`packages/coding-agent/src/kpi/kstack/`) is a vendored,
+rewritten overlay of pstack's principles, playbooks, and workflow skills. It is
+replayed onto new upstream pstack trees rather than hand-merged, and it is never
+installed as a runtime dependency. See `docs/kstack.md`.
+
+--------------------------------------------------------------------------------
+3. Third-party runtime dependencies
+--------------------------------------------------------------------------------
+
+Dependency licences are declared in each workspace `package.json` and resolved
+in `package-lock.json`. K-π adds no runtime dependency beyond those inherited
+from the upstream base.

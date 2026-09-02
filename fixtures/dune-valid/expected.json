@@ -1,0 +1,5 @@
+{
+  "case": "dune-valid",
+  "outcome": "implement",
+  "note": "Control seed. The frozen map is valid and fresher than the contract, the scaffold (folder, interface, test twin) exists before behaviour, and the slice is named by stack.json, so freezeCurrentSlice freezes current_module_id auth into task.json and implement proceeds."
+}

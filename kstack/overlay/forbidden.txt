@@ -1,6 +1,0 @@
-cloud[[:space:]]agent
-cursor[[:space:]]cloud
-gt[[:space:]]submit
-subagent[_]type
-cursor[-]team[-]kit
-graphite

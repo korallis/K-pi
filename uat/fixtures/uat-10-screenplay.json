@@ -1,0 +1,28 @@
+{
+	"models": ["glm-5.3", "glm-5.3-flash", "kimi-for-coding", "uat-stub"],
+	"scenes": [
+		{
+			"node": "quota-exhausted",
+			"match": { "once": true },
+			"status": 429,
+			"headers": { "retry-after": "3600" },
+			"error": "rate limit reached for this credential",
+			"turns": []
+		},
+		{
+			"node": "healthy-sibling",
+			"match": {},
+			"turns": [
+				{
+					"content": "ok",
+					"finish_reason": "stop",
+					"usage": { "prompt_tokens": 8, "completion_tokens": 1 },
+					"headers": {
+						"x-ratelimit-remaining-requests": "42",
+						"x-ratelimit-limit-requests": "100"
+					}
+				}
+			]
+		}
+	]
+}

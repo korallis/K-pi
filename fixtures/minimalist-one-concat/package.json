@@ -1,0 +1,8 @@
+{
+  "name": "minimalist-one-concat-fixture",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test"
+  }
+}

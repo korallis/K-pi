@@ -1,4 +1,6 @@
 > **STATUS: HISTORICAL.** Preserved as the original milestone record. Its checked boxes are not current completion evidence. Active work is in [`remediation-plan.md`](remediation-plan.md).
+>
+> **Superseded architecture.** This record was written when K-π shipped as a Pi package installed with `pi install -l ./`. K-π is now a standalone harness — a fork of Pi `v0.84.4`, executable `kpi`, config `.kpi/`, control plane compiled in as a built-in. Every `pi install`, package-trust, peer-dependency, and `pnpm` reference below is history, not instruction. See [`../UPSTREAM.md`](../UPSTREAM.md) and RP-01A in [`remediation-plan.md`](remediation-plan.md).
 
 # roadmap.md — k-pi
 

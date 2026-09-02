@@ -8,91 +8,121 @@
 
 ## 1. System context
 
+K-π is a standalone harness: one executable, one process. It is a fork of Pi `v0.84.4` (base commit `b79e4cc834970cca69daebffab7df1da7d1e52c4`), tracked through the `upstream` git remote per `../UPSTREAM.md`. Pi is not the host process, is not installed alongside K-π, and is not a dependency.
+
 ```
 operator
-  └─ Pi interactive / print / rpc
-       └─ package k-pi
-            ├─ extensions/control-plane   /kpi commands, widgets, policy
-            ├─ extensions/status-line     Oh My Pi-style footer, brand K-π
-            ├─ extensions/graph           DAG runner on Pi SDK
-            ├─ extensions/accounts        multi-sub pool + failover
-            ├─ extensions/cursor          registerProvider("cursor")
-            ├─ extensions/kg              JSONL claim store
-            ├─ skills / prompts / themes
-            └─ graphs/*.json
+  └─ kpi — interactive / print / rpc
+       ├─ forked harness base          TUI, agent loop, providers, sessions, RPC
+       └─ K-π built-in extension       registered in the binary, no install, no trust gate
+            ├─ control-plane           /kpi commands, widgets, policy
+            ├─ status-line             Oh My Pi-style footer, brand K-π
+            ├─ graph                   DAG runner on the harness SDK
+            ├─ accounts                multi-sub pool + failover
+            ├─ cursor                  registerProvider("cursor")
+            ├─ kg                      JSONL claim store
+            └─ resources               skills, prompts, themes, graphs discovered by the built-in
 ```
 
-Pi remains the process. We do not fork it. We do not embed Oh My Pi or Atomic.
+K-π extends the forked base through the base's own extension surface. Forking is not a licence to rebuild resource loading, model catalogs, sessions, or RPC.
 
-## 2. Package manifest
+## 2. Distribution and layout
 
-`package.json` MUST contain:
+K-π is **not** a package and is never published. There is no `pi install`, no `keywords: ["pi-package"]`, no `package.json#pi` manifest, and no `peerDependencies` on `@earendil-works/pi-*`.
+
+Root `package.json` is `k-pi-monorepo`, private, using npm workspaces. `packages/coding-agent/package.json` MUST contain:
 
 ```json
 {
-  "name": "k-pi",
-  "version": "0.1.0",
-  "keywords": ["pi-package"],
-  "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*",
-    "@earendil-works/pi-tui": "*",
-    "@earendil-works/pi-agent-core": "*",
-    "@earendil-works/pi-ai": "*"
+  "name": "@earendil-works/pi-coding-agent",
+  "bin": {
+    "kpi": "dist/bundle/cli.js",
+    "k-pi": "dist/bundle/cli.js"
   },
-  "pi": {
-    "extensions": ["./extensions"],
-    "skills": ["./skills"],
-    "prompts": ["./prompts"],
-    "themes": ["./themes"]
+  "piConfig": {
+    "name": "kpi",
+    "title": "K-π",
+    "configDir": ".kpi"
   }
 }
 ```
 
+REQ-DIST-01. The internal package name stays upstream-compatible so upstream releases merge with minimal conflict. It is merge hygiene, not a dependency: nothing is resolved from a registry under that name.
+
+REQ-DIST-02. `bin` declares exactly `kpi` and `k-pi`. The upstream `pi` bin MUST NOT exist.
+
+REQ-DIST-03. `piConfig` yields `APP_NAME = kpi`, `APP_TITLE = K-π`, `CONFIG_DIR_NAME = .kpi`, and env overrides `KPI_CODING_AGENT_DIR` / `KPI_CODING_AGENT_SESSION_DIR`. Every project-local runtime path derives from `CONFIG_DIR_NAME`; none hard-codes `.pi`.
+
+REQ-DIST-04. The K-π extension factory is registered as a **visible built-in**. Its skills, prompts, themes, and graphs are declared by that built-in through resource discovery and copied into `dist` at build time. K-π's own commands are available at startup with no install and no project-trust decision. Project trust continues to govern a user's repo-local resources, unchanged from the base.
+
+REQ-DIST-05. No publish, release, or version automation exists in this repository.
+
 Forbidden runtime dependencies: `oh-my-pi`, `@oh-my-pi/*`, `atomic`, `pi-graph`, `@shying/pi-graph`, `pi-multi-account`, `pi-multi-pass`, `pi-cursor-oauth`, `pi-cursor-provider`, `@pi-stef/cursor`, `pi-kimi-coder`, `pi-moonshot`, `@czottmann/pi-zai-api`, `pi-ollama`, `@jamesjfoong/pi-ollama`, `pi-ollama-keyring`, `pi-ollama-cloud-provider`, `exa-js`, `@perplexity-ai/perplexity_ai`.
 
-## 3. Repository layout (this package)
+## 3. Repository layout
 
 ```
-k-pi/
+K-pi/                                     k-pi-monorepo (private, npm workspaces)
 ├── package.json
-├── AGENTS.md
-├── templates/
-│   ├── AGENTS.md
-│   ├── APPEND_SYSTEM.md
-│   └── context-pack/{product,structure,tech}.md
-├── extensions/
-│   ├── index.ts
-│   ├── control-plane.ts
-│   ├── run-store.ts
-│   ├── append-log.ts
-│   ├── policy.ts
-│   ├── renderers.ts
-│   ├── graph/{engine.ts,schema.ts}
-│   ├── accounts/{index.ts,store.ts,balancer.ts,errors.ts,usage/*.ts}
-│   ├── cursor/{provider.ts,oauth.ts}
-│   └── kg/{index.ts,store.ts}
-├── graphs/{coding-loop.gated.json,coding-loop.auto.json,spec-first.json,hotfix.json}
-├── skills/{spec-first,tdd-cycle,isolated-review,quality-gates,conventional-commit,context-pack,concise-output,kg-claim}/SKILL.md
-├── prompts/{specify,plan,implement,review,verify,ship}.md
-├── themes/{loop-amber.json,protocol-blue.json}
-└── schemas/*.json
+├── upstream.json                         machine-readable Pi pin
+├── UPSTREAM.md  NOTICE  LICENSE
+├── AGENTS.md  README.md  START-HERE.md  docs/  design/
+├── kpi-test.sh / .ps1 / .bat             run from source without building
+├── test/*.test.ts                        K-π node tests, importing ../packages/coding-agent/src/kpi/...
+├── fixtures/                             normative test fixtures
+└── packages/                             forked Pi harness — K-π source, not a dependency
+    └── coding-agent/
+        ├── package.json                  bins kpi + k-pi; piConfig name/title/configDir
+        └── src/
+            ├── **                        upstream harness: TUI, agent loop, providers, sessions, RPC
+            └── kpi/                      K-π runtime
+                ├── extensions/
+                │   ├── index.ts          built-in extension factory
+                │   ├── control-plane.ts
+                │   ├── run-store.ts
+                │   ├── append-log.ts
+                │   ├── policy.ts
+                │   ├── renderers.ts
+                │   ├── graph/{engine.ts,schema.ts}
+                │   ├── accounts/{index.ts,store.ts,balancer.ts,errors.ts,usage/*.ts}
+                │   ├── cursor/{provider.ts,oauth.ts}
+                │   └── kg/{index.ts,store.ts}
+                ├── graphs/{coding-loop.gated.json,coding-loop.auto.json,spec-first.json,hotfix.json}
+                ├── skills/{spec-first,tdd-cycle,isolated-review,quality-gates,conventional-commit,context-pack,concise-output,kg-claim}/SKILL.md
+                ├── prompts/{specify,plan,implement,review,verify,ship}.md
+                ├── themes/{loop-amber.json,protocol-blue.json}
+                ├── templates/{AGENTS.md,APPEND_SYSTEM.md,context-pack/{product,structure,tech}.md}
+                ├── schemas/*.json
+                └── kstack/
 ```
 
-Target install paths after `pi install -l ./`:
+Build and run:
 
-- Project: `.pi/` settings + graphs copied or referenced
-- User secrets: `~/.pi/agent/accounts.json`, `~/.pi/agent/accounts.secrets.json`
+```sh
+npm install && npm run build
+node packages/coding-agent/dist/bundle/cli.js
+# or: npm link --workspace @earendil-works/pi-coding-agent && kpi
+```
+
+REQ-DIST-06. The build copies K-π's graphs, skills, prompts, themes, templates, and schemas into `dist` so the built binary resolves them without the source tree.
+
+Operator paths at runtime:
+
+- Project: `.kpi/` settings, graphs, runs
+- User secrets: `~/.kpi/agent/accounts.json`, `~/.kpi/agent/accounts.secrets.json`
+
+REQ-DIST-07. Elsewhere in this document, bare paths `extensions/…`, `graphs/…`, `skills/…`, `prompts/…`, `themes/…`, `templates/…`, `schemas/…`, and `kstack/…` are relative to `packages/coding-agent/src/kpi/`.
 
 Consumer repo after bootstrap:
 
 ```
 AGENTS.md
-.pi/APPEND_SYSTEM.md
-.pi/graphs/
-.pi/kg/
-.pi/runs/
-.pi/context/
-.pi/policy.json
+.kpi/APPEND_SYSTEM.md
+.kpi/graphs/
+.kpi/kg/
+.kpi/runs/
+.kpi/context/
+.kpi/policy.json
 specs/
 ```
 
@@ -106,6 +136,9 @@ specs/
 | `/kpi --plan <path>` | Skip specify; freeze plan files |
 | `/kpi --mode gated\|autopilot` | Force mode |
 | `/kpi --until-green` | Alias of autopilot |
+| `/kpi --max-cost-usd <n>` | Freeze maxCostUsd onto task.limits |
+| `/kpi --timeout-ms <n>` | Freeze timeoutMs onto task.limits |
+| `/kpi --max-rounds <n>` | Freeze maxRounds onto task.limits |
 | `/kpi status` | Overlay from files, no model. Must look like the Avid boards. |
 | `/kpi stop` | Write `BLOCKED`, halt |
 | `/statusbar` | Toggle the K-π footer |
@@ -126,16 +159,16 @@ specs/
 | `/kg query` `/kg propose` | Claim store |
 | `/setup-kstack` | Role map from `model-ladder.md`, then Exa and Perplexity key save/skip. See `kstack.md`. |
 | `/k-mode [task]` | Sticky rigor playbook. `/k-mode off` clears it. |
-| `spawn_background` | Tool. Headless Pi worker. See `agents-bus.md`. |
+| `spawn_background` | Tool. Headless K-π worker. See `agents-bus.md`. |
 | `communicate` | Tool. Deliver via `sendUserMessage` / RPC `prompt`. |
 
-Prompt templates expand via official slash-template mechanism (`prompts/*.md`). Commands that need UI or side effects are extensions (`pi.registerCommand`).
+Prompt templates expand via the harness slash-template mechanism (`prompts/*.md`). Commands that need UI or side effects are extension registrations (`pi.registerCommand`, where `pi` is the `ExtensionAPI` object the harness passes to an extension factory — the name of a parameter, not a separate program).
 
 ## 5. Run store
 
 **REQ-RS-01** Every job has `job_id` kebab-case, time-prefixed allowed.
 
-**Path:** `.pi/runs/<job_id>/`
+**Path:** `.kpi/runs/<job_id>/`
 
 | File | Writer | Role |
 |---|---|---|
@@ -363,25 +396,25 @@ Neither `test` nor `review` receives `write` or `edit`. `write_contract` (REQ-RS
 
 Minimum engine behavior:
 
-- Load JSON schemaVersion 2 graphs from package `graphs/` and project `.pi/graphs/`
+- Load JSON schemaVersion 2 graphs from package `graphs/` and project `.kpi/graphs/`
 - Superstep: ready nodes run, writes commit together
-- Agent nodes call official `createAgentSession` from `@earendil-works/pi-coding-agent`
+- Agent nodes call `createAgentSession` from the harness core (the `@earendil-works/pi-coding-agent` workspace in this repository)
 - Isolated = new in-memory or fresh session; thread = persisted JSONL keyed by threadKey
 - Human node: `ctx.ui.confirm` / `select` / `input`; status `interrupted` until resume
-- Checkpoint after each superstep under `.pi/runs/<job_id>/graph/`
+- Checkpoint after each superstep under `.kpi/runs/<job_id>/graph/`
 - Resume unresolved nodes only
 - Checkpoints are at-least-once. Ship/commit must be idempotent (do not create a second commit if HEAD already has the job marker)
 
 ## 9. Context pack and voice
 
-Load order (Pi native + ours):
+Load order (harness native + ours):
 
-1. `~/.pi/agent/APPEND_SYSTEM.md` (operator global)
-2. `~/.pi/agent/AGENTS.md`
+1. `~/.kpi/agent/APPEND_SYSTEM.md` (operator global)
+2. `~/.kpi/agent/AGENTS.md`
 3. Project `AGENTS.md`
 4. `AGENTS.override.md` if present
-5. `.pi/context/{product,structure,tech}.md` via context-pack skill, not dumped always
-6. `.pi/runs/<id>/context.md` frozen at job start
+5. `.kpi/context/{product,structure,tech}.md` via context-pack skill, not dumped always
+6. `.kpi/runs/<id>/context.md` frozen at job start
 7. Skills on demand
 
 **REQ-CX-01** Do not ship project `SYSTEM.md` that replaces Pi’s instruction template. Use `APPEND_SYSTEM.md`.
@@ -398,7 +431,7 @@ Load order (Pi native + ours):
 
 ## 10. Skills and prompts
 
-Each skill is a directory with `SKILL.md` frontmatter `name` + `description` (max 1024). Description MUST state when to use it so Pi progressive disclosure works.
+Each skill is a directory with `SKILL.md` frontmatter `name` + `description` (max 1024). Description MUST state when to use it so the harness's progressive disclosure works.
 
 | Skill | When |
 |---|---|
@@ -430,7 +463,7 @@ Prompts `/specify` `/plan` `/implement` `/review` `/verify` `/ship` are template
 
 Switch to protocol-blue while a human node is paused. Switch back on resume.
 
-### Status bar (Oh My Pi layout, k-pi brand)
+### Status bar (Oh My Pi layout, K-π brand)
 
 Implement in `extensions/status-line/`. Visual contract: `visual-targets.md`. Reference frames: `visual/omp-statusbar-codemod.jpg`, `visual/omp-statusbar-collab.jpg`.
 
@@ -456,7 +489,7 @@ Default render (unicode):
 K-π  >  ⬡ claude-opus · ● high  >  📁 repo  >  ⎇ main  >  ▦ 12%/200k  >  (sub)  ────  add healthcheck
 ```
 
-`/statusbar` toggles. Off restores Pi default footer.
+`/statusbar` toggles. Off restores the harness default footer.
 
 Job-aware extra slot via `ctx.ui.setStatus("kpi", …)`:
 
@@ -501,7 +534,7 @@ Custom entry renderers for EVT types listed above.
 
 ## 12. Policy
 
-`.pi/policy.json` default:
+`.kpi/policy.json` default:
 
 ```json
 {
@@ -538,7 +571,7 @@ Allowlisted reads (`ls`, `git status`, `git diff`, `git log`, test commands from
 
 ### Store
 
-`~/.pi/agent/accounts.json` mode 0600. Schema version 1:
+`~/.kpi/agent/accounts.json` mode 0600. Schema version 1:
 
 ```json
 {
@@ -574,9 +607,9 @@ Slot kind: `oauth | api_key | local`.
 
 Local pools use official llama.cpp (`LLAMA_BASE_URL`) or first-party `refreshModels` on `/v1/models`. An unreachable server cools that slot; failover stays inside the local family first.
 
-Secrets in `~/.pi/agent/accounts.secrets.json` keyed by `pool/slot`. Never log them. A `local` slot with no `secretRef` has no entry here.
+Secrets in `~/.kpi/agent/accounts.secrets.json` keyed by `pool/slot`. Never log them. A `local` slot with no `secretRef` has no entry here.
 
-Official `~/.pi/agent/auth.json` primary credential is imported as slot `default` if present.
+Official `~/.kpi/agent/auth.json` primary credential is imported as slot `default` if present.
 
 ### Official catalogs
 
@@ -638,7 +671,7 @@ Do not load community Cursor packages.
 
 ## 14. Knowledge graph
 
-Paths: `.pi/kg/nodes.jsonl`, `edges.jsonl`, `sources.jsonl`, `inbox/`, `snapshots/<iso>/`.
+Paths: `.kpi/kg/nodes.jsonl`, `edges.jsonl`, `sources.jsonl`, `inbox/`, `snapshots/<iso>/`.
 
 Node minimum: `id`, `kind`, `source_ids`, `status`, `rev`, `observed_at`.  
 Optional: `confidence` on inferred edges, `valid_from`, `valid_to`.  
@@ -669,7 +702,7 @@ No preamble. No restating the task. No ASCII board.
 | NFR-02 | accounts.json and secrets 0600 |
 | NFR-03 | TypeScript strict |
 | NFR-04 | Tests for balancer, classifier, atomic write, AC compiler, hash chain, `write_contract` path pinning, research network state |
-| NFR-05 | Loads on `@earendil-works/pi-coding-agent` `>=0.84.0`. CI pin `0.84.4`. |
+| NFR-05 | Builds and runs from this repository's own source at the pinned upstream base (Pi `v0.84.4`, commit `b79e4cc`). Moving the pin is a reviewed merge per `../UPSTREAM.md`. |
 | NFR-06 | Board render does not call a model |
 | NFR-07 | TUI required fields (US-25) present. Pixel match is not required. |
 | NFR-08 | One writer worker. `claim_path` exclusive per job. |

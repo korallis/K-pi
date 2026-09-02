@@ -1,6 +1,0 @@
-{
-  "setup-pstack": "setup-kstack",
-  "poteto-mode": "k-mode",
-  "poteto-agent": "k-agent",
-  "pstack": "K-stack"
-}

@@ -1,0 +1,47 @@
+{
+  "job_id": "2026-09-02-dune-no-stack-exemption",
+  "mode": "gated",
+  "goal": "Fix the misspelled Instalation heading in README.md",
+  "nongoals": [
+    "any behaviour change"
+  ],
+  "acceptance": [
+    {
+      "id": "AC-01",
+      "statement": "README.md spells Installation and npm test exits 0",
+      "required": true,
+      "check": {
+        "kind": "command",
+        "cmd": "npm test",
+        "expect": {
+          "exit": 0
+        }
+      },
+      "bounds": {
+        "write_allow": [
+          "README.md"
+        ]
+      }
+    }
+  ],
+  "constraints": [
+    "no new runtime dependency"
+  ],
+  "quality_gates": [
+    "npm test"
+  ],
+  "ac": {
+    "quality": "executable"
+  },
+  "playbook": "typo",
+  "playbook_steps": [
+    {
+      "node": "implement",
+      "text": "Correct the misspelled heading in README.md"
+    },
+    {
+      "node": "test",
+      "text": "Run npm test"
+    }
+  ]
+}

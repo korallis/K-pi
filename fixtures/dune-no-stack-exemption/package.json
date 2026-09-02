@@ -1,0 +1,8 @@
+{
+  "name": "dune-no-stack-exemption-fixture",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test"
+  }
+}

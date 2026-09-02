@@ -1,0 +1,17 @@
+{
+	"name": "pi",
+	"relationship": "fork",
+	"repository": "https://github.com/earendil-works/pi.git",
+	"remote": "upstream",
+	"version": "0.84.4",
+	"tag": "v0.84.4",
+	"commit": "b79e4cc834970cca69daebffab7df1da7d1e52c4",
+	"note": "K-pi vendors this upstream tree as its own harness source. Pi is never installed from a registry and is not a runtime peer dependency of K-pi.",
+	"policy": {
+		"autoMerge": false,
+		"autoUpdate": false,
+		"publishToRegistry": false,
+		"driftCheck": "read-only",
+		"update": "git fetch upstream --tags, review, merge by hand, then edit this file in the same commit"
+	}
+}

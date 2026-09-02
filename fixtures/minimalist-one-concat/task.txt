@@ -1,0 +1,1 @@
+Make joinParts return left and right joined by a single space. Prefer a one-line body change. Do not add files, helpers, classes, or dependencies. cmd npm test exits 0; writes only src/join.js.

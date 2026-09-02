@@ -2,13 +2,13 @@
 
 **Normative.** k-pi does not use Cursor-style subagents (`Task`, `subagent_type`) and does not install pi-intercom, pi-mesh, pi-agents-talk-to-each-other, pi-bus, or pi-side-agents.
 
-Pi itself [does not ship sub-agents](https://pi.dev/). Workers are **real Pi sessions** started in the background. They talk with the official injection APIs.
+The forked harness base [does not ship sub-agents](https://pi.dev/). Workers are **real K-π sessions** started in the background. They talk with the harness's own injection APIs.
 
 ## Official primitives we wrap
 
 | API | Role |
 |---|---|
-| `createAgentSession()` / `pi --mode rpc` | Spawn a headless worker |
+| `createAgentSession()` / `kpi --mode rpc` | Spawn a headless worker |
 | `pi.sendUserMessage(content, { deliverAs })` | Deliver into a live session |
 | `pi.sendMessage(...)` | Non-user custom events |
 | `session.prompt` / RPC `prompt` | Start work on a headless session |
@@ -28,9 +28,9 @@ tools?: allowlist
 prompt: string
 ```
 
-Starts `pi --mode rpc` (or in-process `createAgentSession` when tests need it) with:
+Starts `kpi --mode rpc` (or in-process `createAgentSession` when tests need it) with:
 
-- session file `.pi/runs/<job>/agents/<role>-<id>.jsonl`
+- session file `.kpi/runs/<job>/agents/<role>-<id>.jsonl`
 - same cwd as the job
 - tool allowlist for that role (reviewer and tester: read + grep + test bash, plus the pinned `write_contract` below — never `write` / `edit`)
 - model from K-stack role map, failed over through accounts
@@ -42,7 +42,7 @@ Returns `{ agent_id, session_path, pid }`. Writes `agent.spawned` to `events.jso
 Two workers share the project checkout. They must not edit the same files.
 
 - At most **one** live worker may have `write` / `edit`. That is the writer. Reviewer and tester never get either tool; they publish through `write_contract`, which does not make them the writer.
-- Before a writer edits path `P`, it calls `claim_path(P)`. Exclusive. Held in `.pi/runs/<job>/leases.json`.
+- Before a writer edits path `P`, it calls `claim_path(P)`. Exclusive. Held in `.kpi/runs/<job>/leases.json`.
 - Another claim on `P` is denied until release or the holder exits.
 - Bounds still apply. A claim outside `task.json.allowed_paths` is `UNSAFE`.
 - Parent implementer in the operator session counts as the writer if no worker writer is live.
@@ -58,7 +58,7 @@ path: string      # must equal the role's declared contract path
 content: object   # the parsed contract payload, not a diff and not prose
 ```
 
-- **Pinned at spawn.** The capability is minted for one `agent_id`, one job, one role, and one declared contract path, and that tuple is fixed when the worker starts. Reviewer → `.pi/runs/<job>/verdict.json`. Tester → `.pi/runs/<job>/evidence.json`. A worker cannot widen its own pin at call time.
+- **Pinned at spawn.** The capability is minted for one `agent_id`, one job, one role, and one declared contract path, and that tuple is fixed when the worker starts. Reviewer → `.kpi/runs/<job>/verdict.json`. Tester → `.kpi/runs/<job>/evidence.json`. A worker cannot widen its own pin at call time.
 - **One path, everything else denied.** Any other `path` fails: product files, `task.json`, `release.approved`, another role's contract file, another job's run directory, and any `..` or symlink that resolves outside the pinned path. Denial is a returned error, never a silent no-op.
 - **Schema before disk.** The payload validates against `verdict.schema.json` or `evidence.schema.json` first. An invalid payload writes nothing — no partial file, no placeholder — and the error goes back to the worker. A reviewer that cannot produce a valid verdict has failed review; it has not approved anything.
 - **Atomic write.** A validated payload lands by temp file → fsync → same-directory rename, so the parent never reads a half-written contract.
@@ -75,7 +75,7 @@ expect: "none" | "ack" | "result" # default none
 
 - Live same-process session → `pi.sendUserMessage(message, { deliverAs })`
 - Other process → RPC `prompt` into that worker (steer maps to immediate prompt, followUp waits for idle)
-- Always appends `agent.message` to `events.jsonl` and `.pi/runs/<job>/bus.jsonl`
+- Always appends `agent.message` to `events.jsonl` and `.kpi/runs/<job>/bus.jsonl`
 
 `expect: "result"` waits until the worker writes its contract file (`candidate.json` / `evidence.json` / `verdict.json`) or hits timeout. It does not scrape the worker transcript into the parent context.
 
@@ -103,7 +103,7 @@ Handoffs stay the run contract files. Chat between agents is steering, not sourc
 
 | Old idea | Now |
 |---|---|
-| K-stack `poteto-agent` / `k-agent` subagent | background Pi with role prompt |
+| K-stack `poteto-agent` / `k-agent` subagent | background K-π session with role prompt |
 | `/swarm` fan-out | N≤2 `spawn_background` + `communicate` |
 | `/arena` bakeoff | N≤2 arena workers, parent grafts from their `candidate.json` |
 | `/interrogate` panel | one reviewer worker per panel model, results merge into `verdict.json` |

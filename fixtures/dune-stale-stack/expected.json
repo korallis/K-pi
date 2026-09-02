@@ -1,0 +1,6 @@
+{
+  "case": "dune-stale-stack",
+  "outcome": "unsafe",
+  "reason": "stack.json was frozen against a different task.json",
+  "note": "Staleness is proven by the frozen hash, not by a file timestamp: task_hash is sha256:0000... and can never equal contractHash(task.json), so the map that reached implement was written for a different contract."
+}

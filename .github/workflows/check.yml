@@ -1,0 +1,184 @@
+# Adapted from Ray Fernando's Actions templates (`workflows/check.yml`): the hard
+# verify gate on a persistent self-hosted macOS runner.
+#
+# What this gate proves for K-π, which is its own coding-agent harness built from
+# its own vendored source: install from the committed lockfile with no lifecycle
+# scripts, build the vendored packages offline, then run the fork-integrity
+# guard, the repository gates, the K-π suites, and the K-stack sync check. Pi is
+# never installed from a registry and is never a peer dependency, and nothing
+# here publishes, releases, or pushes.
+#
+# Self-hosted trust boundary:
+#   - This job runs on a persistent Mac runner. Fork pull_request code must never
+#     reach it: secrets are unavailable on fork PRs for `pull_request`, but the
+#     larger risk is untrusted code executing on durable self-hosted hardware.
+#   - Job-level guard: non-PR events (push/schedule/workflow_dispatch) always run;
+#     pull_request runs only when the PR is not a draft AND
+#     `head.repo.full_name == github.repository` (same-repository head).
+#   - External fork contributions therefore require a maintainer-owned branch
+#     (push to a branch in korallis/K-pi, or an internal PR from that branch).
+#   - Never switch this workflow to `pull_request_target` and never expose secrets
+#     to PR-controlled code.
+#
+# Deliberate deviations from the template:
+#   - No `paths-ignore` for `**/*.md` / `docs/**`. In this repo docs are
+#     executable product contracts: AGENTS.md and the K-stack docs are inputs to
+#     `npm run check`, `npm run kstack:sync:check`, and the K-π suites, so a
+#     docs-only commit can and does break the gate.
+#   - No Rust/cargo/ffmpeg steps and no cargo target cache: this fork is Node and
+#     TypeScript only, so the template's toolchain pinning and cache-wipe input
+#     have nothing to pin or wipe.
+#   - `timeout-minutes: 60` rather than 45 — build + four suites on one runner.
+#
+# See ../../UPSTREAM.md (fork patch register) and AGENTS.md.
+
+
+name: check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    # ready_for_review is load-bearing: drafts are skipped below, and without
+    # this type a PR opened as a draft would never re-trigger once marked ready.
+    types: [opened, synchronize, reopened, ready_for_review]
+  # Nightly backstop: catches drift that lands on main without a PR run and
+  # keeps a fresh-worktree signal even in a quiet week.
+  schedule:
+    - cron: "0 4 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: check-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: [self-hosted, macOS]
+    timeout-minutes: 60
+    # Same-repository only on pull_request: fork heads never schedule on the
+    # persistent self-hosted Mac. push/schedule/workflow_dispatch keep running.
+    if: >-
+      github.event_name != 'pull_request'
+      || (github.event.pull_request.draft == false
+          && github.event.pull_request.head.repo.full_name == github.repository)
+
+    env:
+      CI: "1"
+      # A runner-user `url.*.insteadOf` rewrite would otherwise force SSH clones
+      # and ignore the checkout token.
+      GIT_CONFIG_GLOBAL: /dev/null
+      GIT_CONFIG_SYSTEM: /dev/null
+      GIT_TERMINAL_PROMPT: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # No gate needs the token; keeping it out of .git/config keeps it out
+          # of every git invocation below.
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 22.19.0
+          # Dependency caches already survive on a persistent runner.
+          package-manager-cache: false
+
+
+      - name: Verify runner toolchain
+        # The agent's find/grep tools shell out to these. Fail loudly here so a
+        # soft skip inside a test harness cannot greenwash the run.
+        timeout-minutes: 2
+        run: |
+          node --version
+          npm --version
+          rg --version | head -1
+          fd --version
+
+      - name: Install from the committed lockfile
+        run: npm ci --ignore-scripts --prefer-offline --no-audit --fund=false
+
+      - name: Lockfile unchanged by install
+        run: |
+          git diff --exit-code -- package-lock.json
+          if [ -n "$(git status --porcelain -- package-lock.json)" ]; then
+            echo "::error::package-lock.json is dirty after install (tracked or untracked changes)."
+            git status --porcelain -- package-lock.json
+            exit 1
+          fi
+
+      - name: Model catalog data
+        id: model_data
+        # `build:offline` compiles without a network but refuses to run against
+        # missing or stale provider data. Use the vendored data when this fork
+        # carries it, otherwise hydrate it with the in-repo generator. Either way
+        # the check inside build:offline is the real assertion. Hydrate may write
+        # provider data; the final dirty-tree step restores those paths.
+        run: |
+          if [ -f packages/ai/src/providers/data/.manifest.json ]; then
+            echo "vendored provider data present"
+            echo "hydrated=false" >> "$GITHUB_OUTPUT"
+          else
+            npm --prefix packages/ai run hydrate-model-data
+            echo "hydrated=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build the harness from source
+        run: npm run build:offline
+
+      - name: Fork integrity
+        # Required gates exist, no manifest points at a deleted script, and no
+        # publish/release/registry/governance automation has crept back in.
+        run: node scripts/check-ci-contract.mjs
+
+      - name: Upstream pin integrity
+        # Offline: shape and local provenance of upstream.json only. Networked
+        # drift reporting is the scheduled upstream-drift workflow.
+        run: npm run upstream:check -- --offline --summary "$GITHUB_STEP_SUMMARY"
+
+      - name: Repository gates
+        run: npm run check
+
+      - name: Workspace tests
+        run: npm test
+
+      - name: K-π tests
+        run: npm run test:kpi
+
+      - name: K-stack sync check
+        run: npm run kstack:sync:check
+
+      - name: Built harness smoke
+        # Clean-HOME / scratch-repo start of the built kpi binary; distribution inventory.
+        run: npm run verify:built
+
+      - name: Whole-product proof
+        # M-01..M-06 collectors + secret-free remediation-proof.json.
+        # Repository gates and built-harness already ran as prior steps; M-07 is
+        # that conjunction (do not re-run gates here, and do not claim M-07 via
+        # --skip-gates — that path intentionally records gates as skipped).
+        run: >-
+          node scripts/verify-product.mjs
+          --skip-gates
+          --metrics M-01,M-02,M-03,M-04,M-05,M-06
+          --json "${RUNNER_TEMP}/remediation-proof.json"
+
+
+      - name: Working tree clean after gates
+        # Every gate is read-only, and the sync check must not regenerate
+        # anything. A dirty tree here is a real failure — including untracked files.
+        # Exception: intentional model-data hydrate fallback is restored first so
+        # that path can go green when vendored data was missing.
+        run: |
+          if [ "${{ steps.model_data.outputs.hydrated }}" = "true" ]; then
+            git checkout -- packages/ai/src/providers/data 2>/dev/null || true
+            git clean -fd -- packages/ai/src/providers/data
+          fi
+          git diff --exit-code
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "::error::Working tree is dirty after gates (includes untracked files)."
+            git status --porcelain
+            exit 1
+          fi

@@ -1,0 +1,38 @@
+{
+  "job_id": "2026-09-02-dune-one-consumer-shared",
+  "mode": "gated",
+  "goal": "Ship the auth login slice and the session types the plan put in src/shared",
+  "nongoals": [
+    "billing"
+  ],
+  "acceptance": [
+    {
+      "id": "AC-01",
+      "statement": "login() returns a session for the user and npm test exits 0",
+      "required": true,
+      "check": {
+        "kind": "command",
+        "cmd": "npm test",
+        "expect": {
+          "exit": 0
+        }
+      },
+      "bounds": {
+        "write_allow": [
+          "src/auth/**",
+          "test/auth/**"
+        ]
+      }
+    }
+  ],
+  "constraints": [
+    "no new runtime dependency"
+  ],
+  "quality_gates": [
+    "npm test"
+  ],
+  "ac": {
+    "quality": "executable"
+  },
+  "current_module_id": "auth"
+}

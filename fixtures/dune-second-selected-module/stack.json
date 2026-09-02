@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "shape": "dune",
+  "delivery": "vertical",
+  "root": "src",
+  "modules": [
+    {
+      "id": "auth",
+      "purpose": "login and sessions",
+      "folder": "src/auth",
+      "interface": "src/auth/api.ts",
+      "allowed_paths": [
+        "src/auth/**",
+        "test/auth/**"
+      ],
+      "depends_on": []
+    },
+    {
+      "id": "billing",
+      "purpose": "invoices and plans",
+      "folder": "src/billing",
+      "interface": "src/billing/api.ts",
+      "allowed_paths": [
+        "src/billing/**",
+        "test/billing/**"
+      ],
+      "depends_on": []
+    }
+  ],
+  "scaffold_first": true,
+  "current_module_id": "billing"
+}

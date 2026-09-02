@@ -1,0 +1,10 @@
+diff --git a/skills/fixture-skill/references/safe.md b/skills/fixture-skill/references/safe.md
+new file mode 100644
+--- /dev/null
++++ b/skills/fixture-skill/references/safe.md
+@@ -0,0 +1 @@
++safe
+diff --cc skills/fixture-skill/SKILL.md
+index 1111111,2222222..3333333
+--- a/skills/fixture-skill/SKILL.md
++++ b/skills/fixture-skill/SKILL.md

@@ -1,11 +1,13 @@
 # PRD — k-pi
 
 **Status:** Draft for implementation  
-**Product:** k-pi — first-party Pi coding-agent package  
+**Product:** K-π — a standalone coding-agent harness, maintained as a fork of Pi `v0.84.4` (base commit `b79e4cc`)  
 **Brand cell:** `K-π` (never bare `π`)  
 **Audience:** Coding agents and the humans who review them  
-**Companion docs:** `START-HERE.md`, `BUILD-PROMPT.md`, `spec.md`, `kstack.md`, `model-ladder.md`, `research.md`, `dune-architecture.md`, `minimalist.md`, `agents-bus.md`, `visual-targets.md`  
-**Active queue:** [`docs/remediation-plan.md`](remediation-plan.md) is the only active implementation queue; start at the lowest incomplete `RP-##`. Research and gap register: [`remediation-research.md`](remediation-research.md).  
+**Contract:** [`../AGENTS.md`](../AGENTS.md) is the only normative project contract.  
+**Companion docs, read on demand:** `../START-HERE.md`, `BUILD-PROMPT.md`, `../UPSTREAM.md`, `spec.md`, `kstack.md`, `model-ladder.md`, `research.md`, `dune-architecture.md`, `minimalist.md`, `agents-bus.md`, `visual-targets.md`, `uat.md`  
+**Active queue:** [`docs/remediation-plan.md`](remediation-plan.md) is the only active implementation queue and names the current package itself; start at the lowest incomplete `RP-##` whose dependencies are complete. Research and gap register: [`remediation-research.md`](remediation-research.md).  
+**Feature acceptance:** [`uat.md`](uat.md), after every package and the full gates.  
 **Historical, non-authoritative:** `roadmap.md` and `implementation-plan.md` are historical build records. Their checked boxes are not completion evidence.  
 **Visual sources:** https://x.com/av1dlive/status/2092622516544270781 · `visual/omp-statusbar-codemod.jpg` · `visual/omp-statusbar-collab.jpg`  
 **ID prefix:** `PRD-1`
@@ -22,7 +24,7 @@ Most agent setups fail because nobody owns the return path, the shared state, or
 - Keeps the user informed via a control-board TUI
 - Can run **without a human** when acceptance criteria are executable
 - Stacks Anthropic / OpenAI / Grok / Cursor subscriptions and fails over when one hits a limit
-- Is built by us on official Pi plugin APIs so new official models appear automatically
+- Is built by us on the forked harness's own plugin APIs so new official models appear automatically
 
 ## 2. Goals
 
@@ -37,7 +39,7 @@ Most agent setups fail because nobody owns the return path, the shared state, or
 | G-07 | Assistant replies are short; the board carries state |
 | G-08 | Multiple Anthropic / OpenAI / Codex / xAI / Cursor seats can be pooled and failed over |
 | G-09 | Official Anthropic, OpenAI, Codex, and xAI model catalogs are never replaced by a static list |
-| G-10 | First-party package only. No Oh My Pi / Atomic / community multi-account / community Cursor at runtime |
+| G-10 | First-party code only. Everything under `packages/` is our forked source; no Oh My Pi / Atomic / community multi-account / community Cursor at runtime |
 | G-11 | Anthropic subscription login shows the extra-usage warning once per new slot |
 | G-12 | Footer matches Oh My Pi’s status bar; leftmost brand is `K-π` |
 | G-13 | Always-on graph TUI matches the Avid boards so the operator is never guessing |
@@ -53,7 +55,7 @@ Most agent setups fail because nobody owns the return path, the shared state, or
 
 | ID | Non-goal |
 |---|---|
-| NG-01 | Forking Pi or shipping a rebranded Pi binary |
+| NG-01 | Being installable into another harness, or shipping as a Pi package. K-π is a fork with its own executable; upstream stays upstream |
 | NG-02 | Depending on Oh My Pi, Atomic, pi-graph, pi-multi-account, pi-multi-pass, or community Cursor packages |
 | NG-03 | A native knowledge-graph database. File-backed JSONL is the v1 store |
 | NG-04 | OS sandboxing. Isolation is documented Docker/Gondolin, not promised in-process |
@@ -88,21 +90,22 @@ Print/CI may run the auto graph only with `policy.allowNonInteractive` and `allo
 
 Each AC is written so a later agent can turn it into a check. IDs are stable.
 
-### US-01 — Install the package
+### US-01 — Build and run the harness
 
-**Story.** As an operator, I install one local Pi package and the commands, theme, and skills appear after project trust.
+**Story.** As an operator, I build this repository from source and run `kpi`; K-π's commands, theme, and skills are present at startup with no install step.
 
-- **AC-01.1** `pi install -l ./` writes this package into `.pi/settings.json`.
-- **AC-01.2** After `/trust`, `/kpi`, `/loop` (alias of `/kpi`), `/accounts`, `/specify`, `/plan`, `/review`, `/verify`, `/ship`, `/statusbar` exist in command completion.
-- **AC-01.3** Theme `loop-amber` is selectable in `/settings`.
-- **AC-01.4** Package `package.json` contains `"keywords": ["pi-package"]` and a `pi` key listing extensions, skills, prompts, themes.
-- **AC-01.5** `package.json` does not list oh-my-pi, atomic, pi-graph, pi-multi-account, pi-multi-pass, or pi-cursor-* as dependencies.
+- **AC-01.1** `npm install && npm run build` at the repository root produces the harness bundle; `node packages/coding-agent/dist/bundle/cli.js --version` runs it.
+- **AC-01.2** `packages/coding-agent/package.json` declares exactly the bins `kpi` and `k-pi` (no `pi` bin) and `piConfig` `{ name: "kpi", title: "K-π", configDir: ".kpi" }`, so config resolves to `.kpi/` and `~/.kpi/agent/`.
+- **AC-01.3** On a first start in an untrusted scratch repository, `/kpi`, `/loop` (alias of `/kpi`), `/accounts`, `/specify`, `/plan`, `/review`, `/verify`, `/ship`, and `/statusbar` exist in command completion without `/trust` and without any install command.
+- **AC-01.4** Theme `loop-amber` is selectable in `/settings`, and K-π's prompts, skills, themes, and graphs are present in `dist` because the built-in extension declares them — not because a `package.json#pi` manifest was loaded.
+- **AC-01.5** No manifest in the repository declares `keywords: ["pi-package"]`, a `pi` key, or `peerDependencies` on `@earendil-works/pi-*`; K-π is never installable into another harness.
+- **AC-01.6** No manifest lists oh-my-pi, atomic, pi-graph, pi-multi-account, pi-multi-pass, or pi-cursor-* as dependencies.
 
 ### US-02 — Start from a task (gated)
 
 **Story.** As an operator, I type `/kpi <goal>` (or `/loop <goal>`) and the system compiles AC, specifies if needed, plans, implements, tests, reviews, then asks me before commit.
 
-- **AC-02.1** A directory `.pi/runs/<job_id>/` is created containing `task.json`, `context.md`, `events.jsonl`.
+- **AC-02.1** A directory `.kpi/runs/<job_id>/` is created containing `task.json`, `context.md`, `events.jsonl`.
 - **AC-02.2** `task.json` has `goal`, `acceptance[]`, `nongoals`, `constraints`, `quality_gates`.
 - **AC-02.3** If `ac.quality != executable`, mode stays `gated` even if autopilot was requested without `--mode autopilot` force.
 - **AC-02.4** Implementer tools include write/edit/bash. Planner, reviewer, and tester hold no general `write` or `edit`; their product tools are read-only (`read`,`grep`,`find`,`ls`). A read-only node publishes its run contract only through `write_contract` (`spec.md` §5 REQ-RS-06).
@@ -174,7 +177,7 @@ Each AC is written so a later agent can turn it into a check. IDs are stable.
 
 **Story.** As an operator, surviving decisions become source-backed claims, not chat sentences.
 
-- **AC-09.1** Store is `.pi/kg/{nodes,edges,sources}.jsonl` plus `inbox/` and `snapshots/`.
+- **AC-09.1** Store is `.kpi/kg/{nodes,edges,sources}.jsonl` plus `inbox/` and `snapshots/`.
 - **AC-09.2** One writer: the control-plane extension. Workers only drop patches in `inbox/`.
 - **AC-09.3** Minimum fields: `id`, `kind`, `source_ids`, `status`, `rev`, `observed_at`.
 - **AC-09.4** Status enum: `proposed | verified | rejected | superseded`.
@@ -183,7 +186,7 @@ Each AC is written so a later agent can turn it into a check. IDs are stable.
 
 **Story.** As an operator, I attach multiple Anthropic / OpenAI / Codex / xAI / z.ai / Kimi / Cursor seats and work continues when one window dies.
 
-- **AC-10.1** `~/.pi/agent/accounts.json` holds pools and slots. Secrets are not in the repo.
+- **AC-10.1** `~/.kpi/agent/accounts.json` holds pools and slots. Secrets are not in the repo.
 - **AC-10.2** `/accounts login anthropic` adds a slot without deleting existing Anthropic slots.
 - **AC-10.3** Official `/model` ids stay `anthropic/<official-id>`. No `anthropic-account-2/claude-…` duplicate catalog.
 - **AC-10.4** On classified usage-limit (429/402/403-quota), the slot cools until parsed reset (else default 5h) and the next healthy sibling of the same family is used with the same model and thinking level.
@@ -198,7 +201,7 @@ Each AC is written so a later agent can turn it into a check. IDs are stable.
 
 - **AC-11.1** Extensions do not pass a `models` array when touching official ids `anthropic`, `openai`, `openai-codex`, `xai`, `zai`, `zai-coding-cn`, `kimi-coding`.
 - **AC-11.2** Cursor provider implements `refreshModels` and a short fallback list only for pre-sync emptiness.
-- **AC-11.3** README documents `pi update --models` as the operator command for official refresh.
+- **AC-11.3** README documents `kpi update --models` as the operator command for official refresh. There is no `pi` bin (AC-01.2), so no operator command is spelled `pi …`.
 
 ### US-12 — Anthropic extra-usage warning
 
@@ -255,13 +258,13 @@ Reference files: `visual/omp-statusbar-codemod.jpg`, `visual/omp-statusbar-colla
 - **AC-16.5** The assistant does not reprint the board as a markdown table. The TUI carries the state.
 - **AC-16.6** Pixel match to the JPEGs is not required. Required fields in US-25 are. Narrow terminals may wrap. See `visual-targets.md` §honesty.
 
-### US-17 — Install K-stack as first-party skills
+### US-17 — K-stack ships as built-in first-party skills
 
 **Story.** As an operator, I get pstack rigor without installing Cursor pstack, open-pstack, or pi-pstack.
 
-- **AC-17.1** After package trust, `/setup-kstack` and `/k-mode` exist.
-- **AC-17.2** `package.json` has no dependency on `pstack`, `open-pstack`, `@oh-my-pi/*`, or `pi-pstack`.
-- **AC-17.3** `kstack/` contains rewritten skills and playbooks plus `NOTICE` crediting Lauren Tan / Cursor MIT pstack.
+- **AC-17.1** `/setup-kstack` and `/k-mode` exist at startup, with no install or trust step.
+- **AC-17.2** No manifest declares a dependency on `pstack`, `open-pstack`, `@oh-my-pi/*`, or `pi-pstack`.
+- **AC-17.3** `kstack/` contains rewritten skills and playbooks, and the root `NOTICE` credits Lauren Tan / Cursor MIT pstack.
 - **AC-17.4** Operator chrome says **K-stack** / **K-mode**, not poteto-mode.
 
 ### US-18 — Setup maps only wired models
@@ -269,7 +272,7 @@ Reference files: `visual/omp-statusbar-codemod.jpg`, `visual/omp-statusbar-colla
 **Story.** As an operator, `/setup-kstack` only offers models my k-pi pools can actually run.
 
 - **AC-18.1** Offered slugs ⊆ `ctx.modelRegistry.getAvailable()` ∩ configured pools.
-- **AC-18.2** A slug not in that set cannot be written to `~/.pi/agent/kstack/models.json`.
+- **AC-18.2** A slug not in that set cannot be written to `~/.kpi/agent/kstack/models.json`.
 - **AC-18.3** No Cursor Cloud Agent target is listed.
 - **AC-18.4** Re-running setup overwrites the file idempotently.
 - **AC-18.5** Setup prints an auto map from `model-ladder.md` against the live set. Operator applies or edits before write.
@@ -279,7 +282,7 @@ Reference files: `visual/omp-statusbar-codemod.jpg`, `visual/omp-statusbar-colla
 
 **Story.** As an operator, I type `/k-mode add a healthcheck and verify it` and get feature-playbook steps that cannot skip graph gates.
 
-- **AC-19.1** First todo is “read Principles” (21 upstream + 4 graph principles in `kstack.md`).
+- **AC-19.1** The first todo names the four graph principles in `kstack.md` §6, which are always in force, plus only the principle skills whose frontmatter `description` matches the current node. No fixed principle count is asserted, and no todo list opens by reading the whole principle index.
 - **AC-19.2** Matched playbook name is stored on `task.json.playbook`.
 - **AC-19.3** Ship todo cannot complete unless `verdict.json.approved == true` and evidence is fresh.
 - **AC-19.4** Skipped steps remain listed with `skip: <reason>`.
@@ -289,8 +292,8 @@ Reference files: `visual/omp-statusbar-codemod.jpg`, `visual/omp-statusbar-colla
 
 **Story.** As an operator, K-stack never launches a Cursor Cloud agent or a Graphite cloud sleeper.
 
-- **AC-20.1** Autopilot-full / autopilot-stack rewrites spawn only local isolated Pi sessions.
-- **AC-20.2** Those playbooks do not merge to origin. Terminal is `DONE` + local commit per k-pi mode.
+- **AC-20.1** Autopilot-full / autopilot-stack rewrites spawn only local isolated K-π sessions.
+- **AC-20.2** Those playbooks do not merge to origin. Terminal is `DONE` + local commit per K-π mode.
 - **AC-20.3** Source tree grep of runtime `kstack/` has no `cloud agent`, `gt submit`, `subagent_type`, or `cursor-team-kit` calls.
 - **AC-20.4** Swarm/arena honor `maxConcurrency = 2`.
 
@@ -299,11 +302,11 @@ Reference files: `visual/omp-statusbar-codemod.jpg`, `visual/omp-statusbar-colla
 **Story.** As a maintainer, when Cursor pstack moves, I run one command and our K-stack edits re-apply. I do not hand-merge the tree.
 
 - **AC-21.1** `kstack/UPSTREAM.md` records repo, path `pstack/`, commit sha, upstream version.
-- **AC-21.2** `pnpm kstack:sync --pin <sha>` fetches that tree into `kstack/upstream/`, runs transforms + patches, writes `kstack/generated/`.
+- **AC-21.2** `npm run kstack:sync -- --pin <sha>` fetches that tree into `kstack/upstream/`, runs transforms + patches, writes `kstack/generated/`.
 - **AC-21.3** If a patch fails, sync exits non-zero and does not overwrite `generated/`.
-- **AC-21.4** `pnpm kstack:sync --check` fails when generated would drift or when HEAD ≠ pin.
+- **AC-21.4** `npm run kstack:sync:check` fails when generated would drift or when HEAD ≠ pin.
 - **AC-21.5** Weekly CI (documented) fetches `cursor/plugins` `main` and opens a PR if `pstack/` changed. It does not merge.
-- **AC-21.6** Operators running k-pi do not hit the network for this. Sync is maintainer/CI only.
+- **AC-21.6** Operators running K-π do not hit the network for this. Sync is maintainer/CI only.
 
 ### US-22 — Minimalist skill stops over-engineering
 
@@ -316,12 +319,12 @@ Reference files: `visual/omp-statusbar-codemod.jpg`, `visual/omp-statusbar-colla
 
 Source: https://github.com/alirezarezvani/claude-skills/blob/main/engineering/minimalist/SKILL.md
 
-### US-23 — Background Pi agents communicate asynchronously
+### US-23 — Background K-π agents communicate asynchronously
 
-**Story.** As an operator, review/arena/swarm work runs as background Pi sessions that message each other. Not subagents.
+**Story.** As an operator, review/arena/swarm work runs as background K-π sessions that message each other. Not subagents.
 
-- **AC-23.1** `spawn_background` starts a `pi --mode rpc` (or SDK session) with its own session file under `.pi/runs/<job>/agents/`.
-- **AC-23.2** `communicate` delivers via `pi.sendUserMessage` / RPC `prompt` with `deliverAs` steer|followUp.
+- **AC-23.1** `spawn_background` starts a `kpi --mode rpc` (or SDK session) with its own session file under `.kpi/runs/<job>/agents/`.
+- **AC-23.2** `communicate` delivers via `sendUserMessage` / RPC `prompt` with `deliverAs` steer|followUp.
 - **AC-23.3** Parent reads `verdict.json` / `evidence.json`, not the worker transcript.
 - **AC-23.4** Max 2 live workers. Third spawn is denied.
 - **AC-23.5** package.json has no pi-intercom, pi-mesh, pi-agents-talk-to-each-other, pi-bus, pi-side-agents.
@@ -355,7 +358,7 @@ Source: https://github.com/alirezarezvani/claude-skills/blob/main/engineering/mi
 - **AC-26.1** Official pool ids only: `zai` (global, `ZAI_API_KEY`), `zai-coding-cn` (`ZAI_CODING_CN_API_KEY`), `kimi-coding` (`KIMI_API_KEY`).
 - **AC-26.2** `/accounts login zai` and `/accounts login kimi-coding` add slots without freezing catalogs.
 - **AC-26.3** Same-family failover on 429/402/403-quota. z.ai default cool-off uses the 5-hour window when reset is unknown.
-- **AC-26.4** Model ids stay `zai/<official>`, `kimi-coding/<official>`. New GLM or Kimi coding models appear via `pi update --models`.
+- **AC-26.4** Model ids stay `zai/<official>`, `kimi-coding/<official>`. New GLM or Kimi coding models appear via `kpi update --models`.
 - **AC-26.5** Do not hand-roll `api.z.ai/api/coding/paas/v4` in models.json. Use Pi’s built-in `zai` path (z.ai bans unofficial SDK use of the coding plan).
 - **AC-26.6** Kimi Coding Plan is `kimi-coding`, not Moonshot Open Platform (`moonshot` / `api.moonshot.ai`). Pay-per-token Moonshot is out of v1.
 - **AC-26.7** Footer shows `(sub)` for these slots. No runtime dep on `pi-kimi-coder`, `pi-moonshot`, or `@czottmann/pi-zai-api`.
@@ -390,7 +393,7 @@ Source: https://github.com/alirezarezvani/claude-skills/blob/main/engineering/mi
 
 **Story.** As an operator, the agent does not write product code until it has researched the stack and current practice.
 
-- **AC-29.1** Specify and plan cannot leave their nodes without `.pi/runs/<job>/research.md` and `research.json`.
+- **AC-29.1** Specify and plan cannot leave their nodes without `.kpi/runs/<job>/research.md` and `research.json`.
 - **AC-29.2** With an Exa or Perplexity key and `network.state: "online"`, `research.json` records at least two **distinct** external sources — different origins, deduplicated — from `exa_search`, `exa_contents`, or `pplx_search`.
 - **AC-29.3** Without a usable key, or under `no-network` from either origin, mode is `local` and sources are repository and frozen-plan files cited by repo-relative path. The lamp still lights. No external URL is recorded that this job did not fetch.
 - **AC-29.4** Implement is `UNSAFE` if research files are missing or older than the current `task.json` hash.
@@ -491,30 +494,30 @@ operator /k-mode <goal>
 | M-04 | Bounds-violation fixture ends `UNSAFE` | 1/1 |
 | M-05 | Two Anthropic slots: exhausted slot never selected while sibling healthy | 1/1 |
 | M-06 | Assistant visible reply on fixture verdict < 800 chars | 1/1 |
-| M-07 | `pnpm test && pnpm lint && pnpm typecheck` green on main | always |
+| M-07 | `npm run check && npm test && npm run test:kpi` green on main | always |
 
 ## 9. Constraints
 
 - Node `>= 22.19`.
-- Pi peer: `@earendil-works/pi-coding-agent` **>= 0.84.0**. Tested pin: **0.84.4**. CI installs that pin. Newer 0.84.x is allowed; 0.85+ needs an explicit bump PR.
-- Peer-only on `@earendil-works/pi-*`.
-- Secrets: `0600` files under `~/.pi/agent/`, never in git.
+- Upstream base: Pi `v0.84.4`, commit `b79e4cc834970cca69daebffab7df1da7d1e52c4`, tracked via the `upstream` remote. Moving to a newer upstream release is a reviewed merge per `../UPSTREAM.md`, never an automated bump.
+- No peer dependencies. Workspace packages keep upstream `@earendil-works/pi-*` names for merge hygiene only; nothing is resolved from a registry under those names.
+- Secrets: `0600` files under `~/.kpi/agent/`, never in git.
 - English UI strings in v1. Operator-facing text stays short.
 
 ## 10. Open questions (do not block M1–M3)
 
 | ID | Question | Default until answered |
 |---|---|---|
-| Q-01 | Publish scope/name | `k-pi` |
+| Q-01 | Distribution beyond a source build | source build only; never published |
 | Q-02 | Cursor stream transport: OpenAI-shaped vs `streamSimple` | try OpenAI-compatible first, fall back to `streamSimple` |
 | Q-03 | Worktree isolation per job | v1 same tree + one writer + `claim_path` (US-23.7/8) |
-| Q-04 | Cross-process in-flight cap across two Pi processes | v1 in-process only |
+| Q-04 | Cross-process in-flight cap across two K-π processes | v1 in-process only |
 
 ## 11. Traceability
 
 | Story | Primary spec sections | Phase |
 |---|---|---|
-| US-01 | spec §Package | M1 |
+| US-01 | spec §Distribution and layout | M1 |
 | US-02 | spec §Graphs, §Run store | M2–M3 |
 | US-03 | spec §Entry points | M3 |
 | US-04 | spec §Modes, §Graphs auto | M4 |

@@ -1,0 +1,32 @@
+# Strings that must not survive in generated/. One per line; blank lines and
+# lines starting with # are comments. This is a plain final net beside the
+# located sentinels in config.json: simple, unmissable, and independent of
+# whether a transform rule matched.
+make-bot-ui
+benny
+bugbot
+cursor cloud
+cloud agent
+background agent
+cloud worker
+graphite
+gt submit
+cursor-team-kit
+control-cli
+control-ui
+subagent
+run_in_background
+.cursor/rules
+.cursor/projects
+worktree
+/loop
+create-skill
+poteto
+leebarry
+lee barry
+ray fernando
+/Users/
+~/Projects
+.cursor/skills
+.cursor/plugins
+agent-transcripts
