@@ -926,7 +926,37 @@ async function driveUntilPause(
 			// goes on to do with it.
 			shippedThisRun = true;
 		}
-		state = await engine.runSuperstep();
+		const prePlan = state.active.includes("plan");
+		try {
+			state = await engine.runSuperstep();
+		} catch (error) {
+			// Plan owns stack.json via its response contract. A map the plan cannot
+			// freeze is the same Dune refusal implement would raise — UNSAFE with the
+			// semantic reason, never a generic BLOCKED graph crash.
+			const message = error instanceof Error ? error.message : String(error);
+			if (
+				prePlan &&
+				(/stack\.json|stack\.schema|assertDuneStack|Dune|Layer folder|Module folder|Horizontal delivery|layer sweep|shared module/iu.test(
+					message,
+				) ||
+					/failed response validation/iu.test(message))
+			) {
+				const reason =
+					/not valid JSON|assistant response text is unavailable|response must be a JSON object/iu.test(
+						message,
+					)
+						? "stack.json is missing; implement has no frozen map to read"
+						: message.replace(/^agent node plan failed response validation after \d+ attempts: /u, "");
+				return {
+					state,
+					stopState: currentStopState,
+					shippedThisRun,
+					terminalStatus: "UNSAFE",
+					reason,
+				};
+			}
+			throw error;
+		}
 		if (state.status === "exhausted") {
 			// The engine owns cap exhaustion end to end: it has already written the
 			// durable EXHAUSTED checkpoint and the single terminal event.

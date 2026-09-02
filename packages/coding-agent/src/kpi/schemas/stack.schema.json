@@ -9,8 +9,7 @@
     "delivery",
     "root",
     "modules",
-    "scaffold_first",
-    "current_module_id"
+    "scaffold_first"
   ],
   "properties": {
     "version": {

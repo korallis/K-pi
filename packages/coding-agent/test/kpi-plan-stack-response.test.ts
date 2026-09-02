@@ -89,7 +89,7 @@ function planGraph() {
 					path: "stack.json",
 					schema: "stack.schema.json",
 					retries: 0,
-					state: { "stack.current_module_id": "current_module_id" },
+					state: {},
 				},
 			},
 		],
