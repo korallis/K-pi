@@ -1,4 +1,4 @@
-# TEMPLATE: fail when a job is stuck queued waiting for a self-hosted runner.
+# Fail when a job is stuck queued waiting for a self-hosted runner.
 #
 # Why: timeout-minutes does NOT bound queue time — it starts when a job starts.
 # A job waiting for a self-hosted runner can sit in `queued` for hours with no
@@ -7,12 +7,12 @@
 # MUST run on a hosted runner (ubuntu-latest). Do NOT move this to
 # [self-hosted, macOS]: it would queue behind the backlog it is meant to detect.
 #
-# If hosted minutes are unavailable, keep workflow_dispatch only and disable
-# schedule — a permanently red cron trains people to ignore red.
-#
-# Re-enable polling when hosted runners work:
-#   schedule:
-#     - cron: "*/15 * * * *"
+# The half-hourly schedule is live. This repository is public, so hosted minutes
+# are free, and hosted jobs already run here (auto-merge, ai-review,
+# upstream-drift, release) — there is no minute budget to protect and therefore
+# no reason to leave the only stall detector on manual dispatch. `*/30` rather
+# than `*/15`: the probe already re-checks 60s later before it goes red, and two
+# Macs serving one repository make a genuine wedge rare.
 #
 # See ../AGENTS.md and ../docs/self-hosted-macos-runner.md
 
@@ -25,8 +25,8 @@ on:
         description: "Fail if an eligible job has been queued longer than this"
         required: false
         default: "20"
-  # schedule:
-  #   - cron: "*/15 * * * *"
+  schedule:
+    - cron: "*/30 * * * *"
 
 permissions:
   actions: read

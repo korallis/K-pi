@@ -43,7 +43,7 @@ Renaming a workspace package is a breaking merge cost. Do not do it without reco
 |---|---|
 | `packages/coding-agent/src/kpi/**` | K-π-only source: extensions, graphs, prompts, schemas, skills, templates, themes, K-stack. Upstream never touches it, so it never conflicts. |
 | `packages/coding-agent/package.json` | Fork identity: `bin` is `kpi` + `k-pi`, `piConfig` is `{ name: "kpi", title: "K-π", configDir: ".kpi" }`. Expect a conflict here on every upstream bump; resolve in K-π's favour. |
-| Root `package.json` | `k-pi-monorepo`, private, npm workspaces. No publish, release, or version automation. |
+| Root `package.json` | `k-pi-monorepo`, private, npm workspaces. K-π's own `pack` script (`node scripts/pack-kpi.mjs`); upstream publish, version, and shrinkwrap scripts stay removed. |
 | Root `test/**` | K-π's node tests, importing `../packages/coding-agent/src/kpi/...`. |
 | Root product docs | `README.md`, `AGENTS.md`, `START-HERE.md`, `docs/**`, `design/**`, this file, `NOTICE`. |
 | Everything else under `packages/` | Upstream code. Patch it only when K-π genuinely needs the behaviour; record the patch in §6. |
@@ -53,11 +53,11 @@ Renaming a workspace package is a breaking merge cost. Do not do it without reco
 Do not copy, sync, or resurrect any of these from the upstream tree:
 
 - Upstream `.github/**` — workflows, issue and PR templates, governance, auto-close bots, release automation. K-π has its own workflows; none of them are upstream's.
-- Publish and release tooling: `scripts/publish*.mjs`, `scripts/release*.mjs`, `scripts/local-release.mjs`, `scripts/publish-release-announcement*`, npm shrinkwrap/install-lock publish gates.
+- Publish and release tooling: `scripts/publish*.mjs`, `scripts/release*.mjs`, `scripts/local-release.mjs`, `scripts/publish-release-announcement*`, npm shrinkwrap/install-lock publish gates. K-π's own distribution path is `scripts/pack-kpi.mjs` plus `.github/workflows/release.yml`; neither comes from upstream, and neither weakens this exclusion.
 - `CONTRIBUTING.md`, code of conduct, funding, and community policy files.
 - Anything that advertises this tree as the official Pi distribution.
 
-K-π's CI is adapted from Ray Fernando's Actions templates, plus the fork-integrity guard `scripts/check-ci-contract.mjs`, which fails the build if publish, release, registry, or governance automation reappears. The guard is the contract; the templates are where the workflows came from. Upstream CI is not adopted.
+K-π's CI is adapted from Ray Fernando's Actions templates, plus the fork-integrity guard `scripts/check-ci-contract.mjs`. The guard keeps every write escalation on an exact-path allowlist — `release.yml` (npm publish, GitHub release, `id-token`), `auto-merge.yml` (queued merge), `ai-review.yml` (pull-request comment) — and forbids `git push`, long-lived registry tokens, `pull_request_target`, and upstream governance workflows. It also requires `check.yml` and `release.yml` to exist, and blocklists every retired review workflow by exact filename — `cursor-review.yml` and the two that NH-04 deleted — so removing the gate or resurrecting a retired reviewer fails `check` instead of passing quietly. The guard is the contract; the templates are where the workflows came from. Upstream CI is not adopted.
 
 ## 6. Sync procedure
 
@@ -116,12 +116,12 @@ Verified against `git diff b79e4cc..worktree`, upstream-owned paths only. `src/k
 
 | File | Patch |
 |---|---|
-| `package.json` | `k-pi-monorepo`, version `0.1.0`, MIT licence + fork repository URL. Publish, release, version, shrinkwrap/install-lock, and model-catalog pipeline scripts removed; `check` retains biome, pinned-deps, ts-imports, `tsgo --noEmit`, browser-smoke. `test:kpi` added for the root K-π tests. |
+| `package.json` | `k-pi-monorepo`, version `0.1.0`, MIT licence + fork repository URL. Publish, release, version, shrinkwrap/install-lock, and model-catalog pipeline scripts removed; `check` retains biome, pinned-deps, ts-imports, `tsgo --noEmit`, browser-smoke. `test:kpi` added for the root K-π tests, and `pack` for K-π's own tarball. |
 | `package-lock.json` | Follows the manifest (name/version churn, removed script deps). Regenerate on merge; never hand-resolve. |
 | `tsconfig.json` | Adds root `test/**/*.ts` to `include` (K-π's node tests live at the repo root and import `packages/coding-agent/src/kpi/...`). |
 | `biome.json` | Adds root `test/**` to the checked set; ignores `src/kpi/kstack/{generated,upstream}` (vendored/generated trees are not lint subjects). |
 | `.gitignore` | Ignores `.kpi/` (and pre-rebrand `.pi/`) project-local runtime state instead of upstream's maintainer-specific entries. |
-| `.github/workflows/{auto-merge,check,grok-review,queue-stall-alarm,react-doctor,upstream-drift}.yml` | K-π-owned CI: adapted Ray Fernando hard verification, green-only merge, fail-closed read-only Grok review, advisory static-doctor, hosted queue alarm, and read-only upstream drift workflows. CI reads pre-provisioned GitHub secrets only; it never calls 1Password or depends on an operator laptop. `scripts/check-ci-contract.mjs` keeps the two write-enabled workflows on exact-path allowlists, forbids runtime 1Password access and obsolete Cursor credentials/workflows, and blocks publish/release/governance automation. Never merge upstream CI content into these files. |
+| `.github/workflows/{ai-review,auto-merge,check,queue-stall-alarm,release,upstream-drift}.yml` | K-π-owned CI; the status context a workflow emits is its job name, which is what branch protection matches. `ai-review` → `AI review (advisory)`: z.ai review that comments and never blocks, and is never added to the required set. `auto-merge` → `enable`: green-only queued merge. `check` → `check`: adapted Ray Fernando hard verification on the self-hosted macOS runners, and the only required status check. `queue-stall-alarm` → `detect`: hosted watchdog for a stalled runner queue. `release` → `release`: tag-driven `@korallis/k-pi` publish with provenance from a GitHub-hosted runner. `upstream-drift` → `drift`: read-only weekly drift report. CI reads pre-provisioned GitHub secrets only (`ZAI_API_KEY`, variable `AI_REVIEW_MODEL`); it never calls 1Password or depends on an operator laptop. `scripts/check-ci-contract.mjs` keeps every write-enabled workflow on exact-path allowlists, forbids runtime 1Password access and obsolete Cursor credentials/workflows, and blocks pushes, long-lived registry tokens, `pull_request_target`, and upstream governance automation. Never merge upstream CI content into these files. |
 | `pi-test.sh` → `kpi-test.sh` (+ `.ps1`, `.bat`) | Source-runner rename; `.bat` also edited for the new name. Git tracks these as renames, so upstream changes to `pi-test.*` follow to the new names with `merge.renames` on. |
 | `packages/evals/package.json` | Workspace dependency range follows the fork version (`^0.1.0` instead of `^0.84.4`). |
 | `AGENTS.md`, `README.md`, `packages/coding-agent/README.md` | Root docs replaced by K-π's authority docs; the package README keeps upstream's reference body under a fork banner (low risk — regenerate the banner side, take upstream's body updates). |

@@ -34,7 +34,7 @@ const pointerSurfaces: Record<string, string> = {
 
 const historicalRecords = ["docs/roadmap.md", "docs/implementation-plan.md"] as const;
 
-const gateIds = ["NH-01", "NH-02", "NH-03"] as const;
+const gateIds = ["NH-01", "NH-02", "NH-03", "NH-04"] as const;
 
 /** Headings that carry normative weight. Only the project contract may own them. */
 const normativeHeading =

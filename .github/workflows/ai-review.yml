@@ -1,0 +1,103 @@
+# Advisory AI review of a pull request diff.
+#
+# Advisory on purpose. Branch protection requires exactly one check, `check`;
+# this workflow is never a required status. It posts (and rewrites) a single
+# sticky comment and succeeds whether or not it found anything. It fails only
+# when it could not run: missing `ZAI_API_KEY` / `AI_REVIEW_MODEL`, a z.ai
+# failure, or a GitHub API failure. That keeps a broken reviewer visible without
+# letting an unreliable model hold the merge queue hostage — the failure mode
+# that retired the previous fail-closed review gate.
+#
+# Reviewer: z.ai's OpenAI-compatible chat/completions endpoint. Model id comes
+# from the `AI_REVIEW_MODEL` repository variable, key from the `ZAI_API_KEY`
+# secret. `scripts/ai-review.mjs` is dependency-free, so this job never installs
+# the workspace.
+#
+# Trust boundary:
+#   - `pull_request`, never the privileged variant: the PR head is checked out,
+#     so this job must never run with a write token available to PR-controlled
+#     code. The `GH_TOKEN` exists on the single review step only, and that step
+#     runs one trusted script that shells out to `git` and `gh` with validated
+#     argv — never through a shell.
+#   - Fork heads are skipped: `pull_request` withholds secrets from forks, so the
+#     reviewer could not authenticate anyway. Outside contributions are reviewed
+#     by a human.
+#   - The diff is untrusted data. It is capped at 256 KiB, fenced inside the
+#     request body, and the system prompt tells the model to ignore instructions
+#     found within it.
+#
+# Hosted Ubuntu is deliberate: AI review must not occupy the self-hosted macOS
+# hard-gate queue.
+#
+# See ../../UPSTREAM.md (fork patch register) and AGENTS.md.
+
+name: ai-review
+
+on:
+  pull_request:
+    branches: [main]
+    # ready_for_review is load-bearing: drafts are skipped below, and without
+    # this type a PR opened as a draft would never get reviewed once ready.
+    types: [opened, synchronize, reopened, ready_for_review]
+
+concurrency:
+  group: ai-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+# Workflow default: read-only. The comment write lives on the job below.
+permissions:
+  contents: read
+
+jobs:
+  review:
+    name: AI review (advisory)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: >-
+      github.event.pull_request.draft == false
+      && github.event.pull_request.head.repo.full_name == github.repository
+    permissions:
+      # Upsert one sticky issue comment on the pull request.
+      pull-requests: write
+    env:
+      GIT_CONFIG_GLOBAL: /dev/null
+      GIT_CONFIG_SYSTEM: /dev/null
+      GIT_TERMINAL_PROMPT: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # The reviewer diffs base...head locally, so it needs the merge base.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 22.19.0
+          package-manager-cache: false
+
+      - name: Refuse missing reviewer configuration
+        env:
+          ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
+          AI_REVIEW_MODEL: ${{ vars.AI_REVIEW_MODEL }}
+        run: |
+          if [ -z "$ZAI_API_KEY" ]; then
+            echo "::error::ZAI_API_KEY is not configured (z.ai OpenAI-compatible API key)."
+            exit 1
+          fi
+          if [ -z "$AI_REVIEW_MODEL" ]; then
+            echo "::error::AI_REVIEW_MODEL repository variable is not set (must be a z.ai catalog model id)."
+            exit 1
+          fi
+
+      - name: Review the diff
+        # The only step that sees a token. Every PR-controlled value arrives via
+        # env and is shape-validated inside the script before reaching argv.
+        env:
+          ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
+          AI_REVIEW_MODEL: ${{ vars.AI_REVIEW_MODEL }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/ai-review.mjs

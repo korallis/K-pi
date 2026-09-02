@@ -158,12 +158,13 @@ test("the root manifest is a private fork monorepo, not a publishable Pi package
 	}
 });
 
-test("root scripts cover build, check, test and upstream tracking, and nothing publishes", async () => {
+test("root scripts cover build, check, test, upstream tracking and pack, and no root script publishes", async () => {
 	const { scripts = {} } = await readJson<RootManifest>("package.json");
 
 	for (const name of [
 		"build",
 		"build:offline",
+		"pack",
 		"check",
 		"test",
 		"test:kpi",
@@ -175,6 +176,11 @@ test("root scripts cover build, check, test and upstream tracking, and nothing p
 	}
 
 	assert.match(scripts["test:kpi"], /node --test .*test\/\*\.test\.ts/, "test:kpi must run the root K-π suite");
+	assert.match(
+		scripts.pack,
+		/scripts\/pack-kpi\.mjs/,
+		"pack must build the @korallis/k-pi tarball through scripts/pack-kpi.mjs",
+	);
 	for (const name of ["kstack:sync", "kstack:sync:check"]) {
 		assert.match(
 			scripts[name],
@@ -186,7 +192,11 @@ test("root scripts cover build, check, test and upstream tracking, and nothing p
 	const publishing = Object.keys(scripts).filter((name) =>
 		/^(publish|release|version|prepublish|shrinkwrap|install-lock)/.test(name),
 	);
-	assert.deepEqual(publishing, [], "the fork has no publish, release or version flow");
+	assert.deepEqual(
+		publishing,
+		[],
+		"publishing happens only in .github/workflows/release.yml, never from a root script",
+	);
 });
 
 test("the coding-agent package is the K-π CLI: kpi and k-pi bins, .kpi config, no pi bin", async () => {
@@ -205,7 +215,7 @@ test("the coding-agent package is the K-π CLI: kpi and k-pi bins, .kpi config, 
 	const publishing = Object.keys(manifest.scripts ?? {}).filter((name) =>
 		/^(publish|prepublish|shrinkwrap)/.test(name),
 	);
-	assert.deepEqual(publishing, [], "the harness package is built from source, never published");
+	assert.deepEqual(publishing, [], "the workspace package is never published; `@korallis/k-pi` is packed from dist");
 });
 
 test("the fork installs with npm workspaces and keeps no pnpm files", async () => {

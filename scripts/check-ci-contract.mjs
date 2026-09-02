@@ -3,20 +3,26 @@
 /**
  * Fork-integrity guard for K-pi CI.
  *
- * K-pi is its own harness, built from its own vendored source. Four properties
- * have to stay true, and none of them is provable by a build passing:
+ * K-pi is its own harness, built from its own vendored source and published as
+ * the single npm package `@korallis/k-pi`. Four properties have to stay true,
+ * and none of them is provable by a build passing:
  *
- *   1. The hard gate `.github/workflows/check.yml` exists, and the gates it
- *      invokes actually exist as root npm scripts.
+ *   1. The two workflows the project cannot lose exist — `check.yml`, the only
+ *      required status check, and `release.yml`, the only thing allowed to
+ *      publish — and the gates and packaging they invoke exist as root npm
+ *      scripts.
  *   2. No manifest points at a `scripts/<file>` that no longer exists, so
- *      removing upstream publish machinery cannot silently break `npm run check`.
- *   3. No workflow or root script carries upstream publish, release, registry,
- *      governance, issue automation, or pnpm/peer-install machinery.
- *   4. Write tokens and merges live in exactly two reviewed workflows:
- *      grok-review.yml may post one read-only review result, and auto-merge.yml
- *      may ask GitHub to merge a PR after required checks pass. Every other
- *      workflow stays read-only; neither exemption permits pushes, release,
- *      registry, or governance automation.
+ *      retiring machinery cannot silently break `npm run check`.
+ *   3. No workflow or root script carries upstream governance, issue
+ *      automation, pnpm/peer-install machinery, a registry credential, a push,
+ *      or a merge that bypasses the required check. Publishing is allowed in
+ *      exactly one file, and never from a root script: `scripts/pack-kpi.mjs`
+ *      packs a tarball and stops there.
+ *   4. Write tokens live in exactly three reviewed workflows: `release.yml`
+ *      publishes with OIDC and cuts the GitHub release, `auto-merge.yml` asks
+ *      GitHub to merge once the required check passes, and `ai-review.yml`
+ *      posts one advisory comment. Every other workflow stays read-only, and no
+ *      exemption permits a push, a registry credential, or a merge bypass.
  *
  * Exemptions are per file and per rule (see WORKFLOW_EXEMPTIONS): there is no
  * blanket allow pattern, and no way to opt a workflow out from inside itself.
@@ -35,11 +41,12 @@ import { fileURLToPath } from "node:url";
 const scriptPath = fileURLToPath(import.meta.url);
 const repoRoot = resolve(dirname(scriptPath), "..");
 
-/** Gates `.github/workflows/check.yml` invokes by name. */
+/** Gates and packaging the `check` and `release` workflows invoke by name. */
 const REQUIRED_ROOT_SCRIPTS = [
 	"build",
 	"build:offline",
 	"check",
+	"pack",
 	"test",
 	"test:kpi",
 	"kstack:sync:check",
@@ -48,10 +55,18 @@ const REQUIRED_ROOT_SCRIPTS = [
 	"verify:product",
 ];
 
-/** Workflows the fork cannot lose: without them the required gates do not run. */
-const REQUIRED_WORKFLOWS = [".github/workflows/check.yml", ".github/workflows/grok-review.yml"];
+/**
+ * Workflows the fork cannot lose: `check.yml` is the only required status check,
+ * and `release.yml` is the only place allowed to publish.
+ */
+const REQUIRED_WORKFLOWS = [".github/workflows/check.yml", ".github/workflows/release.yml"];
 
-const OBSOLETE_WORKFLOWS = [".github/workflows/cursor-review.yml"];
+/** Retired CI machinery. Re-adding any of these files is a violation, not a merge conflict. */
+const OBSOLETE_WORKFLOWS = [
+	".github/workflows/cursor-review.yml",
+	".github/workflows/grok-review.yml",
+	".github/workflows/react-doctor.yml",
+];
 
 /** Directories that never hold first-party manifests. */
 const SKIPPED_DIRECTORIES = new Set([
@@ -71,7 +86,7 @@ const SKIPPED_DIRECTORIES = new Set([
  * the listed ids and from nothing else.
  */
 const FORBIDDEN_IN_WORKFLOWS = [
-	{ id: "npm-publish", pattern: /npm\s+publish/, label: "npm publish (K-pi is not published to a registry)" },
+	{ id: "npm-publish", pattern: /npm\s+publish/, label: "npm publish outside release.yml" },
 	{ id: "npm-registry", pattern: /registry\.npmjs\.org/, label: "npm registry target" },
 	{ id: "registry-credential", pattern: /\b(NPM_TOKEN|NODE_AUTH_TOKEN)\b/, label: "registry credential" },
 	{
@@ -142,19 +157,22 @@ const WRITE_PERMISSION =
 const GH_PR_MERGE_COMMAND = /gh\s+pr\s+merge[^\n]*/g;
 
 /**
- * The two reviewed write escalations, spelled out file by file.
+ * The three reviewed write escalations, spelled out file by file.
  *
  * rules lists the forbidden-pattern ids the workflow is excused from;
  * writePermissions lists the permission keys it may raise to write. Anything
- * absent here stays forbidden in that file too.
+ * absent here stays forbidden in that file too — notably `git-push`,
+ * `registry-credential`, `release-automation` (third-party release actions),
+ * `merge-bypass` and `privileged-pr-trigger`, which are forbidden everywhere.
  */
 const WORKFLOW_EXEMPTIONS = new Map([
 	[
-		".github/workflows/grok-review.yml",
+		".github/workflows/release.yml",
 		{
-			reason: "posts one read-only Grok review result to the pull request",
-			rules: new Set(),
-			writePermissions: new Set(["pull-requests"]),
+			reason:
+				"publishes @korallis/k-pi with npm trusted publishing (OIDC) and attaches the tarball to the tag release",
+			rules: new Set(["npm-publish", "npm-registry", "gh-release"]),
+			writePermissions: new Set(["contents", "id-token"]),
 		},
 	],
 	[
@@ -165,9 +183,21 @@ const WORKFLOW_EXEMPTIONS = new Map([
 			writePermissions: new Set(["contents", "pull-requests"]),
 		},
 	],
+	[
+		".github/workflows/ai-review.yml",
+		{
+			reason: "posts one advisory review comment to the pull request",
+			rules: new Set(),
+			writePermissions: new Set(["pull-requests"]),
+		},
+	],
 ]);
 
-/** Publish machinery that must not come back into root `scripts/`. */
+/**
+ * Publish machinery that must not come back into root `scripts/`. Publishing is
+ * a workflow concern: `scripts/pack-kpi.mjs` packs a tarball and never talks to
+ * a registry, so no root script needs a credential or a publish command.
+ */
 const FORBIDDEN_IN_SCRIPTS = [
 	{ id: "npm-publish", pattern: /npm\s+publish/, label: "npm publish" },
 	{ id: "npm-registry", pattern: /registry\.npmjs\.org/, label: "npm registry target" },
@@ -185,7 +215,24 @@ const FORBIDDEN_GITHUB_PATHS = [
 	".github/CONTRIBUTING.md",
 ];
 
-const FORBIDDEN_WORKFLOW_NAME = /(publish|release|announce|npm-audit|issue|triage|label|stale|approve|contributor|binaries)/i;
+/**
+ * Upstream workflow filenames. These are the files a merge from upstream tries
+ * to reintroduce; K-pi runs none of them. An exact blocklist rather than a word
+ * regex, so this fork can own `release.yml` while still refusing upstream's
+ * publish/governance set.
+ */
+const FORBIDDEN_WORKFLOW_FILENAMES = new Set([
+	"approve-contributor.yml",
+	"build-binaries.yml",
+	"ci.yml",
+	"issue-analysis.yml",
+	"issue-gate.yml",
+	"issue-triage-labels.yml",
+	"npm-audit.yml",
+	"pr-gate.yml",
+	"publish-model-catalog.yml",
+	"remove-inprogress-on-close.yml",
+]);
 
 /**
  * Third-party `uses:` refs on self-hosted runners must be full 40-char commit
@@ -252,7 +299,7 @@ function checkRequiredScripts(context) {
 	}
 	for (const workflow of REQUIRED_WORKFLOWS) {
 		if (!exists(join(context.root, workflow))) {
-			context.violation(workflow, "required gate workflow is missing (nothing runs the gates above)");
+			context.violation(workflow, "required workflow is missing (nothing runs the gate or the release)");
 		}
 	}
 }
@@ -442,7 +489,7 @@ function checkGithub(context) {
 	const githubDirectory = join(context.root, ".github");
 	for (const obsolete of OBSOLETE_WORKFLOWS) {
 		if (exists(join(context.root, obsolete))) {
-			context.violation(obsolete, "obsolete Cursor review workflow must not exist");
+			context.violation(obsolete, "retired workflow must not exist");
 		}
 	}
 	for (const forbidden of FORBIDDEN_GITHUB_PATHS) {
@@ -454,8 +501,8 @@ function checkGithub(context) {
 	for (const path of listFiles(githubDirectory)) {
 		const relativePath = context.name(path);
 		const isWorkflow = relativePath.startsWith(".github/workflows/");
-		if (isWorkflow && FORBIDDEN_WORKFLOW_NAME.test(relativePath.slice(relativePath.lastIndexOf("/") + 1))) {
-			context.violation(relativePath, "workflow name declares publish/release/governance automation");
+		if (isWorkflow && FORBIDDEN_WORKFLOW_FILENAMES.has(relativePath.slice(relativePath.lastIndexOf("/") + 1))) {
+			context.violation(relativePath, "upstream workflow filename must not be imported");
 		}
 		const exemption = isWorkflow ? WORKFLOW_EXEMPTIONS.get(relativePath) : undefined;
 		const contents = scan(context, path, FORBIDDEN_IN_WORKFLOWS, exemption?.rules);
