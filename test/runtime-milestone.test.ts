@@ -96,6 +96,8 @@ test("human pause selects protocol-blue and running selects loop-amber", async (
 				status: "RUNNING",
 				graph_status: "interrupted",
 				pending_question: "Ship?",
+				playbook: "feature",
+				todos: ["ship: confirm"],
 			}),
 		);
 		kModeState.enabled = true;

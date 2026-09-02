@@ -105,6 +105,15 @@ function eventPayload(type: (typeof EVENT_TYPES)[number]): Record<string, unknow
 			return { ...base, quality: "narrative", reason: "missing check" };
 		case "loop.terminal":
 			return { ...base, status: "DONE", reason: "verified" };
+		case "review.verdict":
+			return {
+				...base,
+				status: "REVISE",
+				approved: false,
+				blocking_count: 2,
+				nonblocking_count: 1,
+				fingerprint: "sha256:" + "a".repeat(64),
+			};
 		case "research.started":
 			return { ...base, mode: "auto", network_state: "online" };
 		case "research.query":

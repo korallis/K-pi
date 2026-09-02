@@ -327,6 +327,20 @@ export class BackgroundBus {
 		return this.workers.size;
 	}
 
+	/**
+	 * Synchronous board/provider count: only workers whose launch and PID are live.
+	 * Does not reap or release — render must never mutate bus state.
+	 */
+	countLiveProcesses(): number {
+		let count = 0;
+		for (const worker of this.workers.values()) {
+			if (worker.launch.isAlive() && this.isProcessAlive(worker.pid)) {
+				count += 1;
+			}
+		}
+		return count;
+	}
+
 	/** Whether a live worker currently holds the single-writer slot. */
 	hasLiveWriter(): boolean {
 		for (const worker of this.workers.values()) {

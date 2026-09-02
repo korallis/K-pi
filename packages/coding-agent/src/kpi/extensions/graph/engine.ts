@@ -7,7 +7,7 @@ import { CONFIG_DIR_NAME, getKpiResourceDir } from "../../../config.ts";
 import { type CreateAgentSessionOptions, createAgentSession } from "../../../core/sdk.ts";
 import { SessionManager } from "../../../core/session-manager.ts";
 
-import { appendEvent } from "../append-log.ts";
+import { appendEvent, buildReviewVerdictEventFields } from "../append-log.ts";
 import { ROLE_CONTRACT_FILE } from "../bus/roles.ts";
 import { BackgroundBus, type BusDependencies } from "../bus/spawn.ts";
 import { atomicWrite } from "../run-store.ts";
@@ -894,6 +894,7 @@ export class GraphEngine {
 				assignments[statePath] = structuredClone(value);
 			}
 			// File bytes stay as the worker published them. GraphEngine does not rewrite.
+			await this.emitReviewVerdictIfNeeded(node, output);
 			return { nodeId: node.id, assignments };
 		} finally {
 			if (agentId !== undefined) {
@@ -912,6 +913,30 @@ export class GraphEngine {
 	 * checkpointed before the wait, so a kill during a backoff resumes with the
 	 * allowance already spent rather than a fresh one.
 	 */
+
+	/**
+	 * Concise review.verdict event when a receipt-backed reviewer contract is accepted.
+	 * Counts and status only — never transcript text or full verdict bytes.
+	 */
+	private async emitReviewVerdictIfNeeded(node: AgentGraphNode, output: Record<string, unknown>): Promise<void> {
+		const path = node.response?.path;
+		const isReviewer =
+			node.workerRole === "reviewer" || path === "verdict.json" || path?.endsWith("/verdict.json") === true;
+		if (!isReviewer) return;
+
+		const fields = buildReviewVerdictEventFields(output);
+		if (fields === undefined) return;
+
+		await appendEvent(join(this.runDirectory(), "events.jsonl"), {
+			ts: new Date().toISOString(),
+			type: "review.verdict",
+			job_id: this.options.jobId,
+			round: this.runState.budget.round,
+			node: node.id,
+			...fields,
+		});
+	}
+
 	private async executeWithRetries(node: GraphNode): Promise<NodeResult> {
 		const nodeState = this.runState.nodes[node.id];
 		// Retries are same-run. A new legitimate run gets a fresh allowance; a run

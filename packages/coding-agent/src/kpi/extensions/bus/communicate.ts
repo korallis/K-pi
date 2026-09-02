@@ -257,7 +257,7 @@ function registerParentTools(pi: ExtensionAPI, options: BusRegistrationOptions):
 	setLiveWorkerCountProvider(() => {
 		let count = 0;
 		for (const bus of buses.values()) {
-			count += bus.live;
+			count += bus.countLiveProcesses();
 		}
 		return count;
 	});

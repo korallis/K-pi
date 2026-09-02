@@ -3447,3 +3447,35 @@ test("publishAndStopAll asks every worker to publish; a timeout does not leave t
 		await rm(harness.fixture.directory, { recursive: true, force: true });
 	}
 });
+
+test("countLiveProcesses excludes dead PIDs without reaping the table", async () => {
+	const harness = await parentHarness();
+	try {
+		const first = await harness.bus.spawn({ role: "reviewer", prompt: "review" });
+		const second = await harness.bus.spawn({ role: "implementer", prompt: "code" });
+		assert.equal(harness.bus.live, 2);
+		assert.equal(harness.bus.countLiveProcesses(), 2);
+
+		// Kill PID liveness only — leave the Map entry until async reap.
+		harness.alive.delete(first.pid);
+		assert.equal(harness.bus.live, 2, "map still holds the dead record");
+		assert.equal(harness.bus.countLiveProcesses(), 1, "sync board count drops the dead PID");
+
+		// Provider path used by the board
+		const { liveWorkerCount, setLiveWorkerCountProvider, resetLiveWorkerCountProvider } = await import(
+			"../packages/coding-agent/src/kpi/extensions/bus/live-snapshot.ts"
+		);
+		setLiveWorkerCountProvider(() => harness.bus.countLiveProcesses());
+		assert.equal(liveWorkerCount(), 1);
+		resetLiveWorkerCountProvider();
+
+		// Async reap still cleans the table later
+		await harness.bus.reap();
+		assert.equal(harness.bus.live, 1);
+		assert.equal(harness.bus.countLiveProcesses(), 1);
+		assert.ok(harness.bus.get(second.agentId));
+	} finally {
+		await harness.bus.stopAll();
+		await rm(harness.fixture.directory, { recursive: true, force: true });
+	}
+});

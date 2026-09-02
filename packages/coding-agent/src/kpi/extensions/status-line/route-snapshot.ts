@@ -15,13 +15,26 @@ export interface FooterRouteSnapshot {
 const DEFAULT_SNAPSHOT: FooterRouteSnapshot = { slotKind: "api_key" };
 
 let snapshot: FooterRouteSnapshot = { ...DEFAULT_SNAPSHOT };
+let changeListener: (() => void) | undefined;
+
+export function setFooterRouteChangeListener(listener: (() => void) | undefined): void {
+	changeListener = listener;
+}
 
 export function setFooterRouteSnapshot(next: FooterRouteSnapshot): void {
+	const previous = snapshot;
 	snapshot = {
 		slotKind: next.slotKind,
 		...(next.route === undefined ? {} : { route: next.route }),
 		...(next.remainingPercent === undefined ? {} : { remainingPercent: next.remainingPercent }),
 	};
+	if (
+		previous.slotKind !== snapshot.slotKind ||
+		previous.route !== snapshot.route ||
+		previous.remainingPercent !== snapshot.remainingPercent
+	) {
+		changeListener?.();
+	}
 }
 
 export function getFooterRouteSnapshot(): FooterRouteSnapshot {
@@ -31,4 +44,5 @@ export function getFooterRouteSnapshot(): FooterRouteSnapshot {
 /** Test/reset helper. */
 export function resetFooterRouteSnapshot(): void {
 	snapshot = { ...DEFAULT_SNAPSHOT };
+	changeListener = undefined;
 }

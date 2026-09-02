@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
+import type { ExtensionAPI, ExtensionContext } from "../packages/coding-agent/src/core/extensions/types.ts";
 import { renderIdleBrand, renderWorkingBrand } from "../packages/coding-agent/src/kpi/extensions/status-line/brand.ts";
+import { registerStatusLine } from "../packages/coding-agent/src/kpi/extensions/status-line/index.ts";
 import {
 	getFooterRouteSnapshot,
 	resetFooterRouteSnapshot,
@@ -163,4 +168,140 @@ test("formatKpiJob is the documented second line shape", () => {
 		}),
 		"K-π LOOP gated r2/3 STAGE implement GATE human AC 4/5 ROUTE anthropic/home",
 	);
+});
+
+test("registered footer full preset embeds kpi job fields and refreshes after state change", async () => {
+	const root = await mkdtemp(join(tmpdir(), "kpi-footer-reg-"));
+	const run = join(root, ".kpi", "runs", "footer-job");
+	await mkdir(run, { recursive: true });
+	await writeFile(
+		join(run, "state.json"),
+		JSON.stringify({
+			job_id: "footer-job",
+			mode: "gated",
+			round: 1,
+			maxRounds: 3,
+			stage: "implement",
+			status: "RUNNING",
+			graph_status: "running",
+		}),
+	);
+
+	let sessionStart: ((event: unknown, ctx: ExtensionContext) => void) | undefined;
+	let agentSettled: ((event: unknown, ctx: ExtensionContext) => void) | undefined;
+	let statusbar: ((args: string, ctx: ExtensionContext) => Promise<void>) | undefined;
+	let footerFactory:
+		| ((
+				tui: unknown,
+				theme: unknown,
+				footerData: unknown,
+		  ) => { render: (w: number) => string[]; dispose?: () => void })
+		| undefined;
+	const statuses = new Map<string, string | undefined>();
+	let renderCalls = 0;
+
+	const pi = {
+		on(event: string, handler: (event: unknown, ctx: ExtensionContext) => void) {
+			if (event === "session_start") sessionStart = handler;
+			if (event === "agent_settled") agentSettled = handler;
+		},
+		registerCommand(name: string, def: { handler: (args: string, ctx: ExtensionContext) => Promise<void> }) {
+			if (name === "statusbar") statusbar = def.handler;
+		},
+	} as unknown as ExtensionAPI;
+
+	const theme = {
+		fg(_name: string, text: string) {
+			return text;
+		},
+	};
+	const footerData = {
+		getGitBranch: () => "main",
+		onBranchChange: () => () => {},
+		getExtensionStatuses: () => [],
+	};
+	const ctx = {
+		cwd: root,
+		mode: "tui",
+		model: { name: "test-model" },
+		thinkingLevel: "off",
+		getContextUsage: () => ({ percent: 10, contextWindow: 100_000 }),
+		sessionManager: { getBranch: () => [] },
+		ui: {
+			setFooter(factory: typeof footerFactory) {
+				footerFactory = factory as typeof footerFactory;
+			},
+			setStatus(key: string, value: string | undefined) {
+				statuses.set(key, value);
+			},
+			notify() {},
+		},
+	} as unknown as ExtensionContext;
+
+	const tui = {
+		requestRender() {
+			renderCalls += 1;
+		},
+	};
+
+	let component: { render: (w: number) => string[]; dispose?: () => void } | undefined;
+	try {
+		registerStatusLine(pi);
+		setFooterRouteSnapshot({ slotKind: "oauth", route: "anthropic/home", remainingPercent: 40 });
+		sessionStart?.({}, ctx);
+		assert.ok(footerFactory, "footer must register on session_start");
+
+		// Allow async job refresh from session_start.
+		await new Promise((r) => setTimeout(r, 30));
+		await statusbar?.("preset full", ctx);
+		await new Promise((r) => setTimeout(r, 30));
+
+		component = footerFactory!(tui, theme, footerData);
+		const line = component.render(200).join("\n");
+		assert.match(line, /LOOP gated/);
+		assert.match(line, /r1\/3/);
+		assert.match(line, /STAGE implement/);
+		assert.match(line, /GATE machine/);
+		assert.match(line, /ROUTE anthropic\/home/);
+		assert.equal(statuses.get("kpi"), undefined, "full clears second status line");
+
+		// State change → agent_settled refresh
+		await writeFile(
+			join(run, "state.json"),
+			JSON.stringify({
+				job_id: "footer-job",
+				mode: "gated",
+				round: 2,
+				maxRounds: 3,
+				stage: "test",
+				status: "RUNNING",
+				graph_status: "interrupted",
+				pending_question: "Continue?",
+			}),
+		);
+		agentSettled?.({}, ctx);
+		await new Promise((r) => setTimeout(r, 40));
+		assert.ok(renderCalls >= 1, "job field change should request render");
+		const updated = component.render(200).join("\n");
+		assert.match(updated, /r2\/3/);
+		assert.match(updated, /STAGE test/);
+		assert.match(updated, /GATE human/);
+		assert.match(updated, /ROUTE anthropic\/home/);
+
+		// Failover updates account/usage and ROUTE from the live snapshot without a job refresh.
+		const rendersBeforeRoute = renderCalls;
+		setFooterRouteSnapshot({ slotKind: "api_key", route: "openai/work", remainingPercent: 12 });
+		await new Promise((r) => setTimeout(r, 20));
+		assert.ok(renderCalls > rendersBeforeRoute, "route snapshot change should request render");
+		const afterRoute = component.render(200).join("\n");
+		assert.match(afterRoute, /ROUTE openai\/work/);
+		assert.doesNotMatch(afterRoute, /ROUTE anthropic\/home/);
+		assert.match(afterRoute, /\$|12%|openai/);
+		assert.match(afterRoute, /r2\/3/);
+		assert.match(afterRoute, /GATE human/);
+	} finally {
+		component?.dispose?.();
+		resetFooterRouteSnapshot();
+		await rm(root, { recursive: true, force: true });
+	}
 });

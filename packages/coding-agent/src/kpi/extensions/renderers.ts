@@ -67,6 +67,20 @@ export function formatEventEntry(type: EventType, event: EventRecord | undefined
 		return `K-π loop.terminal${job}${round} ${status}${reason ? ` — ${reason}` : ""}`;
 	}
 
+	if (type === "review.verdict") {
+		const status = field(event, "status") ?? "?";
+		const approved = field(event, "approved");
+		const blocking = field(event, "blocking_count") ?? "0";
+		const nonblocking = field(event, "nonblocking_count");
+		const fp = field(event, "fingerprint");
+		const parts = [`K-π review.verdict${job}${round}`, status];
+		if (approved !== undefined) parts.push(approved === "true" ? "approved" : "not-approved");
+		parts.push(`blocking=${blocking}`);
+		if (nonblocking !== undefined) parts.push(`nonblocking=${nonblocking}`);
+		if (fp !== undefined) parts.push(`fp=${fp.length > 16 ? fp.slice(0, 16) : fp}`);
+		return parts.join(" ");
+	}
+
 	const status = typeof event?.status === "string" ? ` status=${event.status}` : "";
 	return `K-π ${type}${job}${round}${status}`;
 }

@@ -433,3 +433,33 @@ test("unknown stage still lights exactly one CURRENT via node then ac-compile", 
 	assert.match(fallback, /01 ac-compile CURRENT/);
 	assert.equal((fallback.match(/CURRENT/g) ?? []).length, 1);
 });
+
+test("sticky kMode alone does not light K-STACK on for an active job without freeze", async () => {
+	await withRoot(async (root) => {
+		const { kModeState } = await import("../packages/coding-agent/src/kpi/kstack/mode.ts");
+		const previous = { enabled: kModeState.enabled, plan: kModeState.plan };
+		try {
+			await seedRun(root, {
+				job_id: "no-freeze",
+				mode: "gated",
+				round: 0,
+				maxRounds: 3,
+				stage: "plan",
+				node: "plan",
+				status: "RUNNING",
+			});
+			kModeState.enabled = true;
+			kModeState.plan = {
+				playbook: "review",
+				todos: ["review: sticky only"],
+				steps: [{ node: "review", text: "sticky only" }],
+			};
+			const text = (await createStatusWidget(root)).join("\n");
+			assert.doesNotMatch(text, /K-STACK on/);
+			assert.doesNotMatch(text, /K-STACK review/);
+		} finally {
+			kModeState.enabled = previous.enabled;
+			kModeState.plan = previous.plan;
+		}
+	});
+});

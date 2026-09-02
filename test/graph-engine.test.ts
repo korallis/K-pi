@@ -1,8 +1,13 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import {
+	appendEvent,
+	buildReviewVerdictEventFields,
+	EVENT_TYPES,
+} from "../packages/coding-agent/src/kpi/extensions/append-log.ts";
 
 import { resolveGraphBudgetLimits } from "../packages/coding-agent/src/kpi/extensions/graph/budget.ts";
 import {
@@ -783,6 +788,43 @@ test("a read-only contract breach is a defect, not a transient failure", async (
 		await assert.rejects(engine.runSuperstep(), /registered forbidden tool write/u);
 		assert.deepEqual(slept, [], "a contract defect is never retried");
 		assert.equal(engine.state.status, "failed");
+	} finally {
+		await rm(projectRoot, { recursive: true, force: true });
+	}
+});
+
+test("review.verdict is a first-class event and fields stay concise", async () => {
+	assert.ok(EVENT_TYPES.includes("review.verdict"));
+	const fields = buildReviewVerdictEventFields({
+		status: "PASS",
+		approved: true,
+		blockingIssues: [],
+		nonBlockingIssues: ["nit"],
+		evidence: ["evidence.json"],
+		round: 1,
+		output_fingerprint: "sha256:" + "d".repeat(64),
+	});
+	assert.equal(fields?.blocking_count, 0);
+	assert.equal(fields?.approved, true);
+	assert.equal("blockingIssues" in (fields as object), false);
+
+	const projectRoot = await fixture();
+	try {
+		const path = join(projectRoot, ".kpi", "runs", "rv-job", "events.jsonl");
+		await mkdir(join(projectRoot, ".kpi", "runs", "rv-job"), { recursive: true });
+		await appendEvent(path, {
+			ts: "2026-01-01T00:00:00.000Z",
+			type: "review.verdict",
+			job_id: "rv-job",
+			round: 1,
+			node: "review",
+			...fields!,
+		});
+		const lines = (await readFile(path, "utf8")).trim().split("\n");
+		const event = JSON.parse(lines.at(-1) as string) as Record<string, unknown>;
+		assert.equal(event.type, "review.verdict");
+		assert.equal(event.blocking_count, 0);
+		assert.doesNotMatch(JSON.stringify(event), /blockingIssues|nit|evidence\.json/);
 	} finally {
 		await rm(projectRoot, { recursive: true, force: true });
 	}

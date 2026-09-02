@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import {
 	appendEvent,
+	buildReviewVerdictEventFields,
 	type EventInput,
 	FIRST_HASH,
 	ForbiddenEventPayloadError,
@@ -259,4 +260,51 @@ test("a rejected payload never blocks a concurrent writer", async () => {
 	} finally {
 		await rm(directory, { recursive: true, force: true });
 	}
+});
+
+test("review.verdict appends concise accepted-review fields without issue text", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "kpi-review-verdict-"));
+	const path = join(directory, "events.jsonl");
+	try {
+		const record = await appendEvent(path, {
+			ts: "2026-01-01T00:00:00.000Z",
+			type: "review.verdict",
+			job_id: "job-1",
+			round: 2,
+			node: "review",
+			status: "REVISE",
+			approved: false,
+			blocking_count: 3,
+			nonblocking_count: 1,
+			fingerprint: "sha256:" + "b".repeat(64),
+		});
+		assert.equal(record.type, "review.verdict");
+		assert.equal(record.blocking_count, 3);
+		assert.equal(record.approved, false);
+		assert.equal("blockingIssues" in record, false);
+		const raw = await readFile(path, "utf8");
+		assert.doesNotMatch(raw, /blockingIssues|AC still fails/);
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("buildReviewVerdictEventFields keeps counts only", () => {
+	const fields = buildReviewVerdictEventFields({
+		status: "REVISE",
+		approved: false,
+		blockingIssues: ["a", "b", "c"],
+		nonBlockingIssues: ["n"],
+		evidence: ["evidence.json"],
+		round: 2,
+		output_fingerprint: "sha256:" + "c".repeat(64),
+	});
+	assert.deepEqual(fields, {
+		status: "REVISE",
+		approved: false,
+		blocking_count: 3,
+		nonblocking_count: 1,
+		fingerprint: "sha256:" + "c".repeat(64),
+	});
+	assert.equal(buildReviewVerdictEventFields({ status: "PASS" }), undefined);
 });

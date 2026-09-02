@@ -20,6 +20,7 @@ export const EVENT_TYPES = [
 	"accounts.failover",
 	"ac.refused",
 	"loop.terminal",
+	"review.verdict",
 	"research.started",
 	"research.query",
 	"research.call",
@@ -87,6 +88,16 @@ export type EventInput =
 	| Event<"ac.refused", { quality: "executable" | "partial" | "narrative"; reason: string }>
 	| Event<"accounts.failover", { from: string; to: string; reason?: string }>
 	| Event<"loop.terminal", { status: TerminalStatus; reason?: string }>
+	| Event<
+			"review.verdict",
+			{
+				status: "PASS" | "REVISE" | "BLOCKED";
+				approved: boolean;
+				blocking_count: number;
+				nonblocking_count?: number;
+				fingerprint?: string;
+			}
+	  >
 	| Event<ResearchEventType, ResearchPayload>
 	| Event<
 			"agent.spawned",
@@ -124,6 +135,34 @@ export type EventRecord = {
 } & Record<string, JsonValue>;
 
 /** The predecessor of a log's first record. */
+
+/** Concise fields for a receipt-backed reviewer verdict event. No issue text. */
+export function buildReviewVerdictEventFields(document: Record<string, unknown>):
+	| {
+			status: "PASS" | "REVISE" | "BLOCKED";
+			approved: boolean;
+			blocking_count: number;
+			nonblocking_count?: number;
+			fingerprint?: string;
+	  }
+	| undefined {
+	const statusRaw = document.status;
+	const status = statusRaw === "PASS" || statusRaw === "REVISE" || statusRaw === "BLOCKED" ? statusRaw : undefined;
+	if (status === undefined || typeof document.approved !== "boolean") {
+		return undefined;
+	}
+	const blocking = Array.isArray(document.blockingIssues) ? document.blockingIssues.length : 0;
+	const nonblocking = Array.isArray(document.nonBlockingIssues) ? document.nonBlockingIssues.length : undefined;
+	const fingerprint = typeof document.output_fingerprint === "string" ? document.output_fingerprint : undefined;
+	return {
+		status,
+		approved: document.approved,
+		blocking_count: blocking,
+		...(nonblocking === undefined ? {} : { nonblocking_count: nonblocking }),
+		...(fingerprint === undefined ? {} : { fingerprint }),
+	};
+}
+
 export const FIRST_HASH = "0".repeat(64);
 const HASH_PATTERN = /^[0-9a-f]{64}$/;
 

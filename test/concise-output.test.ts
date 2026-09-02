@@ -54,6 +54,31 @@ test("research accounts bus checkpoint and terminal renderers are field-aware", 
 		/loop\.terminal.*DONE — all AC green/,
 	);
 	assert.doesNotMatch(formatEventEntry("checkpoint", event({ type: "checkpoint" })), /\|/);
+	assert.match(
+		formatEventEntry(
+			"review.verdict",
+			event({
+				type: "review.verdict",
+				status: "REVISE",
+				approved: false,
+				blocking_count: 2,
+				nonblocking_count: 1,
+			}),
+		),
+		/review\.verdict.*REVISE.*not-approved.*blocking=2.*nonblocking=1/,
+	);
+	assert.doesNotMatch(
+		formatEventEntry(
+			"review.verdict",
+			event({
+				type: "review.verdict",
+				status: "PASS",
+				approved: true,
+				blocking_count: 0,
+			}),
+		),
+		/blockingIssues|transcript|\[/,
+	);
 });
 
 test("structured verdict protocol reply stays under 800 visible characters", () => {

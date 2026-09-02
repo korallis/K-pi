@@ -191,7 +191,7 @@ const THREE_LAWS = [
  */
 export function renderBoard(model: BoardModel): string[] {
 	const current = resolveCurrentStageIndex(model.stage, model.node);
-	const kstackMark = model.kModeEnabled === true || model.kstack !== undefined ? "  K-STACK on" : "";
+	const kstackMark = model.kstack !== undefined ? "  K-STACK on" : "";
 	const header = `K-π  LOOP ${model.jobId}  MODE ${model.mode}  JOB ${model.jobId}${kstackMark}`;
 	const lines: string[] = [header, ...contextLayer(model)];
 

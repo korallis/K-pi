@@ -5,11 +5,12 @@ import type { ExtensionAPI, ExtensionContext } from "../../../core/extensions/ty
 import { readActiveJob } from "../run-store.ts";
 
 import { type BrandPreset, renderIdleBrand, renderWorkingBrand } from "./brand.ts";
-import { getFooterRouteSnapshot } from "./route-snapshot.ts";
+import { getFooterRouteSnapshot, setFooterRouteChangeListener } from "./route-snapshot.ts";
 import {
 	assembleFooter,
 	contextColor,
 	formatKpiJob,
+	type KpiJobFields,
 	leftSegmentsForPreset,
 	SEGMENT_SEPARATOR,
 	type StatusbarPreset,
@@ -22,9 +23,80 @@ type FooterState = {
 	requestRender?: () => void;
 	preset: StatusbarPreset;
 	brandPreset: BrandPreset;
+	/** Refreshed job fields for footer assembly; full embeds, default/compact second line. */
+	kpiJob?: KpiJobFields;
 };
 
 const PRESET_PATTERN = /^(?:preset\s+)?(default|compact|full)$/iu;
+
+function kpiJobSnapshotEqual(left: KpiJobFields | undefined, right: KpiJobFields | undefined): boolean {
+	if (left === right) return true;
+	if (left === undefined || right === undefined) return false;
+	return (
+		left.mode === right.mode &&
+		left.round === right.round &&
+		left.maxRounds === right.maxRounds &&
+		left.stage === right.stage &&
+		left.gate === right.gate &&
+		left.ac === right.ac
+	);
+}
+
+/**
+ * Job fields for display: cached loop/stage/gate plus the current route snapshot.
+ * Route/usage can change on failover without a job-field refresh.
+ */
+export function kpiJobWithLiveRoute(job: KpiJobFields | undefined): KpiJobFields | undefined {
+	if (job === undefined) return undefined;
+	const route = getFooterRouteSnapshot();
+	const next: KpiJobFields = {
+		mode: job.mode,
+		round: job.round,
+		maxRounds: job.maxRounds,
+		stage: job.stage,
+		gate: job.gate,
+		...(job.ac === undefined ? {} : { ac: job.ac }),
+		...(route.route === undefined ? {} : { route: route.route }),
+	};
+	return next;
+}
+
+/** Load active-job fields into FooterState. Requests render when the snapshot changes. */
+export async function refreshFooterJobFields(ctx: ExtensionContext, state: FooterState): Promise<void> {
+	const next = await loadKpiJobFields(ctx);
+	if (!kpiJobSnapshotEqual(state.kpiJob, next)) {
+		state.kpiJob = next;
+		state.requestRender?.();
+	} else {
+		state.kpiJob = next;
+	}
+}
+
+async function loadKpiJobFields(ctx: ExtensionContext): Promise<KpiJobFields | undefined> {
+	const job = await readActiveJob(ctx.cwd);
+	if (job === undefined) return undefined;
+	const runState = job.state;
+	const mode = typeof runState.mode === "string" ? runState.mode : "gated";
+	const round = typeof runState.round === "number" ? runState.round : 0;
+	const maxRounds =
+		typeof runState.maxRounds === "number"
+			? runState.maxRounds
+			: typeof (runState.limits as { maxRounds?: number } | undefined)?.maxRounds === "number"
+				? (runState.limits as { maxRounds: number }).maxRounds
+				: 3;
+	const stage = typeof runState.stage === "string" ? runState.stage : "unknown";
+	const paused =
+		runState.graph_status === "interrupted" ||
+		(typeof runState.pending_question === "string" && runState.pending_question.trim().length > 0);
+	// Route is applied at render/publish time from the live snapshot — not cached here.
+	return {
+		mode,
+		round,
+		maxRounds,
+		stage,
+		gate: paused ? "human" : "machine",
+	};
+}
 
 export function registerStatusLine(pi: ExtensionAPI): void {
 	let enabled = true;
@@ -36,7 +108,10 @@ export function registerStatusLine(pi: ExtensionAPI): void {
 	};
 
 	pi.on("session_start", (_event, ctx) => {
-		if (enabled && ctx.mode === "tui") installFooter(ctx, state);
+		if (enabled && ctx.mode === "tui") {
+			installFooter(ctx, state);
+			void refreshFooterJobFields(ctx, state).then(() => publishKpiStatus(ctx, state));
+		}
 	});
 
 	pi.on("input", (event) => {
@@ -51,9 +126,12 @@ export function registerStatusLine(pi: ExtensionAPI): void {
 		state.requestRender?.();
 	});
 
-	pi.on("agent_settled", () => {
+	pi.on("agent_settled", (_event, ctx) => {
 		state.working = false;
-		state.requestRender?.();
+		void refreshFooterJobFields(ctx, state).then(() => {
+			void publishKpiStatus(ctx, state);
+			state.requestRender?.();
+		});
 	});
 
 	pi.on("model_select", () => state.requestRender?.());
@@ -66,10 +144,12 @@ export function registerStatusLine(pi: ExtensionAPI): void {
 			if (presetMatch !== null) {
 				state.preset = presetMatch[1].toLowerCase() as StatusbarPreset;
 				enabled = true;
+				await refreshFooterJobFields(ctx, state);
 				if (ctx.mode === "tui") {
 					installFooter(ctx, state);
 				}
 				await publishKpiStatus(ctx, state);
+				state.requestRender?.();
 				ctx.ui.notify(`K-π status bar preset ${state.preset}`, "info");
 				return;
 			}
@@ -81,6 +161,7 @@ export function registerStatusLine(pi: ExtensionAPI): void {
 			}
 			enabled = !enabled;
 			if (enabled && ctx.mode === "tui") {
+				await refreshFooterJobFields(ctx, state);
 				installFooter(ctx, state);
 				await publishKpiStatus(ctx, state);
 				ctx.ui.notify("K-π status bar enabled", "info");
@@ -94,44 +175,14 @@ export function registerStatusLine(pi: ExtensionAPI): void {
 }
 
 async function publishKpiStatus(ctx: ExtensionContext, state: FooterState): Promise<void> {
-	const jobLine = await kpiJobLine(ctx);
-	if (jobLine === undefined || state.preset === "full") {
+	await refreshFooterJobFields(ctx, state);
+	const job = kpiJobWithLiveRoute(state.kpiJob);
+	if (job === undefined || state.preset === "full") {
 		// Full embeds kpi_job in the footer rail; clear the status slot to avoid duplication.
-		if (state.preset === "full") {
-			ctx.ui.setStatus("kpi", undefined);
-			return;
-		}
 		ctx.ui.setStatus("kpi", undefined);
 		return;
 	}
-	ctx.ui.setStatus("kpi", jobLine);
-}
-
-async function kpiJobLine(ctx: ExtensionContext): Promise<string | undefined> {
-	const job = await readActiveJob(ctx.cwd);
-	if (job === undefined) return undefined;
-	const state = job.state;
-	const mode = typeof state.mode === "string" ? state.mode : "gated";
-	const round = typeof state.round === "number" ? state.round : 0;
-	const maxRounds =
-		typeof state.maxRounds === "number"
-			? state.maxRounds
-			: typeof (state.limits as { maxRounds?: number } | undefined)?.maxRounds === "number"
-				? (state.limits as { maxRounds: number }).maxRounds
-				: 3;
-	const stage = typeof state.stage === "string" ? state.stage : "unknown";
-	const paused =
-		state.graph_status === "interrupted" ||
-		(typeof state.pending_question === "string" && state.pending_question.trim().length > 0);
-	const route = getFooterRouteSnapshot();
-	return formatKpiJob({
-		mode,
-		round,
-		maxRounds,
-		stage,
-		gate: paused ? "human" : "machine",
-		...(route.route === undefined ? {} : { route: route.route }),
-	});
+	ctx.ui.setStatus("kpi", formatKpiJob(job));
 }
 
 function installFooter(ctx: ExtensionContext, state: FooterState): void {
@@ -141,6 +192,10 @@ function installFooter(ctx: ExtensionContext, state: FooterState): void {
 			if (state.working) tui.requestRender();
 		}, 100);
 		state.requestRender = () => tui.requestRender();
+		setFooterRouteChangeListener(() => {
+			void publishKpiStatus(ctx, state);
+			tui.requestRender();
+		});
 		void publishKpiStatus(ctx, state);
 
 		return {
@@ -148,6 +203,7 @@ function installFooter(ctx: ExtensionContext, state: FooterState): void {
 				clearInterval(timer);
 				unsubscribe();
 				state.requestRender = undefined;
+				setFooterRouteChangeListener(undefined);
 			},
 			invalidate() {},
 			render(width: number): string[] {
@@ -161,7 +217,7 @@ function installFooter(ctx: ExtensionContext, state: FooterState): void {
 						)
 					: renderIdleBrand(state.brandPreset);
 
-				// Synchronous path only — job line is published via setStatus asynchronously.
+				const kpiJob = kpiJobWithLiveRoute(state.kpiJob);
 				const assembled = assembleFooter({
 					brand,
 					model: ctx.model?.name,
@@ -176,6 +232,7 @@ function installFooter(ctx: ExtensionContext, state: FooterState): void {
 					request: state.lastRequest,
 					preset: state.preset,
 					width,
+					...(kpiJob === undefined ? {} : { kpiJob }),
 				});
 
 				const leftIds = leftSegmentsForPreset(state.preset);
@@ -190,6 +247,7 @@ function installFooter(ctx: ExtensionContext, state: FooterState): void {
 							return [theme.fg(contextColor(context.percent), text)];
 						}
 						if (id === "cost") return [theme.fg("warning", text)];
+						if (id === "kpi_job") return [theme.fg("text", text)];
 						return [theme.fg("text", text)];
 					})
 					.join(theme.fg("dim", SEGMENT_SEPARATOR));
@@ -216,4 +274,5 @@ function sessionCost(ctx: ExtensionContext): number {
 }
 
 export { getFooterRouteSnapshot, resetFooterRouteSnapshot, setFooterRouteSnapshot } from "./route-snapshot.ts";
+export type { KpiJobFields, StatusbarPreset } from "./segments.ts";
 export { assembleFooter, formatCost, formatKpiJob, formatUsage } from "./segments.ts";
