@@ -10,6 +10,7 @@ import {
 	createJob,
 	readActiveJob,
 	readJob,
+	readLiveJob,
 	resetUnreadableStateReportsForTests,
 	type Task,
 } from "../packages/coding-agent/src/kpi/extensions/run-store.ts";
@@ -225,5 +226,38 @@ test("empty or corrupt state.json is skipped rather than thrown", async () => {
 			console.warn = originalWarn;
 			resetUnreadableStateReportsForTests();
 		}
+	});
+});
+
+test("the live job skips finished runs and is absent when every run has ended", async () => {
+	await withTempDirectory("live-job", async (directory) => {
+		assert.equal(await readLiveJob(directory), undefined, "no runs directory means no live job");
+
+		const runs = join(directory, ".kpi", "runs");
+		const olderPath = join(runs, "job-older", "state.json");
+		await atomicWrite(olderPath, JSON.stringify({ job_id: "job-older", status: "RUNNING" }));
+		assert.equal((await readLiveJob(directory))?.jobId, "job-older", "a running job is live");
+
+		// The newest run has ended: it is still the active (last) job, but nothing
+		// live remains - the widget, footer and policy must all see "no job".
+		const newerPath = join(runs, "job-newer", "state.json");
+		await atomicWrite(newerPath, JSON.stringify({ job_id: "job-newer", status: "UNSAFE" }));
+		const future = new Date(Date.now() + 60_000);
+		await utimes(newerPath, future, future);
+		assert.equal((await readActiveJob(directory))?.jobId, "job-newer", "the last job is still reported");
+		assert.equal(await readLiveJob(directory), undefined, "a finished newest run is not live");
+
+		for (const status of ["DONE", "BLOCKED", "EXHAUSTED", "NO_PROGRESS", "NEEDS_HUMAN"]) {
+			await atomicWrite(newerPath, JSON.stringify({ job_id: "job-newer", status }));
+			await utimes(newerPath, future, future);
+			assert.equal(await readLiveJob(directory), undefined, `${status} is a product terminal`);
+		}
+
+		await atomicWrite(
+			newerPath,
+			JSON.stringify({ job_id: "job-newer", status: "RUNNING", graph_status: "interrupted" }),
+		);
+		await utimes(newerPath, future, future);
+		assert.equal((await readLiveJob(directory))?.jobId, "job-newer", "a paused human node is live");
 	});
 });

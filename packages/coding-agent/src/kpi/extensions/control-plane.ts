@@ -3,23 +3,24 @@ import { join } from "node:path";
 
 import { CONFIG_DIR_NAME } from "../../config.ts";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "../../core/extensions/types.ts";
-import { EXTENSION_WIDGET_MAX_LINES } from "../../core/extensions/types.ts";
 import { kModeState } from "../kstack/mode.ts";
 
 import { appendEvent, inspectChain, type JsonValue } from "./append-log.ts";
 import {
 	type BoardModel,
-	fitBoardHeight,
 	normalizeStop,
 	RUN_FILE_NAMES,
 	renderBoard,
 	researchCellFromDocument,
 	type StopDisplay,
+	type Verifier,
 } from "./board.ts";
+import { createBoardComponent } from "./board-component.ts";
+import { type BoardLayout, type BoardPalette, PLAIN_PALETTE, paintBoard, paletteFromTheme } from "./board-frame.ts";
 import { liveWorkerCount } from "./bus/live-snapshot.ts";
 import { type LoopDependencies, type LoopOutcome, parseLoopInvocation, resumeLoop, runLoop } from "./gated-loop.ts";
-import { atomicWrite, JOB_ID_PATTERN, type RunState, readActiveJob } from "./run-store.ts";
-import { autoWrapState } from "./settings.ts";
+import { atomicWrite, JOB_ID_PATTERN, type RunState, readActiveJob, readLiveJob } from "./run-store.ts";
+import { isRoutingMode, type RoutingMode, routingState } from "./settings.ts";
 import { getFooterRouteSnapshot } from "./status-line/route-snapshot.ts";
 import { formatUsage } from "./status-line/segments.ts";
 
@@ -180,6 +181,16 @@ function fingerprintFromState(state: RunState): string | undefined {
 	return undefined;
 }
 
+/**
+ * A FAIL is only a fail once a verdict exists. `passed` starts out false, so a
+ * round-0 board used to read FAIL before any verifier had run.
+ */
+function verifierFor(passed: boolean | undefined, fileLit: Readonly<Record<string, boolean>>): Verifier {
+	if (passed === true) return "pass";
+	if (passed === false && fileLit["verdict.json"] === true) return "fail";
+	return "pending";
+}
+
 export interface BoardBuildOptions {
 	/** Terminal width for narrow fit. */
 	width?: number;
@@ -195,7 +206,7 @@ export interface BoardBuildOptions {
  * Must not call a model client or createAgentSession.
  */
 export async function buildBoardModel(cwd: string, options: BoardBuildOptions = {}): Promise<BoardModel | undefined> {
-	const job = await readActiveJob(cwd);
+	const job = await readLiveJob(cwd);
 	if (job === undefined) return undefined;
 
 	const state = job.state;
@@ -206,6 +217,8 @@ export async function buildBoardModel(cwd: string, options: BoardBuildOptions = 
 	const agents = options.agents ?? liveWorkerCount();
 	const busLit = await busLogLit(job.directory);
 
+	const fileLit = await fileLitMap(job.directory);
+	const passed = booleanValue(typeof state.passed === "boolean" ? state.passed : nestedValue(state, "test", "passed"));
 	return {
 		jobId: job.jobId,
 		mode: stringValue(state.mode, "gated"),
@@ -215,10 +228,12 @@ export async function buildBoardModel(cwd: string, options: BoardBuildOptions = 
 		node: stringValue(state.node, "unknown"),
 		stop: displayStop(state),
 		paused,
+		gate: paused ? "human" : "machine",
 		...(typeof state.pending_question === "string" ? { pendingQuestion: state.pending_question } : {}),
-		passed: booleanValue(typeof state.passed === "boolean" ? state.passed : nestedValue(state, "test", "passed")),
+		passed,
+		verifier: verifierFor(passed, fileLit),
 		fingerprint: fingerprintFromState(state),
-		fileLit: await fileLitMap(job.directory),
+		fileLit,
 		contextPack: await contextPackLamps(cwd, job.directory),
 		research: await loadResearchCell(job.directory),
 		agents,
@@ -249,6 +264,20 @@ export async function createStatusWidget(cwd: string, options: BoardBuildOptions
 
 export async function renderStatusOverlay(cwd: string, options: BoardBuildOptions = {}): Promise<string> {
 	return (await createStatusWidget(cwd, options)).join("\n");
+}
+
+/** The framed board for a surface of `width` columns; plain unless a palette is given. */
+export async function paintStatusBoard(
+	cwd: string,
+	options: BoardBuildOptions & { width: number; layout: BoardLayout; palette?: BoardPalette },
+): Promise<string[] | undefined> {
+	const model = await buildBoardModel(cwd, options);
+	if (model === undefined) return undefined;
+	return paintBoard(model, {
+		width: options.width,
+		layout: options.layout,
+		palette: options.palette ?? PLAIN_PALETTE,
+	});
 }
 
 /** Reported once per process: a repeated warning would be noise, silence was the bug. */
@@ -285,53 +314,70 @@ export function resetBoardThemeWarning(): void {
 }
 
 /**
- * The always-on board, fitted to the widget surface.
+ * The always-on board above the editor.
  *
- * A board taller than the widget budget is cut from the top by the interactive
- * mode, which removes `STOP`, the file lamps and the paused extras - so the
- * board is fitted here instead, where it is known which rows carry the
- * information. `/kpi status` still renders the whole board in an overlay.
+ * The widget is a component, not a list of strings: the interactive mode caps
+ * a string widget at ten lines and paints it in the default colour, which is
+ * how the board came up as an unframed text block. A component renders at the
+ * live width, is never cut, and repaints in the new colours when the theme
+ * swaps between amber and protocol-blue.
  */
 async function installWidget(ctx: ExtensionContext): Promise<boolean> {
-	const lines = await createStatusWidget(ctx.cwd);
-	if (lines.length === 1 && lines[0] === "no active job") {
+	const model = await buildBoardModel(ctx.cwd);
+	if (model === undefined) {
 		ctx.ui.setWidget("kpi", undefined);
 		return false;
 	}
-	const job = await readActiveJob(ctx.cwd);
-	applyBoardTheme(ctx, job !== undefined && isPausedHuman(job.state));
-	ctx.ui.setWidget("kpi", fitBoardHeight(lines, EXTENSION_WIDGET_MAX_LINES));
+	applyBoardTheme(ctx, model.paused);
+	ctx.ui.setWidget("kpi", (_tui, theme) =>
+		createBoardComponent(model, { layout: "compact", palette: paletteFromTheme(theme) }),
+	);
 	return true;
 }
 
 async function showStatus(ctx: ExtensionCommandContext): Promise<void> {
-	const lines = await createStatusWidget(ctx.cwd);
-	if (lines.length === 1 && lines[0] === "no active job") {
+	const model = await buildBoardModel(ctx.cwd);
+	if (model === undefined) {
 		ctx.ui.setWidget("kpi", undefined);
-		ctx.ui.notify("no active job", "info");
+		// The last run is still worth a line: it says why the board is empty.
+		const last = await readActiveJob(ctx.cwd);
+		const status = typeof last?.state.status === "string" ? last.state.status : undefined;
+		ctx.ui.notify(
+			last === undefined ? "no active job" : `no active job — last job ${last.jobId} ${status ?? "ended"}`,
+			"info",
+		);
 		return;
 	}
 
-	const job = await readActiveJob(ctx.cwd);
-	applyBoardTheme(ctx, job !== undefined && isPausedHuman(job.state));
-	// The widget is fitted; the overlay below renders every line.
-	ctx.ui.setWidget("kpi", fitBoardHeight(lines, EXTENSION_WIDGET_MAX_LINES));
+	applyBoardTheme(ctx, model.paused);
+	ctx.ui.setWidget("kpi", (_tui, theme) =>
+		createBoardComponent(model, { layout: "compact", palette: paletteFromTheme(theme) }),
+	);
 	if (ctx.mode !== "tui" || !ctx.hasUI) {
-		ctx.ui.notify(lines.join("\n"), "info");
+		ctx.ui.notify(renderBoard(model).join("\n"), "info");
 		return;
 	}
 
+	// The full board, framed and in the live theme; any key closes it.
 	await ctx.ui.custom<void>(
-		(_tui, _theme, _keybindings, done) => ({
-			handleInput() {
-				done();
-			},
-			invalidate() {},
-			render() {
-				return lines;
-			},
-		}),
-		{ overlay: true },
+		(_tui, theme, _keybindings, done) => {
+			const board = createBoardComponent(model, { layout: "full", palette: paletteFromTheme(theme) });
+			return {
+				handleInput() {
+					done();
+				},
+				invalidate() {
+					board.invalidate();
+				},
+				render(width: number) {
+					return board.render(width);
+				},
+				dispose() {
+					board.dispose();
+				},
+			};
+		},
+		{ overlay: true, overlayOptions: { width: "92%", maxHeight: "90%", anchor: "center" } },
 	);
 }
 
@@ -388,6 +434,25 @@ async function verifyJobLog(args: string, ctx: ExtensionCommandContext): Promise
 	);
 }
 
+const ROUTING_NOTICES: Record<RoutingMode, string> = {
+	off: "K-π routing off: bare text is plain chat and only /kpi starts a job",
+	auto: "K-π routing auto: the agent starts a job for substantial work",
+	always: "K-π routing always: bare text starts a gated job",
+};
+
+/** A missing, unnameable, or non-directory run path is "not a run", never a crash. */
+const TOLERATED_PROBE_ERRORS = new Set(["ENOENT", "ENAMETOOLONG", "ENOTDIR"]);
+
+async function isRunDirectory(cwd: string, jobId: string): Promise<boolean> {
+	try {
+		await readFile(join(cwd, CONFIG_DIR_NAME, "runs", jobId, "task.json"), "utf8");
+		return true;
+	} catch (error) {
+		if (TOLERATED_PROBE_ERRORS.has((error as NodeJS.ErrnoException).code ?? "")) return false;
+		throw error;
+	}
+}
+
 async function handleKpiCommand(
 	args: string,
 	ctx: ExtensionCommandContext,
@@ -402,9 +467,9 @@ async function handleKpiCommand(
 		await stopJob(ctx);
 		return;
 	}
-	if (command === "off") {
-		autoWrapState.enabled = false;
-		ctx.ui.notify("K-π automatic goal wrapping off", "info");
+	if (isRoutingMode(command)) {
+		routingState.override = command;
+		ctx.ui.notify(ROUTING_NOTICES[command], "info");
 		return;
 	}
 	// A subcommand may not swallow a goal: `verify` alone, or `verify <job-id>`,
@@ -418,17 +483,13 @@ async function handleKpiCommand(
 		const onStateChange = async () => {
 			await installWidget(ctx);
 		};
-		let outcome: LoopOutcome;
-		try {
-			await readFile(join(ctx.cwd, CONFIG_DIR_NAME, "runs", command, "task.json"), "utf8");
-			outcome = await resumeLoop(command, ctx, { ...dependencies, onStateChange });
-		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-			outcome = await runLoop(parseLoopInvocation(command), ctx, {
-				...dependencies,
-				onStateChange,
-			});
-		}
+		// Only something shaped like a job id is probed as one. A goal is free
+		// text, and turning it into a path is how a long message once died with
+		// ENAMETOOLONG before the loop ever started.
+		const resume = JOB_ID_PATTERN.test(command) && (await isRunDirectory(ctx.cwd, command));
+		const outcome: LoopOutcome = resume
+			? await resumeLoop(command, ctx, { ...dependencies, onStateChange })
+			: await runLoop(parseLoopInvocation(command), ctx, { ...dependencies, onStateChange });
 		ctx.ui.notify(`K-π job ${outcome.jobId} ${outcome.status}`, "info");
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
@@ -442,7 +503,8 @@ export function registerControlPlane(pi: ExtensionAPI, dependencies: LoopDepende
 	});
 
 	const command = {
-		description: "Control the K-π coding loop (--max-cost-usd / --timeout-ms / --max-rounds freeze onto task.limits)",
+		description:
+			"Control the K-π coding loop: <goal>, status, stop, verify, auto|always|off routing (--max-cost-usd / --timeout-ms / --max-rounds freeze onto task.limits)",
 		handler: async (args: string, ctx: ExtensionCommandContext) => {
 			await handleKpiCommand(args, ctx, dependencies);
 		},

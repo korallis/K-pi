@@ -35,7 +35,6 @@ import { assertScaffoldedBeforeBehavior, freezeCurrentSlice, scaffoldModule, sta
 
 const execFile = promisify(execFileCallback);
 const PLAN_FILES = ["requirements.md", "design.md", "tasks.md"] as const;
-const DEFAULT_QUALITY_GATES = ["pnpm test", "pnpm lint", "pnpm typecheck"];
 
 export const CONVENTIONAL_COMMIT_PATTERN = /^(feat|fix|docs|refactor|test|chore)(\(.+\))?: /u;
 
@@ -264,26 +263,100 @@ async function snapshotPlan(projectRoot: string, requestedPath: string): Promise
 	return { label: relative(root, source), files };
 }
 
-async function qualityGates(projectRoot: string): Promise<string[]> {
-	let source: string;
+export interface QualityGateDetection {
+	commands: string[];
+	source: "agents-md" | "package-scripts" | "none";
+	/** Where the commands came from, or why there are none; recorded in context.md. */
+	reason: string;
+}
+
+type PackageManager = "npm" | "pnpm" | "yarn" | "bun";
+
+async function exists(path: string): Promise<boolean> {
 	try {
-		source = await readFile(join(projectRoot, "AGENTS.md"), "utf8");
+		await stat(path);
+		return true;
 	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-			return [...DEFAULT_QUALITY_GATES];
-		}
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
 		throw error;
 	}
+}
 
-	const section = /^#{1,6}\s+Quality gates[^\n]*\n[\s\S]*?```(?:bash|sh)?\s*\n([\s\S]*?)```/imu.exec(source);
-	if (section === null) {
-		return [...DEFAULT_QUALITY_GATES];
+async function readIfPresent(path: string): Promise<string | undefined> {
+	try {
+		return await readFile(path, "utf8");
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+		throw error;
 	}
-	const commands = section[1]
-		.split("\n")
-		.map((line) => line.trim().replace(/^\$\s*/u, ""))
-		.filter((line) => line.length > 0 && !line.startsWith("#"));
-	return commands.length > 0 ? commands : [...DEFAULT_QUALITY_GATES];
+}
+
+/** The manager the repository actually uses: its own declaration, else its lockfile, else npm. */
+async function detectPackageManager(projectRoot: string, declared: unknown): Promise<PackageManager> {
+	const match = typeof declared === "string" ? /^(npm|pnpm|yarn|bun)(?:@|$)/u.exec(declared) : null;
+	if (match !== null) return match[1] as PackageManager;
+	if (await exists(join(projectRoot, "pnpm-lock.yaml"))) return "pnpm";
+	if (await exists(join(projectRoot, "yarn.lock"))) return "yarn";
+	if ((await exists(join(projectRoot, "bun.lockb"))) || (await exists(join(projectRoot, "bun.lock")))) return "bun";
+	return "npm";
+}
+
+function scriptCommand(manager: PackageManager, script: string): string {
+	if (script === "test") {
+		return manager === "bun" ? "bun run test" : `${manager} test`;
+	}
+	return `${manager} run ${script}`;
+}
+
+/**
+ * The commands the test node runs and the policy allows without a prompt.
+ *
+ * An AGENTS.md "Quality gates" block is the operator's word and wins (AC-08.3).
+ * Otherwise the gates are the repository's own scripts under its own package
+ * manager - only scripts that exist, never a guessed `pnpm test` in an npm
+ * repository. No gates is a recorded fact, not a silent default: a job whose
+ * test node has nothing to run must say so where the operator reads.
+ */
+export async function detectQualityGates(projectRoot: string): Promise<QualityGateDetection> {
+	const agents = await readIfPresent(join(projectRoot, "AGENTS.md"));
+	if (agents !== undefined) {
+		const section = /^#{1,6}\s+Quality gates[^\n]*\n[\s\S]*?```(?:bash|sh)?\s*\n([\s\S]*?)```/imu.exec(agents);
+		const commands =
+			section === null
+				? []
+				: section[1]
+						.split("\n")
+						.map((line) => line.trim().replace(/^\$\s*/u, ""))
+						.filter((line) => line.length > 0 && !line.startsWith("#"));
+		if (commands.length > 0) {
+			return { commands, source: "agents-md", reason: "AGENTS.md Quality gates block" };
+		}
+	}
+
+	const manifest = await readIfPresent(join(projectRoot, "package.json"));
+	if (manifest !== undefined) {
+		let document: { packageManager?: unknown; scripts?: unknown } = {};
+		try {
+			document = JSON.parse(manifest) as typeof document;
+		} catch {
+			document = {};
+		}
+		const scripts = isJsonObject(document.scripts) ? document.scripts : {};
+		const manager = await detectPackageManager(projectRoot, document.packageManager);
+		const wanted = ["test", "lint", ...(typeof scripts.typecheck === "string" ? ["typecheck"] : ["check"])];
+		const commands = wanted
+			.filter((script) => typeof scripts[script] === "string")
+			.map((script) => scriptCommand(manager, script));
+		if (commands.length > 0) {
+			return { commands, source: "package-scripts", reason: `package.json scripts under ${manager}` };
+		}
+	}
+
+	return {
+		commands: [],
+		source: "none",
+		reason: "no AGENTS.md Quality gates block and package.json declares no test, lint, typecheck or check script",
+	};
 }
 async function runtimeDependencies(projectRoot: string): Promise<string[]> {
 	try {
@@ -297,8 +370,14 @@ async function runtimeDependencies(projectRoot: string): Promise<string[]> {
 	}
 }
 
-function contextFor(invocation: LoopInvocation, plan?: PlanSnapshot): string {
-	const lines = [`# K-π ${invocation.mode} job`, "", `Goal: ${invocation.goal}`, `Mode: ${invocation.mode}`];
+function contextFor(invocation: LoopInvocation, gates: QualityGateDetection, plan?: PlanSnapshot): string {
+	const lines = [
+		`# K-π ${invocation.mode} job`,
+		"",
+		`Goal: ${invocation.goal}`,
+		`Mode: ${invocation.mode}`,
+		`Quality gates: ${gates.source} — ${gates.reason}`,
+	];
 	if (plan !== undefined) {
 		lines.push("", `Frozen plan: ${plan.label}`);
 		for (const file of plan.files) {
@@ -1006,9 +1085,18 @@ async function driveUntilPause(
 				) ||
 					/failed response validation/iu.test(message))
 			) {
+				// The prefix is the contract implement reads; the rest is the real
+				// cause, because "missing" alone hid that the model never returned a
+				// JSON document at all.
+				const validation = /^agent node plan failed response validation after (\d+) attempts?: (.+)$/su.exec(
+					message,
+				);
 				const reason =
-					/not valid JSON|assistant response text is unavailable|response must be a JSON object/iu.test(message)
-						? "stack.json is missing; implement has no frozen map to read"
+					validation !== null &&
+					/not valid JSON|assistant response text is unavailable|response must be a JSON object/iu.test(
+						validation[2],
+					)
+						? `stack.json is missing: plan response was not valid stack.json JSON after ${validation[1]} attempts (${validation[2]})`
 						: message.replace(/^agent node plan failed response validation after \d+ attempts: /u, "");
 				return {
 					state,
@@ -1341,6 +1429,10 @@ export async function runLoop(
 ): Promise<LoopOutcome> {
 	const plan = invocation.planPath === undefined ? undefined : await snapshotPlan(ctx.cwd, invocation.planPath);
 	const compilation = compileAcceptanceCriteria(invocation.goal);
+	const gates = await detectQualityGates(ctx.cwd);
+	if (gates.source === "none") {
+		ctx.ui.notify(`K-π quality gates: ${gates.reason}`, "warning");
+	}
 	const task: Task = {
 		job_id: dependencies.jobId ?? makeJobId(invocation.goal),
 		mode: invocation.mode,
@@ -1351,7 +1443,7 @@ export async function runLoop(
 			invocation.mode === "autopilot"
 				? ["Never push", "Commit only after deterministic release approval"]
 				: ["Never push", "Human approval is required before commit"],
-		quality_gates: await qualityGates(ctx.cwd),
+		quality_gates: gates.commands,
 		ac: { quality: compilation.quality },
 		dependency_baseline: await runtimeDependencies(ctx.cwd),
 		...(invocation.noNetwork === true ? { research_network: "offline" as const } : {}),
@@ -1370,7 +1462,7 @@ export async function runLoop(
 					),
 				}),
 	};
-	const job = await createJob(ctx.cwd, task, contextFor(invocation, plan));
+	const job = await createJob(ctx.cwd, task, contextFor(invocation, gates, plan));
 	if (plan !== undefined) {
 		await writePlanSnapshot(job.directory, plan);
 	}

@@ -940,6 +940,6 @@ export class BackgroundBus {
 	}
 }
 
-export { WORKER_RESULT_TIMEOUT_MS };
 export type { WorkerLaunch, WorkerLauncher } from "./launch.ts";
 export type { WorkerRole } from "./roles.ts";
+export { WORKER_RESULT_TIMEOUT_MS };

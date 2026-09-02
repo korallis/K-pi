@@ -21,6 +21,9 @@ const allowedExternalPackages = new Set([
 	// Optional native accelerators. Their callers fall back to JavaScript when absent.
 	"bufferutil",
 	"utf-8-validate",
+	// Optional native Kerberos negotiator behind http(s)-proxy-agent 9; proxies
+	// without SPNEGO never load it.
+	"kerberos",
 	// Optional debug output coloring.
 	"supports-color",
 ]);
@@ -93,7 +96,7 @@ function commonBuildOptions() {
 		// needs transformation.
 		plugins: [lazyJitiPlugin, httpsProxyAgentNamedExportPlugin],
 		sourcemap: false,
-		target: "node22.19",
+		target: "node22.22",
 		// Do not apply the monorepo's source-oriented path aliases while bundling
 		// compiled output. Release builds must resolve the same package entries as
 		// an installed npm package.

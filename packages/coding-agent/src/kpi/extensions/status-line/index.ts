@@ -2,7 +2,7 @@ import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { ExtensionAPI, ExtensionContext } from "../../../core/extensions/types.ts";
 
-import { readActiveJob } from "../run-store.ts";
+import { readLiveJob } from "../run-store.ts";
 
 import { type BrandPreset, renderIdleBrand, renderWorkingBrand } from "./brand.ts";
 import { getFooterRouteSnapshot, setFooterRouteChangeListener } from "./route-snapshot.ts";
@@ -10,6 +10,7 @@ import {
 	assembleFooter,
 	contextColor,
 	formatKpiJob,
+	formatStatusRow,
 	type KpiJobFields,
 	leftSegmentsForPreset,
 	SEGMENT_SEPARATOR,
@@ -72,14 +73,20 @@ export async function refreshFooterJobFields(ctx: ExtensionContext, state: Foote
 	}
 }
 
-/** Cosmetic footer work must never take down a session; still record why it failed. */
+/**
+ * Cosmetic footer work must never take down a session; still record why it
+ * failed. A context that went stale while the refresh was in flight is not a
+ * failure: the session was replaced, and its own `session_start` reinstalls the
+ * footer with a live context.
+ */
 function noteFooterFailure(phase: string, error: unknown): void {
 	const message = error instanceof Error ? error.message : String(error);
+	if (/ctx is stale/u.test(message)) return;
 	console.warn(`[kpi/status-line] ${phase} failed: ${message}`);
 }
 
 async function loadKpiJobFields(ctx: ExtensionContext): Promise<KpiJobFields | undefined> {
-	const job = await readActiveJob(ctx.cwd);
+	const job = await readLiveJob(ctx.cwd);
 	if (job === undefined) return undefined;
 	const runState = job.state;
 	const mode = typeof runState.mode === "string" ? runState.mode : "gated";
@@ -136,6 +143,9 @@ export function registerStatusLine(pi: ExtensionAPI): void {
 
 	pi.on("agent_settled", (_event, ctx) => {
 		state.working = false;
+		// The footer only exists in the TUI; print and JSON sessions have nowhere
+		// to publish to, and are replaced under this handler's feet.
+		if (!enabled || ctx.mode !== "tui") return;
 		void refreshFooterJobFields(ctx, state)
 			.then(() => {
 				void publishKpiStatus(ctx, state).catch((error) => noteFooterFailure("agent_settled publish", error));
@@ -277,8 +287,8 @@ function installFooter(ctx: ExtensionContext, state: FooterState): void {
 				// even clears the slot for the `full` preset to avoid duplicating
 				// what the rail already shows. Without this the accounts widget, and
 				// the job line for every other preset, are written and never drawn.
-				const statusLine = footerData.getExtensionStatusLine();
-				return statusLine === undefined ? [rail] : [rail, truncateToWidth(theme.fg("muted", statusLine), width)];
+				const statusRow = formatStatusRow(footerData.getExtensionStatuses(), state.preset);
+				return statusRow === undefined ? [rail] : [rail, truncateToWidth(theme.fg("muted", statusRow), width)];
 			},
 		};
 	});

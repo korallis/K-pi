@@ -135,6 +135,23 @@ export function formatKpiJob(fields: KpiJobFields): string {
 	return parts.join(" ");
 }
 
+/**
+ * The footer's second row: the extension statuses that belong there.
+ *
+ * Every `setStatus` entry used to be concatenated, so the accounts summary and
+ * the job line ran together and `ROUTE` printed twice. Default and compact keep
+ * only the job line; `full` already embeds the job fields in the rail, so its
+ * second row is the accounts summary. Keys sort so the row is stable.
+ */
+export function formatStatusRow(statuses: ReadonlyMap<string, string>, preset: StatusbarPreset): string | undefined {
+	const parts = Array.from(statuses.entries())
+		.filter(([key]) => preset === "full" || key !== "accounts")
+		.sort(([left], [right]) => left.localeCompare(right))
+		.map(([, text]) => text.replace(/\s+/gu, " ").trim())
+		.filter((text) => text.length > 0);
+	return parts.length === 0 ? undefined : parts.join(" ");
+}
+
 export function formatRequest(request: string | undefined): string | undefined {
 	if (!request) return undefined;
 	return request.length <= 80 ? request : `${request.slice(0, 79)}…`;

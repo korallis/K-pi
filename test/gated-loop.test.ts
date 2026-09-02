@@ -571,7 +571,9 @@ const invalidStacks: { name: string; document: string; reason: RegExp }[] = [
 	{
 		name: "no stack at all",
 		document: "",
-		reason: /stack\.json is missing/u,
+		// The stable prefix implement reads, then the real cause: the plan never
+		// returned a JSON document, and how many attempts it was given.
+		reason: /stack\.json is missing: plan response was not valid stack\.json JSON after \d+ attempts \(/u,
 	},
 	{
 		name: "a stack that names no slice",

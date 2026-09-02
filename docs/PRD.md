@@ -220,6 +220,8 @@ Each AC is written so a later agent can turn it into a check. IDs are stable.
 - **AC-13.2** In gated mode, `git commit` on the job branch asks confirm with diff stat.
 - **AC-13.3** In autopilot, `git commit` is allowed only after `release.approved == true`.
 - **AC-13.4** Unknown commands: confirm in gated, deny in autopilot.
+- **AC-13.5** With no live job (chat scope), reads, writes, unknown commands and `git commit` never confirm; AC-13.1 denials, secret-shaped paths and reserved artifacts still deny. Inside a job, any command whose every segment is read-only (pipes, `;`, `$(…)` included) runs without a prompt.
+- **AC-13.6** A gated confirm offers "Allow for this session", "Always allow in this project" and "Deny". *Always* persists the exact command to `.kpi/policy.json` `allow[]` and later sessions do not re-prompt; a session approval is not asked again in the same process; neither can launder a hard deny.
 
 ### US-14 — Observability
 
@@ -333,14 +335,14 @@ Source: https://github.com/alirezarezvani/claude-skills/blob/main/engineering/mi
 - **AC-23.8** `claim_path` is exclusive. A second claim on the same path is denied until release or the holder pid dies.
 - **AC-23.9** `write_contract` is not `write`/`edit`. A reviewer or tester holding only `write_contract` is not a writer, does not consume the single-writer slot, and can publish nothing but its own declared run-contract file.
 
-### US-24 — Bare message starts gated K-mode
+### US-24 — Bare message is plain chat; the agent starts a K-π job for substantial work
 
-**Story.** As an operator, I type a goal with no slash and k-pi still runs the harness.
+**Story.** As an operator, I type what I want with no slash. A question, a greeting, or a quick edit is answered directly; a real engineering task becomes a K-π job without my having to remember `/kpi`.
 
-- **AC-24.1** Package enabled, no active job, message does not start with `/` → sticky `/k-mode` + gated `/kpi` with that text.
-- **AC-24.2** Commands (`/kpi`, `/k-mode`, `/accounts`, `/setup-kstack`, …) are never auto-wrapped.
-- **AC-24.3** While a job is active, a bare follow-up is steer/followUp into the parent session. It does not start a second job.
-- **AC-24.4** `/kpi off` or setting `kpi.autoWrap = false` restores plain Pi for bare messages.
+- **AC-24.1** With `kpi.routing = auto` (default) a bare message is ordinary harness input. For substantial engineering work the agent calls `kpi_start_job`, which queues a gated `/kpi` for that goal after the current turn and sets sticky `/k-mode`. Greetings, questions, pasted logs, and goals under 12 characters are refused by the tool and answered directly; no run directory is created for them.
+- **AC-24.2** Commands (`/kpi`, `/k-mode`, `/accounts`, `/setup-kstack`, …) are never wrapped. `kpi.routing = always` (or `/kpi always`) wraps every bare message into a gated `/kpi` with that text, on one line.
+- **AC-24.3** While a job is live, a bare follow-up is steer/followUp into the parent session and `kpi_start_job` refuses to start a second job. A finished run (`DONE`, `BLOCKED`, `EXHAUSTED`, `NO_PROGRESS`, `UNSAFE`, `NEEDS_HUMAN`) owns no follow-up and is not drawn as live.
+- **AC-24.4** `/kpi off` or `kpi.routing = off` disables automatic starts: only explicit `/kpi`, `/loop`, `/k-mode` start a job. Bus worker sessions never hold `kpi_start_job`.
 
 ### US-25 — TUI is information-complete, not pixel-perfect
 
@@ -422,9 +424,12 @@ Source: https://github.com/alirezarezvani/claude-skills/blob/main/engineering/mi
 ### WF-00 Bare goal
 
 ```
+operator types: hi                                   → answered directly; no run directory
+operator types: why does npm test fail?              → investigated with tools; no run directory
 operator types: add a healthcheck and verify it
-  → autoWrap on, no job
-  → /k-mode on + /kpi --mode gated <text>
+  → routing auto, no live job
+  → agent judges it substantial → kpi_start_job
+  → turn ends → /k-mode on + /kpi --mode gated <goal>
   → same as WF-01
 ```
 
@@ -498,7 +503,7 @@ operator /k-mode <goal>
 
 ## 9. Constraints
 
-- Node `>= 22.19`.
+- Node `>= 22.22`.
 - Upstream base: Pi `v0.84.4`, commit `b79e4cc834970cca69daebffab7df1da7d1e52c4`, tracked via the `upstream` remote. Moving to a newer upstream release is a reviewed merge per `../UPSTREAM.md`, never an automated bump.
 - No peer dependencies. Workspace packages keep upstream `@earendil-works/pi-*` names for merge hygiene only; nothing is resolved from a registry under those names.
 - Secrets: `0600` files under `~/.kpi/agent/`, never in git.

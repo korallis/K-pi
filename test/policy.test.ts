@@ -10,24 +10,31 @@ import type { ToolCallEvent, ToolCallEventResult } from "../packages/coding-agen
 import { appendEvent, verifyChain } from "../packages/coding-agent/src/kpi/extensions/append-log.ts";
 import {
 	type ActivePolicyState,
+	APPROVAL_OPTIONS,
 	DEFAULT_ACTIVE_POLICY_STATE,
+	DEFAULT_POLICY_CONFIG,
 	type DiffStatReader,
 	ensurePolicyFile,
 	evaluateToolCall,
+	normalizePolicy,
 	type PolicyConfig,
 	type PolicyRegistrationOptions,
 	parseDiffStat,
 	readGitDiffStat,
+	readPolicy,
 	registerPolicy,
 	resolveActivePolicyState,
+	UNREADABLE_JOB_POLICY_STATE,
 } from "../packages/coding-agent/src/kpi/extensions/policy.ts";
+import { classifyShellCommand } from "../packages/coding-agent/src/kpi/extensions/shell-classifier.ts";
 
 const execFile = promisify(execFileCallback);
 
 const policy: PolicyConfig = {
 	deny: ["git push", "git push --force", "git reset --hard", "rm -rf", "chmod 777"],
-	commit: { gated: "confirm", autopilot: "after-release" },
-	unknown: { gated: "confirm", autopilot: "deny" },
+	allow: [],
+	commit: { chat: "allow", gated: "confirm", autopilot: "after-release" },
+	unknown: { chat: "allow", gated: "confirm", autopilot: "deny" },
 };
 
 const cwd = "/fixture";
@@ -38,6 +45,7 @@ const gated: ActivePolicyState = {
 	qualityGates: ["npm test", "npm run lint -- --max-warnings 0"],
 };
 const autopilot: ActivePolicyState = { ...gated, mode: "autopilot" };
+const chat: ActivePolicyState = { ...DEFAULT_ACTIVE_POLICY_STATE };
 const stubDiffStat: DiffStatReader = () => ({ filesChanged: 3, insertions: 12, deletions: 4 });
 
 function bash(command: string): ToolCallEvent {
@@ -62,29 +70,38 @@ function decide(event: ToolCallEvent, active: ActivePolicyState = gated) {
 	return evaluateToolCall(event, { active, cwd, policy, readDiffStat: stubDiffStat });
 }
 
-type Hook = (
-	event: ToolCallEvent,
-	context: {
-		cwd: string;
-		ui: { confirm: (title: string, question: string) => Promise<boolean> };
-	},
-) => Promise<ToolCallEventResult | undefined>;
+type HookContext = {
+	cwd: string;
+	ui: {
+		confirm: (title: string, question: string) => Promise<boolean>;
+		select?: (title: string, options: string[]) => Promise<string | undefined>;
+		notify?: (message: string, type?: string) => void;
+	};
+};
+type Hook = (event: ToolCallEvent, context: HookContext) => Promise<ToolCallEventResult | undefined>;
+type SessionStart = (event: unknown, context: { cwd: string }) => Promise<void>;
 
-/** The registered hook, exactly as the harness would call it. */
-function policyHook(options: PolicyRegistrationOptions): Hook {
+/** The registered hooks, exactly as the harness would call them. */
+function registeredPolicy(options: PolicyRegistrationOptions): { hook: Hook; sessionStart: SessionStart } {
 	let hook: Hook | undefined;
+	let sessionStart: SessionStart | undefined;
 	const pi = {
 		on(event: string, handler: unknown) {
-			if (event === "tool_call") {
-				hook = handler as Hook;
-			}
+			if (event === "tool_call") hook = handler as Hook;
+			if (event === "session_start") sessionStart = handler as SessionStart;
 		},
 	};
 	registerPolicy(pi as unknown as Parameters<typeof registerPolicy>[0], options);
 	assert.ok(hook, "registerPolicy must register a tool_call hook");
-	return hook;
+	assert.ok(sessionStart, "registerPolicy must register a session_start hook");
+	return { hook, sessionStart };
 }
 
+function policyHook(options: PolicyRegistrationOptions): Hook {
+	return registeredPolicy(options).hook;
+}
+
+/** An operator whose UI only has a confirm dialog: the fallback path. */
 function operator(directory: string, answer: boolean) {
 	const prompts: string[] = [];
 	return {
@@ -95,6 +112,34 @@ function operator(directory: string, answer: boolean) {
 				confirm: async (title: string, question: string) => {
 					prompts.push(`${title}\n${question}`);
 					return answer;
+				},
+			},
+		},
+	};
+}
+
+/** An operator with the selector: the three-way approval. */
+function chooser(directory: string, choice: (typeof APPROVAL_OPTIONS)[number] | undefined) {
+	const prompts: string[] = [];
+	const options: string[][] = [];
+	const notices: string[] = [];
+	return {
+		prompts,
+		options,
+		notices,
+		context: {
+			cwd: directory,
+			ui: {
+				confirm: async () => {
+					throw new Error("confirm must not be used when select is available");
+				},
+				select: async (title: string, offered: string[]) => {
+					prompts.push(title);
+					options.push(offered);
+					return choice;
+				},
+				notify: (message: string) => {
+					notices.push(message);
 				},
 			},
 		},
@@ -312,16 +357,21 @@ test("exact non-mutating inspection commands are allowed in both modes", async (
 		"git log",
 		"git log --oneline",
 		"git branch --show-current",
+		"git show HEAD --stat",
+		"git rev-parse --abbrev-ref HEAD",
+		"grep -rn foo src | head -n 5",
+		"npm ls --depth=0",
+		"node --version",
 	]) {
 		assert.deepEqual(await decide(bash(command)), { kind: "allow" }, command);
 		assert.deepEqual(await decide(bash(command), autopilot), { kind: "allow" }, command);
 	}
 });
 
-test("the safe list is exact, not a prefix match", async () => {
+test("read-only inspection commands are allowed whatever their arguments, in both job modes", async () => {
 	for (const command of ["git log --oneline --all", "git diff --stat -- src", "ls -la /etc", "git status; whoami"]) {
-		assert.equal((await decide(bash(command))).kind, "confirm", command);
-		assert.equal((await decide(bash(command), autopilot)).kind, "deny", command);
+		assert.deepEqual(await decide(bash(command)), { kind: "allow" }, command);
+		assert.deepEqual(await decide(bash(command), autopilot), { kind: "allow" }, command);
 	}
 });
 
@@ -332,15 +382,29 @@ test("exact task quality gates are allowed and never prompt", async () => {
 	assert.equal((await decide(bash("npm test -- --watch"))).kind, "confirm");
 });
 
-test("a chained command is never safe, even when the chain is the declared gate", async () => {
+test("a composition is only as safe as its least safe segment", async () => {
+	// A declared gate is exact: chaining two of them is not the gate.
 	const active: ActivePolicyState = { ...gated, qualityGates: ["npm test && npm run lint"] };
 	assert.equal((await decide(bash("npm test && npm run lint"), active)).kind, "confirm");
 	assert.equal((await decide(bash("npm test && npm run lint"), { ...active, mode: "autopilot" })).kind, "deny");
-	assert.equal((await decide(bash("git status && ls -la"))).kind, "confirm");
+	assert.deepEqual(await decide(bash("git status && ls -la")), { kind: "allow" });
 	// A chain that touches a secret is denied outright: an operator cannot make
 	// reading a credential file legal by approving it.
 	assert.equal((await decide(bash("git status && cat .env"))).kind, "deny");
+	// tee writes: inside the bounds it is unknown (confirm / deny by mode),
+	// outside them it is a bounds denial in every mode.
+	assert.equal((await decide(bash("ls | tee src/out.txt"))).kind, "confirm");
+	assert.equal((await decide(bash("ls | tee src/out.txt"), autopilot)).kind, "deny");
+	assert.equal((await decide(bash("ls | tee /tmp/out"))).kind, "deny");
 	assert.equal((await decide(bash("ls | tee /tmp/out"), autopilot)).kind, "deny");
+	assert.equal((await decide(bash("find . -name '*.ts' -exec rm {} \\;"))).kind, "confirm");
+	assert.equal((await decide(bash("find . -name '*.ts' -exec rm {} \\;"), autopilot)).kind, "deny");
+	assert.deepEqual(await decide(bash("sed -n 1,5p a.ts")), { kind: "allow" });
+	assert.equal((await decide(bash("sed -i s/a/b/ a.ts"))).kind, "confirm");
+	// The confirm names the segment that decided it.
+	const decision = await decide(bash("git status && curl https://example.test"));
+	assert.equal(decision.kind, "confirm");
+	assert.match(decision.kind === "confirm" ? decision.question : "", /unknown head "curl"/u);
 });
 
 test("gated git commit confirms and states the current HEAD diff stat", async () => {
@@ -375,13 +439,99 @@ test("unknown commands confirm in gated and are denied in autopilot", async () =
 	assert.match(denied.kind === "deny" ? denied.reason : "", /unrecognized command/u);
 });
 
-test("without an active job the resolved state is gated, unreleased, and unbounded", () => {
+test("without a live job the resolved state is chat scope; an unreadable live job falls back to gated", () => {
 	assert.deepEqual(DEFAULT_ACTIVE_POLICY_STATE, {
+		mode: "chat",
+		releaseApproved: false,
+		writeAllow: [],
+		qualityGates: [],
+	});
+	assert.deepEqual(UNREADABLE_JOB_POLICY_STATE, {
 		mode: "gated",
 		releaseApproved: false,
 		writeAllow: [],
 		qualityGates: [],
 	});
+});
+
+test("chat scope never confirms but keeps every hard deny", async () => {
+	for (const command of [
+		"curl https://example.test",
+		"npm test",
+		"node packages/coding-agent/dist/bundle/cli.js --help | head -n 120",
+		'git commit -m "feat: chat"',
+		"echo x > notes.txt",
+	]) {
+		assert.deepEqual(await decide(bash(command), chat), { kind: "allow" }, command);
+	}
+	for (const command of [
+		"git push origin main",
+		"rm -rf /",
+		"npm publish",
+		"cat .env",
+		"echo x > .kpi/runs/job-1/verdict.json",
+		"echo x > .kpi/kg/nodes.jsonl",
+	]) {
+		assert.equal((await decide(bash(command), chat)).kind, "deny", command);
+	}
+	assert.deepEqual(await decide(write("package.json"), chat), { kind: "allow" }, "no job means no bounds");
+	assert.equal((await decide(write("src/.env"), chat)).kind, "deny");
+	assert.equal((await decide(write(".kpi/kg/nodes.jsonl"), chat)).kind, "deny");
+
+	// An operator who wants a cautious chat can ask for it in the file.
+	const cautious: PolicyConfig = { ...policy, unknown: { ...policy.unknown, chat: "confirm" } };
+	const asked = await evaluateToolCall(bash("curl https://example.test"), { active: chat, cwd, policy: cautious });
+	assert.equal(asked.kind, "confirm");
+});
+
+test("the two commands that prompted in ordinary chat are allowed", async () => {
+	// Built by concatenation so the shell expansion is not read as a template.
+	const expansion = ["$", "{PI_MODEL:-}"].join("");
+	const first = `printf 'PI_MODEL=%q\\n' "${expansion}"; for f in "$HOME/.kpi/agent"/{settings.json,models.json}; do if [ -e "$f" ]; then printf 'EXISTS %s\\n' "$f"; else printf 'MISSING %s\\n' "$f"; fi; done; command -v kpi || true`;
+	const second =
+		"if [ -f packages/coding-agent/dist/bundle/cli.js ]; then node packages/coding-agent/dist/bundle/cli.js --help | head -n 120; else echo 'dist bundle missing'; fi";
+	assert.deepEqual(await decide(bash(first), chat), { kind: "allow" });
+	assert.deepEqual(await decide(bash(second), chat), { kind: "allow" });
+	// The first is read-only in any scope; the second runs project code, so a
+	// gated job still asks.
+	assert.equal(classifyShellCommand(first).readOnly, true);
+	const classified = classifyShellCommand(second);
+	assert.equal(classified.readOnly, false);
+	assert.match(classified.readOnly ? "" : classified.reason, /node/u);
+	assert.deepEqual(await decide(bash(first)), { kind: "allow" });
+	assert.equal((await decide(bash(second))).kind, "confirm");
+});
+
+test("an exact allow entry is honoured after every hard deny", async () => {
+	const remembered: PolicyConfig = { ...policy, allow: ["frobnicate --all", "git push origin main"] };
+	const options = { cwd, policy: remembered };
+	assert.deepEqual(await evaluateToolCall(bash("frobnicate   --all"), { ...options, active: gated }), {
+		kind: "allow",
+	});
+	assert.deepEqual(await evaluateToolCall(bash("frobnicate --all"), { ...options, active: autopilot }), {
+		kind: "allow",
+	});
+	assert.equal(
+		(await evaluateToolCall(bash("frobnicate --all --now"), { ...options, active: gated })).kind,
+		"confirm",
+	);
+	assert.equal((await evaluateToolCall(bash("git push origin main"), { ...options, active: gated })).kind, "deny");
+	assert.equal((await evaluateToolCall(bash("frobnicate --all"), { ...options, active: gated })).kind, "allow");
+});
+
+test("a policy file written before allow and chat existed still loads, and a malformed one does not", () => {
+	const legacy = normalizePolicy(
+		{
+			deny: ["git push"],
+			commit: { gated: "confirm", autopilot: "after-release" },
+			unknown: { gated: "confirm", autopilot: "deny" },
+		},
+		"policy.json",
+	);
+	assert.deepEqual(legacy, { ...DEFAULT_POLICY_CONFIG, deny: ["git push"] });
+	assert.throws(() => normalizePolicy({ commit: {} }, "policy.json"), /must define a deny array/u);
+	assert.throws(() => normalizePolicy({ deny: [], allow: "ls" }, "policy.json"), /allow must be an array/u);
+	assert.throws(() => normalizePolicy({ deny: [], unknown: { chat: "yes" } }, "policy.json"), /unknown\.chat/u);
 });
 
 test("a diff stat reports every field git omits as an explicit zero", () => {
@@ -427,6 +577,7 @@ test("the default policy is copied without replacing consumer changes", async ()
 		const path = await ensurePolicyFile(directory);
 		const copied = JSON.parse(await readFile(path, "utf8")) as PolicyConfig;
 		assert.ok(copied.deny.includes("git push"));
+		assert.deepEqual(copied, DEFAULT_POLICY_CONFIG, "the shipped template is the in-code default");
 
 		await writeFile(path, '{"deny":["consumer rule"]}\n');
 		await ensurePolicyFile(directory);
@@ -546,8 +697,11 @@ test("the registered hook splits unknown commands by mode", async () => {
 		assert.equal(accepted.prompts.length, 1);
 		assert.match(accepted.prompts[0], /Approve unrecognized command/u);
 
+		// The accepted approval lives for that hook's session, so the decline is a
+		// fresh session.
 		const declined = operator(directory, false);
-		const blocked = await gatedHook(bash("curl https://example.test"), declined.context);
+		const decliningHook = policyHook({ resolveActiveState: () => gated, readDiffStat: stubDiffStat });
+		const blocked = await decliningHook(bash("curl https://example.test"), declined.context);
 		assert.equal(blocked?.block, true);
 		assert.match(blocked?.reason ?? "", /unrecognized command/u);
 
@@ -579,16 +733,37 @@ test("the registered hook never prompts for safe commands or declared quality ga
 	});
 });
 
-test("with no active job the hook defaults to gated bounds and prompts from the real diff", async () => {
-	const hook = policyHook({});
+test("with no live job the hook is chat scope: reads, writes, and commits run without a prompt", async () => {
+	const hook = policyHook({ resolveWriteAllow: async () => ["never-applied/**"] });
 	await withProject(async (directory) => {
 		await seedRepository(directory, "one\ntwo\nthree\n");
 		await writeFile(join(directory, "tracked.txt"), "one\ntwo\nthree\nfour\n");
 
 		const { context, prompts } = operator(directory, false);
-		assert.equal(await hook(bash("git status"), context), undefined, "safe reads still need no job");
-		assert.equal((await hook(write("src/fixture.ts"), context))?.block, true, "no job means no write bounds");
+		for (const event of [
+			bash("git status"),
+			bash("curl https://example.test"),
+			bash('git commit -m "feat: ship"'),
+			write("src/fixture.ts"),
+			write("package.json"),
+		]) {
+			assert.equal(await hook(event, context), undefined, JSON.stringify(event.input));
+		}
+		assert.equal((await hook(bash("git push origin main"), context))?.block, true);
+		assert.equal((await hook(write("src/.env"), context))?.block, true);
+		assert.deepEqual(prompts, [], "chat never asks");
+	});
+});
 
+test("a live gated job prompts a commit from the real diff", async () => {
+	const hook = policyHook({});
+	await withProject(async (directory) => {
+		await seedRepository(directory, "one\ntwo\nthree\n");
+		await writeFile(join(directory, "tracked.txt"), "one\ntwo\nthree\nfour\n");
+		await activeJob(directory, { job_id: "job-1", status: "RUNNING" }, gatedTask);
+
+		const { context, prompts } = operator(directory, false);
+		assert.equal((await hook(write("docs/notes.md"), context))?.block, true, "the job's bounds apply");
 		const commit = await hook(bash('git commit -m "feat: ship"'), context);
 		assert.equal(commit?.block, true, "an unapproved commit is blocked");
 		assert.equal(prompts.length, 1);
@@ -603,13 +778,33 @@ const autopilotTask = {
 	quality_gates: ["npm test"],
 };
 
-async function activeJob(directory: string, state: unknown): Promise<string> {
+const gatedTask = { ...autopilotTask, mode: "gated" };
+
+async function activeJob(directory: string, state: unknown, task: unknown = autopilotTask): Promise<string> {
 	const runDirectory = join(directory, ".kpi", "runs", "job-1");
 	await mkdir(runDirectory, { recursive: true });
-	await writeFile(join(runDirectory, "task.json"), JSON.stringify(autopilotTask));
+	await writeFile(join(runDirectory, "task.json"), JSON.stringify(task));
 	await writeFile(join(runDirectory, "state.json"), JSON.stringify(state));
 	return runDirectory;
 }
+
+test("a finished job never puts chat into a job mode or receives its tool requests", async () => {
+	const hook = policyHook({ resolveActiveState: resolveActivePolicyState, readDiffStat: stubDiffStat });
+	await withProject(async (directory) => {
+		const runDirectory = await activeJob(directory, { job_id: "job-1", status: "DONE", node: "ship" });
+		await writeFile(join(runDirectory, "events.jsonl"), "");
+		const { context, prompts } = operator(directory, false);
+
+		assert.equal(await hook(bash("curl https://example.test"), context), undefined, "not autopilot's deny");
+		assert.equal(await hook(write("docs/notes.md"), context), undefined, "not the finished job's bounds");
+		assert.deepEqual(await toolRequests(runDirectory), [], "a finished run's log is closed");
+		assert.deepEqual(prompts, []);
+
+		await writeFile(join(runDirectory, "state.json"), JSON.stringify({ job_id: "job-1", status: "RUNNING" }));
+		assert.equal((await hook(bash("curl https://example.test"), context))?.block, true, "live autopilot denies");
+		assert.equal((await toolRequests(runDirectory)).length, 1, "a live run records the attempt");
+	});
+});
 
 test("the resolver reads mode, release approval, write bounds, and quality gates from one job", async () => {
 	const hook = policyHook({ resolveActiveState: resolveActivePolicyState, readDiffStat: stubDiffStat });
@@ -625,9 +820,11 @@ test("the resolver reads mode, release approval, write bounds, and quality gates
 		assert.equal((await hook(bash("curl https://example.test"), context))?.block, true, "autopilot denies unknown");
 
 		// The loop's progress document publishes the release.set assignment flattened.
+		// Ship runs while the job is still open: release is approved before the
+		// commit, and the run only reaches DONE after it.
 		await writeFile(
 			join(runDirectory, "state.json"),
-			JSON.stringify({ job_id: "job-1", status: "DONE", release: { approved: true } }),
+			JSON.stringify({ job_id: "job-1", status: "RUNNING", release: { approved: true } }),
 		);
 		assert.equal(await hook(commit, context), undefined, "released autopilot may commit");
 
@@ -644,6 +841,102 @@ test("the resolver reads mode, release approval, write bounds, and quality gates
 		);
 		assert.equal((await hook(commit, context))?.block, true, "a withdrawn approval holds the commit again");
 		assert.deepEqual(prompts, [], "autopilot decides without an operator");
+
+		// A finished run is the newest document on disk but no longer a job the
+		// policy is about: its mode, bounds and approval stop applying.
+		await writeFile(
+			join(runDirectory, "state.json"),
+			JSON.stringify({ job_id: "job-1", status: "DONE", release: { approved: true } }),
+		);
+		assert.deepEqual(
+			await resolveActivePolicyState(directory),
+			DEFAULT_ACTIVE_POLICY_STATE,
+			"a finished job sets no policy mode",
+		);
+	});
+});
+
+test("an operator can allow a command for the session, and the same command does not ask again", async () => {
+	await withProject(async (directory) => {
+		const hook = policyHook({ resolveActiveState: () => gated, readDiffStat: stubDiffStat });
+		const once = chooser(directory, "Allow for this session");
+		assert.equal(await hook(bash("frobnicate --all"), once.context), undefined, "approved once");
+		assert.deepEqual(once.options[0], [...APPROVAL_OPTIONS]);
+		assert.match(once.prompts[0] ?? "", /Approve unrecognized command/u);
+		assert.equal(await hook(bash("frobnicate   --all"), once.context), undefined, "same command, no dialog");
+		assert.equal(once.prompts.length, 1);
+		assert.equal(await hook(bash("frobnicate --other"), once.context), undefined, "a different command asks");
+		assert.equal(once.prompts.length, 2);
+		await assert.rejects(readFile(join(directory, ".kpi", "policy.json"), "utf8"), "nothing persisted");
+
+		// A fresh registration is a fresh process: the session approval is gone.
+		const later = policyHook({ resolveActiveState: () => gated, readDiffStat: stubDiffStat });
+		const declined = operator(directory, false);
+		assert.equal((await later(bash("frobnicate --all"), declined.context))?.block, true);
+	});
+});
+
+test("always allow persists to policy.json allow[] and is honoured by a fresh session", async () => {
+	await withProject(async (directory) => {
+		const hook = policyHook({ resolveActiveState: () => gated, readDiffStat: stubDiffStat });
+		const always = chooser(directory, "Always allow in this project");
+		assert.equal(await hook(bash("frobnicate   --all"), always.context), undefined);
+		const written = JSON.parse(await readFile(join(directory, ".kpi", "policy.json"), "utf8")) as PolicyConfig;
+		assert.deepEqual(written.allow, ["frobnicate --all"], "collapsed and remembered");
+		assert.ok(written.deny.includes("git push"), "the rest of the template came with it");
+		assert.match(always.notices[0] ?? "", /Always allowed in .kpi\/policy\.json: frobnicate --all/u);
+
+		const fresh = policyHook({ resolveActiveState: () => gated, readDiffStat: stubDiffStat });
+		const declined = operator(directory, false);
+		assert.equal(await fresh(bash("frobnicate --all"), declined.context), undefined, "no prompt in a new session");
+		assert.deepEqual(declined.prompts, []);
+		const unattended = policyHook({ resolveActiveState: () => autopilot, readDiffStat: stubDiffStat });
+		assert.equal(await unattended(bash("frobnicate --all"), declined.context), undefined, "autopilot honours it too");
+
+		// allow[] cannot launder a hard deny, and a remembered command is exact.
+		await writeFile(
+			join(directory, ".kpi", "policy.json"),
+			JSON.stringify({ ...written, allow: ["frobnicate --all", "git push origin main"] }),
+		);
+		assert.equal((await fresh(bash("git push origin main"), declined.context))?.block, true);
+		assert.equal((await fresh(bash("frobnicate --all --now"), declined.context))?.block, true);
+		assert.deepEqual((await readPolicy(directory)).allow, ["frobnicate --all", "git push origin main"]);
+	});
+});
+
+test("a declined or cancelled approval blocks the call", async () => {
+	await withProject(async (directory) => {
+		const hook = policyHook({ resolveActiveState: () => gated, readDiffStat: stubDiffStat });
+		for (const choice of ["Deny", undefined] as const) {
+			const answer = chooser(directory, choice);
+			const outcome = await hook(bash("frobnicate --all"), answer.context);
+			assert.equal(outcome?.block, true, String(choice));
+			assert.match(outcome?.reason ?? "", /unrecognized command/u);
+		}
+		const again = chooser(directory, "Deny");
+		await hook(bash("frobnicate --all"), again.context);
+		assert.equal(again.prompts.length, 1, "nothing was cached");
+		await assert.rejects(readFile(join(directory, ".kpi", "policy.json"), "utf8"), "nothing was persisted");
+	});
+});
+
+test("the policy file is seeded only in a project directory", async () => {
+	await withProject(async (directory) => {
+		const { sessionStart } = registeredPolicy({});
+		await sessionStart({}, { cwd: directory });
+		await assert.rejects(readFile(join(directory, ".kpi", "policy.json"), "utf8"), "a bare directory gets no file");
+		assert.deepEqual(await readPolicy(directory), DEFAULT_POLICY_CONFIG, "and reads as the default");
+
+		await git(directory, "init");
+		await sessionStart({}, { cwd: directory });
+		const seeded = JSON.parse(await readFile(join(directory, ".kpi", "policy.json"), "utf8")) as PolicyConfig;
+		assert.deepEqual(seeded, DEFAULT_POLICY_CONFIG, "a git root is a project");
+	});
+	await withProject(async (directory) => {
+		await mkdir(join(directory, ".kpi"), { recursive: true });
+		const { sessionStart } = registeredPolicy({});
+		await sessionStart({}, { cwd: directory });
+		await readFile(join(directory, ".kpi", "policy.json"), "utf8");
 	});
 });
 

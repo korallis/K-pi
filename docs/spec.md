@@ -130,8 +130,9 @@ specs/
 
 | Command | Behavior |
 |---|---|
-| *(bare text)* | If `kpi.autoWrap` (default on) and no job: sticky K-mode + gated `/kpi`. |
-| `/kpi off` | Disable autoWrap for this session |
+| *(bare text)* | Plain harness input. Under `kpi.routing = auto` (default) the agent may call the `kpi_start_job` tool, which queues `/kpi --mode <mode> <goal>` for after the current turn and sets sticky K-mode; `always` wraps bare text into a gated `/kpi` directly; `off` never starts a job automatically. A live job owns bare follow-ups. |
+| `/kpi auto\|always\|off` | Session routing override. `kpi.routing` in project `.kpi/settings.json` or user `~/.kpi/agent/settings.json` (`{"kpi":{"routing":…}}`) sets the default; project wins. |
+| `kpi_start_job` | Tool. Parent session only — never a graph node, never a bus worker. Refuses greetings, questions, goals under 12 characters, and any goal while a job is live. |
 | `/kpi [goal]` | Gated coding loop from a task. `/loop` is an alias. |
 | `/kpi --plan <path>` | Skip specify; freeze plan files |
 | `/kpi --mode gated\|autopilot` | Force mode |
@@ -381,7 +382,7 @@ only if all evidence flags are true. Engine evaluates this as data, not as model
 | specify | read, grep, find, ls | true |
 | plan | read, grep, find, ls | true |
 | implement | read, grep, find, ls, bash, edit, write | false |
-| test | read, bash (quality_gates + AC commands only), `write_contract` → `evidence.json` | read-only for product files; bash command-allowlisted |
+| test | read, bash (quality_gates + AC commands + read-only inspection), `write_contract` → `evidence.json` | read-only for product files; bash command-allowlisted |
 | bounds | set | n/a |
 | review | read, grep, find, ls, `write_contract` → `verdict.json` | read-only for product files |
 | human | none | n/a |
@@ -505,14 +506,22 @@ Canonical look: https://x.com/av1dlive/status/2092622516544270781
 
 ### Widgets
 
-Always-on during a job, `setWidget` above editor:
+Always-on during a live job, `setWidget` above the editor as a **component** (the string form is capped at ten lines and painted colourless). It is the compact cut of Board A / Board B, framed in the theme's colours:
 
 ```
-LOOP  <name>  MODE <gated|autopilot>  ROUND <n>/<max>  STAGE <id>  NODE <id>
-GATE  <human|machine>  AC <ok>/<total> executable  evidence <fresh|stale|missing>
-STOP  <running|DONE|…>
-FILES task.json context.md candidate.json evidence.json verdict.json events.jsonl
+K-π GRAPH CONTROL │ MODE gated │ JOB <id> │ ROUND <n>/<max>
+┌──────────────┬──────────────┬ … 8 stage cells: "04 implement" / CURRENT|DONE|PENDING …┐
+FILES  ● task.json  ● context.md  ○ candidate.json  ● evidence.json  ○ verdict.json  ● events.jsonl
+LOOP <id>  STAGE 04 implement  NODE <node>  GATE <human|machine>            ┌──────────────┐
+ROUND <n>/<max>  PASS ● last verifier  FAIL ○ none  FINGERPRINT <short>       │ STOP RUNNING │
+CONTEXT product ● structure ● tech ○  AGENTS n  BUS ●  ROUTE …  USAGE …       └──────────────┘
+WAITING ON OPERATOR  <question>          (paused only)
+STOP STATES  DONE ○  BLOCKED ○  APPROVAL ●   (paused only)
 ```
+
+The current stage cell and lit lamps are `accent`, done stages `success`, pending `dim`; the STOP box is `warning` while running, `success` for DONE, `accent` for NEEDS_HUMAN, `error` otherwise. `PASS/FAIL PENDING` reads until a verdict exists. At 70 columns and below the rows are flat but keep every field; the lamp row folds rather than cuts. Once the newest run has reached a terminal the widget is removed; `/kpi status` then names that last job.
+
+`/kpi status` draws the full board (context layer, stage cells, iteration loop, oversight, lamp cells, and on Board B the shared run state, stop states, three laws and the operator question) in a `ctx.ui.custom` overlay using the live theme; any key closes it.
 
 Accounts widget:
 
@@ -534,7 +543,7 @@ Custom entry renderers for EVT types listed above.
 
 ## 12. Policy
 
-`.kpi/policy.json` default:
+`.kpi/policy.json` default (`templates/policy.json`, identical to the in-code `DEFAULT_POLICY_CONFIG`):
 
 ```json
 {
@@ -545,27 +554,54 @@ Custom entry renderers for EVT types listed above.
     "rm -rf",
     "chmod 777"
   ],
+  "allow": [],
   "commit": {
+    "chat": "allow",
     "gated": "confirm",
     "autopilot": "after-release"
   },
   "unknown": {
+    "chat": "allow",
     "gated": "confirm",
     "autopilot": "deny"
   }
 }
 ```
 
+A file written before `allow` and the `chat` keys existed still loads: missing keys take these defaults. The file is seeded at session start only in a project directory (one with `.kpi/` or a git root), and a missing file reads as the default without being created.
+
 Hook: `pi.on("tool_call", …)`.
 
-Deny if:
+### Scopes
 
-- command matches deny list
-- write path outside active job `write_allow`
-- path looks like `.env`, `id_rsa`, `auth.json`, `accounts.secrets.json`
+| Scope | When | What applies |
+|---|---|---|
+| `chat` | No live job in the cwd (`readLiveJob` is empty; a finished run is not a job) | The hard denies below. No write bounds, no prompts: `commit.chat` and `unknown.chat` default to `allow`. |
+| `gated` | The live job's mode is gated | Everything: bounds, commit confirm with diff stat, unknown confirm. |
+| `autopilot` | The live job's mode is autopilot | Everything: bounds, commit after `release.approved`, unknown deny. |
+
+A live job whose `task.json` will not parse resolves to gated with no bounds, never to chat.
+
+### Order of evaluation
+
+Deny if, in every scope:
+
+- command matches the deny list, is a `git push`, a recursive forced `rm`, or a production/publish/dependency-adding command
 - a `write_contract` call whose target is not the declared contract path for that agent, job, and role, or whose payload fails `SCH-verdict` / `SCH-evidence`
+- path names a reserved run artifact (`verdict.json`, `release.approved`, `ship.json`) or the authoritative knowledge graph
+- path looks like `.env`, `id_rsa`, `auth.json`, `accounts.secrets.json` — read or written, `write`/`edit` or shell
 
-Allowlisted reads (`ls`, `git status`, `git diff`, `git log`, test commands from `quality_gates`) do not confirm.
+Then, in a job scope only, deny a shell write target outside the active job's `write_allow`.
+
+Then, in order: a standalone `git commit` follows `commit.<scope>`; an exact `quality_gates` command is allowed; a command every segment of which the read-only classifier accepts is allowed; an exact entry of `allow[]` is allowed; anything else is unknown and follows `unknown.<scope>`.
+
+### Read-only classifier (`shell-classifier.ts`)
+
+Allowlisted reads never confirm. A command is read-only when it parses and every simple command in it is: reads such as `cat head tail grep rg ls find wc sort diff stat jq sed -n awk`; `git status|log|diff|show|rev-parse|ls-files|branch (list)|remote (show)|config --get|stash list`; `npm ls|view|outdated|audit`; `node --version`; `<head> --help|--version`; shell control words (`if for while case [ test`), assignments, and `env`/`command`/`xargs`/`timeout` wrapping a read-only command. Pipes, `;`, `&&`, `||`, `$(…)`, backticks and subshells are fine when every part is read-only; redirects only to `/dev/null` or between descriptors (`2>&1`). A segment that writes a file, executes project code (`node script.js`, `npm test`), runs `-exec`/`-delete`, uses a heredoc, a background job, or an unknown head makes the whole line unknown, and the confirm question names that segment. A segment naming a secret-shaped path is denied regardless.
+
+### Remembered approvals
+
+In gated scope an unknown command asks once with three choices: **Allow for this session**, **Always allow in this project**, **Deny**. Either allow is kept for the process (the same whitespace-collapsed command does not ask again); *Always* appends the exact command to `allow[]` in `.kpi/policy.json`, creating the file from the template if needed, and later sessions run it without a prompt. `allow[]` is consulted after every hard deny and after the bounds check, so it cannot launder a push, a secret read, a write outside bounds, or a commit gate. A commit confirm is never remembered. Without a selector (print mode) the dialog falls back to confirm, and no UI at all answers deny.
 
 ## 13. Accounts and providers
 

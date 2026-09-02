@@ -18,7 +18,7 @@
     "shared_title_must_assert_all_bound_ids": true
   },
   "counts": {
-    "ac": 173,
+    "ac": 175,
     "metric": 7,
     "gap": 54,
     "rp": 21,
@@ -26,8 +26,8 @@
     "nfr": 8,
     "schema": 4,
     "event": 22,
-    "total": 317,
-    "covered": 317,
+    "total": 319,
+    "covered": 319,
     "uncovered": 0
   },
   "shared_titles": [
@@ -485,15 +485,6 @@
         "BUS-04",
         "REQ-RS-06",
         "NFR-04"
-      ]
-    },
-    {
-      "key": "test/runtime-milestone.test.ts::bare goals wrap while commands and active-job follow-ups do not",
-      "ids": [
-        "AC-24.1",
-        "AC-24.2",
-        "AC-24.3",
-        "AC-24.4"
       ]
     },
     {
@@ -1922,6 +1913,44 @@
       "failure_route": "Reopen RP-02 for AC-13.4; RP-19 does not patch feature behavior"
     },
     {
+      "id": "AC-13.5",
+      "kind": "ac",
+      "primary_owner": "RP-02",
+      "prd_us": "US-13",
+      "uat_row": "UAT-13",
+      "summary": "With no live job (chat scope), reads, writes, unknown commands and `git commit` never confirm; AC-13.1 denials, secret-shaped paths and reserved artifacts still",
+      "coverage": "covered",
+      "named_checks": [
+        {
+          "name": "chat_scope_never_confirms_but_keeps_every_hard_deny",
+          "file": "test/policy.test.ts",
+          "test_title": "chat scope never confirms but keeps every hard deny",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^chat scope never confirms but keeps every hard deny$' test/policy.test.ts",
+          "observable": "no live job: unknown commands, writes and commits run without a prompt; push, rm -rf, deploy, secret paths and reserved artifacts still deny"
+        }
+      ],
+      "failure_route": "Reopen RP-02 for AC-13.5; RP-19 does not patch feature behavior"
+    },
+    {
+      "id": "AC-13.6",
+      "kind": "ac",
+      "primary_owner": "RP-02",
+      "prd_us": "US-13",
+      "uat_row": "UAT-13",
+      "summary": "A gated confirm offers \"Allow for this session\", \"Always allow in this project\" and \"Deny\". *Always* persists the exact command to `.kpi/policy.json` `allow[]` ",
+      "coverage": "covered",
+      "named_checks": [
+        {
+          "name": "always_allow_persists_to_policy_json_allow_and_is_honoured_by_a_fresh_session",
+          "file": "test/policy.test.ts",
+          "test_title": "always allow persists to policy.json allow[] and is honoured by a fresh session",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^always allow persists to policy\\.json allow\\[\\] and is honoured by a fresh session$' test/policy.test.ts",
+          "observable": "Always allow writes the exact command to .kpi/policy.json allow[]; a new session honours it without a prompt; hard denies are not laundered"
+        }
+      ],
+      "failure_route": "Reopen RP-02 for AC-13.6; RP-19 does not patch feature behavior"
+    },
+    {
       "id": "AC-14.1",
       "kind": "ac",
       "primary_owner": "RP-01",
@@ -3029,15 +3058,15 @@
       "primary_owner": "RP-05",
       "prd_us": "US-24",
       "uat_row": "UAT-24",
-      "summary": "Package enabled, no active job, message does not start with `/` → sticky `/k-mode` + gated `/kpi` with that text.",
+      "summary": "With `kpi.routing = auto` (default) a bare message is ordinary harness input. For substantial engineering work the agent calls `kpi_start_job`, which queues a g",
       "coverage": "covered",
       "named_checks": [
         {
-          "name": "bare_goals_wrap_while_commands_and_active_job_follow_ups_do_not",
+          "name": "bare_text_stays_plain_chat_and_the_agent_starts_a_k_job_through_kpi_start_job",
           "file": "test/runtime-milestone.test.ts",
-          "test_title": "bare goals wrap while commands and active-job follow-ups do not",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^bare goals wrap while commands and active-job follow-ups do not$' test/runtime-milestone.test.ts",
-          "observable": "package on, no job, bare message → sticky /k-mode + gated /kpi wrap"
+          "test_title": "bare text stays plain chat and the agent starts a K-π job through kpi_start_job",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^bare text stays plain chat and the agent starts a K-π job through kpi_start_job$' test/runtime-milestone.test.ts",
+          "observable": "routing auto: bare text is plain chat; the agent queues a gated /kpi through kpi_start_job, sent on agent_end with sticky /k-mode"
         }
       ],
       "failure_route": "Reopen RP-05 for AC-24.1; RP-19 does not patch feature behavior"
@@ -3048,15 +3077,15 @@
       "primary_owner": "RP-05",
       "prd_us": "US-24",
       "uat_row": "UAT-24",
-      "summary": "Commands (`/kpi`, `/k-mode`, `/accounts`, `/setup-kstack`, …) are never auto-wrapped.",
+      "summary": "Commands (`/kpi`, `/k-mode`, `/accounts`, `/setup-kstack`, …) are never wrapped. `kpi.routing = always` (or `/kpi always`) wraps every bare message into a gated",
       "coverage": "covered",
       "named_checks": [
         {
-          "name": "bare_goals_wrap_while_commands_and_active_job_follow_ups_do_not",
+          "name": "routing_always_wraps_bare_goals_but_never_commands",
           "file": "test/runtime-milestone.test.ts",
-          "test_title": "bare goals wrap while commands and active-job follow-ups do not",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^bare goals wrap while commands and active-job follow-ups do not$' test/runtime-milestone.test.ts",
-          "observable": "commands (/kpi, /k-mode, /accounts, …) are never auto-wrapped"
+          "test_title": "routing always wraps bare goals but never commands",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^routing always wraps bare goals but never commands$' test/runtime-milestone.test.ts",
+          "observable": "commands (/kpi, /k-mode, /accounts, …) are never wrapped; routing always wraps bare text into a gated /kpi"
         }
       ],
       "failure_route": "Reopen RP-05 for AC-24.2; RP-19 does not patch feature behavior"
@@ -3067,15 +3096,15 @@
       "primary_owner": "RP-05",
       "prd_us": "US-24",
       "uat_row": "UAT-24",
-      "summary": "While a job is active, a bare follow-up is steer/followUp into the parent session. It does not start a second job.",
+      "summary": "While a job is live, a bare follow-up is steer/followUp into the parent session and `kpi_start_job` refuses to start a second job. A finished run (`DONE`, `BLOC",
       "coverage": "covered",
       "named_checks": [
         {
-          "name": "bare_goals_wrap_while_commands_and_active_job_follow_ups_do_not",
+          "name": "a_live_job_owns_bare_follow_ups_and_kpi_start_job_refuses_to_start_a_second_one",
           "file": "test/runtime-milestone.test.ts",
-          "test_title": "bare goals wrap while commands and active-job follow-ups do not",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^bare goals wrap while commands and active-job follow-ups do not$' test/runtime-milestone.test.ts",
-          "observable": "while job active, bare follow-up steers parent session and does not start a new job"
+          "test_title": "a live job owns bare follow-ups and kpi_start_job refuses to start a second one",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^a live job owns bare follow-ups and kpi_start_job refuses to start a second one$' test/runtime-milestone.test.ts",
+          "observable": "while a job is live, bare text steers the parent session and kpi_start_job refuses; a finished job owns nothing"
         }
       ],
       "failure_route": "Reopen RP-05 for AC-24.3; RP-19 does not patch feature behavior"
@@ -3086,15 +3115,15 @@
       "primary_owner": "RP-05",
       "prd_us": "US-24",
       "uat_row": "UAT-24",
-      "summary": "`/kpi off` or setting `kpi.autoWrap = false` restores plain Pi for bare messages.",
+      "summary": "`/kpi off` or `kpi.routing = off` disables automatic starts: only explicit `/kpi`, `/loop`, `/k-mode` start a job. Bus worker sessions never hold `kpi_start_job",
       "coverage": "covered",
       "named_checks": [
         {
-          "name": "bare_goals_wrap_while_commands_and_active_job_follow_ups_do_not",
+          "name": "kpi_off_kpi_routing_off_and_worker_sessions_leave_no_automatic_job_start",
           "file": "test/runtime-milestone.test.ts",
-          "test_title": "bare goals wrap while commands and active-job follow-ups do not",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^bare goals wrap while commands and active-job follow-ups do not$' test/runtime-milestone.test.ts",
-          "observable": "/kpi off or kpi.autoWrap=false restores plain Pi for bare messages"
+          "test_title": "kpi off, kpi.routing off, and worker sessions leave no automatic job start",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^kpi off, kpi\\.routing off, and worker sessions leave no automatic job start$' test/runtime-milestone.test.ts",
+          "observable": "/kpi off or kpi.routing=off leaves only explicit /kpi; bus workers never hold kpi_start_job"
         }
       ],
       "failure_route": "Reopen RP-05 for AC-24.4; RP-19 does not patch feature behavior"

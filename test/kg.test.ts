@@ -217,8 +217,9 @@ test("a direct authoritative write through the public tool fails", async () => {
 	const paths = knowledgeGraphPaths(cwd);
 	const policy: PolicyConfig = {
 		deny: [],
-		commit: { gated: "confirm", autopilot: "after-release" },
-		unknown: { gated: "confirm", autopilot: "deny" },
+		allow: [],
+		commit: { chat: "allow", gated: "confirm", autopilot: "after-release" },
+		unknown: { chat: "allow", gated: "confirm", autopilot: "deny" },
 	};
 	// A write_allow wide enough to cover everything, so the denial can only come
 	// from the one-writer reservation.

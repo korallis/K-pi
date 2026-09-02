@@ -21,6 +21,7 @@ import {
 	FULL_LEFT_SEGMENT_ORDER,
 	formatCost,
 	formatKpiJob,
+	formatStatusRow,
 	formatUsage,
 	leftSegmentsForPreset,
 	SEGMENT_SEPARATOR,
@@ -310,6 +311,7 @@ test("registered footer full preset embeds kpi job fields and refreshes after st
 test("the registered footer draws the extension statuses it took over", async () => {
 	const root = await mkdtemp(join(tmpdir(), "kpi-footer-status-"));
 	let sessionStart: ((event: unknown, ctx: ExtensionContext) => void) | undefined;
+	let statusbar: ((args: string, ctx: ExtensionContext) => Promise<void>) | undefined;
 	let footerFactory:
 		| ((
 				tui: unknown,
@@ -322,7 +324,9 @@ test("the registered footer draws the extension statuses it took over", async ()
 		on(event: string, handler: (event: unknown, ctx: ExtensionContext) => void) {
 			if (event === "session_start") sessionStart = handler;
 		},
-		registerCommand() {},
+		registerCommand(name: string, def: { handler: (args: string, ctx: ExtensionContext) => Promise<void> }) {
+			if (name === "statusbar") statusbar = def.handler;
+		},
 	} as unknown as ExtensionAPI;
 
 	const ctx = {
@@ -348,23 +352,96 @@ test("the registered footer draws the extension statuses it took over", async ()
 		assert.ok(footerFactory, "footer must register on session_start");
 		await new Promise((resolve) => setTimeout(resolve, 30));
 
-		// Replacing Pi's footer removed the row these are drawn on. The accounts
-		// widget publishes here, so losing the row loses the operator's only view
-		// of which credential is serving them.
+		// Replacing Pi's footer removed the row these are drawn on. Every status
+		// used to be concatenated onto it, so the accounts summary and the job
+		// line ran together and ROUTE printed twice.
 		const footerData = {
 			getGitBranch: () => "main",
 			onBranchChange: () => () => {},
-			getExtensionStatuses: () => new Map([["accounts", "ACCOUNTS\n  LOCAL-OPENAI  a (local) $0"]]),
-			getExtensionStatusLine: () => "ACCOUNTS LOCAL-OPENAI a (local) $0",
+			getExtensionStatuses: () =>
+				new Map([
+					["accounts", "ACCOUNTS\n  ANTHROPIC default 40%\nROUTE   anthropic/home via default"],
+					["kpi", "K-π LOOP gated r2/3 STAGE implement GATE human ROUTE anthropic/home"],
+				]),
+			getExtensionStatusLine: () => "unused",
 		};
 		component = footerFactory!({ requestRender() {} }, { fg: (_name: string, text: string) => text }, footerData);
 		const lines = component.render(200);
-
-		assert.ok(lines.length >= 2, `expected a status row alongside the rail, got ${lines.length} line(s)`);
+		assert.equal(lines.length, 2, `expected the rail and one status row, got ${lines.length} line(s)`);
 		assert.ok(lines[0]?.includes("K-π"), "the first row is still the K-π rail");
-		assert.match(lines.slice(1).join("\n"), /ACCOUNTS LOCAL-OPENAI a \(local\) \$0/u);
+		assert.match(lines[1] ?? "", /LOOP gated r2\/3 STAGE implement GATE human/u);
+		assert.equal((lines[1]?.match(/ROUTE/gu) ?? []).length, 1, "ROUTE prints once");
+		assert.doesNotMatch(lines[1] ?? "", /ACCOUNTS/u, "the accounts summary stays off the default row");
+
+		await statusbar?.("preset full", ctx);
+		component.dispose?.();
+		component = footerFactory!({ requestRender() {} }, { fg: (_name: string, text: string) => text }, footerData);
+		const full = component.render(200);
+		assert.match(
+			full[1] ?? "",
+			/ACCOUNTS ANTHROPIC default 40% ROUTE anthropic\/home via default/u,
+			"full shows the accounts summary",
+		);
 	} finally {
 		component?.dispose?.();
+		resetFooterRouteSnapshot();
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("formatStatusRow keeps one job line by default and the accounts summary under full", () => {
+	const statuses = new Map([
+		["kpi", "K-π LOOP gated r0/3 STAGE plan GATE machine"],
+		["accounts", "ACCOUNTS\n  ANTHROPIC default ?%"],
+		["zeta", " trailing \n"],
+	]);
+	assert.equal(formatStatusRow(statuses, "default"), "K-π LOOP gated r0/3 STAGE plan GATE machine trailing");
+	assert.equal(formatStatusRow(statuses, "compact"), "K-π LOOP gated r0/3 STAGE plan GATE machine trailing");
+	assert.equal(
+		formatStatusRow(statuses, "full"),
+		"ACCOUNTS ANTHROPIC default ?% K-π LOOP gated r0/3 STAGE plan GATE machine trailing",
+	);
+	assert.equal(formatStatusRow(new Map(), "default"), undefined);
+	assert.equal(formatStatusRow(new Map([["accounts", "ACCOUNTS"]]), "default"), undefined);
+});
+
+test("the job line is hidden when the newest job is finished", async () => {
+	const root = await mkdtemp(join(tmpdir(), "kpi-footer-finished-"));
+	const run = join(root, ".kpi", "runs", "done-job");
+	await mkdir(run, { recursive: true });
+	await writeFile(
+		join(run, "state.json"),
+		JSON.stringify({ job_id: "done-job", mode: "gated", round: 3, maxRounds: 3, stage: "ship", status: "DONE" }),
+	);
+	let sessionStart: ((event: unknown, ctx: ExtensionContext) => void) | undefined;
+	const statuses = new Map<string, string | undefined>();
+	const pi = {
+		on(event: string, handler: (event: unknown, ctx: ExtensionContext) => void) {
+			if (event === "session_start") sessionStart = handler;
+		},
+		registerCommand() {},
+	} as unknown as ExtensionAPI;
+	const ctx = {
+		cwd: root,
+		mode: "tui",
+		model: { name: "test-model" },
+		thinkingLevel: "off",
+		getContextUsage: () => ({ percent: 10, contextWindow: 100_000 }),
+		sessionManager: { getBranch: () => [] },
+		ui: {
+			setFooter() {},
+			setStatus(key: string, value: string | undefined) {
+				statuses.set(key, value);
+			},
+			notify() {},
+		},
+	} as unknown as ExtensionContext;
+	try {
+		registerStatusLine(pi);
+		sessionStart?.({}, ctx);
+		await new Promise((resolve) => setTimeout(resolve, 30));
+		assert.equal(statuses.get("kpi"), undefined, "a finished run publishes no job line");
+	} finally {
 		resetFooterRouteSnapshot();
 		await rm(root, { recursive: true, force: true });
 	}

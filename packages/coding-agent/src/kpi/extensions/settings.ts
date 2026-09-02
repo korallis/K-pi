@@ -1,11 +1,28 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { CONFIG_DIR_NAME } from "../../config.ts";
+import { CONFIG_DIR_NAME, getAgentDir } from "../../config.ts";
 import { isJsonObject, type JsonObject } from "./graph/schema.ts";
 import { atomicWrite } from "./run-store.ts";
 
-export const autoWrapState = { enabled: true };
+/**
+ * `kpi.routing`. How a bare (non-slash) message reaches the K-π loop.
+ *
+ * - `auto`: bare text is ordinary harness input; the agent starts a job for
+ *   substantial work through the `kpi_start_job` tool.
+ * - `always`: every bare message is wrapped into a gated `/kpi` job.
+ * - `off`: nothing starts a job automatically; only `/kpi`, `/loop`, `/k-mode`.
+ */
+export const ROUTING_MODES = ["auto", "always", "off"] as const;
+
+export type RoutingMode = (typeof ROUTING_MODES)[number];
+
+export function isRoutingMode(value: unknown): value is RoutingMode {
+	return typeof value === "string" && (ROUTING_MODES as readonly string[]).includes(value);
+}
+
+/** Session override set by `/kpi auto|always|off`; `undefined` means "use settings". */
+export const routingState: { override?: RoutingMode } = {};
 
 /**
  * `kpi.research`. `auto` prefers Exa for developer research and keeps Perplexity
@@ -37,9 +54,10 @@ export interface KpiResearchEndpointSettings {
 export interface KpiSettings {
 	research: ResearchMode;
 	researchEndpoints: KpiResearchEndpointSettings;
+	routing: RoutingMode;
 }
 
-const DEFAULT_SETTINGS: KpiSettings = { research: "auto", researchEndpoints: {} };
+const DEFAULT_SETTINGS: KpiSettings = { research: "auto", researchEndpoints: {}, routing: "auto" };
 
 function readEndpointSettings(value: unknown): KpiResearchEndpointSettings {
 	if (!isJsonObject(value)) {
@@ -56,23 +74,53 @@ export function settingsPath(projectRoot: string): string {
 	return join(projectRoot, CONFIG_DIR_NAME, "settings.json");
 }
 
-/**
- * Project settings. A missing or unreadable file is not a failure: research is
- * optional, so an absent setting means the default rather than a broken run.
- */
-export async function readKpiSettings(projectRoot: string): Promise<KpiSettings> {
+/** The operator's own settings file; the harness keeps unknown top-level keys such as `kpi`. */
+export function userSettingsPath(agentDirectory: string = getAgentDir()): string {
+	return join(agentDirectory, "settings.json");
+}
+
+async function readJsonObject(path: string): Promise<JsonObject | undefined> {
 	try {
-		const parsed: unknown = JSON.parse(await readFile(settingsPath(projectRoot), "utf8"));
-		if (!isJsonObject(parsed)) {
-			return { ...DEFAULT_SETTINGS };
-		}
-		return {
-			research: isResearchMode(parsed.research) ? parsed.research : DEFAULT_SETTINGS.research,
-			researchEndpoints: readEndpointSettings(parsed.researchEndpoints),
-		};
+		const parsed: unknown = JSON.parse(await readFile(path, "utf8"));
+		return isJsonObject(parsed) ? parsed : undefined;
 	} catch {
-		return { ...DEFAULT_SETTINGS };
+		return undefined;
 	}
+}
+
+/**
+ * Settings. A missing or unreadable file is not a failure: every setting is
+ * optional, so an absent value means the default rather than a broken run.
+ *
+ * Research settings are project-only. Routing is read from the project file
+ * (top-level `routing`) first and from the user file (`kpi.routing`) second, so
+ * a repository can pin how its operators enter the loop while a person keeps a
+ * default for everywhere else.
+ */
+export async function readKpiSettings(
+	projectRoot: string,
+	agentDirectory: string = getAgentDir(),
+): Promise<KpiSettings> {
+	const project = (await readJsonObject(settingsPath(projectRoot))) ?? {};
+	const user = (await readJsonObject(userSettingsPath(agentDirectory))) ?? {};
+	const userKpi = isJsonObject(user.kpi) ? user.kpi : {};
+	return {
+		research: isResearchMode(project.research) ? project.research : DEFAULT_SETTINGS.research,
+		researchEndpoints: readEndpointSettings(project.researchEndpoints),
+		routing: isRoutingMode(project.routing)
+			? project.routing
+			: isRoutingMode(userKpi.routing)
+				? userKpi.routing
+				: DEFAULT_SETTINGS.routing,
+	};
+}
+
+/** Effective routing for this session: the `/kpi` override, else settings. */
+export async function resolveRoutingMode(
+	projectRoot: string,
+	agentDirectory: string = getAgentDir(),
+): Promise<RoutingMode> {
+	return routingState.override ?? (await readKpiSettings(projectRoot, agentDirectory)).routing;
 }
 
 /** Persists the research mode, preserving any other setting already written. */

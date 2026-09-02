@@ -51,7 +51,7 @@ K-π is a coding-agent harness we own outright — a fork of Pi `v0.84.4`, base 
 - Plan writes `stack.json` (dune modules). Implement stays inside the current module. Vertical slices by default. See `docs/dune-architecture.md`.
 - Implementer never writes `verdict.json` or `release.approved`.
 - No Cursor-style subagents. Workers are background K-π sessions. They talk only via `communicate` (`sendUserMessage` / RPC prompt). One writer at a time. `claim_path` before edits. See `docs/agents-bus.md`.
-- Bare non-slash text with no active job is gated `/kpi` + sticky `/k-mode`. Commands are never auto-wrapped. `/kpi off` restores plain harness input.
+- Bare non-slash text is plain harness input. The agent starts a K-π job for substantial work through the `kpi_start_job` tool (`kpi.routing = auto`, the default); `/kpi always` wraps every bare message into a gated `/kpi` + sticky `/k-mode`; `/kpi off` or `kpi.routing = off` leaves only explicit `/kpi`, `/loop`, `/k-mode`. Commands are never wrapped. A live job owns bare follow-ups; a finished run owns nothing.
 - Implementer walks the minimalist ladder and records `candidate.json.ladder` before writing files. See `docs/minimalist.md`.
 - Autopilot never push, deploy, force-push, `rm -rf`, production migrate, or add runtime dependencies.
 - Anthropic subscription login must show the extra-usage warning once per new slot before OAuth starts.
@@ -91,7 +91,7 @@ These are the only process rules. There is no principle preamble to read first.
 
 ## Stack (this repo)
 
-- TypeScript, Node `>= 22.19`. npm workspaces. Not pnpm.
+- TypeScript 7 (native `tsc`; there is no compiler API, so `scripts/check-ts-relative-imports.mjs` scans source text), Node `>= 22.22`. npm workspaces. Not pnpm.
 - Repository: `k-pi-monorepo` (private root). Published artifact: `@korallis/k-pi` on npm (NH-04). Executable: `kpi` / `k-pi`. Brand cell: **K-π**.
 - Everything under `packages/` is forked Pi source owned here. K-π's own runtime is `packages/coding-agent/src/kpi/`; K-π's node tests stay in root `test/` and import that path.
 - Upstream base: Pi `v0.84.4`, commit `b79e4cc834970cca69daebffab7df1da7d1e52c4`, remote `upstream` → `https://github.com/earendil-works/pi.git`. Machine-readable pin: `upstream.json`; drift report: `npm run upstream:check`.

@@ -92,7 +92,7 @@ M0 scaffold
 - [x] Fixture `healthcheck-gated` reaches human confirm with green gates (M-01)
 - [x] Reviewer cannot write files
 - [x] Implementer never writes `verdict.json`
-- [x] Bare text auto-wraps to gated `/kpi` + `/k-mode` (US-24)
+- [x] Bare text auto-wraps to gated `/kpi` + `/k-mode` (US-24) — superseded 2026-09-02 by agent-decided routing (`kpi_start_job`, `kpi.routing`); see `fixes.md` FX-03
 - [x] Specify/plan write research.md (US-29)
 - [x] Plan writes stack.json (US-30)
 

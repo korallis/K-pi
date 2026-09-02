@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -8,6 +8,7 @@ import type { ExtensionCommandContext, ExtensionContext } from "../packages/codi
 
 import { verifyChain } from "../packages/coding-agent/src/kpi/extensions/append-log.ts";
 import { createStatusWidget, registerControlPlane } from "../packages/coding-agent/src/kpi/extensions/control-plane.ts";
+import { routingState } from "../packages/coding-agent/src/kpi/extensions/settings.ts";
 
 type CommandHandler = (args: string, context: ExtensionCommandContext) => Promise<void>;
 type SessionStartHandler = (event: unknown, context: ExtensionContext) => Promise<void>;
@@ -44,6 +45,8 @@ function registerFixture() {
 	return { commands, getSessionStart: () => sessionStart };
 }
 
+type WidgetFactory = (tui: unknown, theme: unknown) => { render(width: number): string[] };
+
 function context(cwd: string, notifications: string[], widgets: Array<string[] | undefined>): ExtensionCommandContext {
 	return {
 		cwd,
@@ -59,8 +62,13 @@ function context(cwd: string, notifications: string[], widgets: Array<string[] |
 			notify(message: string) {
 				notifications.push(message);
 			},
-			setWidget(_key: string, content: string[] | undefined) {
-				widgets.push(content);
+			// The board is a component; render it the way the interactive mode would.
+			setWidget(_key: string, content: string[] | WidgetFactory | undefined) {
+				widgets.push(
+					typeof content === "function"
+						? content({ requestRender() {} }, { fg: (_name: string, text: string) => text }).render(120)
+						: content,
+				);
 			},
 		},
 	} as unknown as ExtensionCommandContext;
@@ -206,5 +214,95 @@ test("kpi verify accepts a job id and refuses to eat a goal", async () => {
 			/records chained|FAILED verification/u,
 			"a multi-word goal was not swallowed by the verify subcommand",
 		);
+	});
+});
+
+test("a long or multi-line goal is never probed as a job id", async () => {
+	await withFixture(async (directory) => {
+		const { commands } = registerFixture();
+		const notifications: string[] = [];
+		const goal = `${"the ui of this terminal looks nothing like the reference images ".repeat(6)}\nplease fix it`;
+		await commands.get("kpi")?.(goal, context(directory, notifications, []));
+
+		assert.ok(
+			notifications.every((message) => !/ENAMETOOLONG|ENOTDIR/u.test(message)),
+			`the goal was treated as text, not a path: ${notifications.join(" | ")}`,
+		);
+		// The loop got as far as creating a run for the goal before the fixture's
+		// session factory refused to start an agent.
+		const runs = await readdir(join(directory, ".kpi", "runs"));
+		assert.equal(runs.length, 1, "exactly one run directory for the goal");
+		const task = JSON.parse(await readFile(join(directory, ".kpi", "runs", runs[0] ?? "", "task.json"), "utf8")) as {
+			goal: string;
+			quality_gates: string[];
+		};
+		assert.equal(task.goal, goal, "the goal is kept verbatim on the contract");
+		assert.deepEqual(task.quality_gates, [], "no package manager or AGENTS.md block means no guessed gates");
+		assert.ok(
+			notifications.some((message) => /quality gates/u.test(message)),
+			"missing gates are reported to the operator",
+		);
+	});
+});
+
+test("kpi auto, always and off set the session routing override", async () => {
+	await withFixture(async (directory) => {
+		const { commands } = registerFixture();
+		const notifications: string[] = [];
+		try {
+			for (const mode of ["off", "always", "auto"] as const) {
+				await commands.get("kpi")?.(mode, context(directory, notifications, []));
+				assert.equal(routingState.override, mode);
+			}
+			assert.deepEqual(
+				notifications.map((message) => message.split(":")[0]),
+				["K-π routing off", "K-π routing always", "K-π routing auto"],
+			);
+			assert.deepEqual(await readdir(join(directory)), [], "a routing switch starts no job");
+		} finally {
+			delete routingState.override;
+		}
+	});
+});
+
+test("a finished job is not pinned above the editor", async () => {
+	await withFixture(async (directory) => {
+		const runDirectory = await createRun(directory);
+		await writeFile(
+			join(runDirectory, "state.json"),
+			`${JSON.stringify({ job_id: "2026-08-31-status", mode: "gated", stage: "plan", status: "UNSAFE" })}\n`,
+		);
+		const notifications: string[] = [];
+		const widgets: Array<string[] | undefined> = [];
+		const { commands, getSessionStart } = registerFixture();
+
+		await getSessionStart()?.({}, context(directory, notifications, widgets));
+		assert.deepEqual(widgets, [undefined], "a dead run draws no widget");
+
+		await commands.get("kpi")?.("status", context(directory, notifications, widgets));
+		assert.deepEqual(notifications, ["no active job — last job 2026-08-31-status UNSAFE"]);
+	});
+});
+
+test("the session widget is a framed component painted at the live width", async () => {
+	await withFixture(async (directory) => {
+		await createRun(directory);
+		const widgets: Array<string[] | undefined> = [];
+		const { getSessionStart } = registerFixture();
+		await getSessionStart()?.({}, context(directory, [], widgets));
+		const lines = widgets[0] ?? [];
+		assert.ok(
+			lines.some((line) => line.startsWith("┌")),
+			"the widget is framed",
+		);
+		assert.ok(
+			lines.every((line) => line.length === 120),
+			"every line is painted to the widget width",
+		);
+		const text = lines.join("\n");
+		assert.match(text, /K-π GRAPH CONTROL/);
+		assert.match(text, /04 implement/);
+		assert.match(text, /STOP RUNNING/);
+		assert.match(text, /FILES {2}○ task\.json/, "an empty run file is a dark lamp");
 	});
 });

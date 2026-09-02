@@ -108,10 +108,10 @@ Grader discipline: prefer a deterministic check — exit code, exact string, fil
 - **ACs:** AC-12.1–12.4 · **Owner:** RP-07
 
 ### UAT-13 — US-13 Policy layers
-- **Real-user question:** Can it do something irreversible to my repository?
-- **Action:** Attempt `git push`, force-push, `rm -rf`, a production deploy, a write outside `write_allow`, and an unknown command — in gated and again in autopilot.
-- **Pass evidence:** All five are denied by the `tool_call` hook and never execute. Gated `git commit` asks for confirmation with files changed, insertions, and deletions. Autopilot `git commit` is denied without fresh `release.approved === true`. An unknown command asks in gated and is denied in autopilot.
-- **ACs:** AC-13.1–13.4 · **Owner:** RP-02
+- **Real-user question:** Can it do something irreversible to my repository, and does it stop asking me about things that cannot?
+- **Action:** Attempt `git push`, force-push, `rm -rf`, a production deploy, a write outside `write_allow`, and an unknown command — in gated and again in autopilot. Then, in plain chat with no job, run `ls -la /etc`, a compound read-only command (`printf '%s\n' "$HOME"; command -v node || true`), `node --version | head -n 1` and `git commit`; then, inside a gated job, run an unknown command, choose *Always allow in this project*, restart the harness, and run it again.
+- **Pass evidence:** All five are denied by the `tool_call` hook and never execute. Gated `git commit` asks for confirmation with files changed, insertions, and deletions. Autopilot `git commit` is denied without fresh `release.approved === true`. An unknown command asks in gated and is denied in autopilot. Chat never prompts and `git push` is still denied there. The confirm offers three choices; after *Always allow* `.kpi/policy.json` `allow[]` holds the exact command and the restarted session runs it silently.
+- **ACs:** AC-13.1–13.6 · **Owner:** RP-02
 
 ### UAT-14 — US-14 Observability
 - **Real-user question:** If my laptop dies mid-run, can I reconstruct what happened?
@@ -173,10 +173,10 @@ Grader discipline: prefer a deterministic check — exit code, exact string, fil
 - **Pass evidence:** Each worker is a `kpi --mode rpc` session with its own session file under `.kpi/runs/<job>/agents/`. The third spawn is denied. The second writer is denied. A second `claim_path` on the same path is denied until release or holder-pid death. The parent decides from `verdict.json` and `evidence.json`, never a worker transcript. The board can show `AGENTS n`. No `pi-intercom`, `pi-mesh`, `pi-agents-talk-to-each-other`, `pi-bus`, or `pi-side-agents` in any manifest. A reviewer holding only `write_contract` does not consume the single-writer slot.
 - **ACs:** AC-23.1–23.9 · **Owner:** RP-13, RP-14
 
-### UAT-24 — US-24 Bare message starts gated K-mode
-- **Real-user question:** Can I just type what I want, with no slash command?
-- **Action:** With no active job type `add a healthcheck`; then type `/accounts`; then with a job active type a bare follow-up; then `/kpi off`.
-- **Pass evidence:** The bare message starts sticky `/k-mode` plus a gated `/kpi` with that text. Commands are never auto-wrapped. The bare follow-up steers the existing job and starts no second job — the run directory count stays at one. `/kpi off`, or `kpi.autoWrap = false`, restores plain harness input.
+### UAT-24 — US-24 Bare message is plain chat; the agent starts a K-π job for substantial work
+- **Real-user question:** Can I just type what I want, with no slash command, and get a job only when it is really a job?
+- **Action:** With no live job type `hi`, then `why is the build red?`, then `add a healthcheck endpoint with a test and ship it`; with that job live type a bare follow-up; then `/kpi off` and repeat the goal; then `/kpi always` and type `add a metrics endpoint`.
+- **Pass evidence:** The first two messages create no run directory and are answered in chat. The third produces a `kpi_start_job` call, a one-sentence reply, and exactly one run directory whose `task.json` has that goal and quality gates that match the repository's package manager. The follow-up steers the existing job and creates none. After `/kpi off` the goal is answered as chat with no run directory. After `/kpi always` the bare goal becomes `/kpi --mode gated add a metrics endpoint` directly.
 - **ACs:** AC-24.1–24.4 · **Owner:** RP-05
 
 ### UAT-25 — US-25 TUI is information-complete, not pixel-perfect

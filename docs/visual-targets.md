@@ -124,6 +124,8 @@ Must be present: `K-π`, MODE, JOB, ROUND, stages 01–08 with current lit, PASS
 
 May wrap, stack, or truncate on a narrow terminal. Current stage and STOP stay visible. Amber ≈ running, blue ≈ paused. Hex values in the reconstructions are guidance, not a screenshot test.
 
+The always-on widget is the compact cut of Board A/B: header strip, one row of stage cells, the `FILES` lamp row, the LOOP/STAGE/NODE/GATE and ROUND/PASS/FAIL rows, the STOP box, and while paused the operator question and STOP STATES. `/kpi status` is the full board. Below 70 columns the rows are flat but keep every field; the lamp row folds. Lamps are `●` lit / `○` dark; the iteration panel reads `PASS/FAIL PENDING` until a verdict exists.
+
 Canonical post:
 
 **https://x.com/av1dlive/status/2092622516544270781**

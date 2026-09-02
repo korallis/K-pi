@@ -1,34 +1,58 @@
 import { execFile as execFileCallback } from "node:child_process";
 import { constants } from "node:fs";
-import { copyFile, mkdir, readFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, stat } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 
 import { CONFIG_DIR_NAME, getKpiResourceDir } from "../../config.ts";
 
-import { type ExtensionAPI, isToolCallEventType, type ToolCallEvent } from "../../core/extensions/types.ts";
+import {
+	type ExtensionAPI,
+	type ExtensionUIContext,
+	isToolCallEventType,
+	type ToolCallEvent,
+} from "../../core/extensions/types.ts";
 
 import { appendEvent } from "./append-log.ts";
 import { isJsonObject } from "./graph/schema.ts";
 import { isAuthoritativeKnowledgeGraphPath } from "./kg/store.ts";
-import { type RunState, readActiveJob, type Task, writeAllowForTask } from "./run-store.ts";
+import { atomicWrite, type RunState, readLiveJob, type Task, writeAllowForTask } from "./run-store.ts";
+import { classifyShellCommand } from "./shell-classifier.ts";
 
 const execFile = promisify(execFileCallback);
 
+/** What chat scope does with a commit or an unknown command: run it, or ask. */
+export type ChatRule = "allow" | "confirm";
+
 export interface PolicyConfig {
 	deny: string[];
+	/** Exact whitespace-collapsed commands an operator chose to always allow in this project. */
+	allow: string[];
 	commit: {
+		chat: ChatRule;
 		gated: "confirm";
 		autopilot: "after-release";
 	};
 	unknown: {
+		chat: ChatRule;
 		gated: "confirm";
 		autopilot: "deny";
 	};
 }
 
-/** Loop mode of the active job. Without one, policy runs the safe mode: `gated`. */
-export type PolicyMode = "gated" | "autopilot";
+export const DEFAULT_POLICY_CONFIG: PolicyConfig = {
+	deny: ["git push", "git push --force", "git reset --hard", "rm -rf", "chmod 777"],
+	allow: [],
+	commit: { chat: "allow", gated: "confirm", autopilot: "after-release" },
+	unknown: { chat: "allow", gated: "confirm", autopilot: "deny" },
+};
+
+/**
+ * The scope a tool call is judged in. `chat` is a session with no live K-π
+ * job: the hard denies apply and nothing else does. `gated` and `autopilot`
+ * are the live job's loop mode.
+ */
+export type PolicyMode = "chat" | "gated" | "autopilot";
 
 /**
  * Everything policy needs from the active run. One resolver reads one job, so a
@@ -43,8 +67,16 @@ export interface ActivePolicyState {
 	qualityGates: readonly string[];
 }
 
-/** No active job: gated, unreleased, no declared gates, and no write bounds. */
+/** No live job: chat scope. Hard denies only; no bounds, no prompts. */
 export const DEFAULT_ACTIVE_POLICY_STATE: ActivePolicyState = {
+	mode: "chat",
+	releaseApproved: false,
+	writeAllow: [],
+	qualityGates: [],
+};
+
+/** A live job whose task contract will not parse: the safe job scope, unbounded. Never chat. */
+export const UNREADABLE_JOB_POLICY_STATE: ActivePolicyState = {
 	mode: "gated",
 	releaseApproved: false,
 	writeAllow: [],
@@ -60,6 +92,8 @@ export type PolicyDecision =
 			question: string;
 			/** Recorded when the operator declines, or when no operator can answer. */
 			declineReason: string;
+			/** The collapsed command an approval is remembered under; absent when it must always ask. */
+			command?: string;
 	  };
 
 export interface DiffStat {
@@ -84,7 +118,13 @@ export interface PolicyRegistrationOptions {
 	/** Mode, release gate, bounds, and declared gates. Defaults to the active job. */
 	resolveActiveState?: (cwd: string) => ActivePolicyState | Promise<ActivePolicyState>;
 	readDiffStat?: DiffStatReader;
+	/** Commands approved for this process. Defaults to a fresh set per registration; a test seam. */
+	sessionAllow?: Set<string>;
 }
+
+export const APPROVAL_OPTIONS = ["Allow for this session", "Always allow in this project", "Deny"] as const;
+
+export type ApprovalChoice = "once" | "always" | "deny";
 
 const ALLOW: PolicyDecision = { kind: "allow" };
 
@@ -97,35 +137,6 @@ const PRODUCTION_COMMAND_PATTERNS = [
 	/\bnpm\s+(?:install|i)\b/i,
 	/\b(?:pnpm|yarn|bun)\s+add\b/i,
 ] as const;
-
-/**
- * Non-mutating inspection commands that never prompt. Matching is literal after
- * whitespace collapsing: `git log` is safe, `git log --all -p > /tmp/dump` is a
- * different command and stays unknown. Keep this list exact and small.
- */
-const SAFE_COMMANDS: Record<string, true> = {
-	ls: true,
-	"ls -a": true,
-	"ls -l": true,
-	"ls -la": true,
-	pwd: true,
-	"git branch": true,
-	"git branch --show-current": true,
-	"git diff": true,
-	"git diff --cached": true,
-	"git diff --stat": true,
-	"git diff --staged": true,
-	"git diff HEAD": true,
-	"git log": true,
-	"git log -1": true,
-	"git log --oneline": true,
-	"git log --stat": true,
-	"git status": true,
-	"git status --porcelain": true,
-	"git status --short": true,
-	"git rev-parse HEAD": true,
-	"git rev-parse --verify HEAD": true,
-};
 
 /**
  * Shell syntax that can attach a second command to the first. A command holding
@@ -204,12 +215,19 @@ function isStandaloneGitCommit(command: string): boolean {
 	return tokens[0] === "git" && tokens[1] === "commit";
 }
 
-function isSafeCommand(command: string, qualityGates: readonly string[]): boolean {
+/** A declared gate is allowed verbatim and never as part of a composition. */
+function isDeclaredQualityGate(command: string, qualityGates: readonly string[]): boolean {
 	if (SHELL_COMPOSITION_PATTERN.test(command)) {
 		return false;
 	}
 	const exact = collapseWhitespace(command);
-	return SAFE_COMMANDS[exact] === true || qualityGates.some((gate) => collapseWhitespace(gate) === exact);
+	return qualityGates.some((gate) => collapseWhitespace(gate) === exact);
+}
+
+/** An operator's own "always allow" is exact too: a remembered command, not a remembered prefix. */
+function isAllowlisted(command: string, allow: readonly string[]): boolean {
+	const exact = collapseWhitespace(command);
+	return allow.some((entry) => collapseWhitespace(entry) === exact);
 }
 
 function normalizePath(path: string): string {
@@ -446,7 +464,7 @@ function isReleaseApproved(state: RunState): boolean {
  * the current HEAD, so reading the flag reads a checked one.
  */
 export async function resolveActivePolicyState(cwd: string): Promise<ActivePolicyState> {
-	const job = await readActiveJob(cwd);
+	const job = await readLiveJob(cwd);
 	if (job === undefined) {
 		return DEFAULT_ACTIVE_POLICY_STATE;
 	}
@@ -454,7 +472,7 @@ export async function resolveActivePolicyState(cwd: string): Promise<ActivePolic
 	try {
 		task = JSON.parse(await readFile(join(job.directory, "task.json"), "utf8")) as Task;
 	} catch {
-		return DEFAULT_ACTIVE_POLICY_STATE;
+		return UNREADABLE_JOB_POLICY_STATE;
 	}
 	const writeAllow = Array.isArray(task.acceptance) ? [...writeAllowForTask(task)] : [];
 	// Implementer owns candidate.json in this job's run directory (not product tree).
@@ -470,6 +488,55 @@ export async function resolveActivePolicyState(cwd: string): Promise<ActivePolic
 	};
 }
 
+function confirmCommit(command: string, summary: string): PolicyDecision {
+	return {
+		kind: "confirm",
+		title: "Approve git commit",
+		question: `${command}\n\n${summary} against HEAD.\n\nCommit on the job branch?`,
+		declineReason: `Policy requires confirmation for git commit; not approved: ${command}`,
+	};
+}
+
+async function evaluateGitCommit(command: string, options: PolicyEvaluationOptions): Promise<PolicyDecision> {
+	const { active, policy } = options;
+	const rule = active.mode === "chat" ? policy.commit.chat : policy.commit[active.mode];
+	if (rule === "allow") {
+		return ALLOW;
+	}
+	if (rule === "confirm") {
+		const stat = await (options.readDiffStat ?? readGitDiffStat)(options.cwd);
+		const summary = `${stat.filesChanged} files changed, ${stat.insertions} insertions(+), ${stat.deletions} deletions(-)`;
+		return confirmCommit(command, summary);
+	}
+	return active.releaseApproved
+		? ALLOW
+		: { kind: "deny", reason: `Policy denied git commit before release.approved: ${command}` };
+}
+
+function unknownCommand(command: string, options: PolicyEvaluationOptions, why: string): PolicyDecision {
+	const { active, policy } = options;
+	const rule = active.mode === "chat" ? policy.unknown.chat : policy.unknown[active.mode];
+	if (rule === "allow") {
+		return ALLOW;
+	}
+	if (rule === "confirm") {
+		return {
+			kind: "confirm",
+			title: "Approve unrecognized command",
+			question: `${command}\n\n${why}\n\nRun it?`,
+			declineReason: `Policy requires confirmation for an unrecognized command; not approved: ${command}`,
+			command: collapseWhitespace(command),
+		};
+	}
+	return { kind: "deny", reason: `Policy denied unrecognized command: ${command}` };
+}
+
+/**
+ * Order matters and is the contract: every hard deny comes first, so nothing
+ * an operator allows can launder a push, a secret read, a write outside the
+ * bounds, or a commit gate. Reads are allowed on their own merits; `allow[]`
+ * is consulted only after them, and only for what would otherwise be unknown.
+ */
 async function evaluateCommand(command: string, options: PolicyEvaluationOptions): Promise<PolicyDecision> {
 	const { active, policy } = options;
 	if (commandDenied(command, policy.deny)) {
@@ -491,45 +558,41 @@ async function evaluateCommand(command: string, options: PolicyEvaluationOptions
 		return { kind: "deny", reason: `Policy denied a secret-shaped path: ${sensitive}` };
 	}
 
-	const outsideBounds = shellWriteTargets(command).find(
-		(target) => !isWriteAllowed(options.cwd, target, active.writeAllow),
-	);
-	if (outsideBounds !== undefined) {
-		return {
-			kind: "deny",
-			reason: `Policy denied write outside write_allow: ${outsideBounds}`,
-		};
+	// Chat has no job and so no bounds; a job's bounds are the job's.
+	if (active.mode !== "chat") {
+		const outsideBounds = shellWriteTargets(command).find(
+			(target) => !isWriteAllowed(options.cwd, target, active.writeAllow),
+		);
+		if (outsideBounds !== undefined) {
+			return {
+				kind: "deny",
+				reason: `Policy denied write outside write_allow: ${outsideBounds}`,
+			};
+		}
 	}
 
 	if (isStandaloneGitCommit(command)) {
-		if (policy.commit[active.mode] === "confirm") {
-			const stat = await (options.readDiffStat ?? readGitDiffStat)(options.cwd);
-			const summary = `${stat.filesChanged} files changed, ${stat.insertions} insertions(+), ${stat.deletions} deletions(-)`;
-			return {
-				kind: "confirm",
-				title: "Approve git commit",
-				question: `${command}\n\n${summary} against HEAD.\n\nCommit on the job branch?`,
-				declineReason: `Policy requires confirmation for git commit; not approved: ${command}`,
-			};
-		}
-		return active.releaseApproved
-			? ALLOW
-			: { kind: "deny", reason: `Policy denied git commit before release.approved: ${command}` };
+		return await evaluateGitCommit(command, options);
 	}
 
-	if (isSafeCommand(command, active.qualityGates)) {
+	if (isDeclaredQualityGate(command, active.qualityGates)) {
 		return ALLOW;
 	}
 
-	if (policy.unknown[active.mode] === "confirm") {
-		return {
-			kind: "confirm",
-			title: "Approve unrecognized command",
-			question: `${command}\n\nThis command is not on the policy safe list. Run it?`,
-			declineReason: `Policy requires confirmation for an unrecognized command; not approved: ${command}`,
-		};
+	const classification = classifyShellCommand(command);
+	if (classification.readOnly) {
+		return ALLOW;
 	}
-	return { kind: "deny", reason: `Policy denied unrecognized command: ${command}` };
+
+	if (isAllowlisted(command, policy.allow)) {
+		return ALLOW;
+	}
+
+	const why =
+		classification.segment === undefined
+			? `Not read-only: ${classification.reason}.`
+			: `Not read-only: ${classification.reason} in \`${classification.segment}\`.`;
+	return unknownCommand(command, options, why);
 }
 
 function evaluateWrite(path: string, options: PolicyEvaluationOptions): PolicyDecision {
@@ -545,6 +608,13 @@ function evaluateWrite(path: string, options: PolicyEvaluationOptions): PolicyDe
 			kind: "deny",
 			reason: `Policy reserved the authoritative knowledge graph for the control plane: ${path}`,
 		};
+	}
+	if (options.active.mode === "chat") {
+		// No job, no bounds: only a secret-shaped name is off limits.
+		const relativePath = relativeWritePath(options.cwd, path) ?? normalizePath(path);
+		return relativePath.split("/").some((part) => SENSITIVE_FILE_PATTERN.test(part))
+			? { kind: "deny", reason: `Policy denied a secret-shaped path: ${path}` }
+			: ALLOW;
 	}
 	if (!isWriteAllowed(options.cwd, path, options.active.writeAllow)) {
 		return { kind: "deny", reason: `Policy denied write outside write_allow: ${path}` };
@@ -567,27 +637,120 @@ export async function evaluateToolCall(
 	return ALLOW;
 }
 
+export function policyPath(cwd: string): string {
+	return resolve(cwd, CONFIG_DIR_NAME, "policy.json");
+}
+
 export async function ensurePolicyFile(cwd: string): Promise<string> {
-	const configDirectory = resolve(cwd, CONFIG_DIR_NAME);
-	const policyPath = resolve(configDirectory, "policy.json");
-	await mkdir(configDirectory, { recursive: true });
+	const target = policyPath(cwd);
+	await mkdir(resolve(cwd, CONFIG_DIR_NAME), { recursive: true });
 	try {
-		await copyFile(join(getKpiResourceDir(), "templates", "policy.json"), policyPath, constants.COPYFILE_EXCL);
+		await copyFile(join(getKpiResourceDir(), "templates", "policy.json"), target, constants.COPYFILE_EXCL);
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
 			throw error;
 		}
 	}
-	return policyPath;
+	return target;
 }
 
-export async function readPolicy(cwd: string): Promise<PolicyConfig> {
-	const policyPath = await ensurePolicyFile(cwd);
-	const policy = JSON.parse(await readFile(policyPath, "utf8")) as PolicyConfig;
-	if (!Array.isArray(policy.deny)) {
-		throw new Error(`${policyPath} must define a deny array`);
+async function exists(path: string): Promise<boolean> {
+	try {
+		await stat(path);
+		return true;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+		throw error;
 	}
-	return policy;
+}
+
+/**
+ * Whether a session start should seed `.kpi/policy.json` here: only in a
+ * project — one that already has a `.kpi/` or is a git root. A shell opened in
+ * an arbitrary directory is not a reason to leave a config file behind.
+ */
+export async function shouldSeedPolicyFile(cwd: string): Promise<boolean> {
+	return (await exists(resolve(cwd, CONFIG_DIR_NAME))) || (await exists(resolve(cwd, ".git")));
+}
+
+function chatRule(value: unknown, source: string, field: string): ChatRule {
+	if (value === undefined) return "allow";
+	if (value === "allow" || value === "confirm") return value;
+	throw new Error(`${source} ${field} must be "allow" or "confirm"`);
+}
+
+/**
+ * A policy file written before `allow[]` and the `chat` keys existed still
+ * loads: the missing keys take the defaults. A malformed file is an error the
+ * operator must see, not a silent fall back to something they did not write.
+ */
+export function normalizePolicy(raw: unknown, source: string): PolicyConfig {
+	if (!isJsonObject(raw) || !Array.isArray(raw.deny)) {
+		throw new Error(`${source} must define a deny array`);
+	}
+	const allow = raw.allow ?? [];
+	if (!Array.isArray(allow) || !allow.every((entry) => typeof entry === "string")) {
+		throw new Error(`${source} allow must be an array of strings`);
+	}
+	const commit = isJsonObject(raw.commit) ? raw.commit : {};
+	const unknown = isJsonObject(raw.unknown) ? raw.unknown : {};
+	return {
+		deny: raw.deny.filter((entry): entry is string => typeof entry === "string"),
+		allow,
+		commit: {
+			chat: chatRule(commit.chat, source, "commit.chat"),
+			gated: "confirm",
+			autopilot: "after-release",
+		},
+		unknown: {
+			chat: chatRule(unknown.chat, source, "unknown.chat"),
+			gated: "confirm",
+			autopilot: "deny",
+		},
+	};
+}
+
+/** Reads the project policy; a missing file is the default and is never created here. */
+export async function readPolicy(cwd: string): Promise<PolicyConfig> {
+	const target = policyPath(cwd);
+	let source: string;
+	try {
+		source = await readFile(target, "utf8");
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return DEFAULT_POLICY_CONFIG;
+		throw error;
+	}
+	return normalizePolicy(JSON.parse(source), target);
+}
+
+/** Appends an exact command to `allow[]`, creating the file from the template on first use. */
+export async function rememberAllowedCommand(cwd: string, command: string): Promise<string> {
+	const target = await ensurePolicyFile(cwd);
+	const policy = normalizePolicy(JSON.parse(await readFile(target, "utf8")), target);
+	const exact = collapseWhitespace(command);
+	if (!policy.allow.includes(exact)) {
+		policy.allow.push(exact);
+	}
+	await atomicWrite(target, `${JSON.stringify(policy, null, 2)}\n`);
+	return target;
+}
+
+/**
+ * The approval dialog. A selector when the UI has one, a plain confirm where it
+ * does not; no UI at all (print mode) answers "deny", so an unattended session
+ * blocks the call instead of running it unapproved.
+ */
+export async function askApproval(
+	ui: Pick<ExtensionUIContext, "confirm"> & Partial<Pick<ExtensionUIContext, "select">>,
+	decision: Extract<PolicyDecision, { kind: "confirm" }>,
+): Promise<ApprovalChoice> {
+	if (decision.command === undefined || typeof ui.select !== "function") {
+		return (await ui.confirm(decision.title, decision.question)) ? "once" : "deny";
+	}
+	const choice = await ui.select(`${decision.title}\n${decision.question}`, [...APPROVAL_OPTIONS]);
+	if (choice === APPROVAL_OPTIONS[0]) return "once";
+	if (choice === APPROVAL_OPTIONS[1]) return "always";
+	return "deny";
 }
 
 /** The path a tool call names, for the tools that name one. */
@@ -618,7 +781,7 @@ async function recordToolRequest(
 	reason?: string,
 ): Promise<void> {
 	try {
-		const job = await readActiveJob(cwd);
+		const job = await readLiveJob(cwd);
 		if (job === undefined) {
 			return;
 		}
@@ -640,8 +803,12 @@ async function recordToolRequest(
 }
 
 export function registerPolicy(pi: ExtensionAPI, options: PolicyRegistrationOptions = {}): void {
+	const sessionAllow = options.sessionAllow ?? new Set<string>();
+
 	pi.on("session_start", async (_event, ctx) => {
-		await ensurePolicyFile(ctx.cwd);
+		if (await shouldSeedPolicyFile(ctx.cwd)) {
+			await ensurePolicyFile(ctx.cwd);
+		}
 	});
 
 	pi.on("tool_call", async (event, ctx) => {
@@ -649,8 +816,10 @@ export function registerPolicy(pi: ExtensionAPI, options: PolicyRegistrationOpti
 			readPolicy(ctx.cwd),
 			(options.resolveActiveState ?? resolveActivePolicyState)(ctx.cwd),
 		]);
+		// Chat has no bounds, so a finished job's write list (or a stale one) is
+		// never laid over it.
 		const active =
-			options.resolveWriteAllow === undefined
+			options.resolveWriteAllow === undefined || resolved.mode === "chat"
 				? resolved
 				: { ...resolved, writeAllow: await options.resolveWriteAllow(ctx.cwd) };
 		const decision = await evaluateToolCall(event, {
@@ -667,14 +836,31 @@ export function registerPolicy(pi: ExtensionAPI, options: PolicyRegistrationOpti
 			await recordToolRequest(ctx.cwd, event, "deny", decision.reason);
 			return { block: true, reason: decision.reason };
 		}
+		const key = decision.command === undefined ? undefined : `${ctx.cwd}\0${decision.command}`;
+		if (key !== undefined && sessionAllow.has(key)) {
+			await recordToolRequest(ctx.cwd, event, "allow", "approved earlier this session");
+			return;
+		}
 		// Recorded before the dialog: the attempt happened whether or not the
 		// operator ever answers.
 		await recordToolRequest(ctx.cwd, event, "confirm", decision.title);
-		// Without dialog-capable UI the harness resolves confirm to false, so an
-		// unattended session blocks the call instead of running it unapproved.
-		if (await ctx.ui.confirm(decision.title, decision.question)) {
-			return;
+		const choice = await askApproval(ctx.ui, decision);
+		if (choice === "deny") {
+			return { block: true, reason: decision.declineReason };
 		}
-		return { block: true, reason: decision.declineReason };
+		if (key !== undefined) {
+			sessionAllow.add(key);
+		}
+		if (choice === "always" && decision.command !== undefined) {
+			try {
+				const target = await rememberAllowedCommand(ctx.cwd, decision.command);
+				ctx.ui.notify(`Always allowed in ${relative(ctx.cwd, target)}: ${decision.command}`, "info");
+			} catch (error) {
+				// The operator approved the call; a policy file that would not take
+				// the note is reported, not turned into a refusal.
+				const message = error instanceof Error ? error.message : String(error);
+				ctx.ui.notify(`Could not record the approval in ${CONFIG_DIR_NAME}/policy.json: ${message}`, "warning");
+			}
+		}
 	});
 }
