@@ -19,3 +19,5 @@ upstream has moved and never changes the pin.
 
 Generated content is produced by `npm run kstack:sync`; runtime package loading never fetches
 the network.
+
+Pinned-deps (`scripts/check-pinned-deps.mjs`) excludes the vendored `upstream/` path only — a byte-for-byte mirror that keeps loose specs (e.g. `skills/poteto-mode/scripts/package.json` with `bun-types`/`typescript: "latest"`); `generated/` ships no `package.json`, and the overlay drops or pins any such manifests before emit.
