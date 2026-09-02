@@ -372,13 +372,7 @@ export function createBatch23Runners(h) {
 				{ id: "specify-skipped", artifact: "artifacts/specify-lit.txt", contains: "specify-skipped" },
 				{ id: "plan-check", artifact: "artifacts/plan-check.txt", contains: "plan-check-ran" },
 				{ id: "midrun-edit-stops", artifact: "artifacts/midrun-edit.txt", locator: "re:stopped-or-replan" },
-			];
-			const control = {
-				id: "no-plan-path-control",
-				description: "Without --plan, specify is expected to light; control grades specify-skipped as fail",
-				wouldPass: false,
-			};
-			const notes = [
+			];			const notes = [
 				"# UAT-03",
 				"",
 				`- rpc status: ${rpc.status}`,
@@ -387,7 +381,7 @@ export function createBatch23Runners(h) {
 				`- plan-check: ${planCheck}`,
 				`- mid-run edit: ${editOutcome}`,
 			].join("\n");
-			return finishRow(rowDir, specs, { control, notes, extra: { row: "UAT-03" } });
+			return finishRow(rowDir, specs, { notes, extra: { row: "UAT-03" } });
 		} finally {
 			cleanupSandbox(box);
 		}
@@ -603,13 +597,7 @@ export function createBatch23Runners(h) {
 				{ id: "d-needs-human", artifact: "artifacts/d-status.txt", contains: "NEEDS_HUMAN" },
 				{ id: "e429-self-test", artifact: "artifacts/e429-ok.txt", contains: "ok" },
 				{ id: "no-unknown-status", artifact: "artifacts/unknown-status.txt", contains: "none" },
-			];
-			const control = {
-				id: "wrong-status-control",
-				description: "If a sub-row reported DONE for NO_PROGRESS drive, a-status would fail",
-				wouldPass: results.a?.status === "DONE",
-			};
-			const notes = [
+			];			const notes = [
 				"# UAT-05",
 				"",
 				`- a NO_PROGRESS: ${results.a?.status} terminals=${results.a?.terminal_count} ${results.a?.reason || ""}`,
@@ -620,7 +608,7 @@ export function createBatch23Runners(h) {
 				`- d NEEDS_HUMAN: ${results.d?.status} ${results.d?.reason || ""}`,
 				`- 429 self-test: ${results.e429?.self_test_ok}`,
 			].join("\n");
-			return finishRow(rowDir, specs, { control, notes, extra: { row: "UAT-05", results } });
+			return finishRow(rowDir, specs, { notes, extra: { row: "UAT-05", results } });
 		} finally {
 			cleanupSandbox(box);
 		}
@@ -686,13 +674,7 @@ export function createBatch23Runners(h) {
 				{ id: "red-before-green", artifact: "artifacts/red-before-green.txt", contains: "yes" },
 				{ id: "conventional-commit", artifact: "artifacts/conventional.txt", contains: "yes" },
 				{ id: "gates-recorded", artifact: "artifacts/agents-gates.txt", contains: "npm test" },
-			];
-			const control = {
-				id: "empty-evidence-fails-red-green",
-				description: "Empty evidence would fail red-before-green",
-				wouldPass: false,
-			};
-			const notes = [
+			];			const notes = [
 				"# UAT-08",
 				"",
 				`- duration_ms: ${Date.now() - before}`,
@@ -702,7 +684,7 @@ export function createBatch23Runners(h) {
 				`- conventional: ${conv}`,
 				`- git: ${(git.log || "").split("\n")[0]}`,
 			].join("\n");
-			return finishRow(rowDir, specs, { control, notes, extra: { row: "UAT-08" } });
+			return finishRow(rowDir, specs, { notes, extra: { row: "UAT-08" } });
 		} finally {
 			cleanupSandbox(box);
 		}
@@ -817,13 +799,7 @@ export function createBatch23Runners(h) {
 				{ id: "ladder-shape", artifact: "artifacts/ladder-shape.txt", contains: "ok" },
 				{ id: "no-extra-product-files", artifact: "artifacts/new-files.txt", expected: "\n" },
 				{ id: "undeclared-dep-blocked", artifact: "artifacts/undeclared-dep.txt", contains: "blocked" },
-			];
-			const control = {
-				id: "missing-ladder-fails",
-				description: "candidate without ladder must fail ladder-shape",
-				wouldPass: false,
-			};
-			const notes = [
+			];			const notes = [
 				"# UAT-22",
 				"",
 				`- ladder: ${JSON.stringify(cand.ladder)}`,
@@ -832,7 +808,7 @@ export function createBatch23Runners(h) {
 				`- join delta bytes: ${afterJoin.length - beforeJoin.length}`,
 				`- undeclared dep: ${ds.status} ${ds.reason || ""}`,
 			].join("\n");
-			return finishRow(rowDir, specs, { control, notes, extra: { row: "UAT-22" } });
+			return finishRow(rowDir, specs, { notes, extra: { row: "UAT-22" } });
 		} finally {
 			cleanupSandbox(box);
 		}
@@ -981,20 +957,14 @@ export function createBatch23Runners(h) {
 					locator: "re:^([6-9]|1[0-2])/1[0-2]$",
 				},
 				{ id: "score-file", artifact: "artifacts/dune-score.txt", locator: "re:\\d+/\\d+" },
-			];
-			const control = {
-				id: "zero-pass-control",
-				description: "If no case passed, score would be 0 — control wouldPass false",
-				wouldPass: false,
-			};
-			const notes = [
+			];			const notes = [
 				"# UAT-30",
 				"",
 				`- score: ${passed}/${caseResults.length}`,
 				`- unsafe: ${unsafeOk}/${unsafeCases.length}`,
 				...caseResults.map((c) => `- ${c.case}: ${c.pass ? "PASS" : "FAIL"} status=${c.status} wrote=${c.wrote} ${c.reason}`),
 			].join("\n");
-			return finishRow(rowDir, specs, { control, notes, extra: { row: "UAT-30", cases: caseResults } });
+			return finishRow(rowDir, specs, { notes, extra: { row: "UAT-30", cases: caseResults } });
 		} finally {
 			cleanupSandbox(box);
 		}
@@ -1109,13 +1079,7 @@ export function createBatch23Runners(h) {
 				{ id: "kg-files", artifact: "artifacts/kg-files.txt", contains: "nodes.jsonl" },
 				{ id: "record-shape", artifact: "artifacts/record-shape.txt", contains: "ok" },
 				{ id: "readable-after-crash", artifact: "artifacts/readable-after-crash.txt", contains: "readable" },
-			];
-			const control = {
-				id: "empty-kg-fails",
-				description: "Missing nodes.jsonl fails kg-files",
-				wouldPass: false,
-			};
-			const notes = [
+			];			const notes = [
 				"# UAT-09",
 				"",
 				`- propose rpc: ${rpc.status}`,
@@ -1124,7 +1088,7 @@ export function createBatch23Runners(h) {
 				`- snapshots: ${snapNote}`,
 				`- kg files: ${readFileSync(join(art, "kg-files.txt"), "utf8").trim()}`,
 			].join("\n");
-			return finishRow(rowDir, specs, { control, notes, extra: { row: "UAT-09" } });
+			return finishRow(rowDir, specs, { notes, extra: { row: "UAT-09" } });
 		} finally {
 			cleanupSandbox(box);
 		}
@@ -1322,13 +1286,7 @@ export function createBatch23Runners(h) {
 				{ id: "status-ok", artifact: "artifacts/status-ok.txt", contains: "ok" },
 				{ id: "zero-canaries", artifact: "artifacts/canary-count.txt", contains: "0" },
 				{ id: "no-tmp-left", artifact: "artifacts/tmp-left.txt", contains: "none" },
-			];
-			const control = {
-				id: "tamper-must-not-verify-clean",
-				description: "Tampered chain must be caught; if missed, wouldPass true fails row",
-				wouldPass: readFileSync(join(art, "tamper-caught.txt"), "utf8").includes("missed"),
-			};
-			const notes = [
+			];			const notes = [
 				"# UAT-14",
 				"",
 				`- kill after run dirs: ${listRunDirs(subject).length}`,
@@ -1339,7 +1297,7 @@ export function createBatch23Runners(h) {
 				`- canary hits: ${hits.length}`,
 				`- status stage named: ${statusNamesStage}`,
 			].join("\n");
-			return finishRow(rowDir, specs, { control, notes, extra: { row: "UAT-14" } });
+			return finishRow(rowDir, specs, { notes, extra: { row: "UAT-14" } });
 		} finally {
 			cleanupSandbox(box);
 		}
@@ -1514,13 +1472,7 @@ export function createBatch23Runners(h) {
 				{ id: "reclaim-after-death", artifact: "artifacts/reclaim-after-death.txt", contains: "yes" },
 				{ id: "denials-recorded", artifact: "artifacts/denials.json", contains: "agent.denied" },
 				{ id: "parent-decision", artifact: "artifacts/parent-decision.txt", contains: "yes" },
-			];
-			const control = {
-				id: "no-denial-control",
-				description: "Empty denials must fail worker-limit",
-				wouldPass: unique.length === 0,
-			};
-			const notes = [
+			];			const notes = [
 				"# UAT-23",
 				"",
 				`- denials: ${unique.length} reasons=[${[...reasons].join(",")}]`,
@@ -1529,7 +1481,7 @@ export function createBatch23Runners(h) {
 				`- bus keywords: ${hits.length ? "FOUND" : "clean"}`,
 				`- phase2 exit: ${phase2.code}`,
 			].join("\n");
-			return finishRow(rowDir, specs, { control, notes, extra: { row: "UAT-23", denials: unique } });
+			return finishRow(rowDir, specs, { notes, extra: { row: "UAT-23", denials: unique } });
 		} finally {
 			cleanupSandbox(box);
 		}

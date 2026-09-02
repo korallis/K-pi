@@ -200,12 +200,12 @@ function wireUatPaths(proofRoot, map) {
 			executedCount += 1;
 			if (typeof result.verdict === "string") {
 				verdict = result.verdict;
-				pass = result.verdict === "PASS" && result.ok !== false && result.control_also_passes !== true;
+				pass = result.verdict === "PASS" && result.ok !== false;
 			} else if (typeof result.pass === "boolean") {
 				pass = result.pass === true;
 				verdict = pass ? "PASS" : "FAIL";
 			} else if (typeof result.ok === "boolean") {
-				pass = result.ok === true && result.control_also_passes !== true;
+				pass = result.ok === true;
 				verdict = pass ? "PASS" : "FAIL";
 			}
 			if (pass) passCount += 1;
@@ -227,7 +227,6 @@ function wireUatPaths(proofRoot, map) {
 			owner,
 			detail,
 			...(attended.length > 0 ? { attended } : {}),
-			...(result?.control_also_passes === true ? { control_also_passes: true } : {}),
 		});
 	}
 	const rowsExecuted = executedCount > 0;

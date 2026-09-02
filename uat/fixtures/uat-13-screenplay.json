@@ -5,9 +5,8 @@
   "scenes": [
     {
       "match": {
-        "promptIncludes": [
-          "UAT13_POLICY",
-          "git push origin HEAD"
+        "lastUserIncludes": [
+          "UAT13_POLICY_PUSH"
         ],
         "once": true
       },
@@ -27,9 +26,8 @@
     },
     {
       "match": {
-        "promptIncludes": [
-          "UAT13_POLICY",
-          "git push origin HEAD"
+        "lastUserIncludes": [
+          "UAT13_POLICY_PUSH"
         ]
       },
       "turns": [
@@ -41,9 +39,8 @@
     },
     {
       "match": {
-        "promptIncludes": [
-          "UAT13_POLICY",
-          "git push --force origin HEAD"
+        "lastUserIncludes": [
+          "UAT13_POLICY_FORCE"
         ],
         "once": true
       },
@@ -63,9 +60,8 @@
     },
     {
       "match": {
-        "promptIncludes": [
-          "UAT13_POLICY",
-          "git push --force origin HEAD"
+        "lastUserIncludes": [
+          "UAT13_POLICY_FORCE"
         ]
       },
       "turns": [
@@ -77,9 +73,8 @@
     },
     {
       "match": {
-        "promptIncludes": [
-          "UAT13_POLICY",
-          "rm -rf /tmp/uat-should-not-matter-but-deny"
+        "lastUserIncludes": [
+          "UAT13_POLICY_RM"
         ],
         "once": true
       },
@@ -99,9 +94,8 @@
     },
     {
       "match": {
-        "promptIncludes": [
-          "UAT13_POLICY",
-          "rm -rf /tmp/uat-should-not-matter-but-deny"
+        "lastUserIncludes": [
+          "UAT13_POLICY_RM"
         ]
       },
       "turns": [
@@ -113,9 +107,8 @@
     },
     {
       "match": {
-        "promptIncludes": [
-          "UAT13_POLICY",
-          "kubectl apply -f deploy.yaml"
+        "lastUserIncludes": [
+          "UAT13_POLICY_DEPLOY"
         ],
         "once": true
       },
@@ -135,9 +128,8 @@
     },
     {
       "match": {
-        "promptIncludes": [
-          "UAT13_POLICY",
-          "kubectl apply -f deploy.yaml"
+        "lastUserIncludes": [
+          "UAT13_POLICY_DEPLOY"
         ]
       },
       "turns": [
@@ -149,9 +141,8 @@
     },
     {
       "match": {
-        "promptIncludes": [
-          "UAT13_POLICY",
-          "totally-unknown-bin-xyz --force"
+        "lastUserIncludes": [
+          "UAT13_POLICY_UNKNOWN"
         ],
         "once": true
       },
@@ -171,23 +162,13 @@
     },
     {
       "match": {
-        "promptIncludes": [
-          "UAT13_POLICY",
-          "totally-unknown-bin-xyz --force"
+        "lastUserIncludes": [
+          "UAT13_POLICY_UNKNOWN"
         ]
       },
       "turns": [
         {
           "content": "policy path exercised for totally-unknown-bin-xyz --force",
-          "finish_reason": "stop"
-        }
-      ]
-    },
-    {
-      "match": {},
-      "turns": [
-        {
-          "content": "uat-stub default",
           "finish_reason": "stop"
         }
       ]

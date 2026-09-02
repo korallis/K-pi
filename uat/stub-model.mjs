@@ -23,7 +23,7 @@ const DEFAULT_MODEL = "uat-stub";
 
 /**
  * @typedef {{
- *   match?: { promptIncludes?: string[], toolsAny?: string[], toolsAll?: string[], model?: string, node?: string },
+ *   match?: { promptIncludes?: string[], lastUserIncludes?: string[], toolsAny?: string[], toolsAll?: string[], model?: string, node?: string },
  *   status?: number,
  *   headers?: Record<string,string>,
  *   once?: boolean,
@@ -891,6 +891,7 @@ export function createApp() {
 
 function matchScene(body) {
 	const blob = promptBlob(body);
+	const lastUser = lastUserText(body);
 	const tools = toolNames(body);
 	const model = typeof body?.model === "string" ? body.model : "";
 
@@ -902,6 +903,10 @@ function matchScene(body) {
 		}
 		if (m.model && m.model !== model && !model.endsWith(`/${m.model}`) && !model.includes(m.model)) {
 			continue;
+		}
+		if (m.lastUserIncludes) {
+			const ok = m.lastUserIncludes.every((s) => lastUser.includes(s));
+			if (!ok) continue;
 		}
 		if (m.promptIncludes) {
 			const ok = m.promptIncludes.every((s) => blob.includes(s));

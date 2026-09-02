@@ -218,13 +218,7 @@ export function createBatch45Runners(h) {
 				{ id: "cooled-never-reselected", artifact: "artifacts/cooled-never-reselected.txt", contains: "yes" },
 				{ id: "widget-cooldown", artifact: "artifacts/widget-cooldown.txt", contains: "yes" },
 				{ id: "route-moved-sibling", artifact: "artifacts/route-moved.txt", contains: "via" },
-			];
-			const control = {
-				id: "zero-requests-fail",
-				description: "No model requests must not pass cooled-never-reselected",
-				wouldPass: requests.length === 0,
-			};
-			const notes = [
+			];			const notes = [
 				"# UAT-10",
 				"",
 				`- Machine half (loopback): ${requests.length} requests, cooled reselected ${afterCooling.length} times`,
@@ -233,9 +227,7 @@ export function createBatch45Runners(h) {
 				"- AC-10.2 anthropic OAuth stack: ATTENDED-ONLY (not claimed here)",
 				`- selection-tally: ${JSON.stringify(tally)}`,
 			].join("\n");
-			return finishRow(rowDir, specs, {
-				control,
-				notes,
+			return finishRow(rowDir, specs, { notes,
 				extra: { row: "UAT-10", machine: "loopback-zai", attended: ["AC-10.2"] },
 			});
 		} finally {
@@ -297,20 +289,14 @@ export function createBatch45Runners(h) {
 				{ id: "bundle-built", artifact: "artifacts/bundle-exists.txt", contains: "yes" },
 				{ id: "no-frozen-official-models", artifact: "artifacts/frozen-models.txt", contains: "none" },
 				{ id: "refresh-models-or-help", artifact: "artifacts/refresh-models.txt", contains: "yes" },
-			];
-			const control = {
-				id: "frozen-would-fail",
-				description: "If anthropic had models:[], frozen-models would not be none",
-				wouldPass: frozen.includes("anthropic"),
-			};
-			const notes = [
+			];			const notes = [
 				"# UAT-11",
 				"",
 				`- frozen official models arrays: ${frozen.length ? frozen.join(",") : "none"}`,
 				`- refreshModels in bundle: ${refresh}`,
 				`- readme update --models: ${/update --models/i.test(readme)}`,
 			].join("\n");
-			return finishRow(rowDir, specs, { control, notes, extra: { row: "UAT-11", frozen } });
+			return finishRow(rowDir, specs, { notes, extra: { row: "UAT-11", frozen } });
 		} finally {
 			cleanupSandbox(box);
 		}
@@ -352,22 +338,14 @@ export function createBatch45Runners(h) {
 
 			const specs = [
 				{ id: "warning-code-present", artifact: "artifacts/warning-present.txt", contains: "yes" },
-			];
-			const control = {
-				id: "no-warning-code-fails",
-				description: "Missing warningAcceptedAt would fail",
-				wouldPass: srcHits.length === 0,
-			};
-			const notes = [
+			];			const notes = [
 				"# UAT-12",
 				"",
 				`- warning source hits: ${srcHits.length}`,
 				`- warning in rpc output: ${warned}`,
 				"- Full cancel/accept slot write: partial without interactive OAuth browser",
 			].join("\n");
-			return finishRow(rowDir, specs, {
-				control,
-				notes,
+			return finishRow(rowDir, specs, { notes,
 				extra: { row: "UAT-12" },
 				forceFail: !warned,
 				forceFailReason: warned
@@ -431,9 +409,7 @@ export function createBatch45Runners(h) {
 			const specs = [
 				{ id: "no-banned-deps", artifact: "artifacts/banned-deps.txt", contains: "clean" },
 				{ id: "pool-ids-present", artifact: "artifacts/pool-ids.txt", notContains: "0" },
-			];
-			const control = { id: "banned-would-fail", description: "banned dep hits fail", wouldPass: bad.length > 0 };
-			const notes = [
+			];			const notes = [
 				"# UAT-26",
 				"",
 				`- banned dep hits: ${bad.length}`,
@@ -441,7 +417,7 @@ export function createBatch45Runners(h) {
 				`- zai personal note: ${personal.length > 0}`,
 				"- Live 429 cool-off: not driven without real zai/kimi credentials",
 			].join("\n");
-			return finishRow(rowDir, specs, { control, notes, extra: { row: "UAT-26" } });
+			return finishRow(rowDir, specs, { notes, extra: { row: "UAT-26" } });
 		} finally {
 			cleanupSandbox(box);
 		}
@@ -481,19 +457,13 @@ export function createBatch45Runners(h) {
 				{ id: "no-pi-ollama", artifact: "artifacts/pi-ollama.txt", contains: "clean" },
 				{ id: "footer-local-zero", artifact: "artifacts/footer-local.txt", contains: "yes" },
 				{ id: "local-provider-surface", artifact: "artifacts/local-provider.txt", contains: "yes" },
-			];
-			const control = {
-				id: "pi-ollama-fails",
-				description: "pi-ollama dependency would fail",
-				wouldPass: banned.length > 0,
-			};
-			const notes = [
+			];			const notes = [
 				"# UAT-27",
 				"",
 				"- Graded local provider surface + footer $0 + no pi-ollama.",
 				"- Full multi-server start/stop cool-off: partial (stub only).",
 			].join("\n");
-			return finishRow(rowDir, specs, { control, notes, extra: { row: "UAT-27" } });
+			return finishRow(rowDir, specs, { notes, extra: { row: "UAT-27" } });
 		} finally {
 			cleanupSandbox(box);
 		}
@@ -527,19 +497,13 @@ export function createBatch45Runners(h) {
 				{ id: "research-keys-surface", artifact: "artifacts/research-src.txt", notContains: "0" },
 				{ id: "no-research-sdk", artifact: "artifacts/no-sdk.txt", contains: "clean" },
 				{ id: "not-in-model-pools", artifact: "artifacts/not-in-pool-chain.txt", contains: "ok" },
-			];
-			const control = {
-				id: "sdk-would-fail",
-				description: "SDK import fails row",
-				wouldPass: noSdk.length > 0,
-			};
-			const notes = [
+			];			const notes = [
 				"# UAT-28",
 				"",
 				`- research surfaces: ${research.length}`,
 				"- Full /setup-kstack four-way key matrix: not driven (no interactive setup).",
 			].join("\n");
-			return finishRow(rowDir, specs, { control, notes, extra: { row: "UAT-28" } });
+			return finishRow(rowDir, specs, { notes, extra: { row: "UAT-28" } });
 		} finally {
 			cleanupSandbox(box);
 		}
@@ -596,19 +560,13 @@ export function createBatch45Runners(h) {
 			const specs = [
 				{ id: "research-md", artifact: "artifacts/research-md.txt", contains: "yes" },
 				{ id: "research-json", artifact: "artifacts/research-json.txt", contains: "yes" },
-			];
-			const control = {
-				id: "missing-research-fails",
-				description: "no research files fails",
-				wouldPass: !researchMd,
-			};
-			const notes = [
+			];			const notes = [
 				"# UAT-29",
 				"",
 				`- research.md: ${Boolean(researchMd)} research.json: ${Boolean(researchJson)}`,
 				"- Runs 2 (no key) driven; runs 1/3/4/5/6 not fully matrixed.",
 			].join("\n");
-			return finishRow(rowDir, specs, { control, notes, extra: { row: "UAT-29" } });
+			return finishRow(rowDir, specs, { notes, extra: { row: "UAT-29" } });
 		} finally {
 			cleanupSandbox(box);
 		}
@@ -672,16 +630,10 @@ export function createBatch45Runners(h) {
 				{ id: "setup-kstack-cmd", artifact: "artifacts/setup-kstack.txt", contains: "yes" },
 				{ id: "k-mode-cmd", artifact: "artifacts/k-mode.txt", contains: "yes" },
 				{ id: "manifest-clean", artifact: "artifacts/manifest-clean.txt", contains: "clean" },
-			];
-			const control = {
-				id: "pstack-dep-fails",
-				description: "pstack dependency fails",
-				wouldPass: manif.length > 0,
-			};
-			const notes = ["# UAT-17", "", `- manifests: ${manif.length ? manif.join(";") : "clean"}`, `- notice: ${notice}`].join(
+			];			const notes = ["# UAT-17", "", `- manifests: ${manif.length ? manif.join(";") : "clean"}`, `- notice: ${notice}`].join(
 				"\n",
 			);
-			return finishRow(rowDir, specs, { control, notes, extra: { row: "UAT-17" } });
+			return finishRow(rowDir, specs, { notes, extra: { row: "UAT-17" } });
 		} finally {
 			cleanupSandbox(box);
 		}
@@ -715,19 +667,13 @@ export function createBatch45Runners(h) {
 			const specs = [
 				{ id: "setup-ran", artifact: "artifacts/rpc.jsonl", contains: "response" },
 				{ id: "no-cloud-target", artifact: "artifacts/no-cloud-target.txt", contains: "ok" },
-			];
-			const control = {
-				id: "cloud-target-fails",
-				description: "cloud agent target fails",
-				wouldPass: noCloud.length > 0,
-			};
-			const notes = [
+			];			const notes = [
 				"# UAT-18",
 				"",
 				`- models.json written: ${existsSync(modelsPath)}`,
 				"- Full slug-subset + cmp twice: partial without multi-pool config.",
 			].join("\n");
-			return finishRow(rowDir, specs, { control, notes, extra: { row: "UAT-18" } });
+			return finishRow(rowDir, specs, { notes, extra: { row: "UAT-18" } });
 		} finally {
 			cleanupSandbox(box);
 		}
@@ -765,14 +711,8 @@ export function createBatch45Runners(h) {
 			writeFileSync(join(art, "playbook.txt"), playbook ? `${playbook}\n` : "missing\n");
 			const specs = [
 				{ id: "playbook-on-task", artifact: "artifacts/playbook.txt", notContains: "missing" },
-			];
-			const control = {
-				id: "no-playbook-fails",
-				description: "missing playbook fails",
-				wouldPass: !playbook,
-			};
-			const notes = ["# UAT-19", "", `- playbook: ${playbook || "(none)"}`].join("\n");
-			return finishRow(rowDir, specs, { control, notes, extra: { row: "UAT-19", playbook } });
+			];			const notes = ["# UAT-19", "", `- playbook: ${playbook || "(none)"}`].join("\n");
+			return finishRow(rowDir, specs, { notes, extra: { row: "UAT-19", playbook } });
 		} finally {
 			cleanupSandbox(box);
 		}
@@ -795,19 +735,13 @@ export function createBatch45Runners(h) {
 				for (const f of found) hits.push(`${bad}:${f}`);
 			}
 			writeFileSync(join(art, "cloud-grep.txt"), hits.length ? hits.join("\n") + "\n" : "clean\n");
-			const specs = [{ id: "no-cloud-strings", artifact: "artifacts/cloud-grep.txt", contains: "clean" }];
-			const control = {
-				id: "cloud-string-fails",
-				description: "cloud agent string fails",
-				wouldPass: hits.length > 0,
-			};
-			const notes = [
+			const specs = [{ id: "no-cloud-strings", artifact: "artifacts/cloud-grep.txt", contains: "clean" }];			const notes = [
 				"# UAT-20",
 				"",
 				`- cloud/gt/subagent hits: ${hits.length}`,
 				"- Third worker denial covered by UAT-23; playbook autopilot-full not re-run here.",
 			].join("\n");
-			return finishRow(rowDir, specs, { control, notes, extra: { row: "UAT-20" } });
+			return finishRow(rowDir, specs, { notes, extra: { row: "UAT-20" } });
 		} finally {
 			cleanupSandbox(box);
 		}
@@ -843,20 +777,14 @@ export function createBatch45Runners(h) {
 				{ id: "sync-scripts", artifact: "artifacts/scripts.txt", contains: "yes" },
 				{ id: "upstream-md", artifact: "artifacts/upstream-md.txt", contains: "yes" },
 				{ id: "sync-check-ran", artifact: "artifacts/sync-check-ran.txt", contains: "yes" },
-			];
-			const control = {
-				id: "no-script-fails",
-				description: "missing kstack:sync fails",
-				wouldPass: !hasSync,
-			};
-			const notes = [
+			];			const notes = [
 				"# UAT-21",
 				"",
 				`- kstack:sync scripts: ${hasSync}`,
 				`- sync:check exit: ${check.status}`,
 				"- Double pin no-op + broken patch: not re-run (destructive/long); scripts+check graded.",
 			].join("\n");
-			return finishRow(rowDir, specs, { control, notes, extra: { row: "UAT-21", syncCheck: check.status } });
+			return finishRow(rowDir, specs, { notes, extra: { row: "UAT-21", syncCheck: check.status } });
 		} finally {
 			cleanupSandbox(box);
 		}

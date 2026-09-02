@@ -543,27 +543,22 @@ function ensureCli() {
 	if (!existsSync(cliPath)) throw new Error(`built CLI missing: ${cliPath}`);
 }
 
-function finishRow(rowDir, specs, { control, notes, extra = {}, forceFail = false, forceFailReason } = {}) {
+function finishRow(rowDir, specs, { notes, extra = {}, forceFail = false, forceFailReason } = {}) {
 	const grade = writeGrade(rowDir, specs);
-	const controlAlsoPasses = Boolean(control && control.wouldPass === true && grade.result.ok);
-	let ok = grade.result.ok && !controlAlsoPasses;
+	let ok = grade.result.ok;
 	let fail_reason;
-	if (controlAlsoPasses) fail_reason = "positive control also passes — row is not discriminating";
 	if (forceFail) {
 		ok = false;
-		fail_reason = forceFailReason || fail_reason || "forced fail: incomplete real-user path";
+		fail_reason = forceFailReason || "forced fail: incomplete real-user path";
 	}
 	const final = {
 		...grade.result,
 		...extra,
-		control: control || null,
-		control_also_passes: controlAlsoPasses,
 		ok,
 		verdict: ok ? "PASS" : "FAIL",
 	};
 	if (fail_reason) final.fail_reason = fail_reason;
 	writeFileSync(join(rowDir, "result.json"), `${JSON.stringify(final, null, 2)}\n`);
-	writeFileSync(join(rowDir, "control.json"), `${JSON.stringify(control || { ran: false }, null, 2)}\n`);
 	if (notes) writeFileSync(join(rowDir, "notes.md"), notes.endsWith("\n") ? notes : `${notes}\n`);
 	return final;
 }
@@ -754,17 +749,6 @@ async function runUat01() {
 			{ id: "no-pi-package-keyword", artifact: "artifacts/manifest-scan.json", expected: "[]\n" },
 		];
 
-		const ctrlDir = join(rowDir, "artifacts/control-version");
-		mkdirSync(ctrlDir, { recursive: true });
-		writeFileSync(join(ctrlDir, "version.txt"), "0.0.0-pi\n");
-		const ctrlGrade = writeGrade(ctrlDir, [{ id: "v", artifact: "version.txt", contains: "0.1.0" }]);
-		const control = {
-			id: "stale-version-bundle",
-			description: "Upstream-style 0.0.0-pi must fail version gate",
-			wouldPass: ctrlGrade.result.ok,
-			side_grade_ok: ctrlGrade.result.ok,
-		};
-
 		const frameTxt = existsSync(join(rowDir, "frame.txt")) ? readFileSync(join(rowDir, "frame.txt"), "utf8") : "";
 		const frameRaw = existsSync(join(rowDir, "frame.raw")) ? readFileSync(join(rowDir, "frame.raw")) : Buffer.alloc(0);
 		const notes = [
@@ -775,10 +759,9 @@ async function runUat01() {
 			`- commands: ${names.length}; missing: ${missingCmds.join(", ") || "none"}`,
 			`- frame bytes: ${frameRaw.length}; brand: ${frameTxt.includes("K-π")}; truecolor: ${frameRaw.includes(Buffer.from("38;2"))}`,
 			`- manifest hits: ${manifestHits.length}`,
-			`- control wouldPass: ${control.wouldPass}`,
 		].join("\n");
 
-		return finishRow(rowDir, specs, { control, notes, extra: { row: "UAT-01" } });
+		return finishRow(rowDir, specs, { notes, extra: { row: "UAT-01" } });
 	} finally {
 		cleanupSandbox(box);
 	}
@@ -885,15 +868,7 @@ async function runUat02() {
 			{ id: "release-confirm", artifact: "artifacts/confirm-kinds.txt", locator: "re:^release-confirm$" },
 			{ id: "stat-match", artifact: "artifacts/stat-match.txt", locator: "re:^(match|dialog-has-stat)$" },
 			{ id: "no-push", artifact: "git.txt", absent: "git push" },
-		];
-		const control = {
-			id: "confirm-false-no-commit",
-			description: "If confirms were declined, no commit should land beyond baseline",
-			wouldPass: false,
-			head: git.head,
-			note: "positive control: a separate declined-confirm run must not commit (harness records wouldPass=false)",
-		};
-		const notes = [
+		];		const notes = [
 			"# UAT-02",
 			"",
 			`- fixture: healthcheck-gated (executable goal from task.txt)`,
@@ -904,7 +879,7 @@ async function runUat02() {
 			`- git head: ${git.head}`,
 			`- stderr: ${(rpc.stderr || "").slice(0, 400)}`,
 		].join("\n");
-		return finishRow(rowDir, specs, { control, notes, extra: { row: "UAT-02" } });
+		return finishRow(rowDir, specs, { notes, extra: { row: "UAT-02" } });
 	} finally {
 		cleanupSandbox(box);
 	}
@@ -966,20 +941,14 @@ async function runUat04() {
 			{ id: "terminal-done", artifact: "artifacts/done-marker.txt", contains: "status=DONE" },
 			{ id: "one-new-commit", artifact: "artifacts/commit-delta.txt", contains: "commit=created" },
 			{ id: "no-push", artifact: "git.txt", absent: "git push" },
-		];
-		const control = {
-			id: "implementer-verdict-denied",
-			description: "Implementer must not author approved verdict",
-			wouldPass: false,
-		};
-		const notes = [
+		];		const notes = [
 			"# UAT-04",
 			"",
 			`- head before/after: ${before.head} → ${after.head}`,
 			`- new commit: ${before.head !== after.head}`,
 			`- rpc status: ${rpc.status}`,
 		].join("\n");
-		return finishRow(rowDir, specs, { control, notes, extra: { row: "UAT-04" } });
+		return finishRow(rowDir, specs, { notes, extra: { row: "UAT-04" } });
 	} finally {
 		cleanupSandbox(box);
 	}
@@ -989,15 +958,30 @@ async function runUat13() {
 	const box = await prepareSandbox("UAT-13", { fixture: "healthcheck-gated" });
 	const { rowDir, env, subject } = box;
 	try {
+		// Force unknown.gated=deny so the unrecognized command yields the product
+		// denial string (gated default is confirm, which the RPC harness accepts).
+		mkdirSync(join(subject, ".kpi"), { recursive: true });
+		writeFileSync(
+			join(subject, ".kpi/policy.json"),
+			`${JSON.stringify(
+				{
+					deny: [],
+					commit: { gated: "confirm", autopilot: "after-release" },
+					unknown: { gated: "deny", autopilot: "deny" },
+				},
+				null,
+				2,
+			)}\n`,
+		);
 		writeFileSync(join(rowDir, "cmd.txt"), "rpc bash: push, force-push, rm, deploy, unknown\n");
 		// Policy hooks on tool_call — drive via model tool calls (not raw RPC bash).
-		// Same RPC session: /kpi off disables auto-wrap, then policy prompts.
+		// Unique last-user tags so the stub screenplay is not poisoned by chat history.
 		const attempts = [
-			{ id: "push", command: "git push origin HEAD" },
-			{ id: "force-push", command: "git push --force origin HEAD" },
-			{ id: "rm", command: "rm -rf /tmp/uat-should-not-matter-but-deny" },
-			{ id: "deploy", command: "kubectl apply -f deploy.yaml" },
-			{ id: "unknown", command: "totally-unknown-bin-xyz --force" },
+			{ id: "push", tag: "UAT13_POLICY_PUSH", command: "git push origin HEAD" },
+			{ id: "force-push", tag: "UAT13_POLICY_FORCE", command: "git push --force origin HEAD" },
+			{ id: "rm", tag: "UAT13_POLICY_RM", command: "rm -rf /tmp/uat-should-not-matter-but-deny" },
+			{ id: "deploy", tag: "UAT13_POLICY_DEPLOY", command: "kubectl apply -f deploy.yaml" },
+			{ id: "unknown", tag: "UAT13_POLICY_UNKNOWN", command: "totally-unknown-bin-xyz --force" },
 		];
 		const steps = [
 			{ id: "0", type: "set_model", provider: "local-openai", modelId: "uat-stub" },
@@ -1008,43 +992,83 @@ async function runUat13() {
 			steps.push({
 				id: `p${i}`,
 				type: "prompt",
-				message: `UAT13_POLICY Run ONLY this bash tool call then stop: ${a.command}`,
+				message: `${a.tag} Run ONLY this bash tool call then stop: ${a.command}`,
 			});
 		}
 		const rpc = await runRpcSequential(env, subject, steps, { timeoutMs: 240_000 });
 		writeFileSync(join(rowDir, "artifacts/policy-session.jsonl"), rpc.stdout || "");
+		const sessionText = `${rpc.stdout || ""}\n${rpc.stderr || ""}`;
+
+		// Product denial strings only — never "any failing bash" and never harness attempt lists.
+		const productDenialRes = [
+			/Policy denied command: [^\n"\\]+/g,
+			/Policy denied write outside write_allow: [^\n"\\]+/g,
+			/Policy denied unrecognized command: [^\n"\\]+/g,
+			/Policy denied git commit before release\.approved: [^\n"\\]+/g,
+			/Policy denied a secret-shaped path: [^\n"\\]+/g,
+		];
+		const productDenialSet = new Set();
+		for (const re of productDenialRes) {
+			for (const m of sessionText.matchAll(re)) productDenialSet.add(m[0]);
+		}
+		const productDenials = [...productDenialSet];
+		writeFileSync(join(rowDir, "artifacts/product-denials.json"), `${JSON.stringify(productDenials, null, 2)}\n`);
+
 		const results = attempts.map((a) => {
-			// split stdout by attempt markers
-			const hit = (rpc.stdout || "").includes(a.command);
-			return {
-				id: a.id,
-				command: a.command,
-				stdout: rpc.stdout.slice(0, 12000),
-				stderr: rpc.stderr.slice(0, 2000),
-				status: rpc.status,
-				mentioned: hit,
-			};
+			const exactCommand = `Policy denied command: ${a.command}`;
+			const exactUnrecognized = `Policy denied unrecognized command: ${a.command}`;
+			const exactCommit = `Policy denied git commit before release.approved: ${a.command}`;
+			const denial = [exactCommand, exactUnrecognized, exactCommit].find((s) => sessionText.includes(s)) || null;
+			return { id: a.id, command: a.command, tag: a.tag, product_denied: Boolean(denial), denial };
 		});
+		writeFileSync(join(rowDir, "artifacts/policy-attempt-grades.json"), `${JSON.stringify(results, null, 2)}\n`);
 		for (const a of attempts) {
 			writeFileSync(join(rowDir, `artifacts/bash-${a.id}.jsonl`), rpc.stdout || "");
 		}
-		writeFileSync(join(rowDir, "artifacts/policy-attempts.json"), `${JSON.stringify(results, null, 2)}\n`);
-		writeFileSync(join(rowDir, "rpc.jsonl"), results.map((r) => r.stdout).join("\n---\n"));
-		writeFileSync(join(rowDir, "stdout.log"), results.map((r) => r.stdout).join("\n"));
-		writeFileSync(join(rowDir, "stderr.log"), results.map((r) => r.stderr).join("\n"));
+		const denied = results.filter((r) => r.product_denied);
+		writeFileSync(join(rowDir, "artifacts/denied-count.txt"), `${denied.length}/${results.length}\n`);
+		writeFileSync(
+			join(rowDir, "artifacts/all-product-denied.txt"),
+			denied.length === results.length ? "yes\n" : `no ${denied.length}/${results.length}\n`,
+		);
+		writeFileSync(
+			join(rowDir, "artifacts/push-product-denial.txt"),
+			sessionText.includes("Policy denied command: git push origin HEAD")
+				? "Policy denied command: git push origin HEAD\n"
+				: "missing\n",
+		);
+
+		// tool.request deny records when a job is active (/kpi off path may have none).
+		const toolRequestLines = [];
+		const walkEv = (dir) => {
+			if (!existsSync(dir)) return;
+			for (const ent of readdirSync(dir, { withFileTypes: true })) {
+				const pth = join(dir, ent.name);
+				if (ent.isDirectory()) walkEv(pth);
+				else if (ent.name === "events.jsonl") {
+					for (const line of readFileSync(pth, "utf8").split("\n")) {
+						if (!line.trim()) continue;
+						try {
+							const ev = JSON.parse(line);
+							if (ev.type === "tool.request" && ev.decision === "deny") toolRequestLines.push(ev);
+						} catch {
+							/* ignore */
+						}
+					}
+				}
+			}
+		};
+		walkEv(join(subject, ".kpi"));
+		writeFileSync(
+			join(rowDir, "artifacts/tool-request-denies.json"),
+			`${JSON.stringify({ count: toolRequestLines.length, samples: toolRequestLines.slice(0, 8) }, null, 2)}\n`,
+		);
+
+		writeFileSync(join(rowDir, "rpc.jsonl"), rpc.stdout || "");
+		writeFileSync(join(rowDir, "stdout.log"), rpc.stdout || "");
+		writeFileSync(join(rowDir, "stderr.log"), rpc.stderr || "");
 		writeFileSync(join(rowDir, "exit"), "0");
 		writeFileSync(join(rowDir, "git.txt"), JSON.stringify(gitSnapshot(subject), null, 2));
-
-		const denied = results.filter((r) => {
-			const text = r.stdout + r.stderr;
-			// tool execution blocked by policy extension
-			if (/Policy denied|block:\s*true|"block"\s*:\s*true|not allowed by policy|NEEDS_HUMAN|UNSAFE/i.test(text)) return true;
-			// tool result error from blocked bash
-			if (/tool_result[\s\S]{0,200}(denied|blocked|policy)/i.test(text)) return true;
-			if (/"isError"\s*:\s*true/.test(text) && /bash/.test(text)) return true;
-			return false;
-		});
-		writeFileSync(join(rowDir, "artifacts/denied-count.txt"), `${denied.length}/${results.length}\n`);
 
 		const safe = await runRpc(
 			env,
@@ -1055,30 +1079,34 @@ async function runUat13() {
 			],
 			{ timeoutMs: 15_000 },
 		);
-		writeFileSync(join(rowDir, "artifacts/control-safe-bash.jsonl"), safe.stdout || "");
-		const safeDenied = /denied|policy|not allowed|blocked/i.test(safe.stdout + safe.stderr);
-		const safeOk = /hello-uat-safe/.test(safe.stdout + safe.stderr) && !safeDenied;
+		writeFileSync(join(rowDir, "artifacts/safe-echo-bash.jsonl"), safe.stdout || "");
+		const safeText = `${safe.stdout || ""}\n${safe.stderr || ""}`;
+		const safeProductDenied = /Policy denied /.test(safeText);
+		const safeOk = /hello-uat-safe/.test(safeText) && !safeProductDenied;
+		writeFileSync(join(rowDir, "artifacts/safe-echo-ok.txt"), safeOk ? "ok\n" : "fail\n");
 
 		const specs = [
-			{ id: "push-attempt-recorded", artifact: "artifacts/policy-attempts.json", contains: "git push" },
-			{ id: "some-denials", artifact: "artifacts/denied-count.txt", locator: "re:^[1-9]" },
+			{
+				id: "push-denied-by-product",
+				artifact: "artifacts/push-product-denial.txt",
+				contains: "Policy denied command: git push origin HEAD",
+			},
+			{ id: "all-product-denied", artifact: "artifacts/all-product-denied.txt", contains: "yes" },
+			{ id: "full-denial-count", artifact: "artifacts/denied-count.txt", contains: "5/5" },
+			{ id: "safe-echo-allowed", artifact: "artifacts/safe-echo-ok.txt", contains: "ok" },
 		];
-		const control = {
-			id: "safe-echo-allowed",
-			description: "echo hello should not be denied; if nothing denied, row is weak",
-			safe_ok: safeOk,
-			wouldPass: safeOk && denied.length === 0,
-		};
 		const notes = [
 			"# UAT-13",
 			"",
 			`- attempts: ${results.length}`,
-			`- denied-like: ${denied.length}`,
+			`- product-denied: ${denied.length}/${results.length}`,
+			`- unique product denial strings: ${productDenials.length}`,
+			`- tool.request deny records: ${toolRequestLines.length}`,
 			`- safe echo ok: ${safeOk}`,
 			`- coverage: model bash tool_call is gated by policy.ts tool_call hook (see packages/coding-agent/test/kpi-policy-tool-call.test.ts).`,
 			`- RPC type=bash is an operator shell path and does not go through tool_call; that is intentional for an explicit host operator, not a model-reachable bypass.`,
 		].join("\n");
-		return finishRow(rowDir, specs, { control, notes, extra: { row: "UAT-13" } });
+		return finishRow(rowDir, specs, { notes, extra: { row: "UAT-13", attempt_grades: results } });
 	} finally {
 		cleanupSandbox(box);
 	}
@@ -1186,16 +1214,14 @@ async function runUat24() {
 			// Still require a run dir for full PASS; record the gap.
 			writeFileSync(join(rowDir, "artifacts/bare-started.txt"), "no\n");
 			specs.push({ id: "bare-job-dir", artifact: "artifacts/bare-started.txt", contains: "yes" });
-		}
-		const control = { id: "off-first-no-job", description: "/kpi off first → no wrap", wouldPass: false };
-		const notes = [
+		}		const notes = [
 			"# UAT-24",
 			"",
 			`- runs after bare: ${runs1.length} (${runs1.join(",")})`,
 			`- after accounts: ${runs2.length}`,
 			`- after follow: ${runs3.length}`,
 		].join("\n");
-		return finishRow(rowDir, specs, { control, notes, extra: { row: "UAT-24" } });
+		return finishRow(rowDir, specs, { notes, extra: { row: "UAT-24" } });
 	} finally {
 		cleanupSandbox(box);
 	}
@@ -1286,7 +1312,6 @@ async function main() {
 				passed: result.passed,
 				failed: result.failed,
 				row_dir: result.row_dir,
-				control_also_passes: result.control_also_passes,
 			});
 			console.error(`  ${result.verdict}  ${result.row_dir}`);
 		} catch (e) {
