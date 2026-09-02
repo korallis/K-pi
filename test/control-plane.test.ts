@@ -45,6 +45,8 @@ function registerFixture() {
 	return { commands, getSessionStart: () => sessionStart };
 }
 
+type WidgetFactory = (tui: unknown, theme: unknown) => { render(width: number): string[] };
+
 function context(cwd: string, notifications: string[], widgets: Array<string[] | undefined>): ExtensionCommandContext {
 	return {
 		cwd,
@@ -60,8 +62,13 @@ function context(cwd: string, notifications: string[], widgets: Array<string[] |
 			notify(message: string) {
 				notifications.push(message);
 			},
-			setWidget(_key: string, content: string[] | undefined) {
-				widgets.push(content);
+			// The board is a component; render it the way the interactive mode would.
+			setWidget(_key: string, content: string[] | WidgetFactory | undefined) {
+				widgets.push(
+					typeof content === "function"
+						? content({ requestRender() {} }, { fg: (_name: string, text: string) => text }).render(120)
+						: content,
+				);
 			},
 		},
 	} as unknown as ExtensionCommandContext;
@@ -255,5 +262,47 @@ test("kpi auto, always and off set the session routing override", async () => {
 		} finally {
 			delete routingState.override;
 		}
+	});
+});
+
+test("a finished job is not pinned above the editor", async () => {
+	await withFixture(async (directory) => {
+		const runDirectory = await createRun(directory);
+		await writeFile(
+			join(runDirectory, "state.json"),
+			`${JSON.stringify({ job_id: "2026-08-31-status", mode: "gated", stage: "plan", status: "UNSAFE" })}\n`,
+		);
+		const notifications: string[] = [];
+		const widgets: Array<string[] | undefined> = [];
+		const { commands, getSessionStart } = registerFixture();
+
+		await getSessionStart()?.({}, context(directory, notifications, widgets));
+		assert.deepEqual(widgets, [undefined], "a dead run draws no widget");
+
+		await commands.get("kpi")?.("status", context(directory, notifications, widgets));
+		assert.deepEqual(notifications, ["no active job — last job 2026-08-31-status UNSAFE"]);
+	});
+});
+
+test("the session widget is a framed component painted at the live width", async () => {
+	await withFixture(async (directory) => {
+		await createRun(directory);
+		const widgets: Array<string[] | undefined> = [];
+		const { getSessionStart } = registerFixture();
+		await getSessionStart()?.({}, context(directory, [], widgets));
+		const lines = widgets[0] ?? [];
+		assert.ok(
+			lines.some((line) => line.startsWith("┌")),
+			"the widget is framed",
+		);
+		assert.ok(
+			lines.every((line) => line.length === 120),
+			"every line is painted to the widget width",
+		);
+		const text = lines.join("\n");
+		assert.match(text, /K-π GRAPH CONTROL/);
+		assert.match(text, /04 implement/);
+		assert.match(text, /STOP RUNNING/);
+		assert.match(text, /FILES {2}○ task\.json/, "an empty run file is a dark lamp");
 	});
 });

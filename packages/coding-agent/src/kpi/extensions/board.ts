@@ -3,6 +3,8 @@
  * Pure render from run-owned state — never starts a model.
  */
 
+import { visibleWidth } from "@earendil-works/pi-tui";
+
 export const BOARD_STAGES = [
 	{ id: "01", key: "ac-compile", label: "ac-compile" },
 	{ id: "02", key: "specify", label: "specify" },
@@ -66,6 +68,10 @@ export interface BoardModel {
 	/** Sticky K-mode enabled even before a playbook freezes. */
 	kModeEnabled?: boolean;
 	passed?: boolean;
+	/** What the last verifier said; derived from `passed` when absent. */
+	verifier?: Verifier;
+	/** Who holds the next gate; derived from `paused` when absent. */
+	gate?: "human" | "machine";
 	fingerprint?: string;
 	/** file name → lit (exists && size > 0) */
 	fileLit: Readonly<Record<string, boolean>>;
@@ -116,10 +122,102 @@ export function resolveCurrentStageIndex(stage: string, node?: string): number {
 	return 0; // ac-compile
 }
 
-function verifierLabel(passed: boolean | undefined): string {
-	if (passed === true) return "PASS";
-	if (passed === false) return "FAIL";
-	return "PASS/FAIL";
+/** Colour identities a span can carry; mapped to theme keys by the painter. */
+export type Tone = "accent" | "success" | "warning" | "error" | "dim" | "muted" | "text" | "border" | "borderAccent";
+
+export interface Span {
+	text: string;
+	tone?: Tone;
+}
+
+/** One logical line of a region: spans joined without separators. */
+export type Row = Span[];
+
+export function rowText(row: Row): string {
+	return row.map((span) => span.text).join("");
+}
+
+export interface BoardCell {
+	/** Full-height cell body, one entry per line (id / label / status). */
+	lines: string[];
+	/** One-line body for the compact layout. */
+	compact: string;
+	tone: Tone;
+	borderTone: Tone;
+	lit: boolean;
+}
+
+export type RegionId =
+	| "header"
+	| "telemetry"
+	| "contextLayer"
+	| "stages"
+	| "iteration"
+	| "oversight"
+	| "lamps"
+	| "stopStates"
+	| "threeLaws"
+	| "waiting"
+	| "stop";
+
+interface RegionBase {
+	id: RegionId;
+	/** The frame-less lines; what `renderBoard`, tests and non-TUI surfaces show. */
+	flat: string[];
+}
+
+export interface StripRegion extends RegionBase {
+	kind: "strip";
+	segments: Span[];
+}
+
+export interface RowsRegion extends RegionBase {
+	kind: "rows";
+	title?: string;
+	rows: Row[];
+	/** `none` draws bare rows, `panel` a bordered box, `accent` an accent-bordered box. */
+	frame: "none" | "panel" | "accent";
+}
+
+export interface CellsRegion extends RegionBase {
+	kind: "cells";
+	title: string;
+	cells: BoardCell[];
+	/** The one-row form, used by the compact layout and by narrow terminals. */
+	compactRow: Row;
+}
+
+export interface StopRegion extends RegionBase {
+	kind: "stop";
+	text: string;
+	tone: Tone;
+}
+
+export type Region = StripRegion | RowsRegion | CellsRegion | StopRegion;
+
+export interface BoardRegions {
+	variant: "amber" | "blue";
+	regions: Region[];
+	byId: Partial<Record<RegionId, Region>>;
+}
+
+export type Verifier = "pass" | "fail" | "pending";
+
+/**
+ * What the last verifier said. `passed` alone cannot tell "failed" from "never
+ * ran", so a caller that knows whether a verdict exists says so explicitly.
+ */
+export function verifierFor(model: Pick<BoardModel, "passed" | "verifier">): Verifier {
+	if (model.verifier !== undefined) return model.verifier;
+	if (model.passed === true) return "pass";
+	if (model.passed === false) return "fail";
+	return "pending";
+}
+
+function verifierLabel(verifier: Verifier): string {
+	if (verifier === "pass") return "PASS";
+	if (verifier === "fail") return "FAIL";
+	return "PASS/FAIL PENDING";
 }
 
 function shortFingerprint(value: string | undefined): string {
@@ -128,106 +226,315 @@ function shortFingerprint(value: string | undefined): string {
 	return hex.length <= 12 ? hex : hex.slice(0, 12);
 }
 
-function stageRail(current: number): string {
-	const cells = BOARD_STAGES.map((entry, index) => {
-		const label = `${entry.id} ${entry.label}`;
-		if (index === current) return `${label} CURRENT`;
-		if (current >= 0 && index < current) return `${label} DONE`;
-		return `${label} PENDING`;
-	});
-	// Two rows of four, matching the visual reconstruction.
-	return `STAGES  ${cells.slice(0, 4).join("   ")}\n        ${cells.slice(4).join("   ")}`;
+export function stopTone(stop: StopDisplay): Tone {
+	if (stop === "RUNNING") return "warning";
+	if (stop === "DONE") return "success";
+	if (stop === "NEEDS_HUMAN") return "accent";
+	return "error";
 }
 
-function contextLayer(model: BoardModel): string[] {
+const LIT = "●";
+const DARK = "○";
+
+function stageCells(current: number): BoardCell[] {
+	return BOARD_STAGES.map((entry, index) => {
+		const status = index === current ? "CURRENT" : current >= 0 && index < current ? "DONE" : "PENDING";
+		const tone: Tone = status === "CURRENT" ? "accent" : status === "DONE" ? "success" : "dim";
+		return {
+			lines: [entry.id, entry.label, status],
+			compact: `${entry.id} ${entry.label} ${status}`,
+			tone,
+			borderTone: status === "CURRENT" ? "borderAccent" : "border",
+			lit: status === "CURRENT",
+		};
+	});
+}
+
+function stagesRegion(current: number, title: string): CellsRegion {
+	const cells = stageCells(current);
+	const labels = cells.map((cell) => cell.compact);
+	return {
+		kind: "cells",
+		id: "stages",
+		title,
+		cells,
+		compactRow: cells.map((cell, index) => ({ text: `${index === 0 ? "" : "   "}${cell.compact}`, tone: cell.tone })),
+		// Two rows of four, matching the visual reconstruction.
+		flat: [`STAGES  ${labels.slice(0, 4).join("   ")}`, `        ${labels.slice(4).join("   ")}`],
+	};
+}
+
+function lampCells(fileLit: Readonly<Record<string, boolean>>): BoardCell[] {
+	return RUN_FILE_NAMES.map((name) => {
+		const lit = fileLit[name] === true;
+		return {
+			lines: [name, lit ? LIT : DARK, lit ? "ON" : "DIM"],
+			compact: `${lit ? LIT : DARK} ${name}`,
+			tone: lit ? "accent" : "dim",
+			borderTone: lit ? "borderAccent" : "border",
+			lit,
+		};
+	});
+}
+
+function lampRow(cells: BoardCell[]): Row {
+	return cells.map((cell, index) => ({ text: `${index === 0 ? "" : "  "}${cell.compact}`, tone: cell.tone }));
+}
+
+function lampsRegion(model: BoardModel, paused: boolean): CellsRegion {
+	const cells = paused
+		? RUN_FILE_NAMES.map((name) => {
+				const lit = model.fileLit[name] === true;
+				const status = name === "events.jsonl" ? "APPEND" : lit ? "READY" : "MISSING";
+				return {
+					lines: [name, lit ? LIT : DARK, status],
+					compact: `${lit ? LIT : DARK} ${name}`,
+					tone: (lit ? "accent" : "dim") as Tone,
+					borderTone: (lit ? "borderAccent" : "border") as Tone,
+					lit,
+				};
+			})
+		: lampCells(model.fileLit);
+	const compactRow = lampRow(cells);
+	const flatLamps = rowText(compactRow);
+	return {
+		kind: "cells",
+		id: "lamps",
+		title: paused ? "SHARED RUN STATE" : "FILE LAMPS",
+		cells,
+		compactRow,
+		flat: paused ? ["SHARED RUN STATE", `  ${flatLamps}`] : [`FILES  ${flatLamps}`],
+	};
+}
+
+function contextRows(model: BoardModel): Row[] {
 	const pack = model.contextPack;
-	const lamps = [
-		`product ${pack.product ? "●" : "○"}`,
-		`structure ${pack.structure ? "●" : "○"}`,
-		`tech ${pack.tech ? "●" : "○"}`,
-	].join("  ");
-	const lines = [`CONTEXT LAYER  ${lamps}`];
+	const rows: Row[] = [
+		[
+			{ text: `product ${pack.product ? LIT : DARK}`, tone: pack.product ? "text" : "dim" },
+			{ text: "  " },
+			{ text: `structure ${pack.structure ? LIT : DARK}`, tone: pack.structure ? "text" : "dim" },
+			{ text: "  " },
+			{ text: `tech ${pack.tech ? LIT : DARK}`, tone: pack.tech ? "text" : "dim" },
+		],
+	];
 	if (model.research !== undefined) {
-		lines.push(`  ${model.research.cell}`);
+		rows.push([{ text: model.research.cell, tone: "muted" }]);
 		if (model.research.struck !== undefined) {
-			lines.push(`  ${model.research.struck}`);
+			rows.push([{ text: model.research.struck, tone: "error" }]);
 		}
 	}
 	if (model.kstack !== undefined) {
 		const done = model.kstack.todos.length;
-		lines.push(`  K-STACK ${model.kstack.playbook}  ${done} steps`);
+		rows.push([{ text: `K-STACK ${model.kstack.playbook}  ${done} steps`, tone: "text" }]);
 		if (model.kstack.todos.length > 0) {
-			lines.push(`  PROGRESS  ${model.kstack.todos[0]}${done > 1 ? ` · +${done - 1}` : ""}`);
+			rows.push([{ text: `PROGRESS  ${model.kstack.todos[0]}${done > 1 ? ` · +${done - 1}` : ""}`, tone: "muted" }]);
 		}
 	}
-	const agents = `AGENTS ${model.agents}`;
-	const bus = model.busLit ? "BUS ●" : "BUS ○";
-	const route = model.route === undefined ? "" : `  ROUTE ${model.route}`;
-	const usage = model.usage === undefined ? "" : `  USAGE ${model.usage}`;
-	lines.push(`  ${agents}  ${bus}${route}${usage}`);
-	return lines;
+	const cells: Span[] = [
+		{ text: `AGENTS ${model.agents}`, tone: "text" },
+		{ text: "  " },
+		{ text: model.busLit ? `BUS ${LIT}` : `BUS ${DARK}`, tone: model.busLit ? "text" : "dim" },
+	];
+	if (model.route !== undefined) cells.push({ text: "  " }, { text: `ROUTE ${model.route}`, tone: "text" });
+	if (model.usage !== undefined) cells.push({ text: "  " }, { text: `USAGE ${model.usage}`, tone: "text" });
+	rows.push(cells);
+	return rows;
 }
 
-function fileRow(fileLit: Readonly<Record<string, boolean>>): string {
-	return RUN_FILE_NAMES.map((name) => `${fileLit[name] === true ? "●" : "○"} ${name}`).join("  ");
+function contextRegion(model: BoardModel): RowsRegion {
+	const rows = contextRows(model);
+	const [lamps, ...rest] = rows;
+	return {
+		kind: "rows",
+		id: "contextLayer",
+		title: "CONTEXT LAYER",
+		rows,
+		frame: "panel",
+		flat: [`CONTEXT LAYER  ${rowText(lamps ?? [])}`, ...rest.map((row) => `  ${rowText(row)}`)],
+	};
 }
 
-function stopStatesLine(paused: boolean, stop: StopDisplay): string {
-	const done = stop === "DONE" ? "DONE ●" : "DONE ○";
-	const blocked = stop === "BLOCKED" ? "BLOCKED ●" : "BLOCKED ○";
-	const approval = paused ? "APPROVAL ●" : "APPROVAL ○";
-	return `STOP STATES  ${done}  ${blocked}  ${approval}`;
+function iterationRegion(model: BoardModel): RowsRegion {
+	const verifier = verifierFor(model);
+	const fingerprint = shortFingerprint(model.fingerprint);
+	const round = `ROUND ${model.round}/${model.maxRounds}`;
+	const rows: Row[] = [[{ text: round, tone: "text" }]];
+	if (verifier === "pending") {
+		rows.push([{ text: "PASS/FAIL PENDING", tone: "dim" }]);
+	} else {
+		rows.push(
+			[
+				{
+					text: verifier === "pass" ? `PASS ${LIT} last verifier` : `PASS ${DARK} none`,
+					tone: verifier === "pass" ? "success" : "dim",
+				},
+			],
+			[
+				{
+					text: verifier === "fail" ? `FAIL ${LIT} last verifier` : `FAIL ${DARK} none`,
+					tone: verifier === "fail" ? "error" : "dim",
+				},
+			],
+		);
+	}
+	rows.push([{ text: `FINGERPRINT ${fingerprint}`, tone: "muted" }]);
+	return {
+		kind: "rows",
+		id: "iteration",
+		title: "ITERATION LOOP",
+		rows,
+		frame: "panel",
+		flat: [`${round}  FINGERPRINT ${fingerprint}  ${verifierLabel(verifier)}`],
+	};
+}
+
+function oversightRegion(question: string | undefined): RowsRegion {
+	const text = question === undefined ? "confirm to continue" : question;
+	return {
+		kind: "rows",
+		id: "oversight",
+		title: "HUMAN OVERSIGHT REQUIRED",
+		rows: [
+			[
+				{ text: "GATE human — ", tone: "accent" },
+				{ text, tone: "text" },
+			],
+		],
+		frame: "accent",
+		flat: ["HUMAN OVERSIGHT REQUIRED"],
+	};
+}
+
+function waitingRegion(question: string | undefined): RowsRegion {
+	return {
+		kind: "rows",
+		id: "waiting",
+		title: "WAITING ON OPERATOR",
+		rows: question === undefined ? [] : [[{ text: question, tone: "text" }]],
+		frame: "accent",
+		flat: [question === undefined ? "WAITING ON OPERATOR" : `WAITING ON OPERATOR  ${question}`],
+	};
+}
+
+function stopStatesRegion(stop: StopDisplay): CellsRegion {
+	const entries: Array<[string, boolean]> = [
+		["DONE", stop === "DONE"],
+		["BLOCKED", stop === "BLOCKED"],
+		["APPROVAL", true],
+	];
+	const cells = entries.map(([label, lit]) => ({
+		lines: [label, lit ? LIT : DARK],
+		compact: `${label} ${lit ? LIT : DARK}`,
+		tone: (lit ? "accent" : "dim") as Tone,
+		borderTone: (lit ? "borderAccent" : "border") as Tone,
+		lit,
+	}));
+	const compactRow: Row = cells.map((cell, index) => ({
+		text: `${index === 0 ? "" : "  "}${cell.compact}`,
+		tone: cell.tone,
+	}));
+	return {
+		kind: "cells",
+		id: "stopStates",
+		title: "STOP STATES",
+		cells,
+		compactRow,
+		flat: [`STOP STATES  ${rowText(compactRow)}`],
+	};
 }
 
 const THREE_LAWS = [
-	"THREE LAWS",
-	"  1. Outer loop owns the return path",
-	"  2. Shared files are the contract",
-	"  3. Irreversible effects stay outside the worker",
+	"1. Outer loop owns the return path",
+	"2. Shared files are the contract",
+	"3. Irreversible effects stay outside the worker",
 ] as const;
 
+function threeLawsRegion(): RowsRegion {
+	return {
+		kind: "rows",
+		id: "threeLaws",
+		title: "THREE LAWS",
+		rows: THREE_LAWS.map((law) => [{ text: law, tone: "muted" }]),
+		frame: "panel",
+		flat: ["THREE LAWS", ...THREE_LAWS.map((law) => `  ${law}`)],
+	};
+}
+
+function telemetryRegion(model: BoardModel, current: number, gate: "human" | "machine"): RowsRegion {
+	const stage = BOARD_STAGES[current] ?? BOARD_STAGES[0];
+	const row: Row = [
+		{ text: `LOOP ${model.jobId}`, tone: "text" },
+		{ text: "  " },
+		{ text: `STAGE ${stage.id} ${stage.label}`, tone: "accent" },
+		{ text: "  " },
+		{ text: `NODE ${model.node}`, tone: "text" },
+		{ text: "  " },
+		{ text: `GATE ${gate}`, tone: gate === "human" ? "accent" : "text" },
+	];
+	return { kind: "rows", id: "telemetry", rows: [row], frame: "none", flat: [rowText(row)] };
+}
+
+function headerRegion(model: BoardModel, paused: boolean): StripRegion {
+	const segments: Span[] = [
+		{ text: paused ? "K-π PROTOCOL" : "K-π GRAPH CONTROL", tone: "accent" },
+		{ text: `MODE ${model.mode}`, tone: "text" },
+		{ text: `JOB ${model.jobId}`, tone: "text" },
+		{ text: `ROUND ${model.round}/${model.maxRounds}`, tone: "text" },
+	];
+	if (paused) segments.push({ text: "GATE approval", tone: "accent" });
+	if (model.kstack !== undefined) segments.push({ text: "K-STACK on", tone: "success" });
+	return { kind: "strip", id: "header", segments, flat: [segments.map((segment) => segment.text).join("  ")] };
+}
+
 /**
- * Renders Board A (amber running) or Board B (protocol-blue pause).
+ * The board as regions: what each panel says, which cells are lit, and the
+ * frame-less lines that mean the same thing. Board A (amber) while the loop
+ * runs; Board B (protocol-blue) while a human node is paused.
+ */
+export function buildBoardRegions(model: BoardModel): BoardRegions {
+	const current = resolveCurrentStageIndex(model.stage, model.node);
+	const paused = model.paused;
+	const gate: "human" | "machine" = model.gate ?? (paused ? "human" : "machine");
+	const question = model.pendingQuestion?.trim();
+	const pending = question !== undefined && question.length > 0 ? question : undefined;
+	const regions: Region[] = [
+		headerRegion(model, paused),
+		telemetryRegion(model, current, gate),
+		contextRegion(model),
+		stagesRegion(current, paused ? "STAGE RAIL" : "STAGES 01–08"),
+		iterationRegion(model),
+	];
+	if (paused) {
+		regions.push(oversightRegion(pending), waitingRegion(pending));
+	}
+	regions.push(lampsRegion(model, paused));
+	if (paused) {
+		regions.push(stopStatesRegion(model.stop), threeLawsRegion());
+	}
+	regions.push({
+		kind: "stop",
+		id: "stop",
+		text: `STOP ${model.stop}`,
+		tone: stopTone(model.stop),
+		flat: [`STOP ${model.stop}`],
+	});
+	const byId: Partial<Record<RegionId, Region>> = {};
+	for (const region of regions) byId[region.id] = region;
+	return { variant: paused ? "blue" : "amber", regions, byId };
+}
+
+/** The frame-less board: every region's flat lines, in board order. */
+export function flattenRegions(regions: BoardRegions): string[] {
+	return regions.regions.flatMap((region) => region.flat);
+}
+
+/**
+ * Renders Board A (amber running) or Board B (protocol-blue pause) as plain
+ * lines. The painter draws the same regions with frames and colour.
  */
 export function renderBoard(model: BoardModel): string[] {
-	const current = resolveCurrentStageIndex(model.stage, model.node);
-	const kstackMark = model.kstack !== undefined ? "  K-STACK on" : "";
-	const header = `K-π  LOOP ${model.jobId}  MODE ${model.mode}  JOB ${model.jobId}${kstackMark}`;
-	const lines: string[] = [header, ...contextLayer(model)];
-
-	for (const row of stageRail(current).split("\n")) {
-		lines.push(row);
-	}
-
-	lines.push(
-		`ROUND ${model.round}/${model.maxRounds}  FINGERPRINT ${shortFingerprint(model.fingerprint)}  ${verifierLabel(model.passed)}`,
-	);
-
-	const gate = model.paused ? "human" : "machine";
-	lines.push(`GATE ${gate}`);
-	if (model.paused) {
-		lines.push("HUMAN OVERSIGHT REQUIRED");
-		const question = model.pendingQuestion?.trim();
-		if (question !== undefined && question.length > 0) {
-			lines.push(`WAITING ON OPERATOR  ${question}`);
-		} else {
-			lines.push("WAITING ON OPERATOR");
-		}
-	}
-
-	if (model.paused) {
-		lines.push("SHARED RUN STATE");
-		lines.push(`  ${fileRow(model.fileLit)}`);
-		lines.push(stopStatesLine(true, model.stop));
-		lines.push(...THREE_LAWS);
-	} else {
-		lines.push(`FILES  ${fileRow(model.fileLit)}`);
-	}
-
-	lines.push(`STOP ${model.stop}`);
-	lines.push(`NODE ${model.node}`);
-
-	return fitBoard(lines, model.width);
+	return fitBoard(flattenRegions(buildBoardRegions(model)), model.width);
 }
 
 /** The two-space gap between lamps, which is also where a lamp row may fold. */
@@ -265,7 +572,7 @@ function foldLamps(line: string, width: number): string[] {
 	let prefix = firstPrefix;
 	for (const lamp of lamps) {
 		const candidate = current.length === 0 ? `${prefix}${lamp}` : `${current}${LAMP_SEPARATOR}${lamp}`;
-		if (current.length > 0 && candidate.length > width) {
+		if (current.length > 0 && visibleWidth(candidate) > width) {
 			rows.push(current);
 			prefix = continuationPrefix;
 			current = `${prefix}${lamp}`;
@@ -279,8 +586,75 @@ function foldLamps(line: string, width: number): string[] {
 	return rows;
 }
 
+/** Plain-text truncation: no escape sequences, so the result can still be painted. */
+export function truncatePlain(text: string, width: number): string {
+	if (visibleWidth(text) <= width) return text;
+	let out = "";
+	for (const character of text) {
+		if (visibleWidth(out + character) > width - 1) break;
+		out += character;
+	}
+	return `${out}…`;
+}
+
 function clamp(line: string, width: number): string {
-	return line.length <= width ? line : `${line.slice(0, Math.max(0, width - 1))}…`;
+	return truncatePlain(line, width);
+}
+
+const STAGE_CELL_PATTERN = /\d{2} \S+ (?:DONE|CURRENT|PENDING)/gu;
+const STAGE_CELL_SEPARATOR = "   ";
+
+/** A stage-rail row: at least one `NN label STATUS` cell. */
+function isStageRow(line: string): boolean {
+	return line.match(STAGE_CELL_PATTERN) !== null;
+}
+
+/**
+ * Folds a stage row the way lamp rows fold. The CURRENT cell is left out
+ * because the essentials already carry it; every other stage keeps its name.
+ */
+function foldStages(line: string, width: number): string[] {
+	const cells = (line.match(STAGE_CELL_PATTERN) ?? []).filter((cell) => !cell.endsWith("CURRENT"));
+	const label = line.trimStart().startsWith("STAGES") ? "STAGES" : "";
+	const rows: string[] = [];
+	let current = "";
+	let prefix = label.length > 0 ? `${label}  ` : "        ";
+	for (const cell of cells) {
+		const candidate = current.length === 0 ? `${prefix}${cell}` : `${current}${STAGE_CELL_SEPARATOR}${cell}`;
+		if (current.length > 0 && visibleWidth(candidate) > width) {
+			rows.push(current);
+			prefix = "        ";
+			current = `${prefix}${cell}`;
+			continue;
+		}
+		current = candidate;
+	}
+	if (current.length > 0) rows.push(current);
+	return rows;
+}
+
+/** The header gives up the job id before MODE or ROUND. */
+function fitHeader(line: string, width: number): string {
+	if (visibleWidth(line) <= width) return line;
+	const segments = line.split("  ");
+	const job = segments.findIndex((segment) => segment.startsWith("JOB "));
+	if (job !== -1) {
+		const excess = visibleWidth(line) - width;
+		const keep = Math.max("JOB ".length + 6, visibleWidth(segments[job] ?? "") - excess);
+		segments[job] = truncatePlain(segments[job] ?? "", keep);
+	}
+	return clamp(segments.join("  "), width);
+}
+
+/** Rows a narrow board keeps first: the brand, the current stage, STOP, and the operator's question. */
+function isEssentialRow(line: string): boolean {
+	return (
+		line.includes("CURRENT") ||
+		line.startsWith("STOP ") ||
+		line.startsWith("K-π") ||
+		line.startsWith("WAITING ON OPERATOR") ||
+		line.startsWith("HUMAN OVERSIGHT")
+	);
 }
 
 /**
@@ -296,94 +670,31 @@ export function fitBoard(lines: readonly string[], width?: number): string[] {
 		if (line.includes("CURRENT")) {
 			const match = /(\d{2}\s+\S+)\s+CURRENT/u.exec(line);
 			const marker = match !== null ? `${match[1]} CURRENT` : "CURRENT";
-			essential.push(marker.length <= width ? marker : marker.slice(0, width));
+			essential.push(clamp(marker, width));
 			continue;
 		}
-		if (line.startsWith("STOP ") || line.startsWith("STOP STATES")) {
-			essential.push(clamp(line, width));
-			continue;
-		}
-		if (line.startsWith("K-π") || line.startsWith("WAITING ON OPERATOR") || line.startsWith("HUMAN OVERSIGHT")) {
-			essential.push(clamp(line, width));
+		if (isEssentialRow(line)) {
+			essential.push(line.startsWith("K-π") ? fitHeader(line, width) : clamp(line, width));
 		}
 	}
 	// Keep remaining context after the essentials, still width-bound, with lamp
-	// rows folded rather than cut.
+	// and stage rows folded rather than cut.
 	const rest: string[] = [];
 	for (const line of lines) {
-		if (
-			line.includes("CURRENT") ||
-			line.startsWith("STOP ") ||
-			line.startsWith("STOP STATES") ||
-			line.startsWith("K-π") ||
-			line.startsWith("WAITING ON OPERATOR") ||
-			line.startsWith("HUMAN OVERSIGHT")
-		) {
+		if (isEssentialRow(line) && !line.includes("CURRENT")) {
 			continue;
 		}
 		if (isFileLampRow(line)) {
 			rest.push(...foldLamps(line, width));
 			continue;
 		}
+		if (isStageRow(line)) {
+			rest.push(...foldStages(line, width));
+			continue;
+		}
 		rest.push(clamp(line, width));
 	}
 	return [...essential, ...rest];
-}
-
-/**
- * How much an operator loses by not seeing a row, highest first.
- *
- * `STOP` and the current stage are what the board is scanned for, and both sit
- * at the far ends of it - so a head-cut or a tail-cut each destroy one of them.
- * The ladder exists so that a surface too short for the whole board drops the
- * rows an operator can reconstruct (the context layer, the three laws, the
- * fingerprint) and never the rows they cannot.
- */
-const ROW_PRIORITY: ReadonlyArray<(line: string) => boolean> = [
-	(line) => line.startsWith("K-π"),
-	(line) => line.includes("CURRENT"),
-	(line) => line.trimStart().startsWith("STOP ") && !line.trimStart().startsWith("STOP STATES"),
-	(line) => line.trimStart().startsWith("WAITING ON OPERATOR"),
-	(line) => isFileLampRow(line),
-	(line) => line.trimStart().startsWith("ROUND "),
-	(line) => line.trimStart().startsWith("GATE "),
-	(line) => line.trimStart().startsWith("NODE "),
-	(line) => line.trimStart().startsWith("HUMAN OVERSIGHT"),
-	(line) => line.trimStart().startsWith("SHARED RUN STATE"),
-	(line) => line.trimStart().startsWith("STOP STATES"),
-];
-
-function rowRank(line: string): number {
-	const index = ROW_PRIORITY.findIndex((matches) => matches(line));
-	return index === -1 ? ROW_PRIORITY.length : index;
-}
-
-/**
- * Fits the board into a surface that shows a fixed number of lines.
- *
- * The interactive widget cuts a too-tall widget from the top and appends
- * "(widget truncated)", which drops `STOP`, the run-file lamps and the paused
- * extras - exactly the rows the board exists to show, because they are last.
- * Choosing here by what the row is worth keeps the board readable in the
- * always-on widget; `/kpi status` still renders every line in an overlay.
- *
- * Output stays in board order, so the fitted board reads like a shorter version
- * of the same board rather than a re-sorted one.
- */
-export function fitBoardHeight(lines: readonly string[], maxLines: number): string[] {
-	if (maxLines <= 0 || lines.length <= maxLines) {
-		return [...lines];
-	}
-	const ranked = lines.map((line, index) => ({ line, index, rank: rowRank(line) }));
-	const keep = new Set(
-		ranked
-			.slice()
-			// Ties keep board order, so a folded lamp row is never split.
-			.sort((left, right) => left.rank - right.rank || left.index - right.index)
-			.slice(0, maxLines)
-			.map((entry) => entry.index),
-	);
-	return lines.filter((_line, index) => keep.has(index));
 }
 
 /** Research.json → board cell. Never invents external URLs. */

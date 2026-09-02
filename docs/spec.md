@@ -506,14 +506,22 @@ Canonical look: https://x.com/av1dlive/status/2092622516544270781
 
 ### Widgets
 
-Always-on during a job, `setWidget` above editor:
+Always-on during a live job, `setWidget` above the editor as a **component** (the string form is capped at ten lines and painted colourless). It is the compact cut of Board A / Board B, framed in the theme's colours:
 
 ```
-LOOP  <name>  MODE <gated|autopilot>  ROUND <n>/<max>  STAGE <id>  NODE <id>
-GATE  <human|machine>  AC <ok>/<total> executable  evidence <fresh|stale|missing>
-STOP  <running|DONE|…>
-FILES task.json context.md candidate.json evidence.json verdict.json events.jsonl
+K-π GRAPH CONTROL │ MODE gated │ JOB <id> │ ROUND <n>/<max>
+┌──────────────┬──────────────┬ … 8 stage cells: "04 implement" / CURRENT|DONE|PENDING …┐
+FILES  ● task.json  ● context.md  ○ candidate.json  ● evidence.json  ○ verdict.json  ● events.jsonl
+LOOP <id>  STAGE 04 implement  NODE <node>  GATE <human|machine>            ┌──────────────┐
+ROUND <n>/<max>  PASS ● last verifier  FAIL ○ none  FINGERPRINT <short>       │ STOP RUNNING │
+CONTEXT product ● structure ● tech ○  AGENTS n  BUS ●  ROUTE …  USAGE …       └──────────────┘
+WAITING ON OPERATOR  <question>          (paused only)
+STOP STATES  DONE ○  BLOCKED ○  APPROVAL ●   (paused only)
 ```
+
+The current stage cell and lit lamps are `accent`, done stages `success`, pending `dim`; the STOP box is `warning` while running, `success` for DONE, `accent` for NEEDS_HUMAN, `error` otherwise. `PASS/FAIL PENDING` reads until a verdict exists. At 70 columns and below the rows are flat but keep every field; the lamp row folds rather than cuts. Once the newest run has reached a terminal the widget is removed; `/kpi status` then names that last job.
+
+`/kpi status` draws the full board (context layer, stage cells, iteration loop, oversight, lamp cells, and on Board B the shared run state, stop states, three laws and the operator question) in a `ctx.ui.custom` overlay using the live theme; any key closes it.
 
 Accounts widget:
 

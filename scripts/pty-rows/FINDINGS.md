@@ -31,9 +31,13 @@ operator question, keeping board order. `control-plane.ts` fits the widget;
 means by "expands it".
 
 **Tests:** `test/operator-ui.test.ts` — "the widget-sized board keeps STOP and
-the lamps a top-cut would drop" asserts the fitted board still carries `STOP`,
-the current stage, the operator question and all six lamps, in board order; a
-second case asserts a board already inside the budget is returned untouched.
+the lamps a top-cut would drop" asserted the fitted board still carried `STOP`,
+the current stage, the operator question and all six lamps, in board order.
+
+**Superseded (FX-01, 2026-09-02):** the widget is now installed with the
+component form of `setWidget`, which the interactive mode neither caps nor
+paints colourless, so `fitBoardHeight` is gone. "the compact widget is at most
+12 lines at 100 columns and keeps STOP and the lamps" pins the replacement.
 
 ### 2. K-π's status bar hid every extension status, including its own
 

@@ -3,16 +3,18 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { EXTENSION_WIDGET_MAX_LINES } from "../packages/coding-agent/src/core/extensions/types.ts";
+import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
 import {
 	type BoardModel,
+	buildBoardRegions,
 	fitBoard,
-	fitBoardHeight,
 	RUN_FILE_NAMES,
 	renderBoard,
 	researchCellFromDocument,
 	resolveCurrentStageIndex,
+	type Tone,
 } from "../packages/coding-agent/src/kpi/extensions/board.ts";
+import { PLAIN_PALETTE, paintBoard } from "../packages/coding-agent/src/kpi/extensions/board-frame.ts";
 import {
 	applyBoardTheme,
 	buildBoardModel,
@@ -285,7 +287,7 @@ test("narrow width keeps CURRENT stage and STOP visible", () => {
 	const text = lines.join("\n");
 	assert.match(text, /CURRENT/);
 	assert.match(text, /STOP RUNNING/);
-	assert.ok(lines.every((line) => line.length <= 40));
+	assert.ok(lines.every((line) => visibleWidth(line) <= 40));
 });
 
 test("board and status rendering never call a model client", async () => {
@@ -501,28 +503,228 @@ function boardModel(overrides: Partial<BoardModel> = {}): BoardModel {
 	};
 }
 
-test("every width keeps the six file lamps, the current stage, and STOP", () => {
+const REQUIRED_FIELDS = ["K-π", "MODE gated", "JOB 2026-09", "ROUND 2/3", "STOP RUNNING"] as const;
+
+function requireFields(text: string, label: string): void {
+	for (const field of REQUIRED_FIELDS) {
+		assert.ok(text.includes(field), `${label} kept ${field}`);
+	}
+	for (const name of RUN_FILE_NAMES) {
+		assert.ok(text.includes(name), `${label} kept the ${name} lamp`);
+	}
+	for (const stage of ["ac-compile", "specify", "plan", "implement", "test", "bounds", "review", "ship"]) {
+		assert.ok(text.includes(stage), `${label} kept the ${stage} stage`);
+	}
+	assert.equal((text.match(/CURRENT/gu) ?? []).length, 1, `${label} lights exactly one CURRENT`);
+}
+
+test("the framed board keeps every required field at 200, 120, 80 and 60 columns", () => {
 	for (const width of [200, 120, 80, 60]) {
-		const lines = renderBoard(boardModel({ width }));
-		const text = lines.join("\n");
-		for (const name of RUN_FILE_NAMES) {
-			assert.ok(text.includes(name), `width ${width} kept the ${name} lamp`);
-		}
-		// A dark lamp must stay legible as dark, not vanish behind an ellipsis.
-		assert.ok(text.includes("○ candidate.json"), `width ${width} kept the dark candidate lamp`);
-		assert.ok(text.includes("○ verdict.json"), `width ${width} kept the dark verdict lamp`);
-		assert.ok(text.includes("04 implement CURRENT"), `width ${width} kept the current stage`);
-		assert.ok(text.includes("STOP RUNNING"), `width ${width} kept STOP`);
-		assert.ok(
-			lines.some((line) => line.startsWith("K-π")),
-			`width ${width} kept the brand`,
-		);
-		if (width < 100) {
-			for (const line of lines) {
-				assert.ok(line.length <= width, `width ${width}: "${line}" fits`);
+		for (const layout of ["full", "compact"] as const) {
+			const lines = paintBoard(boardModel(), { width, layout });
+			const text = lines.join("\n");
+			const label = `${layout} at ${width}`;
+			requireFields(text, label);
+			// A dark lamp must stay legible as dark, not vanish behind an ellipsis.
+			assert.ok(/○/u.test(text) && text.includes("candidate.json"), `${label} kept the dark candidate lamp`);
+			if (width >= 70) {
+				assert.ok(
+					lines.every((line) => visibleWidth(line) === width),
+					`${label}: every framed line is exactly ${width} wide`,
+				);
+				assert.ok(text.includes("┌"), `${label} is framed`);
+				const stageRows = lines.filter((line) => line.includes("ac-compile")).length;
+				assert.equal(stageRows, width >= 120 ? 1 : 1, `${label}: ac-compile sits on one row`);
+				const shipRows = lines.filter((line) => line.includes("ship")).length;
+				assert.equal(shipRows >= 1, true, label);
+				if (width >= 120) {
+					assert.ok(
+						lines.some((line) => line.includes("ac-compile") && line.includes("ship")),
+						`${label}: eight stages on one row`,
+					);
+				} else {
+					assert.ok(
+						!lines.some((line) => line.includes("ac-compile") && line.includes("ship")),
+						`${label}: stages wrap into two rows`,
+					);
+				}
+			} else {
+				assert.ok(!text.includes("┌"), `${label} falls back to flat rows`);
+				assert.ok(
+					lines.every((line) => visibleWidth(line) <= width),
+					`${label}: every flat line fits`,
+				);
 			}
 		}
 	}
+});
+
+test("colour never enters the width math", () => {
+	const ansi = { paint: (_tone: Tone, text: string) => `\u001b[38;5;208m${text}\u001b[39m` };
+	for (const width of [120, 80]) {
+		for (const layout of ["full", "compact"] as const) {
+			const coloured = paintBoard(boardModel(), { width, layout, palette: ansi });
+			const plain = paintBoard(boardModel(), { width, layout, palette: PLAIN_PALETTE });
+			assert.ok(
+				coloured.every((line) => visibleWidth(line) === width),
+				`${layout} at ${width} stays ${width} wide with colour`,
+			);
+			assert.deepEqual(
+				coloured.map((line) => stripTerminalSequences(line)),
+				plain,
+				`${layout} at ${width}: colour changes nothing but colour`,
+			);
+		}
+	}
+});
+
+test("tones: the current stage and lit lamps are accent, done stages success, pending dim", () => {
+	const seen: Array<[Tone, string]> = [];
+	const spy = {
+		paint(tone: Tone, text: string) {
+			seen.push([tone, text]);
+			return text;
+		},
+	};
+	paintBoard(boardModel(), { width: 120, layout: "full", palette: spy });
+	const toneOf = (needle: string) => seen.filter(([, text]) => text.trim() === needle).map(([tone]) => tone);
+	assert.deepEqual([...new Set(toneOf("CURRENT"))], ["accent"]);
+	assert.deepEqual([...new Set(toneOf("DONE"))], ["success"]);
+	assert.deepEqual([...new Set(toneOf("PENDING"))], ["dim"]);
+	assert.ok(
+		toneOf("●").every((tone) => tone === "accent"),
+		"lit lamps are accent",
+	);
+	assert.ok(
+		toneOf("○").every((tone) => tone === "dim"),
+		"dark lamps are dim",
+	);
+	assert.ok(
+		seen.some(([tone, text]) => tone === "borderAccent" && text.includes("─")),
+		"the current cell's border is accent",
+	);
+	assert.ok(
+		seen.some(([tone, text]) => tone === "warning" && text === "STOP RUNNING"),
+		"a running STOP box is warning",
+	);
+});
+
+test("a paused board is the protocol variant with APPROVAL lit", () => {
+	const paused = boardModel({
+		paused: true,
+		stage: "ship",
+		node: "human-confirm",
+		pendingQuestion: "Ship the change?",
+	});
+	assert.equal(buildBoardRegions(paused).variant, "blue");
+	assert.equal(buildBoardRegions(boardModel()).variant, "amber");
+	const seen: Array<[Tone, string]> = [];
+	const spy = {
+		paint(tone: Tone, text: string) {
+			seen.push([tone, text]);
+			return text;
+		},
+	};
+	const text = paintBoard(paused, { width: 120, layout: "full", palette: spy }).join("\n");
+	for (const field of [
+		"K-π PROTOCOL",
+		"SHARED RUN STATE",
+		"STOP STATES",
+		"APPROVAL",
+		"THREE LAWS",
+		"WAITING ON OPERATOR",
+		"Ship the change?",
+		"STAGE RAIL",
+		"STOP RUNNING",
+		"HUMAN OVERSIGHT REQUIRED",
+	]) {
+		assert.ok(text.includes(field), `the paused board shows ${field}`);
+	}
+	assert.ok(!text.includes("STOP APPROVAL"), "APPROVAL is a lamp, never a stop state");
+	assert.ok(
+		seen.some(([tone, text]) => tone === "accent" && text.trim() === "APPROVAL"),
+		"APPROVAL is lit",
+	);
+	assert.ok(
+		seen.some(([tone, text]) => tone === "dim" && text.trim() === "DONE"),
+		"DONE is dark while paused",
+	);
+	const compact = paintBoard(paused, { width: 100, layout: "compact" }).join("\n");
+	assert.ok(compact.includes("WAITING ON OPERATOR  Ship the change?"), "the widget carries the question");
+	assert.ok(compact.includes("APPROVAL ●"), "the widget lights APPROVAL");
+});
+
+test("the compact widget is at most 12 lines at 100 columns and keeps STOP and the lamps", () => {
+	const running = paintBoard(boardModel(), { width: 100, layout: "compact" });
+	assert.ok(running.length <= 12, `running widget is ${running.length} lines`);
+	const wide = paintBoard(boardModel(), { width: 120, layout: "compact" });
+	assert.ok(wide.length <= 9, `running widget at 120 is ${wide.length} lines`);
+	requireFields(running.join("\n"), "the running widget");
+	assert.ok(
+		running.some((line) => line.includes("FILES") && line.includes("task.json")),
+		"lamps stay on one FILES row",
+	);
+	assert.ok(
+		running.some((line) => line.includes("NODE implement") && line.includes("GATE machine")),
+		"telemetry row",
+	);
+
+	const paused = paintBoard(
+		boardModel({
+			paused: true,
+			pendingQuestion: "All quality gates and isolated review are green. Approve this change for commit?",
+		}),
+		{ width: 100, layout: "compact" },
+	);
+	// A paused widget carries the question and STOP STATES as well; the
+	// question wraps under its label instead of being cut.
+	assert.ok(paused.length <= 14, `paused widget is ${paused.length} lines`);
+	const pausedWide = paintBoard(
+		boardModel({
+			paused: true,
+			pendingQuestion: "All quality gates and isolated review are green. Approve this change for commit?",
+		}),
+		{ width: 120, layout: "compact" },
+	);
+	assert.ok(pausedWide.length <= 12, `paused widget at 120 is ${pausedWide.length} lines`);
+	assert.ok(pausedWide.join("\n").includes("Approve this change for commit?"), "the whole question survives");
+	const text = paused.join("\n");
+	assert.ok(text.includes("STOP RUNNING"), "STOP survived");
+	assert.ok(text.includes("WAITING ON OPERATOR"), "the operator question survived");
+	assert.ok(text.includes("04 implement CURRENT"), "the current stage survived");
+	for (const name of RUN_FILE_NAMES) {
+		assert.ok(text.includes(name), `the ${name} lamp survived`);
+	}
+});
+
+test("PASS/FAIL reads PENDING until a verdict exists", async () => {
+	await withRoot(async (root) => {
+		await seedRun(
+			root,
+			{
+				job_id: "pending-1",
+				mode: "gated",
+				round: 0,
+				maxRounds: 3,
+				stage: "plan",
+				node: "plan",
+				passed: false,
+				status: "RUNNING",
+			},
+			{ "verdict.json": "" },
+		);
+		await rm(join(root, ".kpi", "runs", "pending-1", "verdict.json"), { force: true });
+		let text = (await createStatusWidget(root)).join("\n");
+		assert.match(text, /PASS\/FAIL PENDING/);
+		assert.doesNotMatch(text, /\bFAIL\b(?! PENDING)/);
+
+		await writeFile(
+			join(root, ".kpi", "runs", "pending-1", "verdict.json"),
+			'{"status":"REVISE","approved":false}\n',
+		);
+		text = (await createStatusWidget(root)).join("\n");
+		assert.match(text, /FINGERPRINT \S+ {2}FAIL$/m);
+	});
 });
 
 test("a paused narrow board keeps the operator question and the lamps", () => {
@@ -542,49 +744,8 @@ test("a paused narrow board keeps the operator question and the lamps", () => {
 		assert.ok(text.includes(name), `the paused board kept the ${name} lamp`);
 	}
 	for (const line of lines) {
-		assert.ok(line.length <= 60, `"${line}" fits`);
+		assert.ok(visibleWidth(line) <= 60, `"${line}" fits`);
 	}
-});
-
-test("the widget-sized board keeps STOP and the lamps a top-cut would drop", () => {
-	const paused = renderBoard(
-		boardModel({
-			paused: true,
-			stop: "RUNNING",
-			pendingQuestion: "All quality gates and isolated review are green. Approve this change for commit?",
-		}),
-	);
-	// The defect this pins: the paused board is taller than the widget budget, so
-	// the interactive mode cut it from the top and appended "(widget truncated)",
-	// removing STOP, the run-file lamps and the paused extras - the rows the
-	// board exists to show.
-	assert.ok(paused.length > EXTENSION_WIDGET_MAX_LINES, "the paused board really does overflow the widget");
-
-	const fitted = fitBoardHeight(paused, EXTENSION_WIDGET_MAX_LINES);
-	assert.ok(fitted.length <= EXTENSION_WIDGET_MAX_LINES, `fitted to ${fitted.length} lines`);
-	const text = fitted.join("\n");
-	assert.ok(text.includes("STOP RUNNING"), "STOP survived the fit");
-	assert.ok(text.includes("WAITING ON OPERATOR"), "the operator question survived");
-	assert.ok(text.includes("04 implement CURRENT"), "the current stage survived");
-	for (const name of RUN_FILE_NAMES) {
-		assert.ok(text.includes(name), `the ${name} lamp survived`);
-	}
-	assert.ok(
-		fitted.some((line) => line.startsWith("K-π")),
-		"the brand survived",
-	);
-	// Board order is preserved, so the fitted board reads like the full one.
-	const order = fitted.map((line) => paused.indexOf(line));
-	assert.deepEqual(
-		order,
-		[...order].sort((left, right) => left - right),
-		"rows stay in board order",
-	);
-});
-
-test("a running board already inside the budget is returned untouched", () => {
-	const running = renderBoard(boardModel({}));
-	assert.deepEqual(fitBoardHeight(running, EXTENSION_WIDGET_MAX_LINES), running);
 });
 
 test("a refused board theme is reported once instead of silently ignored", () => {
@@ -644,6 +805,6 @@ test("folding a lamp row preserves every lamp in order", () => {
 		.map((token) => token.slice(2));
 	assert.deepEqual(order, [...RUN_FILE_NAMES], "every lamp survived, in order");
 	for (const line of folded) {
-		assert.ok(line.length <= 40, `"${line}" fits`);
+		assert.ok(visibleWidth(line) <= 40, `"${line}" fits`);
 	}
 });

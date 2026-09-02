@@ -114,10 +114,10 @@ const missingStages = stageIds.filter((id) => !amberRun.raw.includes(bytesOf(id)
  * would report one CURRENT per board and call it a defect.
  */
 function lastBoard(text) {
-	const marker = text.lastIndexOf("K-\u03c0  LOOP");
+	const marker = Math.max(text.lastIndexOf("K-\u03c0 GRAPH CONTROL"), text.lastIndexOf("K-\u03c0 PROTOCOL"));
 	return marker === -1 ? text : text.slice(marker);
 }
-const boardsPainted = (amberRun.text.match(/K-\u03c0  LOOP/gu) ?? []).length;
+const boardsPainted = (amberRun.text.match(/K-\u03c0 (?:GRAPH CONTROL|PROTOCOL)/gu) ?? []).length;
 const currentCount = (lastBoard(amberRun.text).match(/CURRENT/gu) ?? []).length;
 
 // Lamp order, read from the painted row rather than from the constant.
