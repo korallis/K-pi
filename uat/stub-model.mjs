@@ -17,7 +17,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 
 const DEFAULT_MODEL = "uat-stub";
 
@@ -207,12 +207,384 @@ function hasToolResult(body) {
  * Drive a minimal happy-path coding loop against fixtures that already contain
  * a green healthcheck. Uses only the request transcript (no filesystem).
  */
+
+/** How many completed tool results exist for `name` in the conversation. */
+
+function defaultHealthStack(taskHash) {
+	const stack = {
+		version: 1,
+		shape: "dune",
+		delivery: "vertical",
+		root: "src",
+		scaffold_first: true,
+		current_module_id: "health",
+		modules: [
+			{
+				id: "health",
+				purpose: "HTTP healthcheck endpoint and its tests",
+				folder: "src/health",
+				interface: "src/health/server.js",
+				allowed_paths: ["src/health/**", "test/health/**"],
+				depends_on: [],
+			},
+		],
+	};
+	if (taskHash) stack.task_hash = taskHash;
+	return stack;
+}
+
+/** Match product contractHash: JSON of task without current_module_id. */
+function taskHashFromJob(jobId) {
+	let subject = process.env.UAT_SUBJECT_DIR;
+	const subjectFile = process.env.UAT_SUBJECT_DIR_FILE;
+	if (subjectFile) {
+		try {
+			const v = readFileSync(subjectFile, "utf8").trim();
+			if (v) subject = v;
+		} catch {
+			/* keep env */
+		}
+	}
+	if (!subject || !jobId) return undefined;
+	try {
+		const raw = readFileSync(join(subject, ".kpi", "runs", jobId, "task.json"), "utf8");
+		const task = JSON.parse(raw);
+		const { current_module_id: _slice, ...contract } = task;
+		return "sha256:" + createHash("sha256").update(JSON.stringify(contract)).digest("hex");
+	} catch {
+		return undefined;
+	}
+}
+
+function countToolResults(body, name) {
+	const messages = body?.messages ?? body?.input ?? [];
+	// Only count completions after the latest user text turn so sticky session
+	// history from earlier UAT23 prompts does not skip tool calls.
+	let start = 0;
+	for (let i = messages.length - 1; i >= 0; i--) {
+		if (messages[i]?.role === "user") {
+			const c = messages[i].content;
+			const text = typeof c === "string" ? c : Array.isArray(c) ? c.map((p) => p?.text || "").join("") : "";
+			// Skip pure tool-result user wrappers that have no plain text
+			if (text && !/tool_result|tool-result/i.test(String(c?.[0]?.type || ""))) {
+				start = i;
+				break;
+			}
+		}
+	}
+	let calls = 0;
+	for (let i = start; i < messages.length; i++) {
+		const m = messages[i];
+		const names = [];
+		if (Array.isArray(m?.tool_calls)) {
+			for (const tc of m.tool_calls) {
+				if ((tc.function?.name || tc.name) === name) names.push(1);
+			}
+		}
+		if (Array.isArray(m?.content)) {
+			for (const c of m.content) {
+				if (
+					(c.type === "tool_use" || c.type === "function" || c.type === "toolCall") &&
+					(c.name === name || c.function?.name === name)
+				) {
+					names.push(1);
+				}
+			}
+		}
+		if (names.length === 0) continue;
+		for (let j = i + 1; j < messages.length; j++) {
+			const m2 = messages[j];
+			if (m2?.role === "tool" || m2?.role === "function") {
+				calls += names.length;
+				break;
+			}
+			if (
+				Array.isArray(m2?.content) &&
+				m2.content.some((c) => /tool_result|tool-result|function_call_output|toolResult/i.test(String(c.type || "")))
+			) {
+				calls += names.length;
+				break;
+			}
+			if (m2?.role === "user" && Array.isArray(m2?.content)) {
+				const has = m2.content.some((c) => /tool/i.test(String(c.type || "")));
+				if (has) {
+					calls += names.length;
+					break;
+				}
+			}
+		}
+	}
+	return calls;
+}
+
+
+/** Last user text only — avoids sticky session history matching UAT markers. */
+function lastUserText(body) {
+	const messages = body?.messages ?? [];
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const m = messages[i];
+		if (m?.role !== "user") continue;
+		if (typeof m.content === "string") return m.content;
+		if (Array.isArray(m.content)) {
+			return m.content
+				.map((c) => (typeof c === "string" ? c : c?.text || ""))
+				.filter(Boolean)
+				.join("\n");
+		}
+	}
+	return "";
+}
+
 function dynamicLoopTurns(body) {
 	const blob = promptBlob(body);
 	const tools = toolNames(body);
 	const jobId = extractJobId(blob);
 	const texts = toolResultTexts(body);
 	const sha = findSha(texts);
+
+	// --- UAT-23 parent/worker screenplays (before history-sensitive matches) ---
+	const uatBlob = lastUserText(body);
+	// UAT-23: stop every live worker between cap cases
+	if (tools.has("agents_stop") && /UAT23_STOP_ALL/i.test(uatBlob)) {
+		const n = countToolResults(body, "agents_stop");
+		if (n < 1) {
+			return [
+				{
+					tool_calls: [{ name: "agents_stop", arguments: { graceMs: 500 } }],
+					finish_reason: "tool_calls",
+				},
+			];
+		}
+		return [{ content: "all workers stopped", finish_reason: "stop" }];
+	}
+	// UAT-23 parent: spawn_background denials
+	if (tools.has("spawn_background") && /UAT23_SPAWN_THREE_EXPLORERS/i.test(uatBlob)) {
+		const n = countToolResults(body, "spawn_background");
+		if (n < 3) {
+			return [
+				{
+					tool_calls: [
+						{
+							name: "spawn_background",
+							arguments: {
+								role: "explorer",
+								prompt: `// UAT23_HOLD_WORKER explorer ${n + 1}: sleep thirty seconds then stop`,
+							},
+						},
+					],
+					finish_reason: "tool_calls",
+				},
+			];
+		}
+		return [{ content: `spawned explorers; third attempt recorded denial if cap hit (${n})`, finish_reason: "stop" }];
+	}
+	if (tools.has("spawn_background") && /UAT23_SPAWN_TWO_WRITERS/i.test(uatBlob)) {
+		const n = countToolResults(body, "spawn_background");
+		if (n < 2) {
+			return [
+				{
+					tool_calls: [
+						{
+							name: "spawn_background",
+							arguments: {
+								role: "implementer",
+								prompt: `// UAT23_HOLD_WORKER writer ${n + 1}: sleep thirty seconds then stop`,
+							},
+						},
+					],
+					finish_reason: "tool_calls",
+				},
+			];
+		}
+		return [{ content: `spawned writers; second attempt may deny writer-live (${n})`, finish_reason: "stop" }];
+	}
+	if (tools.has("spawn_background") && /UAT23_CLAIM_TWICE/i.test(uatBlob)) {
+		const bashN = countToolResults(body, "bash");
+		const spawnN = countToolResults(body, "spawn_background");
+		const commN = countToolResults(body, "communicate");
+		// 1) Seed a live foreign lease (parent bash) so claim-held is product-side.
+		if (bashN < 1 && tools.has("bash")) {
+			return [
+				{
+					tool_calls: [
+						{
+							name: "bash",
+							arguments: {
+								command:
+									'RUN=$(ls -dt .kpi/runs/*/ 2>/dev/null | head -1); if [ -z "$RUN" ]; then echo no-run; exit 1; fi; ' +
+									'node -e \'const fs=require("fs"); const {spawn}=require("child_process"); const run=process.argv[1]; const key="src/health/server.js"; const child=spawn("sleep",["120"],{detached:true,stdio:"ignore"}); child.unref(); const hp=child.pid; if(!Number.isInteger(hp)||hp<=0){console.error("no-pid"); process.exit(1);} fs.writeFileSync(run+"leases.json", JSON.stringify({[key]:{agent_id:"implementer-foreign-holder",pid:hp,at:new Date().toISOString()}},null,2)+"\\n"); fs.writeFileSync(run+"uat-holder.pid", String(hp)+"\\n"); process.kill(hp,0); console.log("seeded-live "+hp+" "+run);\' "$RUN"',
+							},
+						},
+					],
+					finish_reason: "tool_calls",
+				},
+			];
+		}
+		// 2) Spawn one implementer that claims (hits claim-held), kills holder, reclaims.
+		if (spawnN < 1) {
+			return [
+				{
+					tool_calls: [
+						{
+							name: "spawn_background",
+							arguments: {
+								role: "implementer",
+								prompt:
+									"// UAT23_WORKER_SEED_AND_CLAIM: claim_path then kill holder then claim_path again on src/health/server.js",
+							},
+						},
+					],
+					finish_reason: "tool_calls",
+				},
+			];
+		}
+		// 3) Wait for the worker via communicate expect=result (or bash sleep fallback).
+		if (commN < 1 && tools.has("communicate")) {
+			const spawnText = texts.join("\n");
+			let agentId = null;
+			const mId = /"agent_id"\s*:\s*"([^"]+)"/.exec(spawnText);
+			if (mId) agentId = mId[1];
+			if (agentId) {
+				return [
+					{
+						tool_calls: [
+							{
+								name: "communicate",
+								arguments: {
+									to: agentId,
+									message: "finish claim-held then reclaim after holder death",
+									deliverAs: "followUp",
+									expect: "result",
+									timeoutMs: 120000,
+								},
+							},
+						],
+						finish_reason: "tool_calls",
+					},
+				];
+			}
+		}
+		if (bashN < 2 && tools.has("bash") && spawnN >= 1) {
+			return [
+				{
+					tool_calls: [
+						{
+							name: "bash",
+							arguments: { command: "sleep 8" },
+						},
+					],
+					finish_reason: "tool_calls",
+				},
+			];
+		}
+		return [{ content: "claim race driven", finish_reason: "stop" }];
+	}
+
+	// Worker: seed a live foreign lease then claim → claim-held denial
+	if (/UAT23_WORKER_SEED_AND_CLAIM/i.test(uatBlob)) {
+		const bashN = countToolResults(body, "bash");
+		const claimN = countToolResults(body, "claim_path");
+		// Parent already seeded leases.json — claim once (expect claim-held).
+		if (claimN < 1 && tools.has("claim_path")) {
+			return [
+				{
+					tool_calls: [
+						{
+							name: "claim_path",
+							arguments: { path: "src/health/server.js" },
+						},
+					],
+					finish_reason: "tool_calls",
+				},
+			];
+		}
+		// Kill foreign holder after denial (or always after first claim attempt).
+		if (bashN < 1 && tools.has("bash")) {
+			return [
+				{
+					tool_calls: [
+						{
+							name: "bash",
+							arguments: {
+								command:
+									'RUN=$(ls -dt .kpi/runs/*/ 2>/dev/null | head -1); HP=$(cat "${RUN}uat-holder.pid" 2>/dev/null); if [ -n "$HP" ]; then kill "$HP" 2>/dev/null || true; sleep 0.3; echo killed:$HP; else echo no-holder-pid; fi; ls -la "${RUN}leases.json" 2>/dev/null || true',
+							},
+						},
+					],
+					finish_reason: "tool_calls",
+				},
+			];
+		}
+		// Re-claim after holder death.
+		if (claimN < 2 && tools.has("claim_path") && bashN >= 1) {
+			return [
+				{
+					tool_calls: [
+						{
+							name: "claim_path",
+							arguments: { path: "src/health/server.js" },
+						},
+					],
+					finish_reason: "tool_calls",
+				},
+			];
+		}
+		return [{ content: "seed-claim-reclaim done", finish_reason: "stop" }];
+	}
+
+	if (/UAT23_HOLD_WORKER/i.test(uatBlob)) {
+		if (tools.has("bash") && countToolResults(body, "bash") < 1) {
+			return [
+				{
+					tool_calls: [{ name: "bash", arguments: { command: "sleep 25" } }],
+					finish_reason: "tool_calls",
+				},
+			];
+		}
+		// Explorers have no bash — spin on read of a real file
+		if (tools.has("read") && countToolResults(body, "read") < 8) {
+			return [
+				{
+					tool_calls: [{ name: "read", arguments: { path: "package.json" } }],
+					finish_reason: "tool_calls",
+				},
+			];
+		}
+		return [{ content: "hold complete", finish_reason: "stop" }];
+	}
+
+	// Worker claim path for UAT-23
+	if (tools.has("claim_path") && /UAT23_WORKER_CLAIM/i.test(uatBlob)) {
+		const n = countToolResults(body, "claim_path");
+		if (n < 1) {
+			return [
+				{
+					tool_calls: [
+						{
+							name: "claim_path",
+							arguments: { path: "src/health/server.js" },
+						},
+					],
+					finish_reason: "tool_calls",
+				},
+			];
+		}
+		// Hold the process open so the lease stays live for the second claimer
+		if (/HOLD/i.test(blob) && countToolResults(body, "bash") < 1 && tools.has("bash")) {
+			return [
+				{
+					tool_calls: [
+						{
+							name: "bash",
+							arguments: { command: "sleep 45" },
+						},
+					],
+					finish_reason: "tool_calls",
+				},
+			];
+		}
+		return [{ content: "claim done", finish_reason: "stop" }];
+	}
 
 	// Reviewer worker: must publish via write_contract
 	if (
@@ -222,20 +594,87 @@ function dynamicLoopTurns(body) {
 		/Publish the verdict only/i.test(blob)
 	) {
 		if (!hasToolResult(body) || !lastAssistantHadToolCalls(body)) {
-			const fingerprint =
-				"sha256:" +
-				createHash("sha256")
-					.update(`verdict-${jobId}-${sha || "seed"}`)
-					.digest("hex");
-			const verdict = {
-				status: "PASS",
-				approved: true,
-				blockingIssues: [],
-				nonBlockingIssues: [],
-				evidence: ["npm test exits 0", "acceptance criteria covered by fixture"],
-				round: 0,
-				output_fingerprint: fingerprint,
-			};
+			let reviewMode = "PASS";
+			const modeFile = process.env.UAT_REVIEW_MODE_FILE;
+			if (modeFile) {
+				try {
+					const raw = readFileSync(modeFile, "utf8").trim();
+					if (raw) reviewMode = raw.split(/\s+/)[0].toUpperCase();
+				} catch {
+					/* default PASS */
+				}
+			}
+			if (process.env.UAT_REVIEW_MODE) {
+				reviewMode = process.env.UAT_REVIEW_MODE.trim().toUpperCase();
+			}
+
+			let fingerprint;
+			let verdict;
+			if (reviewMode === "REVISE_SAME") {
+				fingerprint = "sha256:" + "c".repeat(64);
+				verdict = {
+					status: "REVISE",
+					approved: false,
+					blockingIssues: ["AC-01 still failing: same fingerprint"],
+					nonBlockingIssues: [],
+					evidence: ["evidence.json"],
+					round: 1,
+					output_fingerprint: fingerprint,
+				};
+			} else if (reviewMode === "REVISE_ROTATE") {
+				const counterFile = process.env.UAT_REVIEW_COUNTER_FILE || (modeFile ? modeFile + ".count" : null);
+				let n = 0;
+				if (counterFile) {
+					try {
+						n = Number.parseInt(readFileSync(counterFile, "utf8").trim() || "0", 10) || 0;
+					} catch {
+						n = 0;
+					}
+					writeFileSync(counterFile, String(n + 1) + "\n");
+				} else {
+					n = Math.floor(Math.random() * 1000);
+				}
+				fingerprint =
+					"sha256:" +
+					createHash("sha256")
+						.update(`revise-rotate-${n}`)
+						.digest("hex");
+				verdict = {
+					status: "REVISE",
+					approved: false,
+					blockingIssues: [`AC-01 still failing: rotate ${n}`],
+					nonBlockingIssues: [],
+					evidence: ["evidence.json"],
+					round: n + 1,
+					output_fingerprint: fingerprint,
+				};
+			} else if (reviewMode === "BLOCKED") {
+				fingerprint = "sha256:" + "b".repeat(64);
+				verdict = {
+					status: "BLOCKED",
+					approved: false,
+					blockingIssues: ["Required behavior cannot be verified locally — untestable blocking issue"],
+					nonBlockingIssues: [],
+					evidence: ["evidence.json"],
+					round: 1,
+					output_fingerprint: fingerprint,
+				};
+			} else {
+				fingerprint =
+					"sha256:" +
+					createHash("sha256")
+						.update(`verdict-${jobId}-${sha || "seed"}`)
+						.digest("hex");
+				verdict = {
+					status: "PASS",
+					approved: true,
+					blockingIssues: [],
+					nonBlockingIssues: [],
+					evidence: ["npm test exits 0", "acceptance criteria covered by fixture"],
+					round: 0,
+					output_fingerprint: fingerprint,
+				};
+			}
 			return [
 				{
 					tool_calls: [
@@ -306,6 +745,9 @@ function dynamicLoopTurns(body) {
 			/not ok\b/i.test(blobTexts);
 		const passed = /✔/.test(blobTexts) || /\bpass\s+[1-9]/.test(blobTexts);
 		const testExit = failed ? 1 : passed ? 0 : 0;
+		// Keep quality-gates green so the graph reaches review. Stop states
+		// (NO_PROGRESS / EXHAUSTED / NEEDS_HUMAN) are driven by the review verdict,
+		// not by failing ACs that would thrash implement until maxRounds.
 		const ac_results = ["AC-01", "AC-02", "AC-03", "AC-04", "AC-05"].map((id) => ({
 			id,
 			passed: testExit === 0,
@@ -424,24 +866,7 @@ export function createApp() {
 		if (process.env.UAT_PLAN_STACK && process.env.UAT_PLAN_STACK.trim()) {
 			return [{ content: process.env.UAT_PLAN_STACK.trim(), finish_reason: "stop" }];
 		}
-		const stack = {
-			version: 1,
-			shape: "dune",
-			delivery: "vertical",
-			root: "src",
-			scaffold_first: true,
-			current_module_id: "health",
-			modules: [
-				{
-					id: "health",
-					purpose: "HTTP healthcheck endpoint returning {status:\"ok\"} and its tests",
-					folder: "src/health",
-					interface: "src/health/server.js",
-					allowed_paths: ["src/health/**", "test/health/**"],
-					depends_on: [],
-				},
-			],
-		};
+		const stack = defaultHealthStack(taskHashFromJob(jobId));
 		return [
 			{
 				content: JSON.stringify(stack),

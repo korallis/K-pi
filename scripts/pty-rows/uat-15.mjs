@@ -13,21 +13,9 @@
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import {
-	bytesOf,
-	check,
-	drive,
-	egressClean,
-	freePort,
-	LOCAL_CONTEXT_WINDOW,
-	sandbox,
-	seedRun,
-	startStub,
-	teardown,
-	writeRow,
-} from "./lib.mjs";
+import { bytesOf, check, drive, egressClean, freePort, LOCAL_CONTEXT_WINDOW, sandbox, seedRun, startStub, teardown, writeRow, repoRoot } from "./lib.mjs";
 
-const EVIDENCE = "/tmp/kpi-pty/evidence/UAT-15";
+const EVIDENCE = join(repoRoot, ".kpi", "uat", "UAT-15");
 
 /** The footer row: the painted line carrying the brand and the chevron rail. */
 function footerRows(text) {

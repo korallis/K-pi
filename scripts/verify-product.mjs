@@ -3,9 +3,16 @@
 /**
  * RP-19 whole-product proof.
  *
- * Runs repository gates (unless --skip-gates), built-harness smoke (unless
- * --skip-harness), and M-01..M-07 collectors that exercise fixtures / live hooks
- * / renderers. Writes a secret-free JSON proof report.
+ * Runs repository gates (unless --skip-gates), the built-harness smoke (unless
+ * --skip-harness), and the M-01..M-07 collectors. Writes a secret-free JSON
+ * proof report.
+ *
+ * M-01..M-06 are established by driving the built `dist/bundle/cli.js` against
+ * the deterministic fixtures under a clean HOME and a scratch Git repository,
+ * with a loopback stub provider and an egress guard, exactly as RP-19 step 5
+ * requires. Each verdict is read back out of an artifact the product wrote.
+ * Nothing here runs `node --test`, imports product source, or asks a renderer
+ * what it would have said. M-07 is the gate roll-up.
  *
  * Usage:
  *   node scripts/verify-product.mjs --json .kpi/remediation-proof.json
@@ -17,6 +24,8 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { BUILT_METRICS, collectBuiltMetric, evidenceFiles } from "./metric-runs.mjs";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, "..");
@@ -99,6 +108,12 @@ function ownerFor(map, id) {
 	return map.entries.find((e) => e.id === id)?.primary_owner ?? "RP-19";
 }
 
+/** Primary RP owner for a UAT row, from the first map entry that names it. */
+function ownerForUat(map, uatId) {
+	const hit = map.entries.find((e) => e.uat_row === uatId);
+	return hit?.primary_owner ?? "RP-19";
+}
+
 function assertTapPass(combined, result) {
 	if (!result.ok) return false;
 	if (/\n✖ /.test(combined)) return false;
@@ -108,6 +123,11 @@ function assertTapPass(combined, result) {
 	return true;
 }
 
+/**
+ * The traceability test is the one `node --test` invocation this proof still
+ * makes, and it is not a metric: it checks that the requirement map covers what
+ * it claims to. Every metric is established against the built binary.
+ */
 function runNodeTest(files, namePattern, timeout = 300_000) {
 	return run(
 		process.execPath,
@@ -116,110 +136,46 @@ function runNodeTest(files, namePattern, timeout = 300_000) {
 	);
 }
 
-function collectFixtureMetric(id, spec, proofRoot) {
-	const dir = join(proofRoot, id);
-	ensureDir(dir);
-	const started = new Date().toISOString();
-	const result = runNodeTest(spec.files, spec.pattern, spec.timeout ?? 300_000);
-	const combined = `${result.stdout}\n${result.stderr}`;
-	writeEvidence(dir, "cmd.txt", result.command);
-	writeEvidence(dir, "stdout.log", result.stdout);
-	writeEvidence(dir, "stderr.log", result.stderr);
-	writeEvidence(dir, "exit", String(result.status ?? "null"));
-	const secrets = scanSecrets(combined);
-	const pass = secrets.length === 0 && assertTapPass(combined, result);
-	writeEvidence(dir, "result.json", {
-		id,
-		pass,
-		started,
-		finished: new Date().toISOString(),
-		owner: spec.owner,
-		fixture: spec.fixture,
-		pattern: spec.pattern,
-		secrets_hits: secrets,
-	});
-	return {
-		pass,
-		owner: spec.owner,
-		evidence: relative(repoRoot, dir),
-		detail: pass
-			? spec.okDetail
-			: secrets.length
-				? `secret canary in evidence: ${secrets.join(",")}`
-				: `fixture exercise failed (exit ${result.status})`,
-		fixture: spec.fixture,
-	};
-}
-
-function collectM06(proofRoot) {
-	const dir = join(proofRoot, "M-06");
-	ensureDir(dir);
-	const renderersPath = join(repoRoot, "packages/coding-agent/src/kpi/extensions/renderers.ts");
-	const outPath = join(dir, "verdict-reply.json");
-	const code = `
-import { writeFileSync } from "node:fs";
-import { formatVerdictReply } from ${JSON.stringify(renderersPath)};
-const reply = formatVerdictReply({
-  status: "REVISE",
-  approved: false,
-  round: 2,
-  blockingIssues: [
-    "AC-01 still fails quality-gates",
-    "candidate.json missing bounds claim",
-    "reviewer found an unsafe write outside the slice",
-  ],
-  nonBlockingIssues: ["typo in comment", "changelog lag"],
-  evidence: ["evidence.json", "events.jsonl", "test/output.log", "coverage/summary.json"],
-});
-const payload = {
-  length: reply.length,
-  reply,
-  pass: reply.length < 800 && /^Verdict:/.test(reply),
-};
-writeFileSync(${JSON.stringify(outPath)}, JSON.stringify(payload, null, 2) + "\\n");
-process.stdout.write(JSON.stringify(payload));
-`;
-	const result = run(process.execPath, ["--experimental-strip-types", "--input-type=module", "-e", code], {
-		timeout: 30_000,
-	});
-	writeEvidence(dir, "cmd.txt", result.command);
-	writeEvidence(dir, "stdout.log", result.stdout);
-	writeEvidence(dir, "stderr.log", result.stderr);
-	writeEvidence(dir, "exit", String(result.status ?? "null"));
-	let payload = null;
-	try {
-		payload = JSON.parse(result.stdout.trim() || readFileSync(outPath, "utf8"));
-	} catch {
-		payload = null;
-	}
-	const secrets = scanSecrets(`${result.stdout}\n${result.stderr}\n${payload?.reply ?? ""}`);
-	const pass = result.ok && payload?.pass === true && secrets.length === 0;
-	writeEvidence(dir, "result.json", { id: "M-06", pass, length: payload?.length ?? null, secrets_hits: secrets });
-	return {
-		pass,
-		owner: "RP-18",
-		evidence: relative(repoRoot, dir),
-		detail: pass ? `visible verdict reply length ${payload.length} < 800` : "M-06 renderer proof failed",
-	};
-}
-
 function collectM07(gates, proofRoot) {
 	const dir = join(proofRoot, "M-07");
 	ensureDir(dir);
-	const pass = Object.values(gates).every((g) => g === true);
-	writeEvidence(dir, "result.json", { id: "M-07", pass, gates });
+	const values = Object.values(gates);
+	const skipped = values.some((g) => g === "skipped");
+	const pass = values.every((g) => g === true);
+	writeEvidence(dir, "result.json", { id: "M-07", pass, skipped, gates });
 	return {
 		pass,
 		owner: "RP-19",
 		evidence: relative(repoRoot, dir),
-		detail: pass ? "all repository gates and built-harness checks passed" : "one or more gates/harness failed",
+		detail: pass
+			? "all repository gates and built-harness checks passed"
+			: skipped
+				? "one or more gates were skipped in this run"
+				: "one or more gates/harness failed",
 	};
 }
 
-function wireUatPaths(proofRoot) {
+function readUatResult(dir) {
+	const path = join(dir, "result.json");
+	if (!existsSync(path)) return null;
+	try {
+		return JSON.parse(readFileSync(path, "utf8"));
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Collect each UAT row's real verdict from `.kpi/uat/<id>/result.json`.
+ * Machine rows write `{ ok, verdict }` (grade.mjs) or `{ pass }` (pty-rows).
+ * A missing result is recorded as not executed — never invented as PASS.
+ */
+function wireUatPaths(proofRoot, map) {
 	const uatRoot = join(repoRoot, ".kpi/uat");
 	ensureDir(uatRoot);
 	const rows = [];
+	let executedCount = 0;
+	let passCount = 0;
 	for (let i = 1; i <= 30; i += 1) {
 		const id = `UAT-${String(i).padStart(2, "0")}`;
 		const dir = join(uatRoot, id);
@@ -231,24 +187,80 @@ function wireUatPaths(proofRoot) {
 				`Evidence directory for ${id}. Populate cmd.txt/exit/stdout.log/frame.txt/head.txt when UAT runs after RP-19.\n`,
 			);
 		}
-		rows.push({ id, path: relative(repoRoot, dir), executed: false });
+		const result = readUatResult(dir);
+		const usId = `US-${String(i).padStart(2, "0")}`;
+		const owner = ownerForUat(map, id);
+		let executed = false;
+		let pass = false;
+		let verdict = "NOT_RUN";
+		let detail = "no result.json";
+		let attended = [];
+		if (result && typeof result === "object") {
+			executed = true;
+			executedCount += 1;
+			if (typeof result.verdict === "string") {
+				verdict = result.verdict;
+				pass = result.verdict === "PASS" && result.ok !== false && result.control_also_passes !== true;
+			} else if (typeof result.pass === "boolean") {
+				pass = result.pass === true;
+				verdict = pass ? "PASS" : "FAIL";
+			} else if (typeof result.ok === "boolean") {
+				pass = result.ok === true && result.control_also_passes !== true;
+				verdict = pass ? "PASS" : "FAIL";
+			}
+			if (pass) passCount += 1;
+			detail =
+				typeof result.detail === "string"
+					? result.detail
+					: pass
+						? `passed ${result.passed ?? result.checks?.filter?.((c) => c.ok)?.length ?? "?"} checks`
+						: `failed ${result.failed ?? result.checks?.filter?.((c) => !c.ok)?.length ?? "?"}`;
+			if (Array.isArray(result.attended)) attended = result.attended;
+		}
+		rows.push({
+			id,
+			us: usId,
+			path: relative(repoRoot, dir),
+			executed,
+			pass,
+			verdict,
+			owner,
+			detail,
+			...(attended.length > 0 ? { attended } : {}),
+			...(result?.control_also_passes === true ? { control_also_passes: true } : {}),
+		});
 	}
-	writeEvidence(proofRoot, "uat-wiring.json", { rows_executed: false, rows });
+	const rowsExecuted = executedCount > 0;
+	const allPass = rows.every((r) => r.executed && r.pass);
+	writeEvidence(proofRoot, "uat-wiring.json", {
+		rows_executed: rowsExecuted,
+		executed_count: executedCount,
+		pass_count: passCount,
+		all_pass: allPass,
+		rows,
+	});
 	return {
 		path_template: ".kpi/uat/<UAT-ID>/",
 		wired: true,
-		rows_executed: false,
+		rows_executed: rowsExecuted,
+		executed_count: executedCount,
+		pass_count: passCount,
+		all_pass: allPass,
 		row_count: rows.length,
+		rows,
 	};
 }
 
-function main() {
+async function main() {
 	const args = parseArgs(process.argv);
 	const proofRoot = join(repoRoot, ".kpi/proof");
 	ensureDir(proofRoot);
 	ensureDir(join(repoRoot, ".kpi"));
 
 	const map = loadMap();
+	// Resolved early so the canary sweep can exclude the report it is about to
+	// write, whichever path the caller asked for.
+	const jsonPath = args.json ? resolve(process.cwd(), args.json) : join(repoRoot, ".kpi/remediation-proof.json");
 	const failures = [];
 	const gates = {
 		check: false,
@@ -273,6 +285,9 @@ function main() {
 			counts: map.counts,
 		},
 		uat: null,
+		// Product surfaces a metric wanted and did not find. Recorded rather than
+		// worked around, so a missing observable cannot be mistaken for a pass.
+		gaps: [],
 		secrets_scan: { pass: true, canaries: CANARIES, hits: [] },
 		failures,
 		ok: false,
@@ -313,9 +328,23 @@ function main() {
 
 		const testR = runNpm("test");
 		gates.test = testR.ok;
-		gates.test_kpi = testR.ok;
 		if (!testR.ok) {
 			failures.push({ id: "gate.test", owner: "RP-19", check: "npm test", message: "npm test failed" });
+		}
+
+		// Its own run, not an alias of `npm test`. `npm test` also covers the
+		// inherited upstream suites, so aliasing them would let an unrelated
+		// upstream failure be reported as K-π's, and would hide a real K-π
+		// regression behind a green upstream run.
+		const kpiR = runNpm("test:kpi");
+		gates.test_kpi = kpiR.ok;
+		if (!kpiR.ok) {
+			failures.push({
+				id: "gate.test_kpi",
+				owner: "RP-19",
+				check: "npm run test:kpi",
+				message: (kpiR.stderr || kpiR.stdout).slice(-500),
+			});
 		}
 
 		const kstackR = runNpm("kstack:sync:check");
@@ -340,15 +369,21 @@ function main() {
 			});
 		}
 	} else {
-		gates.check = true;
-		gates.test = true;
-		gates.test_kpi = true;
-		gates.kstack_sync_check = true;
-		gates.upstream_offline = true;
+		// Do not invent green gates. Record skipped so M-07 cannot claim a run that
+		// never executed npm check/test.
+		gates.check = "skipped";
+		gates.test = "skipped";
+		gates.test_kpi = "skipped";
+		gates.kstack_sync_check = "skipped";
+		gates.upstream_offline = "skipped";
 		gates.build_offline = existsSync(join(repoRoot, "packages/coding-agent/dist/bundle/cli.js"));
 		if (!gates.build_offline) {
 			failures.push({ id: "REQ-DIST-06", owner: "RP-01A", check: "dist bundle", message: "cli.js missing" });
 		}
+		report.gaps.push({
+			id: "gates-skipped",
+			detail: "verify-product invoked with --skip-gates; M-07 cannot claim repository gates from this run",
+		});
 	}
 
 	if (!args.skipHarness) {
@@ -375,66 +410,34 @@ function main() {
 		gates.built_harness = existsSync(join(repoRoot, "packages/coding-agent/dist/bundle/cli.js"));
 	}
 
-	const metricSpecs = {
-		"M-01": {
-			owner: "RP-05",
-			fixture: "fixtures/healthcheck-gated",
-			files: ["test/gated-loop.test.ts"],
-			pattern: "^loop on healthcheck fixture reaches human confirm with green gates$",
-			okDetail: "gated healthcheck fixture: human confirm + green receipts",
-		},
-		"M-02": {
-			owner: "RP-05",
-			fixture: "fixtures/healthcheck-auto",
-			files: ["test/autopilot.test.ts"],
-			pattern: "^autopilot healthcheck reaches DONE with one commit and no human node$",
-			okDetail: "autopilot DONE, one job commit, no human node",
-		},
-		"M-03": {
-			owner: "RP-05",
-			fixture: "fixtures/narrative-ac",
-			files: ["test/autopilot.test.ts"],
-			pattern: "^narrative acceptance criteria refuse forced autopilot before graph load$",
-			okDetail: "narrative AC refused; ac.refused path exercised",
-		},
-		"M-04": {
-			owner: "RP-05",
-			fixture: "fixtures/bounds-violation",
-			files: ["test/autopilot.test.ts"],
-			pattern: "^an autopilot write outside bounds stops UNSAFE without a commit$",
-			okDetail: "bounds violation → UNSAFE, no commit",
-		},
-		"M-05": {
-			owner: "RP-06",
-			fixture: "accounts live hooks",
-			files: ["test/accounts.test.ts"],
-			pattern: "^M-05 through the live hooks: an exhausted slot is never selected in 100 requests$",
-			okDetail: "exhausted sibling never selected in 100 requests",
-			timeout: 180_000,
-		},
-	};
-
+	// M-01..M-06 against the built binary. Each collector owns its sandbox: clean
+	// HOME, scratch Git repository, loopback stub provider, egress guard.
 	for (const id of args.metrics) {
-		if (id === "M-06" || id === "M-07") continue;
-		const spec = metricSpecs[id];
-		if (!spec) {
-			report.metrics[id] = { pass: false, owner: ownerFor(map, id), detail: "unknown metric" };
-			failures.push({ id, owner: ownerFor(map, id), check: "collector", message: "unknown metric" });
-			continue;
-		}
-		const result = collectFixtureMetric(id, spec, proofRoot);
+		if (!BUILT_METRICS.includes(id)) continue;
+		process.stderr.write(`  metric ${id} (built binary)\n`);
+		const result = await collectBuiltMetric(id, proofRoot);
 		report.metrics[id] = result;
+		for (const gap of result.gaps ?? []) {
+			report.gaps.push({ metric: id, ...gap });
+		}
 		if (!result.pass) {
-			failures.push({ id, owner: result.owner, check: spec.pattern, message: result.detail });
+			const failed = (result.checks ?? []).filter((entry) => !entry.ok);
+			failures.push({
+				id,
+				owner: result.owner ?? ownerFor(map, id),
+				check: failed.length > 0 ? failed.map((entry) => entry.id).join(",") : "built-binary collector",
+				message:
+					failed.length > 0
+						? failed.map((entry) => `${entry.id}: ${entry.observed}`).join(" | ")
+						: result.detail,
+			});
 		}
 	}
 
-	if (args.metrics.includes("M-06")) {
-		const result = collectM06(proofRoot);
-		report.metrics["M-06"] = result;
-		if (!result.pass) {
-			failures.push({ id: "M-06", owner: "RP-18", check: "formatVerdictReply", message: result.detail });
-		}
+	for (const id of args.metrics) {
+		if (BUILT_METRICS.includes(id) || id === "M-07") continue;
+		report.metrics[id] = { pass: false, owner: ownerFor(map, id), detail: "unknown metric" };
+		failures.push({ id, owner: ownerFor(map, id), check: "collector", message: "unknown metric" });
 	}
 
 	if (args.metrics.includes("M-07")) {
@@ -445,7 +448,7 @@ function main() {
 		}
 	}
 
-	report.uat = wireUatPaths(proofRoot);
+	report.uat = wireUatPaths(proofRoot, map);
 
 	// REL-01: map must exist; full traceability test is part of test:kpi / explicit run
 	if (!existsSync(join(repoRoot, "docs/traceability-map.json"))) {
@@ -467,19 +470,20 @@ function main() {
 		}
 	}
 
-	// Scan metric evidence dirs only — report.secrets_scan.canaries intentionally lists tokens.
+	// Every file a metric wrote, not a hand-listed few: a built-binary run copies
+	// the whole run store, so the sweep has to walk what is actually there.
+	// `report.secrets_scan.canaries` intentionally lists the canary strings, so the
+	// report itself is never swept for them.
 	const secretHits = [];
-	for (const id of Object.keys(report.metrics)) {
-		const ev = report.metrics[id]?.evidence;
-		if (typeof ev !== "string") continue;
-		const evDir = join(repoRoot, ev);
-		if (!existsSync(evDir)) continue;
-		for (const name of ["stdout.log", "stderr.log", "result.json", "verdict-reply.json", "cmd.txt"]) {
-			const fp = join(evDir, name);
-			if (!existsSync(fp)) continue;
-			secretHits.push(...scanSecrets(readFileSync(fp, "utf8")));
-		}
+	const sweptFiles = [];
+	for (const file of evidenceFiles(proofRoot)) {
+		// The report lists the canary strings on purpose, so it is never its own
+		// haystack.
+		if (resolve(file) === resolve(jsonPath)) continue;
+		sweptFiles.push(relative(repoRoot, file));
+		secretHits.push(...scanSecrets(readFileSync(file, "utf8")));
 	}
+	report.secrets_scan.files_swept = sweptFiles.length;
 	const harnessEv = join(proofRoot, "built-harness.json");
 	if (existsSync(harnessEv)) secretHits.push(...scanSecrets(readFileSync(harnessEv, "utf8")));
 	report.secrets_scan.hits = [...new Set(secretHits)];
@@ -499,7 +503,6 @@ function main() {
 	const gatesOk = Object.values(gates).every((g) => g === true);
 	report.ok = failures.length === 0 && metricsOk && gatesOk;
 
-	const jsonPath = args.json ? resolve(process.cwd(), args.json) : join(repoRoot, ".kpi/remediation-proof.json");
 	ensureDir(dirname(jsonPath));
 	writeFileSync(jsonPath, `${JSON.stringify(report, null, 2)}\n`);
 	process.stdout.write(
@@ -511,4 +514,4 @@ function main() {
 	process.exitCode = report.ok ? 0 : 1;
 }
 
-main();
+await main();

@@ -11,20 +11,9 @@
 
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import {
-	bytesOf,
-	check,
-	drive,
-	egressClean,
-	freePort,
-	sandbox,
-	seedRun,
-	startStub,
-	teardown,
-	writeRow,
-} from "./lib.mjs";
+import { bytesOf, check, drive, egressClean, freePort, sandbox, seedRun, startStub, teardown, writeRow, repoRoot } from "./lib.mjs";
 
-const EVIDENCE = "/tmp/kpi-pty/evidence/UAT-25";
+const EVIDENCE = join(repoRoot, ".kpi", "uat", "UAT-25");
 const JOB = "20260902-uat25";
 const WIDTHS = [200, 120, 80, 60];
 const LAMPS = ["task.json", "context.md", "candidate.json", "evidence.json", "verdict.json", "events.jsonl"];

@@ -11,21 +11,7 @@
 
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import {
-	AMBER,
-	bytesOf,
-	check,
-	drive,
-	egressClean,
-	fgTruecolor,
-	freePort,
-	PROTOCOL_BLUE,
-	sandbox,
-	seedRun,
-	startStub,
-	teardown,
-	writeRow,
-} from "./lib.mjs";
+import { AMBER, bytesOf, check, drive, egressClean, fgTruecolor, freePort, PROTOCOL_BLUE, sandbox, seedRun, startStub, teardown, writeRow, repoRoot } from "./lib.mjs";
 
 const JOB = "20260902-uat06";
 const task = {
@@ -117,9 +103,9 @@ async function capture(outDir, state, { stubDown = false } = {}) {
 	return { ...result, egress };
 }
 
-const runningDir = "/tmp/kpi-pty/evidence/UAT-06/running";
-const pausedDir = "/tmp/kpi-pty/evidence/UAT-06/paused";
-const downDir = "/tmp/kpi-pty/evidence/UAT-06/provider-unreachable";
+const runningDir = join(repoRoot, ".kpi", "uat", "UAT-06", "running");
+const pausedDir = join(repoRoot, ".kpi", "uat", "UAT-06", "paused");
+const downDir = join(repoRoot, ".kpi", "uat", "UAT-06", "provider-unreachable");
 
 const running = await capture(runningDir, RUNNING);
 const paused = await capture(pausedDir, PAUSED);
@@ -208,7 +194,7 @@ const swapped = [
 	paused.raw.includes(amber) ? "protocol-blue-while-paused(swapped)" : undefined,
 ].filter((entry) => entry !== undefined);
 
-const verdict = writeRow("/tmp/kpi-pty/evidence/UAT-06", "UAT-06", {
+const verdict = writeRow(join(repoRoot, ".kpi", "uat", "UAT-06"), "UAT-06", {
 	checks,
 	control: {
 		describe:

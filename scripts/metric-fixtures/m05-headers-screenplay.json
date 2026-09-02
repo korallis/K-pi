@@ -1,0 +1,11 @@
+{
+	"models": ["glm-5.3", "glm-5.3-flash", "uat-stub"],
+	"scenes": [
+		{
+			"node": "healthy-with-quota-headers",
+			"match": {},
+			"headers": { "x-ratelimit-limit-requests": "100", "x-ratelimit-remaining-requests": "42" },
+			"turns": [{ "content": "ok", "finish_reason": "stop", "usage": { "prompt_tokens": 5, "completion_tokens": 1 } }]
+		}
+	]
+}

@@ -203,6 +203,10 @@ export function gradeRow(rowDir, specs = []) {
 				pass = text.includes(spec.contains);
 				detail = pass ? "contains ok" : "contains missing";
 				actual = pass ? spec.contains : null;
+			} else if (spec.notContains != null) {
+				pass = !text.includes(spec.notContains);
+				detail = pass ? "notContains ok" : `found forbidden ${spec.notContains}`;
+				actual = pass ? null : spec.notContains;
 			} else if (spec.expected != null) {
 				const exp = String(spec.expected);
 				pass = located != null && String(located) === exp;

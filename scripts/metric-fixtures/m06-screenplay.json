@@ -1,0 +1,39 @@
+{
+	"models": [
+		"uat-stub"
+	],
+	"scenes": [
+		{
+			"node": "concise",
+			"match": {
+				"promptIncludes": [
+					"Keep user-visible answers short"
+				]
+			},
+			"turns": [
+				{
+					"content": "Verdict: REVISE (round 2, not approved).\n\nBlocking:\n- AC-01 still fails quality-gates\n- candidate.json is missing its bounds claim\n- an unsafe write landed outside the slice\n\nEvidence: evidence.json, events.jsonl, test/output.log\n\nNext: rerun implement for AC-01, then review.",
+					"finish_reason": "stop",
+					"usage": {
+						"prompt_tokens": 64,
+						"completion_tokens": 48
+					}
+				}
+			]
+		},
+		{
+			"node": "diary",
+			"match": {},
+			"turns": [
+				{
+					"content": "Right, so before I answer let me walk you through everything I considered, because context matters and I want to be transparent about my reasoning at every step. Right, so before I answer let me walk you through everything I considered, because context matters and I want to be transparent about my reasoning at every step. Right, so before I answer let me walk you through everything I considered, because context matters and I want to be transparent about my reasoning at every step. Right, so before I answer let me walk you through everything I considered, because context matters and I want to be transparent about my reasoning at every step. Right, so before I answer let me walk you through everything I considered, because context matters and I want to be transparent about my reasoning at every step. Right, so before I answer let me walk you through everything I considered, because context matters and I want to be transparent about my reasoning at every step. Right, so before I answer let me walk you through everything I considered, because context matters and I want to be transparent about my reasoning at every step. Right, so before I answer let me walk you through everything I considered, because context matters and I want to be transparent about my reasoning at every step. Right, so before I answer let me walk you through everything I considered, because context matters and I want to be transparent about my reasoning at every step. Right, so before I answer let me walk you through everything I considered, because context matters and I want to be transparent about my reasoning at every step. Right, so before I answer let me walk you through everything I considered, because context matters and I want to be transparent about my reasoning at every step. Right, so before I answer let me walk you through everything I considered, because context matters and I want to be transparent about my reasoning at every step.",
+					"finish_reason": "stop",
+					"usage": {
+						"prompt_tokens": 64,
+						"completion_tokens": 400
+					}
+				}
+			]
+		}
+	]
+}

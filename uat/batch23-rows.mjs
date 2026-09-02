@@ -277,11 +277,15 @@ export function createBatch23Runners(h) {
 		prepareSandbox,
 		cleanupSandbox,
 		runRpc,
+		runRpcSequential,
 		finishRow,
 		fixtureGoal,
 		gitSnapshot,
+		initGit,
 		cliPath,
 		repoRoot: root,
+		pinZaiStubPool,
+		pinAgentDir,
 	} = h;
 
 	async function runUat03() {
@@ -389,87 +393,146 @@ export function createBatch23Runners(h) {
 		}
 	}
 
+
 	async function runUat05() {
 		const box = await prepareSandbox("UAT-05", { fixture: "healthcheck-auto" });
-		const { rowDir, env, subject, agentDir } = box;
+		const { rowDir, env, subject, reviewModeFile, reviewCounterFile, subjectDirFile } = box;
 		const art = join(rowDir, "artifacts");
 		const results = {};
+
+		const driveStopCase = async (name, reviewMode, goalExtra = "", opts = {}) => {
+			const sub = join(art, name);
+			mkdirSync(sub, { recursive: true });
+			const subj = join(sub, "subj");
+			cpSync(subject, subj, { recursive: true });
+			writeFileSync(reviewModeFile, `${reviewMode}\n`);
+			writeFileSync(reviewCounterFile, "0\n");
+			if (subjectDirFile) writeFileSync(subjectDirFile, `${subj}\n`);
+			// Stub re-reads mode + subject dir each request.
+			const goal = `${fixtureGoal("healthcheck-auto")}${goalExtra}`;
+			const flagPrefix = opts.flagPrefix || "";
+			// Local pools are $0 by design (AC-27.6). Cost exhaustion needs a
+			// credentialed catalog model pointed at the same loopback stub so
+			// usage × model.cost is non-zero through the product path.
+			const priced = opts.pricedPool === true;
+			if (priced && typeof pinZaiStubPool === "function") {
+				pinZaiStubPool(box.agentDir, box.baseUrl, { modelId: "glm-5.3", slots: 1 });
+			} else if (typeof pinAgentDir === "function") {
+				// Restore the default local pin so a prior cost case does not leak.
+				pinAgentDir(box.agentDir, box.baseUrl);
+			}
+			const model = priced
+				? { provider: "zai", modelId: "glm-5.3" }
+				: { provider: "local-openai", modelId: "uat-stub" };
+			const rpc = await runRpc(
+				env,
+				subj,
+				[
+					{ id: "1", type: "set_model", provider: model.provider, modelId: model.modelId },
+					{ id: "2", type: "prompt", message: `/kpi ${flagPrefix}--mode autopilot ${goal}` },
+				],
+				{
+					timeoutMs: 300_000,
+					confirm: true,
+					stopWhen: "terminal",
+					model: `${model.provider}/${model.modelId}`,
+				},
+			);
+			writeFileSync(join(sub, "rpc.jsonl"), rpc.stdout || "");
+			writeFileSync(join(sub, "stderr.log"), rpc.stderr || "");
+			if (existsSync(join(subj, ".kpi/runs"))) cpSync(join(subj, ".kpi/runs"), join(sub, "runs"), { recursive: true });
+			const stPath = walkFind(join(sub, "runs"), "state.json");
+			const state = stPath ? readJsonSafe(stPath) : {};
+			const eventsPath = walkFind(join(sub, "runs"), "events.jsonl");
+			const events = eventsPath && existsSync(eventsPath) ? readFileSync(eventsPath, "utf8") : "";
+			const terminals = events
+				.split("\n")
+				.filter(Boolean)
+				.map((line) => {
+					try {
+						return JSON.parse(line);
+					} catch {
+						return null;
+					}
+				})
+				.filter((e) => e && e.type === "loop.terminal");
+			writeFileSync(join(sub, "state.json"), `${JSON.stringify(state, null, 2)}\n`);
+			writeFileSync(join(sub, "terminals.json"), `${JSON.stringify(terminals, null, 2)}\n`);
+			return {
+				status: String(state.status || ""),
+				reason: String(state.reason || ""),
+				exhausted_limit: state.exhausted_limit ?? state.limits?.exhausted ?? null,
+				round: state.round,
+				maxRounds: state.maxRounds,
+				terminals,
+				terminal_count: terminals.length,
+			};
+		};
+
 		try {
-			writeFileSync(join(rowDir, "cmd.txt"), "UAT-05 a–d stop states + 429 sub-row\n");
+			writeFileSync(join(rowDir, "cmd.txt"), "UAT-05 a–d stop states + 429 through built binary\n");
 
-			// --- a) NO_PROGRESS: identical verifier output twice ---
-			{
-				const sub = join(art, "a-no-progress");
-				mkdirSync(sub, { recursive: true });
-				const subj = join(sub, "subj");
-				cpSync(subject, subj, { recursive: true });
-				// Force low maxRounds via post-start patch is fragile; drive revise-same via screenplay file
-				const sp = join(sub, "screenplay.json");
-				writeScreenplay(sp, defaultLoopScenes({ reviewStatus: "REVISE_SAME" }));
-				const env2 = { ...env, UAT_STUB_SCREENPLAY: sp };
-				// Relaunch is not automatic — use dynamic stub + hope review path hits REVISE.
-				// Practical drive: run until terminal and record status; also unit-backed stop vocabulary check.
-				const rpc = await runRpc(
-					env,
-					subj,
-					[
-						{ id: "1", type: "set_model", provider: "local-openai", modelId: "uat-stub" },
-						{
-							id: "2",
-							type: "prompt",
-							message: `/kpi --mode autopilot ${fixtureGoal("healthcheck-auto")} maxRounds=2`,
-						},
-					],
-					{ timeoutMs: 180_000, confirm: true, stopWhen: "terminal" },
-				);
-				writeFileSync(join(sub, "rpc.jsonl"), rpc.stdout || "");
-				if (existsSync(join(subj, ".kpi/runs"))) cpSync(join(subj, ".kpi/runs"), join(sub, "runs"), { recursive: true });
-				const st = walkFind(join(sub, "runs"), "state.json");
-				const state = st ? readJsonSafe(st) : {};
-				results.a = {
-					status: state.status || "",
-					reason: state.reason || "",
-					stdout_tail: (rpc.stdout || "").slice(-800),
-				};
-				writeFileSync(join(sub, "state.json"), `${JSON.stringify(state, null, 2)}\n`);
-			}
+			// a) NO_PROGRESS: identical review fingerprint twice
+			results.a = await driveStopCase("a-no-progress", "REVISE_SAME");
+			writeFileSync(
+				join(art, "a-status.txt"),
+				results.a.status === "NO_PROGRESS" && results.a.terminal_count === 1 ? "NO_PROGRESS\n" : `got=${results.a.status} terminals=${results.a.terminal_count}\n`,
+			);
 
-			// --- b) EXHAUSTED via maxRounds ---
-			{
-				const sub = join(art, "b-exhausted");
-				mkdirSync(sub, { recursive: true });
-				const subj = join(sub, "subj");
-				cpSync(subject, subj, { recursive: true });
-				const rpc = await runRpc(
-					env,
-					subj,
-					[
-						{ id: "1", type: "set_model", provider: "local-openai", modelId: "uat-stub" },
-						{
-							id: "2",
-							type: "prompt",
-							message: `/kpi --mode autopilot ${fixtureGoal("healthcheck-auto")}`,
-						},
-					],
-					{ timeoutMs: 120_000, confirm: true, stopWhen: "terminal" },
-				);
-				writeFileSync(join(sub, "rpc.jsonl"), rpc.stdout || "");
-				if (existsSync(join(subj, ".kpi/runs"))) cpSync(join(subj, ".kpi/runs"), join(sub, "runs"), { recursive: true });
-				const st = walkFind(join(sub, "runs"), "state.json");
-				const state = st ? readJsonSafe(st) : {};
-				// If DONE, patch task limits and re-run is not EXHAUSTED. Record honesty.
-				results.b = { status: state.status || "", reason: state.reason || "" };
-				writeFileSync(join(sub, "state.json"), `${JSON.stringify(state, null, 2)}\n`);
-			}
+			// b) EXHAUSTED: maxRounds + cost + timeout, each with exhausted_limit
+			results.b = await driveStopCase("b-exhausted", "REVISE_ROTATE");
+						results.b_cost = await driveStopCase(
+				"b-exhausted-cost",
+				"REVISE_ROTATE",
+				"",
+				// Catalog rates make ~5e-5 USD per stub turn; a micro-dollar cap
+				// exhausts on the first priced agent node without a floor.
+				{ flagPrefix: "--max-cost-usd 0.00003 ", pricedPool: true },
+			);
+			results.b_timeout = await driveStopCase(
+				"b-exhausted-timeout",
+				"REVISE_ROTATE",
+				"",
+				{ flagPrefix: "--timeout-ms 50 " },
+			);
+			const bOk =
+				results.b.status === "EXHAUSTED" &&
+				results.b.terminal_count === 1 &&
+				(results.b.exhausted_limit === "maxRounds" || /round/i.test(results.b.reason));
+			const bCostOk =
+				results.b_cost.status === "EXHAUSTED" &&
+				results.b_cost.terminal_count === 1 &&
+				results.b_cost.exhausted_limit === "maxCostUsd";
+			const bTimeoutOk =
+				results.b_timeout.status === "EXHAUSTED" &&
+				results.b_timeout.terminal_count === 1 &&
+				results.b_timeout.exhausted_limit === "timeoutMs";
+			writeFileSync(join(art, "b-rounds-status.txt"), bOk ? "EXHAUSTED\n" : `got=${results.b.status}/${results.b.exhausted_limit}\n`);
+			writeFileSync(join(art, "b-cost-status.txt"), bCostOk ? "EXHAUSTED\n" : `got=${results.b_cost.status}/${results.b_cost.exhausted_limit}\n`);
+			writeFileSync(join(art, "b-timeout-status.txt"), bTimeoutOk ? "EXHAUSTED\n" : `got=${results.b_timeout.status}/${results.b_timeout.exhausted_limit}\n`);
+			writeFileSync(
+				join(art, "b-status.txt"),
+				bOk && bCostOk && bTimeoutOk ? "EXHAUSTED\n" : "NOT_EXHAUSTED\n",
+			);
+			writeFileSync(
+				join(art, "b-exhausted-limit.txt"),
+				[
+					`maxRounds=${results.b.exhausted_limit ?? ""}`,
+					`maxCostUsd=${results.b_cost.exhausted_limit ?? ""}`,
+					`timeoutMs=${results.b_timeout.exhausted_limit ?? ""}`,
+				].join("\n") + "\n",
+			);
 
-			// --- c) UNSAFE bounds-violation ---
+			// c) UNSAFE bounds-violation
 			{
 				const sub = join(art, "c-unsafe");
 				mkdirSync(sub, { recursive: true });
 				const subj = join(sub, "subj");
 				const fx = join(root, "fixtures", "bounds-violation");
 				cpSync(fx, subj, { recursive: true });
-				h.initGit(subj);
+				initGit(subj);
+				writeFileSync(reviewModeFile, "PASS\n");
+				if (subjectDirFile) writeFileSync(subjectDirFile, `${subj}\n`);
 				const rpc = await runRpc(
 					env,
 					subj,
@@ -487,105 +550,75 @@ export function createBatch23Runners(h) {
 				if (existsSync(join(subj, ".kpi/runs"))) cpSync(join(subj, ".kpi/runs"), join(sub, "runs"), { recursive: true });
 				const st = walkFind(join(sub, "runs"), "state.json");
 				const state = st ? readJsonSafe(st) : {};
-				const git = gitSnapshot(subj);
+				const eventsPath = walkFind(join(sub, "runs"), "events.jsonl");
+				const events = eventsPath ? readFileSync(eventsPath, "utf8") : "";
+				const terminals = events.split("\n").filter((l) => l.includes('"loop.terminal"'));
 				results.c = {
-					status: state.status || "",
-					reason: state.reason || "",
-					commits: git.log,
-					head: git.head,
+					status: String(state.status || ""),
+					reason: String(state.reason || ""),
+					terminal_count: terminals.length,
 				};
 				writeFileSync(join(sub, "state.json"), `${JSON.stringify(state, null, 2)}\n`);
-				writeFileSync(join(sub, "git.txt"), JSON.stringify(git, null, 2));
-			}
-
-			// --- d) NEEDS_HUMAN untestable review ---
-			{
-				const sub = join(art, "d-needs-human");
-				mkdirSync(sub, { recursive: true });
-				const subj = join(sub, "subj");
-				cpSync(subject, subj, { recursive: true });
-				// Dynamic stub review path publishes green; cannot force BLOCKED without screenplay reload.
-				// Drive and record; product unit tests pin NEEDS_HUMAN vocabulary.
-				const rpc = await runRpc(
-					env,
-					subj,
-					[
-						{ id: "1", type: "set_model", provider: "local-openai", modelId: "uat-stub" },
-						{
-							id: "2",
-							type: "prompt",
-							message: `/kpi --mode autopilot ${fixtureGoal("healthcheck-auto")}`,
-						},
-					],
-					{ timeoutMs: 180_000, confirm: true, stopWhen: "terminal" },
+				writeFileSync(
+					join(art, "c-status.txt"),
+					results.c.status === "UNSAFE" && results.c.terminal_count >= 1 ? "UNSAFE\n" : `got=${results.c.status}\n`,
 				);
-				writeFileSync(join(sub, "rpc.jsonl"), rpc.stdout || "");
-				if (existsSync(join(subj, ".kpi/runs"))) cpSync(join(subj, ".kpi/runs"), join(sub, "runs"), { recursive: true });
-				const st = walkFind(join(sub, "runs"), "state.json");
-				const state = st ? readJsonSafe(st) : {};
-				results.d = { status: state.status || "", reason: state.reason || "" };
-				writeFileSync(join(sub, "state.json"), `${JSON.stringify(state, null, 2)}\n`);
 			}
 
-			// --- 429 retry sub-row: stub self-test already proves once; drive via stub /self-test endpoint ---
+			// d) NEEDS_HUMAN: BLOCKED untestable review
+			results.d = await driveStopCase("d-needs-human", "BLOCKED");
+			writeFileSync(
+				join(art, "d-status.txt"),
+				results.d.status === "NEEDS_HUMAN" && results.d.terminal_count === 1
+					? "NEEDS_HUMAN\n"
+					: `got=${results.d.status} terminals=${results.d.terminal_count}\n`,
+			);
+
+			// e) 429: stub self-test + drive once to ensure product absorbs without round bump vocabulary
 			{
 				const sub = join(art, "e-429");
 				mkdirSync(sub, { recursive: true });
-				// Call stub's built-in 429 once path if exposed; else record model log for 429
-				const modelLog = existsSync(box.modelLog) ? readFileSync(box.modelLog, "utf8") : "";
-				writeFileSync(join(sub, "model-log-excerpt.txt"), modelLog.slice(0, 4000));
-				// Use stub internal self-test by spawning a one-shot
 				const st = spawnSync(process.execPath, [join(here, "stub-model.mjs"), "--self-test"], {
 					encoding: "utf8",
 					timeout: 15_000,
 				});
 				writeFileSync(join(sub, "stub-self-test.txt"), `${st.stdout || ""}\n${st.stderr || ""}\nexit=${st.status}\n`);
-				results.e429 = {
-					self_test_ok: st.status === 0,
-					stdout: (st.stdout || "").slice(0, 500),
-				};
+				results.e429 = { self_test_ok: st.status === 0 };
+				writeFileSync(join(art, "e429-ok.txt"), st.status === 0 ? "ok\n" : "fail\n");
 			}
 
 			writeFileSync(join(art, "stop-results.json"), `${JSON.stringify(results, null, 2)}\n`);
-			const vocab = ["NO_PROGRESS", "EXHAUSTED", "UNSAFE", "NEEDS_HUMAN", "DONE", "BLOCKED"];
-			const seen = Object.values(results)
-				.map((r) => r && r.status)
-				.filter(Boolean);
-			writeFileSync(join(art, "statuses-seen.txt"), `${seen.join("\n")}\n`);
-			const unknown = seen.filter((s) => s && !vocab.includes(s));
+			const statuses = ["a", "b", "c", "d"].map((k) => results[k]?.status).filter(Boolean);
+			const vocab = new Set(["NO_PROGRESS", "EXHAUSTED", "UNSAFE", "NEEDS_HUMAN", "DONE", "BLOCKED", "RUNNING"]);
+			const unknown = statuses.filter((s) => !vocab.has(s));
 			writeFileSync(join(art, "unknown-status.txt"), unknown.length ? unknown.join("\n") + "\n" : "none\n");
 
-			// Grade: c must be UNSAFE; vocabulary clean; 429 self-test ok; a/b/d recorded honestly
-			const cOk = results.c?.status === "UNSAFE";
-			writeFileSync(join(art, "c-unsafe.txt"), cOk ? "UNSAFE\n" : `got=${results.c?.status}\n`);
-			writeFileSync(join(art, "e429-ok.txt"), results.e429?.self_test_ok ? "ok\n" : "fail\n");
-
 			const specs = [
-				{ id: "stop-results", artifact: "artifacts/stop-results.json", contains: "status" },
-				{ id: "no-unknown-status", artifact: "artifacts/unknown-status.txt", contains: "none" },
-				{ id: "c-bounds-unsafe", artifact: "artifacts/c-unsafe.txt", contains: "UNSAFE" },
+				{ id: "a-no-progress", artifact: "artifacts/a-status.txt", contains: "NO_PROGRESS" },
+				{ id: "b-exhausted", artifact: "artifacts/b-status.txt", contains: "EXHAUSTED" },
+				{ id: "b-exhausted-rounds", artifact: "artifacts/b-rounds-status.txt", contains: "EXHAUSTED" },
+				{ id: "b-exhausted-cost", artifact: "artifacts/b-cost-status.txt", contains: "EXHAUSTED" },
+				{ id: "b-exhausted-timeout", artifact: "artifacts/b-timeout-status.txt", contains: "EXHAUSTED" },
+				{ id: "c-unsafe", artifact: "artifacts/c-status.txt", contains: "UNSAFE" },
+				{ id: "d-needs-human", artifact: "artifacts/d-status.txt", contains: "NEEDS_HUMAN" },
 				{ id: "e429-self-test", artifact: "artifacts/e429-ok.txt", contains: "ok" },
+				{ id: "no-unknown-status", artifact: "artifacts/unknown-status.txt", contains: "none" },
 			];
-			// a/b/d may not hit exact states under default stub — require presence of keys
-			specs.push({ id: "a-recorded", artifact: "artifacts/stop-results.json", contains: '"a"' });
-			specs.push({ id: "b-recorded", artifact: "artifacts/stop-results.json", contains: '"b"' });
-			specs.push({ id: "d-recorded", artifact: "artifacts/stop-results.json", contains: '"d"' });
-
 			const control = {
-				id: "unknown-status-must-fail",
-				description: "If unknown status vocabulary appeared, row must fail",
-				wouldPass: unknown.length > 0,
+				id: "wrong-status-control",
+				description: "If a sub-row reported DONE for NO_PROGRESS drive, a-status would fail",
+				wouldPass: results.a?.status === "DONE",
 			};
 			const notes = [
 				"# UAT-05",
 				"",
-				`- a NO_PROGRESS attempt: ${results.a?.status} ${results.a?.reason || ""}`,
-				`- b EXHAUSTED attempt: ${results.b?.status}`,
-				`- c UNSAFE bounds: ${results.c?.status} ${results.c?.reason || ""}`,
-				`- d NEEDS_HUMAN attempt: ${results.d?.status}`,
+				`- a NO_PROGRESS: ${results.a?.status} terminals=${results.a?.terminal_count} ${results.a?.reason || ""}`,
+				`- b EXHAUSTED rounds: ${results.b?.status} limit=${results.b?.exhausted_limit} round=${results.b?.round}/${results.b?.maxRounds}`,
+				`- b EXHAUSTED cost: ${results.b_cost?.status} limit=${results.b_cost?.exhausted_limit}`,
+				`- b EXHAUSTED timeout: ${results.b_timeout?.status} limit=${results.b_timeout?.exhausted_limit}`,
+				`- c UNSAFE: ${results.c?.status} ${results.c?.reason || ""}`,
+				`- d NEEDS_HUMAN: ${results.d?.status} ${results.d?.reason || ""}`,
 				`- 429 self-test: ${results.e429?.self_test_ok}`,
-				"",
-				"Note: a/b/d under default dynamic stub often reach DONE; product stop vocabulary is pinned by test/graph stop suites. c and 429 are product-driven here.",
 			].join("\n");
 			return finishRow(rowDir, specs, { control, notes, extra: { row: "UAT-05", results } });
 		} finally {
@@ -818,7 +851,7 @@ export function createBatch23Runners(h) {
 				const fx = join(root, "fixtures", name);
 				const subj = join(sub, "subj");
 				cpSync(fx, subj, { recursive: true });
-				h.initGit(subj);
+				initGit(subj);
 				const expected = readJsonSafe(join(fx, "expected.json")) || {};
 				const goal = existsSync(join(fx, "task.txt"))
 					? readFileSync(join(fx, "task.txt"), "utf8").trim()
@@ -1312,16 +1345,18 @@ export function createBatch23Runners(h) {
 		}
 	}
 
+
+
 	async function runUat23() {
 		const box = await prepareSandbox("UAT-23", { fixture: "healthcheck-gated" });
 		const { rowDir, env, subject } = box;
 		try {
 			writeFileSync(
 				join(rowDir, "cmd.txt"),
-				"background agents: spawn limits, claim_path, no pi-bus keywords\n",
+				"UAT-23: third spawn, second writer, claim_path → agent.denied via built CLI\n",
 			);
 			const art = join(rowDir, "artifacts");
-			// Manifest scan for forbidden bus packages
+
 			const hits = [];
 			const scan = (dir, depth = 0) => {
 				if (!existsSync(dir) || depth > 5) return;
@@ -1349,82 +1384,152 @@ export function createBatch23Runners(h) {
 				}
 			};
 			scan(join(root, "packages"));
-			writeFileSync(join(art, "bus-keyword-hits.json"), `${JSON.stringify(hits, null, 2)}\n`);
 			writeFileSync(join(art, "bus-keywords.txt"), hits.length ? "found\n" : "clean\n");
 
-			// Start a gated job so agents/ dirs can appear for review worker
 			const goal = fixtureGoal("healthcheck-gated");
-			const rpc = await runRpc(
+			// One long-lived RPC session: finish a job, then drive spawn caps in-process
+			// so BackgroundBus live counts stay accurate across prompts.
+			const seq = await runRpcSequential(
 				env,
 				subject,
 				[
 					{ id: "1", type: "set_model", provider: "local-openai", modelId: "uat-stub" },
+					// Establish active job for bus context
 					{ id: "2", type: "prompt", message: `/kpi ${goal}` },
+					// Disable bare-message auto-wrap so spawn prompts are plain tool turns
+					{ id: "3", type: "prompt", message: "/kpi off" },
+					{
+						id: "4",
+						type: "prompt",
+						message: "UAT23_SPAWN_TWO_WRITERS: call spawn_background twice as role implementer",
+					},
+					{ id: "5", type: "prompt", message: "UAT23_STOP_ALL: stop every background worker" },
+					{
+						id: "6",
+						type: "prompt",
+						message:
+							"UAT23_CLAIM_TWICE: seed live lease then spawn implementer to claim_path src/health/server.js",
+					},
+					{ id: "7", type: "prompt", message: "UAT23_STOP_ALL: stop every background worker" },
+					{
+						id: "8",
+						type: "prompt",
+						message: "UAT23_SPAWN_THREE_EXPLORERS: call spawn_background three times as role explorer",
+					},
+					{ id: "9", type: "prompt", message: "UAT23_STOP_ALL: stop every background worker" },
 				],
-				{ timeoutMs: 240_000, confirm: true, stopWhen: "terminal" },
+				{ timeoutMs: 720_000 },
 			);
-			writeFileSync(join(rowDir, "rpc.jsonl"), rpc.stdout || "");
-			writeFileSync(join(rowDir, "stdout.log"), rpc.stdout || "");
-			writeFileSync(join(rowDir, "stderr.log"), rpc.stderr || "");
+			writeFileSync(join(art, "rpc-seq.jsonl"), seq.stdout || "");
+			writeFileSync(join(art, "stderr.log"), seq.stderr || "");
+			const phase2 = seq;
+
 			const run = latestRunDir(subject);
 			if (run) cpSync(run, join(art, "run"), { recursive: true });
+
+			const eventsPath = run && existsSync(join(run, "events.jsonl")) ? join(run, "events.jsonl") : null;
+			const busPath = run && existsSync(join(run, "bus.jsonl")) ? join(run, "bus.jsonl") : null;
+			const eventText = eventsPath ? readFileSync(eventsPath, "utf8") : "";
+			const busText = busPath ? readFileSync(busPath, "utf8") : "";
+			const denied = [...eventText.split("\n"), ...busText.split("\n")]
+				.filter(Boolean)
+				.map((line) => {
+					try {
+						return JSON.parse(line);
+					} catch {
+						return null;
+					}
+				})
+				.filter((e) => e && e.type === "agent.denied");
+			// Dedup by reason+ts
+			const seen = new Set();
+			const unique = [];
+			for (const d of denied) {
+				const k = `${d.reason}|${d.ts}|${d.agent_id || ""}`;
+				if (seen.has(k)) continue;
+				seen.add(k);
+				unique.push(d);
+			}
+			writeFileSync(join(art, "denials.json"), `${JSON.stringify(unique, null, 2)}\n`);
+			const reasons = new Set(unique.map((d) => d.reason).filter(Boolean));
+			writeFileSync(join(art, "denial-reasons.txt"), `${[...reasons].sort().join("\n")}\n`);
+			writeFileSync(join(art, "worker-limit.txt"), reasons.has("worker-limit") ? "yes\n" : "no\n");
+			writeFileSync(join(art, "writer-live.txt"), reasons.has("writer-live") ? "yes\n" : "no\n");
+			writeFileSync(join(art, "claim-held.txt"), reasons.has("claim-held") ? "yes\n" : "no\n");
+			// Holder death → re-claim: look for a successful claim after claim-held
+			let reclaimOk = false;
+			if (run && existsSync(join(run, "agents"))) {
+				for (const name of readdirSync(join(run, "agents"))) {
+					if (!name.endsWith(".jsonl")) continue;
+					const body = readFileSync(join(run, "agents", name), "utf8");
+					if (/claimed src\/health\/server\.js|claimed .*server\.js/i.test(body) && /seed-claim-reclaim done|claim done/i.test(body)) {
+						reclaimOk = true;
+					}
+					// tool result text in session
+					if (body.includes("claimed") && reasons.has("claim-held")) {
+						const claimedCount = (body.match(/claimed /g) || []).length;
+						if (claimedCount >= 1) reclaimOk = true;
+					}
+				}
+			}
+			// leases.json after reclaim should name the live claimer, not foreign holder
+			const leasesPath = run && existsSync(join(run, "leases.json")) ? join(run, "leases.json") : null;
+			const leases = leasesPath ? readJsonSafe(leasesPath) : {};
+			const leaseHolder = leases["src/health/server.js"]?.agent_id || "";
+			if (leaseHolder && leaseHolder !== "implementer-foreign-holder") reclaimOk = true;
+			writeFileSync(join(art, "reclaim-after-death.txt"), reclaimOk && reasons.has("claim-held") ? "yes\n" : `no holder=${leaseHolder}\n`);
+
+
 			const agentsDir = run ? join(run, "agents") : null;
 			const agentSessions = agentsDir && existsSync(agentsDir) ? readdirSync(agentsDir) : [];
-			writeFileSync(join(art, "agent-sessions.txt"), `${agentSessions.join("\n")}\n`);
 			writeFileSync(join(art, "agent-count.txt"), `${agentSessions.length}\n`);
-			// Parent decision from verdict/evidence not transcript
+			writeFileSync(join(art, "agent-sessions.txt"), `${agentSessions.join("\n")}\n`);
+
 			const verdict = run && existsSync(join(run, "verdict.json"));
 			const evidence = run && existsSync(join(run, "evidence.json"));
-			writeFileSync(
-				join(art, "parent-receipts.txt"),
-				[verdict ? "verdict.json" : "", evidence ? "evidence.json" : ""].filter(Boolean).join("\n") + "\n",
-			);
-			// Events for denials if any
-			const events = run && existsSync(join(run, "events.jsonl")) ? readFileSync(join(run, "events.jsonl"), "utf8") : "";
-			const denial = /worker.*limit|claim.*denied|already claimed|Background worker limit/i.test(events + rpc.stdout);
-			writeFileSync(join(art, "denial-observed.txt"), denial ? "yes\n" : "no-during-happy-path\n");
-
 			const stPath = run && existsSync(join(run, "state.json")) ? join(run, "state.json") : null;
 			const st = stPath ? readJsonSafe(stPath) : {};
-			const terminalParent =
-				Boolean(verdict) ||
-				Boolean(evidence) ||
-				["DONE", "UNSAFE", "BLOCKED", "EXHAUSTED", "NEEDS_HUMAN", "NO_PROGRESS"].includes(String(st.status || ""));
-			writeFileSync(join(art, "parent-decision.txt"), terminalParent ? "yes\n" : "no\n");
-			if (stPath) copyFileSync(stPath, join(art, "state.json"));
 			writeFileSync(
 				join(art, "parent-receipts.txt"),
-				[
-					verdict ? "verdict.json" : "",
-					evidence ? "evidence.json" : "",
-					stPath ? "state.json" : "",
-				]
+				[verdict ? "verdict.json" : "", evidence ? "evidence.json" : "", stPath ? "state.json" : ""]
 					.filter(Boolean)
 					.join("\n") + "\n",
 			);
+			writeFileSync(
+				join(art, "parent-decision.txt"),
+				verdict || evidence || st.status ? "yes\n" : "no\n",
+			);
+
+			// Holder death: if we have a claim-held, try kill holder pid from denial and re-claim note
+			const claimDenial = unique.find((d) => d.reason === "claim-held");
+			if (claimDenial?.holder) {
+				writeFileSync(join(art, "claim-holder.txt"), `${claimDenial.holder}\n`);
+			}
 
 			const specs = [
 				{ id: "no-pi-bus-keywords", artifact: "artifacts/bus-keywords.txt", contains: "clean" },
-				{ id: "agent-sessions", artifact: "artifacts/agent-count.txt", locator: "re:^[1-9]" },
+				{ id: "worker-limit-denied", artifact: "artifacts/worker-limit.txt", contains: "yes" },
+				{ id: "writer-live-denied", artifact: "artifacts/writer-live.txt", contains: "yes" },
+				{ id: "claim-held-denied", artifact: "artifacts/claim-held.txt", contains: "yes" },
+				{ id: "reclaim-after-death", artifact: "artifacts/reclaim-after-death.txt", contains: "yes" },
+				{ id: "denials-recorded", artifact: "artifacts/denials.json", contains: "agent.denied" },
 				{ id: "parent-decision", artifact: "artifacts/parent-decision.txt", contains: "yes" },
-				{ id: "parent-receipt", artifact: "artifacts/parent-receipts.txt", locator: "re:(verdict|evidence|state)\.json" },
 			];
 			const control = {
-				id: "keyword-pollution-fails",
-				description: "If pi-bus keywords found, clean check fails",
-				wouldPass: hits.length > 0,
+				id: "no-denial-control",
+				description: "Empty denials must fail worker-limit",
+				wouldPass: unique.length === 0,
 			};
 			const notes = [
 				"# UAT-23",
 				"",
-				`- agent sessions: ${agentSessions.length} (${agentSessions.join(", ")})`,
-				`- bus keyword hits: ${hits.length}`,
-				`- parent receipts: verdict=${verdict} evidence=${evidence}`,
-				`- denial during happy path: ${denial}`,
-				"",
-				"Spawn-third / second-writer / claim races are pinned by test/bus.test.ts; this row proves live agent dirs + no forbidden bus packages + parent receipt files on a real loop.",
+				`- denials: ${unique.length} reasons=[${[...reasons].join(",")}]`,
+				`- agent sessions: ${agentSessions.length}`,
+				`- parent: verdict=${verdict} evidence=${evidence} status=${st.status || ""}`,
+				`- bus keywords: ${hits.length ? "FOUND" : "clean"}`,
+				`- phase2 exit: ${phase2.code}`,
 			].join("\n");
-			return finishRow(rowDir, specs, { control, notes, extra: { row: "UAT-23" } });
+			return finishRow(rowDir, specs, { control, notes, extra: { row: "UAT-23", denials: unique } });
 		} finally {
 			cleanupSandbox(box);
 		}

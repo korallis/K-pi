@@ -10,23 +10,9 @@
 
 import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import {
-	AMBER,
-	bytesOf,
-	check,
-	drive,
-	egressClean,
-	fgTruecolor,
-	freePort,
-	PROTOCOL_BLUE,
-	sandbox,
-	seedRun,
-	startStub,
-	teardown,
-	writeRow,
-} from "./lib.mjs";
+import { AMBER, bytesOf, check, drive, egressClean, fgTruecolor, freePort, PROTOCOL_BLUE, sandbox, seedRun, startStub, teardown, writeRow, repoRoot } from "./lib.mjs";
 
-const EVIDENCE = "/tmp/kpi-pty/evidence/UAT-16";
+const EVIDENCE = join(repoRoot, ".kpi", "uat", "UAT-16");
 const JOB = "20260902-uat16";
 const LAMPS = ["task.json", "context.md", "candidate.json", "evidence.json", "verdict.json", "events.jsonl"];
 

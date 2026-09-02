@@ -22,7 +22,7 @@ import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { check, cliPath, egressClean, freePort, repoRoot, sandbox, startStub, teardown, writeRow } from "./lib.mjs";
 
-const EVIDENCE = "/tmp/kpi-pty/evidence/UAT-07";
+const EVIDENCE = join(repoRoot, ".kpi", "uat", "UAT-07");
 const BUDGET = 800;
 const SKILL_PATH = join(repoRoot, "packages/coding-agent/src/kpi/skills/concise-output/SKILL.md");
 const APPEND_TEMPLATE = join(repoRoot, "packages/coding-agent/src/kpi/templates/APPEND_SYSTEM.md");
@@ -197,9 +197,12 @@ const VERDICT_QUESTION = "Summarise the review verdict for round 2.";
  * the session that carries it - which is what an operator meets on a fresh
  * agent directory.
  */
-async function scenario(label, { installFirst }) {
+async function scenario(label, { installFirst, plantAppend }) {
 	const port = await freePort();
 	const box = sandbox(label, { baseUrl: `http://127.0.0.1:${port}/v1`, port });
+	if (typeof plantAppend === "string") {
+		writeFileSync(join(box.agentDir, "APPEND_SYSTEM.md"), plantAppend);
+	}
 	writeFileSync(join(box.home, "screenplay.json"), JSON.stringify(screenplay()));
 	const stub = await startStub(port, join(box.home, "model.jsonl"), join(box.home, "screenplay.json"));
 
@@ -229,14 +232,19 @@ async function scenario(label, { installFirst }) {
 
 	const appendPath = join(box.agentDir, "APPEND_SYSTEM.md");
 	const installedText = existsSync(appendPath) ? readFileSync(appendPath, "utf8") : "";
-	const requests = existsSync(box.modelLog ?? "")
-		? []
-		: (existsSync(join(box.home, "model.jsonl"))
-				? readFileSync(join(box.home, "model.jsonl"), "utf8")
-						.split("\n")
-						.filter((line) => line.trim().length > 0)
-						.map((line) => JSON.parse(line))
-				: []);
+	const logPath = join(box.home, "model.jsonl");
+	const requests = existsSync(logPath)
+		? readFileSync(logPath, "utf8")
+				.split("\n")
+				.filter((line) => line.trim().length > 0)
+				.flatMap((line) => {
+					try {
+						return [JSON.parse(line)];
+					} catch {
+						return [];
+					}
+				})
+		: [];
 	const egress = egressClean(box);
 	teardown(box, stub);
 
@@ -252,7 +260,17 @@ async function scenario(label, { installFirst }) {
 }
 
 const installed = await scenario("u07-installed", { installFirst: true });
-const bare = await scenario("u07-bare", { installFirst: false });
+const bare = await scenario("u07-bare", {
+	installFirst: false,
+	// First-run auto-install would write the real rule; plant an operator-owned
+	// file without the brevity phrase so ensureAppendSystemInstalled leaves it.
+	plantAppend: [
+		"# Operator append",
+		"",
+		"Write long, thorough answers. Narrate every step. Never compress.",
+		"",
+	].join("\n"),
+});
 
 // Shipped artefacts, read from the tree that builds the binary.
 const skillText = readFileSync(SKILL_PATH, "utf8");
@@ -345,7 +363,7 @@ const checks = [
 ];
 
 /**
- * Control: the same scenario with the rule never installed by the operator. The
+ * Control: operator-owned APPEND_SYSTEM.md without the brevity phrase (auto-install leaves it). The
  * stub's diary scene answers, and it is over budget - so the under-800
  * assertion is measuring the rule's effect rather than the stub's good manners.
  */

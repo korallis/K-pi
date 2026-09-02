@@ -27,6 +27,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:net";
 import { writeGrade } from "./grade.mjs";
 import { createBatch23Runners } from "./batch23-rows.mjs";
+import { createBatch45Runners } from "./batch45-rows.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "..");
@@ -88,6 +89,51 @@ function pinAgentDir(agentDir, baseUrl, extraSettings = {}) {
 	);
 }
 
+
+/**
+ * Credentialed OpenAI-compatible pool on the loopback stub, with catalog model
+ * pricing intact. Local pools are intentionally $0 (AC-27.6); priced spend for
+ * maxCostUsd / failover rows uses this pin instead.
+ */
+function pinZaiStubPool(agentDir, baseUrl, { modelId = "glm-5.3", slots = 2, extraFamilies = [] } = {}) {
+	mkdirSync(agentDir, { recursive: true });
+	const zaiSlots = [];
+	const secrets = {};
+	for (let i = 0; i < slots; i += 1) {
+		const id = String.fromCharCode(97 + i); // a, b, …
+		zaiSlots.push({ id, kind: "api_key", label: id });
+		secrets[`zai/${id}`] = { type: "api_key", key: `uat-slot-${id}` };
+	}
+	const pools = {
+		zai: { strategy: "round-robin", slots: zaiSlots },
+	};
+	const fallback = ["zai"];
+	const providers = { zai: { baseUrl } };
+	const auth = { zai: { type: "api_key", key: "uat-zai-preflight" } };
+	for (const family of extraFamilies) {
+		const fid = family.id;
+		const fslots = (family.slots || ["a"]).map((sid) => ({ id: sid, kind: "api_key", label: sid }));
+		pools[fid] = { strategy: "round-robin", slots: fslots };
+		fallback.push(fid);
+		providers[fid] = { baseUrl: family.baseUrl || baseUrl };
+		auth[fid] = { type: "api_key", key: `uat-${fid}-preflight` };
+		for (const s of fslots) {
+			secrets[`${fid}/${s.id}`] = { type: "api_key", key: `uat-${fid}-slot-${s.id}` };
+		}
+	}
+	writeFileSync(
+		join(agentDir, "settings.json"),
+		`${JSON.stringify({ defaultProvider: "zai", defaultModel: modelId }, null, 2)}\n`,
+	);
+	writeFileSync(join(agentDir, "models.json"), `${JSON.stringify({ providers }, null, 2)}\n`);
+	writeFileSync(
+		join(agentDir, "accounts.json"),
+		`${JSON.stringify({ version: 1, pools, fallback, stickiness: "session-until-exhausted" }, null, 2)}\n`,
+	);
+	writeFileSync(join(agentDir, "auth.json"), `${JSON.stringify(auth, null, 2)}\n`);
+	writeFileSync(join(agentDir, "accounts.secrets.json"), `${JSON.stringify(secrets, null, 2)}\n`, { mode: 0o600 });
+}
+
 function startStub(port, logFile, screenplayPath, stubEnv = {}) {
 	return new Promise((resolveStub, reject) => {
 		const args = [stubPath, "--port", String(port), "--log", logFile];
@@ -135,11 +181,11 @@ function baseEnv({ home, agentDir, egressLog }) {
 	return env;
 }
 
-function runRpc(env, cwd, lines, { timeoutMs = 30_000, confirm = true, onConfirm, stopWhen = "response" } = {}) {
+function runRpc(env, cwd, lines, { timeoutMs = 30_000, confirm = true, onConfirm, stopWhen = "response", model = "local-openai/uat-stub" } = {}) {
 	return new Promise((resolveRpc) => {
 		const child = spawn(
 			process.execPath,
-			[cliPath, "--offline", "--mode", "rpc", "--model", "local-openai/uat-stub"],
+			[cliPath, "--offline", "--mode", "rpc", "--model", model],
 			{ cwd, env, stdio: ["pipe", "pipe", "pipe"] },
 		);
 		let stdout = "";
@@ -282,11 +328,11 @@ function runRpc(env, cwd, lines, { timeoutMs = 30_000, confirm = true, onConfirm
 }
 
 /** Sequential RPC prompts on one long-lived session (keeps in-memory extension state). */
-function runRpcSequential(env, cwd, steps, { timeoutMs = 60_000 } = {}) {
+function runRpcSequential(env, cwd, steps, { timeoutMs = 60_000, model = "local-openai/uat-stub" } = {}) {
 	return new Promise((resolveRpc) => {
 		const child = spawn(
 			process.execPath,
-			[cliPath, "--offline", "--mode", "rpc", "--model", "local-openai/uat-stub"],
+			[cliPath, "--offline", "--mode", "rpc", "--model", model],
 			{ cwd, env, stdio: ["pipe", "pipe", "pipe"] },
 		);
 		let stdout = "";
@@ -349,22 +395,57 @@ function runRpcSequential(env, cwd, steps, { timeoutMs = 60_000 } = {}) {
 				finish();
 				return;
 			}
-			const step = steps[i++];
-			const beforeLen = stdout.length;
-			child.stdin.write(JSON.stringify(step));
-			child.stdin.write("\n");
+			const step = steps[i];
 			const isPrompt = step.type === "prompt";
-			const waitStart = Date.now();
-			const wait = setInterval(() => {
-				const chunk = stdout.slice(beforeLen);
-				const settled = isPrompt
-					? /agent_settled/.test(chunk) || /"command":"prompt","success"/.test(chunk)
-					: /"type":"response"/.test(chunk);
-				if (settled || Date.now() - waitStart > 40_000) {
-					clearInterval(wait);
-					setTimeout(sendNext, 150);
-				}
-			}, 100);
+			const stepId = step.id != null ? String(step.id) : "";
+			let attempts = 0;
+			const maxAttempts = isPrompt ? 3 : 1;
+
+			const runAttempt = () => {
+				attempts += 1;
+				const beforeLen = stdout.length;
+				child.stdin.write(JSON.stringify(step));
+				child.stdin.write("\n");
+				const waitStart = Date.now();
+				const wait = setInterval(() => {
+					const chunk = stdout.slice(beforeLen);
+					// Require this step's own prompt response — a mid-turn agent_settled
+					// from a prior multi-tool prompt must not unlock the next send.
+					const idPat = stepId
+						? new RegExp(
+								`"id"\\s*:\\s*"${stepId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"[^\\n]*"command"\\s*:\\s*"prompt"`,
+							)
+						: /"command":"prompt"/;
+					const successMatch = isPrompt ? chunk.match(/"success"\s*:\s*(true|false)/) : null;
+					const settled = isPrompt
+						? idPat.test(chunk) && successMatch !== null
+						: /"type":"response"/.test(chunk);
+					const settledTurn = !isPrompt || chunk.includes('"type":"agent_settled"');
+					// Multi-tool spawn/claim turns (UAT-23) need far more than 20s.
+					const remaining = timeoutMs - (Date.now() - started);
+					const stepBudget = Math.min(180_000, Math.max(45_000, remaining));
+					const timedOut = Date.now() - waitStart > stepBudget;
+					const failedBusy =
+						isPrompt &&
+						successMatch &&
+						successMatch[1] === "false" &&
+						/already processing/i.test(chunk);
+					if (failedBusy && attempts < maxAttempts && !timedOut) {
+						// Wait for the prior turn to finish, then resend the same step.
+						if (chunk.includes('"type":"agent_settled"') || Date.now() - waitStart > 5_000) {
+							clearInterval(wait);
+							setTimeout(runAttempt, 400);
+						}
+						return;
+					}
+					if ((settled && settledTurn && !failedBusy) || timedOut) {
+						clearInterval(wait);
+						i += 1;
+						setTimeout(sendNext, timedOut ? 500 : 200);
+					}
+				}, 100);
+			};
+			runAttempt();
 		};
 		// kick off
 		sendNext();
@@ -462,18 +543,25 @@ function ensureCli() {
 	if (!existsSync(cliPath)) throw new Error(`built CLI missing: ${cliPath}`);
 }
 
-function finishRow(rowDir, specs, { control, notes, extra = {} }) {
+function finishRow(rowDir, specs, { control, notes, extra = {}, forceFail = false, forceFailReason } = {}) {
 	const grade = writeGrade(rowDir, specs);
 	const controlAlsoPasses = Boolean(control && control.wouldPass === true && grade.result.ok);
+	let ok = grade.result.ok && !controlAlsoPasses;
+	let fail_reason;
+	if (controlAlsoPasses) fail_reason = "positive control also passes — row is not discriminating";
+	if (forceFail) {
+		ok = false;
+		fail_reason = forceFailReason || fail_reason || "forced fail: incomplete real-user path";
+	}
 	const final = {
 		...grade.result,
 		...extra,
 		control: control || null,
 		control_also_passes: controlAlsoPasses,
-		ok: grade.result.ok && !controlAlsoPasses,
-		verdict: grade.result.ok && !controlAlsoPasses ? "PASS" : "FAIL",
+		ok,
+		verdict: ok ? "PASS" : "FAIL",
 	};
-	if (controlAlsoPasses) final.fail_reason = "positive control also passes — row is not discriminating";
+	if (fail_reason) final.fail_reason = fail_reason;
 	writeFileSync(join(rowDir, "result.json"), `${JSON.stringify(final, null, 2)}\n`);
 	writeFileSync(join(rowDir, "control.json"), `${JSON.stringify(control || { ran: false }, null, 2)}\n`);
 	if (notes) writeFileSync(join(rowDir, "notes.md"), notes.endsWith("\n") ? notes : `${notes}\n`);
@@ -498,6 +586,12 @@ async function prepareSandbox(rowId, { fixture } = {}) {
 	writeFileSync(egressLog, "");
 	const planStackFile = join(rowDir, "artifacts", "plan-stack-override.json");
 	writeFileSync(planStackFile, ""); // empty = use stub default health stack
+	const reviewModeFile = join(rowDir, "artifacts", "review-mode.txt");
+	const reviewCounterFile = join(rowDir, "artifacts", "review-counter.txt");
+	writeFileSync(reviewModeFile, "PASS\n");
+	writeFileSync(reviewCounterFile, "0\n");
+	const subjectDirFile = join(rowDir, "artifacts", "subject-dir.txt");
+	writeFileSync(subjectDirFile, `${subject}\n`);
 	const port = await freePort();
 	const baseUrl = `http://127.0.0.1:${port}/v1`;
 	pinAgentDir(agentDir, baseUrl);
@@ -505,6 +599,10 @@ async function prepareSandbox(rowId, { fixture } = {}) {
 	const sp = existsSync(screenplay) ? screenplay : join(here, "fixtures/loop-agent-screenplay.json");
 	const { child: stub, info } = await startStub(port, modelLog, sp, {
 		UAT_PLAN_STACK_FILE: planStackFile,
+		UAT_REVIEW_MODE_FILE: reviewModeFile,
+		UAT_REVIEW_COUNTER_FILE: reviewCounterFile,
+		UAT_SUBJECT_DIR: subject,
+		UAT_SUBJECT_DIR_FILE: subjectDirFile,
 	});
 	const env = baseEnv({ home, agentDir, egressLog });
 	return {
@@ -520,6 +618,9 @@ async function prepareSandbox(rowId, { fixture } = {}) {
 		info,
 		env,
 		planStackFile,
+		reviewModeFile,
+		reviewCounterFile,
+		subjectDirFile,
 	};
 }
 
@@ -1112,22 +1213,41 @@ const BATCH23 = createBatch23Runners({
 	prepareSandbox,
 	cleanupSandbox,
 	runRpc,
+	runRpcSequential,
 	finishRow,
 	fixtureGoal,
 	gitSnapshot,
 	initGit,
 	cliPath,
 	repoRoot,
+	pinZaiStubPool,
+	pinAgentDir,
+});
+
+const BATCH45 = createBatch45Runners({
+	prepareSandbox,
+	cleanupSandbox,
+	runRpc,
+	runRpcSequential,
+	finishRow,
+	fixtureGoal,
+	cliPath,
+	repoRoot,
+	pinZaiStubPool,
+	pinAgentDir,
 });
 
 const ROWS = {
 	...BATCH1,
 	...BATCH23,
+	...BATCH45,
 };
 
 const BATCH1_IDS = Object.keys(BATCH1);
 const BATCH2_IDS = ["UAT-03", "UAT-05", "UAT-08", "UAT-22", "UAT-30"];
 const BATCH3_IDS = ["UAT-09", "UAT-14", "UAT-23"];
+const BATCH4_IDS = ["UAT-10", "UAT-11", "UAT-12", "UAT-26", "UAT-27", "UAT-28", "UAT-29"];
+const BATCH5_IDS = ["UAT-17", "UAT-18", "UAT-19", "UAT-20", "UAT-21"];
 
 async function main() {
 	ensureCli();
@@ -1139,7 +1259,9 @@ async function main() {
 			if (v === "all-batch1") list = [...BATCH1_IDS];
 			else if (v === "all-batch2") list = [...BATCH2_IDS];
 			else if (v === "all-batch3") list = [...BATCH3_IDS];
-			else if (v === "all") list = [...BATCH1_IDS, ...BATCH2_IDS, ...BATCH3_IDS];
+			else if (v === "all-batch4") list = [...BATCH4_IDS];
+			else if (v === "all-batch5") list = [...BATCH5_IDS];
+			else if (v === "all") list = [...BATCH1_IDS, ...BATCH2_IDS, ...BATCH3_IDS, ...BATCH4_IDS, ...BATCH5_IDS];
 			else list = v.split(",").map((s) => s.trim()).filter(Boolean);
 		}
 	}
