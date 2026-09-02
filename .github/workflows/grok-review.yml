@@ -219,28 +219,29 @@ jobs:
 
           CATALOG_PATH="$RUNNER_TEMP/prepare/catalog/zai.json" \
             node --input-type=module <<'NODE'
-import { readFileSync } from "node:fs";
-const path = process.env.CATALOG_PATH;
-const want = process.env.GROK_REVIEW_MODEL;
-const raw = JSON.parse(readFileSync(path, "utf8"));
-const ids = [];
-for (const entries of Object.values(raw)) {
-  if (entries && typeof entries === "object") ids.push(...Object.keys(entries));
-}
-ids.sort();
-if (!ids.includes(want)) {
-  console.error(`::error::GROK_REVIEW_MODEL ${JSON.stringify(want)} is not in the z.ai catalog. Known ids: ${ids.join(", ")}`);
-  process.exit(1);
-}
-let baseUrl = "";
-for (const entries of Object.values(raw)) {
-  if (entries && typeof entries === "object" && entries[want]?.baseUrl) {
-    baseUrl = entries[want].baseUrl;
-    break;
-  }
-}
-console.log(`zai catalog ok: model=${want} baseUrl=${baseUrl}`);
-NODE
+          import { readFileSync } from "node:fs";
+          const path = process.env.CATALOG_PATH;
+          const want = process.env.GROK_REVIEW_MODEL;
+          const raw = JSON.parse(readFileSync(path, "utf8"));
+          const ids = [];
+          for (const entries of Object.values(raw)) {
+            if (entries && typeof entries === "object") ids.push(...Object.keys(entries));
+          }
+          ids.sort();
+          if (!ids.includes(want)) {
+            console.error(`::error::GROK_REVIEW_MODEL ${JSON.stringify(want)} is not in the z.ai catalog. Known ids: ${ids.join(", ")}`);
+            process.exit(1);
+          }
+          let baseUrl = "";
+          for (const entries of Object.values(raw)) {
+            if (entries && typeof entries === "object" && entries[want]?.baseUrl) {
+              baseUrl = entries[want].baseUrl;
+              break;
+            }
+          }
+          console.log(`zai catalog ok: model=${want} baseUrl=${baseUrl}`);
+          NODE
+
 
 
           chunk_count=$(jq -r '.chunkCount // 0' "$RUNNER_TEMP/prepare/prepare-meta.json")
