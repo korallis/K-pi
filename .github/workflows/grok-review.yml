@@ -8,9 +8,12 @@
 # Inference backend: z.ai OpenAI-compatible chat completions for the `zai` pool.
 # Model id comes from vars.GROK_REVIEW_MODEL and is validated against the checked-out
 # packages/ai/src/providers/data/zai.json catalog (baseUrl + id from that file only).
+# Operator default: glm-5.3-flash (cost/quota — why we left Copilot). Switch the repo
+# variable to glm-5.3 if flash reviews too shallowly; both ids are in the catalog.
 # Required secret: ZAI_API_KEY. Check context name stays "Grok review" for branch protection.
 # GitHub's ephemeral write token is introduced only in the final job's comment step.
 # Inference clears GITHUB_TOKEN/GH_TOKEN and never sends a repository token to z.ai.
+
 #
 # Trust boundary:
 #   - Base is checked out for trusted gate scripts; head is read-only diff source.
