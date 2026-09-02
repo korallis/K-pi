@@ -329,7 +329,16 @@ async function main() {
 		const testR = runNpm("test");
 		gates.test = testR.ok;
 		if (!testR.ok) {
-			failures.push({ id: "gate.test", owner: "RP-19", check: "npm test", message: "npm test failed" });
+			const detail = (testR.error || testR.stderr || testR.stdout || "npm test failed").slice(-1500);
+			failures.push({
+				id: "gate.test",
+				owner: "RP-19",
+				check: "npm test",
+				message: detail,
+				status: testR.status,
+				error: testR.error,
+			});
+			writeEvidence(proofRoot, "gate-test-failure.txt", `${detail}\n`);
 		}
 
 		// Its own run, not an alias of `npm test`. `npm test` also covers the
