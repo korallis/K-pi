@@ -4,7 +4,7 @@
 
 **How agents use this file.** Pick the lowest incomplete package whose dependencies are complete. Implement only that package. Run its scoped verification. Check its DoD only after the observable result passes. Do not use historical `[x]` boxes as proof.
 
-**Ordering.** IDs sort as written: `RP-00`, `RP-01`, `RP-01A`, `RP-02`, … `RP-19`. RP-00 through RP-15 are complete, so **`RP-16` is the current lowest incomplete package**.
+**Ordering.** IDs sort as written: `RP-00`, `RP-01`, `RP-01A`, `RP-02`, … `RP-19`. RP-00 through RP-16 are complete, so **`RP-17` is the current lowest incomplete package**.
 
 IDs: `RP-##`. Stories and ACs: `PRD.md`. Normative contracts: `spec.md`, `../UPSTREAM.md`, and focused product docs. Research and gap IDs: [`remediation-research.md`](remediation-research.md).
 
@@ -832,7 +832,7 @@ node --test --experimental-strip-types test/minimalist.test.ts
 - Exclude `make-bot-ui`, Benny, Bugbot, worktree cleanup, `/loop` sleeper, cloud-agent, Graphite, and every documented drop path.
 - Use token/path-aware branding; never corrupt containing words such as `upstack`.
 - Arena/swarm use live configured k-pi pools, at most two workers, one writer, and no cloud/worktree semantics.
-- Freeze the matched playbook in `task.json.playbook`, render every playbook step, and preserve skipped steps as `skip: <reason>`.
+- Freeze the matched playbook name and ordered `{node,text,skip?}` steps into `task.json`; render every step into `state.json.todos` from that snapshot only; include playbook and steps in `contractHash` (only `current_module_id` excluded).
 - Retain the complete upstream MIT license.
 
 ### Tests
@@ -851,9 +851,9 @@ node --test --experimental-strip-types test/kstack-runtime.test.ts test/harness.
 
 ### DoD
 
-- [ ] One generated/loadable K-stack runtime source
-- [ ] No invalid skill diagnostics or forbidden Cursor/cloud/Graphite residue
-- [ ] K-stack orchestration uses the first-party bus and live model map
+- [x] One generated/loadable K-stack runtime source
+- [x] No invalid skill diagnostics or forbidden Cursor/cloud/Graphite residue
+- [x] K-stack orchestration uses the first-party bus and live model map
 
 ---
 
