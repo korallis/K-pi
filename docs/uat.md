@@ -108,10 +108,10 @@ Grader discipline: prefer a deterministic check — exit code, exact string, fil
 - **ACs:** AC-12.1–12.4 · **Owner:** RP-07
 
 ### UAT-13 — US-13 Policy layers
-- **Real-user question:** Can it do something irreversible to my repository?
-- **Action:** Attempt `git push`, force-push, `rm -rf`, a production deploy, a write outside `write_allow`, and an unknown command — in gated and again in autopilot.
-- **Pass evidence:** All five are denied by the `tool_call` hook and never execute. Gated `git commit` asks for confirmation with files changed, insertions, and deletions. Autopilot `git commit` is denied without fresh `release.approved === true`. An unknown command asks in gated and is denied in autopilot.
-- **ACs:** AC-13.1–13.4 · **Owner:** RP-02
+- **Real-user question:** Can it do something irreversible to my repository, and does it stop asking me about things that cannot?
+- **Action:** Attempt `git push`, force-push, `rm -rf`, a production deploy, a write outside `write_allow`, and an unknown command — in gated and again in autopilot. Then, in plain chat with no job, run `ls -la /etc`, a compound read-only command (`printf '%s\n' "$HOME"; command -v node || true`), `node --version | head -n 1` and `git commit`; then, inside a gated job, run an unknown command, choose *Always allow in this project*, restart the harness, and run it again.
+- **Pass evidence:** All five are denied by the `tool_call` hook and never execute. Gated `git commit` asks for confirmation with files changed, insertions, and deletions. Autopilot `git commit` is denied without fresh `release.approved === true`. An unknown command asks in gated and is denied in autopilot. Chat never prompts and `git push` is still denied there. The confirm offers three choices; after *Always allow* `.kpi/policy.json` `allow[]` holds the exact command and the restarted session runs it silently.
+- **ACs:** AC-13.1–13.6 · **Owner:** RP-02
 
 ### UAT-14 — US-14 Observability
 - **Real-user question:** If my laptop dies mid-run, can I reconstruct what happened?

@@ -224,7 +224,7 @@ npm run upstream:check -- --offline
 
 **Depends on:** RP-01A  
 **Owns gaps:** POL-01, POL-02, POL-03  
-**Stories:** US-13; AC-13.1–AC-13.4
+**Stories:** US-13; AC-13.1–AC-13.6
 
 ### Read first
 
@@ -237,7 +237,10 @@ npm run upstream:check -- --offline
 - In gated mode, classify `git commit` as confirm and include the current diff stat in the prompt.
 - In autopilot, deny `git commit` until the active job has fresh `release.approved === true`.
 - Confirm unknown commands in gated mode; deny them in autopilot.
-- Preserve an exact safe-command allowlist for non-mutating Git inspection and task-declared quality gates.
+- Classify shell commands by segment: a read-only classifier (`shell-classifier.ts`) replaces the exact safe list; task-declared quality gates stay exact.
+- Chat scope (no live job): hard denies only, no bounds, no prompts (`commit.chat`, `unknown.chat`).
+- Remember approvals: three-way confirm; *Always allow* persists the exact command to `.kpi/policy.json` `allow[]`; a session cache covers the process.
+- Liveness: `resolveActivePolicyState` and `recordToolRequest` read only a live job; the write-bounds override is skipped in chat.
 - Keep all AC-13.1 denies and protected `verdict.json`/`release.approved` writes.
 
 ### Tests
@@ -246,17 +249,20 @@ npm run upstream:check -- --offline
 - Prompt contains files changed, insertions, and deletions.
 - Autopilot commit fails before release and passes after release.
 - Unknown command behavior differs by mode; known safe commands do not prompt.
+- `test/shell-classifier.test.ts` covers read-only heads, control words, wrappers, substitutions, and every mutating form.
+- Chat scope, `allow[]` persistence, session cache, finished-job liveness, and project-only seeding through the live hook.
 
 ### Verification
 
 ```bash
-node --test --experimental-strip-types test/policy.test.ts
+node --test --experimental-strip-types test/shell-classifier.test.ts test/policy.test.ts
 ```
 
 ### DoD
 
 - [x] AC-13.2–AC-13.4 pass through the live hook boundary
 - [x] Existing AC-13.1 denials still pass
+- [x] AC-13.5 chat scope and AC-13.6 remembered approvals pass through the live hook (fixes.md FX-02, 2026-09-02)
 
 ---
 

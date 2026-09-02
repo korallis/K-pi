@@ -6,11 +6,14 @@
     "rm -rf",
     "chmod 777"
   ],
+  "allow": [],
   "commit": {
+    "chat": "allow",
     "gated": "confirm",
     "autopilot": "after-release"
   },
   "unknown": {
+    "chat": "allow",
     "gated": "confirm",
     "autopilot": "deny"
   }

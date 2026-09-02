@@ -765,9 +765,14 @@ layer denies whole command families regardless of mode — publishing
 `pnpm/yarn/bun add`). Adding a runtime dependency is deliberately in that list:
 the loop is expected to solve the task with what the repository already has.
 
-A small, exact allow-list of non-mutating inspection commands never prompts, and
-matching is literal after collapsing whitespace: `git log` is safe, while
-`git log --all -p > /tmp/dump` is a different command and stays unknown.
+Outside a K-π job the policy enforces only those hard denies: plain chat never
+prompts. Inside a gated job, read-only commands never prompt either — including
+pipes, `;`, `&&` and `$(…)` chains whose every segment is read-only, such as
+`git log --oneline --all | head` or `grep -rn foo src | wc -l`. Anything that
+writes a file, executes project code or is otherwise unknown asks once, and the
+answer can be kept for the session or remembered in `.kpi/policy.json` under
+`allow[]` (exact command, whitespace collapsed). A remembered command can never
+override a hard deny.
 
 Process-level policy is not an operating-system sandbox. Use Docker or Gondolin
 when filesystem, network or process isolation is required.

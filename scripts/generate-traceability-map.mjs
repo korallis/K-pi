@@ -397,6 +397,16 @@ const AC = {
 		"unknown commands confirm in gated and are denied in autopilot",
 		"unknown commands: confirm in gated, deny in autopilot",
 	],
+	"AC-13.5": [
+		"test/policy.test.ts",
+		"chat scope never confirms but keeps every hard deny",
+		"no live job: unknown commands, writes and commits run without a prompt; push, rm -rf, deploy, secret paths and reserved artifacts still deny",
+	],
+	"AC-13.6": [
+		"test/policy.test.ts",
+		"always allow persists to policy.json allow[] and is honoured by a fresh session",
+		"Always allow writes the exact command to .kpi/policy.json allow[]; a new session honours it without a prompt; hard denies are not laundered",
+	],
 
 	// US-14
 	"AC-14.1": [
@@ -1227,6 +1237,8 @@ function main() {
 		"AC-13.2": "RP-02",
 		"AC-13.3": "RP-02",
 		"AC-13.4": "RP-02",
+		"AC-13.5": "RP-02",
+		"AC-13.6": "RP-02",
 		"AC-28.6": "RP-18",
 	};
 

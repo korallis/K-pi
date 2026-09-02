@@ -3,8 +3,9 @@ import { DEFAULT_ACTIVE_POLICY_STATE, evaluateToolCall, type PolicyConfig } from
 
 const policy: PolicyConfig = {
 	deny: [],
-	commit: { gated: "confirm", autopilot: "after-release" },
-	unknown: { gated: "confirm", autopilot: "deny" },
+	allow: [],
+	commit: { chat: "allow", gated: "confirm", autopilot: "after-release" },
+	unknown: { chat: "allow", gated: "confirm", autopilot: "deny" },
 };
 
 function bashEvent(command: string) {

@@ -220,6 +220,8 @@ Each AC is written so a later agent can turn it into a check. IDs are stable.
 - **AC-13.2** In gated mode, `git commit` on the job branch asks confirm with diff stat.
 - **AC-13.3** In autopilot, `git commit` is allowed only after `release.approved == true`.
 - **AC-13.4** Unknown commands: confirm in gated, deny in autopilot.
+- **AC-13.5** With no live job (chat scope), reads, writes, unknown commands and `git commit` never confirm; AC-13.1 denials, secret-shaped paths and reserved artifacts still deny. Inside a job, any command whose every segment is read-only (pipes, `;`, `$(…)` included) runs without a prompt.
+- **AC-13.6** A gated confirm offers "Allow for this session", "Always allow in this project" and "Deny". *Always* persists the exact command to `.kpi/policy.json` `allow[]` and later sessions do not re-prompt; a session approval is not asked again in the same process; neither can launder a hard deny.
 
 ### US-14 — Observability
 
