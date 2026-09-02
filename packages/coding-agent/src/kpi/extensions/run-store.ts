@@ -326,18 +326,39 @@ export async function readJob(projectRoot: string, jobId: string): Promise<Job> 
 	};
 }
 
+/** Paths already reported so a torn write does not spam every footer refresh. */
+const reportedUnreadableStates = new Set<string>();
+
+function noteUnreadableState(statePath: string, reason: string): void {
+	if (reportedUnreadableStates.has(statePath)) return;
+	reportedUnreadableStates.add(statePath);
+	console.warn(`[kpi/run-store] skipping unreadable state.json (${reason}): ${statePath}`);
+}
+
+/** Test hook: clear the once-per-path report set. */
+export function resetUnreadableStateReportsForTests(): void {
+	reportedUnreadableStates.clear();
+}
+
 async function readStateCandidate(directory: string): Promise<(ActiveJob & { modifiedAt: number }) | undefined> {
 	const statePath = join(directory, "state.json");
 	try {
 		const [source, metadata] = await Promise.all([readFile(statePath, "utf8"), stat(statePath)]);
 		// Empty or torn mid-write is "not a started run" — never throw into the
 		// fire-and-forget footer refresh path (unhandledRejection under the suite).
-		if (source.trim().length === 0) return undefined;
+		// Still report once so the operator can see a real corrupt file.
+		if (source.trim().length === 0) {
+			noteUnreadableState(statePath, "empty");
+			return undefined;
+		}
 		let state: RunState;
 		try {
 			state = JSON.parse(source) as RunState;
 		} catch (error) {
-			if (error instanceof SyntaxError) return undefined;
+			if (error instanceof SyntaxError) {
+				noteUnreadableState(statePath, "invalid JSON");
+				return undefined;
+			}
 			throw error;
 		}
 		const jobId = typeof state.job_id === "string" ? state.job_id : basename(directory);

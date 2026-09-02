@@ -13,13 +13,14 @@ import {
 	DEFAULT_MAX_CONCURRENCY,
 	PROMPT_ARGV_TEST_CEILING_BYTES,
 	REQUIRED_EFFORT,
-	ZAI_CODING_BASE_URL,
-	ZAI_DEFAULT_REVIEW_MODEL,
 	copilotSpawnEnv,
 	createZaiRunCommand,
 	defaultRunCommand,
+	loadZaiProviderCatalog,
 	mapPool,
 	resolveReviewRunCommand,
+	resolveZaiCatalogModel,
+	resolveZaiCatalogPath,
 	runChunkedGrokReview,
 	runGroupGrokReview,
 } from "./run-chunked-grok-review.mjs";
@@ -610,6 +611,7 @@ test("runGroupGrokReview rejects chunkCount mismatch and path escape", async () 
 	}
 });
 
+
 function startLocalZaiStub(handler) {
 	const server = createServer((req, res) => {
 		void handler(req, res);
@@ -635,12 +637,43 @@ async function readRequestBody(req) {
 	return Buffer.concat(chunks).toString("utf8");
 }
 
-test("catalog z.ai defaults match packages/ai zai.json ids", () => {
-	assert.equal(ZAI_CODING_BASE_URL, "https://api.z.ai/api/coding/paas/v4");
-	assert.equal(ZAI_DEFAULT_REVIEW_MODEL, "glm-5.3-flash");
+function writeTempZaiCatalog(dir, models) {
+	const path = join(dir, "zai.json");
+	const body = { "openai-completions": models };
+	writeFileSync(path, `${JSON.stringify(body, null, 2)}\n`);
+	return path;
+}
+
+test("repo zai catalog lists official ids including glm-5.3 and glm-5.3-flash", () => {
+	const catalog = loadZaiProviderCatalog(resolveZaiCatalogPath());
+	const ids = Object.keys(catalog.models).sort();
+	assert.ok(ids.includes("glm-5.3"), `expected glm-5.3 in ${ids.join(", ")}`);
+	assert.ok(ids.includes("glm-5.3-flash"), `expected glm-5.3-flash in ${ids.join(", ")}`);
+	assert.equal(typeof catalog.models["glm-5.3"].baseUrl, "string");
+	assert.ok(catalog.models["glm-5.3"].baseUrl.length > 0);
+	// baseUrl must come from the file, not a frozen constant in this module.
+	assert.match(catalog.models["glm-5.3"].baseUrl, /^https?:\/\//u);
 });
 
-test("createZaiRunCommand returns assistant content as stdout on success", async () => {
+test("resolveZaiCatalogModel fails closed listing real catalog ids", () => {
+	const dir = mkdtempSync(join(tmpdir(), "kpi-zai-cat-"));
+	try {
+		const path = writeTempZaiCatalog(dir, {
+			"glm-5.3": { name: "GLM-5.3", baseUrl: "http://127.0.0.1:9/v4" },
+			"glm-5.3-flash": { name: "Flash", baseUrl: "http://127.0.0.1:9/v4" },
+		});
+		const catalog = loadZaiProviderCatalog(path);
+		assert.equal(resolveZaiCatalogModel(catalog, "glm-5.3").id, "glm-5.3");
+		assert.throws(
+			() => resolveZaiCatalogModel(catalog, "not-a-real-model"),
+			/Known ids: glm-5\.3, glm-5\.3-flash/,
+		);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("createZaiRunCommand posts to catalog baseUrl and returns assistant content", async () => {
 	const findingsDoc = JSON.stringify([
 		{
 			id: "grok-local",
@@ -653,7 +686,9 @@ test("createZaiRunCommand returns assistant content as stdout on success", async
 	]);
 	let sawAuth = "";
 	let sawBody = null;
+	let sawUrl = "";
 	const stub = await startLocalZaiStub(async (req, res) => {
+		sawUrl = req.url ?? "";
 		assert.equal(req.method, "POST");
 		assert.equal(req.url, "/api/coding/paas/v4/chat/completions");
 		sawAuth = req.headers.authorization ?? "";
@@ -666,27 +701,52 @@ test("createZaiRunCommand returns assistant content as stdout on success", async
 			}),
 		);
 	});
+	const dir = mkdtempSync(join(tmpdir(), "kpi-zai-run-"));
 	try {
+		const catalogPath = writeTempZaiCatalog(dir, {
+			"glm-5.3": { name: "GLM-5.3", baseUrl: stub.baseUrl },
+		});
+		const catalog = loadZaiProviderCatalog(catalogPath);
 		const run = createZaiRunCommand({
-			baseUrl: stub.baseUrl,
 			apiKey: "test-key-not-real",
+			catalog,
 			fetchImpl: fetch,
 		});
 		const result = await run({
 			prompt: "review this",
-			model: ZAI_DEFAULT_REVIEW_MODEL,
+			model: "glm-5.3",
 			timeoutSec: 5,
 		});
 		assert.equal(result.ok, true);
 		assert.equal(result.reason, "success");
 		assert.equal(result.stdout, findingsDoc);
 		assert.equal(sawAuth, "Bearer test-key-not-real");
-		assert.equal(sawBody.model, "glm-5.3-flash");
+		assert.equal(sawBody.model, "glm-5.3");
 		assert.equal(sawBody.messages[0].content, "review this");
+		assert.equal(sawUrl, "/api/coding/paas/v4/chat/completions");
 		// Prompt rides in HTTP body — not subject to PROMPT_ARGV_TEST_CEILING_BYTES.
 		assert.ok(PROMPT_ARGV_TEST_CEILING_BYTES > 0);
 	} finally {
 		await stub.close();
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("createZaiRunCommand fails closed on unknown model without calling network", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "kpi-zai-unknown-"));
+	try {
+		const catalog = loadZaiProviderCatalog(
+			writeTempZaiCatalog(dir, {
+				"glm-5.3": { name: "GLM-5.3", baseUrl: "http://127.0.0.1:1/nope" },
+			}),
+		);
+		const run = createZaiRunCommand({ apiKey: "k", catalog, fetchImpl: fetch });
+		const result = await run({ prompt: "p", model: "missing-model", timeoutSec: 1 });
+		assert.equal(result.ok, false);
+		assert.equal(result.reason, "invalid-model");
+		assert.match(result.stderr, /Known ids: glm-5\.3/);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
 	}
 });
 
@@ -695,18 +755,21 @@ test("createZaiRunCommand fails closed on HTTP error", async () => {
 		res.writeHead(429, { "content-type": "application/json" });
 		res.end(JSON.stringify({ error: { message: "rate limited" } }));
 	});
+	const dir = mkdtempSync(join(tmpdir(), "kpi-zai-http-"));
 	try {
-		const run = createZaiRunCommand({
-			baseUrl: stub.baseUrl,
-			apiKey: "k",
-			fetchImpl: fetch,
-		});
-		const result = await run({ prompt: "p", model: "glm-5.3-flash", timeoutSec: 5 });
+		const catalog = loadZaiProviderCatalog(
+			writeTempZaiCatalog(dir, {
+				"glm-5.3": { name: "GLM-5.3", baseUrl: stub.baseUrl },
+			}),
+		);
+		const run = createZaiRunCommand({ apiKey: "k", catalog, fetchImpl: fetch });
+		const result = await run({ prompt: "p", model: "glm-5.3", timeoutSec: 5 });
 		assert.equal(result.ok, false);
 		assert.equal(result.reason, "exit-nonzero");
 		assert.match(result.stderr, /HTTP 429/);
 	} finally {
 		await stub.close();
+		rmSync(dir, { recursive: true, force: true });
 	}
 });
 
@@ -715,17 +778,20 @@ test("createZaiRunCommand fails closed on non-JSON body", async () => {
 		res.writeHead(200, { "content-type": "text/plain" });
 		res.end("not-json");
 	});
+	const dir = mkdtempSync(join(tmpdir(), "kpi-zai-nj-"));
 	try {
-		const run = createZaiRunCommand({
-			baseUrl: stub.baseUrl,
-			apiKey: "k",
-			fetchImpl: fetch,
-		});
-		const result = await run({ prompt: "p", model: "glm-5.3-flash", timeoutSec: 5 });
+		const catalog = loadZaiProviderCatalog(
+			writeTempZaiCatalog(dir, {
+				"glm-5.3": { name: "GLM-5.3", baseUrl: stub.baseUrl },
+			}),
+		);
+		const run = createZaiRunCommand({ apiKey: "k", catalog, fetchImpl: fetch });
+		const result = await run({ prompt: "p", model: "glm-5.3", timeoutSec: 5 });
 		assert.equal(result.ok, false);
 		assert.equal(result.reason, "invalid-response");
 	} finally {
 		await stub.close();
+		rmSync(dir, { recursive: true, force: true });
 	}
 });
 
@@ -734,41 +800,46 @@ test("createZaiRunCommand fails closed when content is missing", async () => {
 		res.writeHead(200, { "content-type": "application/json" });
 		res.end(JSON.stringify({ choices: [{ message: {} }] }));
 	});
+	const dir = mkdtempSync(join(tmpdir(), "kpi-zai-nc-"));
 	try {
-		const run = createZaiRunCommand({
-			baseUrl: stub.baseUrl,
-			apiKey: "k",
-			fetchImpl: fetch,
-		});
-		const result = await run({ prompt: "p", model: "glm-5.3-flash", timeoutSec: 5 });
+		const catalog = loadZaiProviderCatalog(
+			writeTempZaiCatalog(dir, {
+				"glm-5.3": { name: "GLM-5.3", baseUrl: stub.baseUrl },
+			}),
+		);
+		const run = createZaiRunCommand({ apiKey: "k", catalog, fetchImpl: fetch });
+		const result = await run({ prompt: "p", model: "glm-5.3", timeoutSec: 5 });
 		assert.equal(result.ok, false);
 		assert.equal(result.reason, "invalid-response");
 		assert.match(result.stderr, /missing choices/);
 	} finally {
 		await stub.close();
+		rmSync(dir, { recursive: true, force: true });
 	}
 });
 
 test("createZaiRunCommand times out via AbortSignal", async () => {
 	const stub = await startLocalZaiStub(async (_req, res) => {
-		// Never respond until client aborts.
 		await new Promise((resolve) => setTimeout(resolve, 5000));
 		res.writeHead(200);
 		res.end("{}");
 	});
+	const dir = mkdtempSync(join(tmpdir(), "kpi-zai-to-"));
 	try {
-		const run = createZaiRunCommand({
-			baseUrl: stub.baseUrl,
-			apiKey: "k",
-			fetchImpl: fetch,
-		});
+		const catalog = loadZaiProviderCatalog(
+			writeTempZaiCatalog(dir, {
+				"glm-5.3": { name: "GLM-5.3", baseUrl: stub.baseUrl },
+			}),
+		);
+		const run = createZaiRunCommand({ apiKey: "k", catalog, fetchImpl: fetch });
 		const started = Date.now();
-		const result = await run({ prompt: "p", model: "glm-5.3-flash", timeoutSec: 1 });
+		const result = await run({ prompt: "p", model: "glm-5.3", timeoutSec: 1 });
 		assert.equal(result.ok, false);
 		assert.equal(result.reason, "timeout");
 		assert.ok(Date.now() - started < 4000);
 	} finally {
 		await stub.close();
+		rmSync(dir, { recursive: true, force: true });
 	}
 });
 
@@ -777,14 +848,20 @@ test("resolveReviewRunCommand selects zai when backend=zai and requires key", ()
 		() => resolveReviewRunCommand({ GROK_REVIEW_BACKEND: "zai" }),
 		/ZAI_API_KEY/,
 	);
-	const run = resolveReviewRunCommand({
-		GROK_REVIEW_BACKEND: "zai",
-		ZAI_API_KEY: "secret",
-		ZAI_BASE_URL: "http://127.0.0.1:9/v4",
-	});
-	assert.equal(typeof run, "function");
-	const copilot = resolveReviewRunCommand({ GROK_REVIEW_BACKEND: "copilot" });
-	assert.equal(copilot, defaultRunCommand);
+	const dir = mkdtempSync(join(tmpdir(), "kpi-zai-res-"));
+	try {
+		const catalogPath = writeTempZaiCatalog(dir, {
+			"glm-5.3": { name: "GLM-5.3", baseUrl: "http://127.0.0.1:9/v4" },
+		});
+		const run = resolveReviewRunCommand({
+			GROK_REVIEW_BACKEND: "zai",
+			ZAI_API_KEY: "secret",
+			ZAI_CATALOG_PATH: catalogPath,
+		});
+		assert.equal(typeof run, "function");
+		const copilot = resolveReviewRunCommand({ GROK_REVIEW_BACKEND: "copilot" });
+		assert.equal(copilot, defaultRunCommand);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
 });
-
-

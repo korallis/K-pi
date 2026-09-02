@@ -10,6 +10,7 @@ import {
 	createJob,
 	readActiveJob,
 	readJob,
+	resetUnreadableStateReportsForTests,
 	type Task,
 } from "../packages/coding-agent/src/kpi/extensions/run-store.ts";
 
@@ -188,18 +189,41 @@ test("the active job is the most recently written progress document", async () =
 
 test("empty or corrupt state.json is skipped rather than thrown", async () => {
 	await withTempDirectory("active-job-corrupt", async (directory) => {
-		const runs = join(directory, ".kpi", "runs");
-		await mkdir(join(runs, "job-empty"), { recursive: true });
-		await mkdir(join(runs, "job-torn"), { recursive: true });
-		await mkdir(join(runs, "job-good"), { recursive: true });
-		await writeFile(join(runs, "job-empty", "state.json"), "");
-		await writeFile(join(runs, "job-torn", "state.json"), '{"job_id":"job-torn","round":');
-		await atomicWrite(join(runs, "job-good", "state.json"), JSON.stringify({ job_id: "job-good", round: 3 }));
-		const future = new Date(Date.now() + 60_000);
-		await utimes(join(runs, "job-good", "state.json"), future, future);
+		resetUnreadableStateReportsForTests();
+		const warnings: string[] = [];
+		const originalWarn = console.warn;
+		console.warn = (...args: unknown[]) => {
+			warnings.push(args.map(String).join(" "));
+		};
+		try {
+			const runs = join(directory, ".kpi", "runs");
+			await mkdir(join(runs, "job-empty"), { recursive: true });
+			await mkdir(join(runs, "job-torn"), { recursive: true });
+			await mkdir(join(runs, "job-good"), { recursive: true });
+			await writeFile(join(runs, "job-empty", "state.json"), "");
+			await writeFile(join(runs, "job-torn", "state.json"), '{"job_id":"job-torn","round":');
+			await atomicWrite(join(runs, "job-good", "state.json"), JSON.stringify({ job_id: "job-good", round: 3 }));
+			const future = new Date(Date.now() + 60_000);
+			await utimes(join(runs, "job-good", "state.json"), future, future);
 
-		const active = await readActiveJob(directory);
-		assert.equal(active?.jobId, "job-good", "valid progress still wins");
-		assert.equal(active?.state.round, 3);
+			const active = await readActiveJob(directory);
+			assert.equal(active?.jobId, "job-good", "valid progress still wins");
+			assert.equal(active?.state.round, 3);
+			assert.ok(
+				warnings.some((line) => line.includes("job-empty") && line.includes("empty")),
+				"empty state is reported once",
+			);
+			assert.ok(
+				warnings.some((line) => line.includes("job-torn") && line.includes("invalid JSON")),
+				"torn state is reported once",
+			);
+			// Second pass must not re-spam the same paths.
+			const before = warnings.length;
+			await readActiveJob(directory);
+			assert.equal(warnings.length, before, "corrupt paths reported at most once");
+		} finally {
+			console.warn = originalWarn;
+			resetUnreadableStateReportsForTests();
+		}
 	});
 });

@@ -14,7 +14,7 @@
 import { randomBytes } from "node:crypto";
 import { spawn } from "node:child_process";
 import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
 	DEFAULT_MAX_CHUNK_BYTES,
@@ -344,41 +344,118 @@ export function defaultRunCommand(spec) {
 }
 
 /**
- * Catalog defaults from `packages/ai/src/providers/data/zai.json` (global coding API).
- * Do not invent endpoints or model ids — verify against that file.
+ * Load the z.ai provider catalog JSON (packages/ai/src/providers/data/zai.json shape:
+ * { "<api>": { "<modelId>": { baseUrl, name, ... } } }).
+ * Never invent endpoints or model ids — only what the file lists.
+ *
+ * @param {string} catalogPath
+ * @returns {{ path: string, models: Record<string, { id: string, name?: string, baseUrl: string, api: string }> }}
  */
-export const ZAI_CODING_BASE_URL = "https://api.z.ai/api/coding/paas/v4";
-/** Flash review model id present in zai.json. */
-export const ZAI_DEFAULT_REVIEW_MODEL = "glm-5.3-flash";
+export function loadZaiProviderCatalog(catalogPath) {
+	const raw = JSON.parse(readFileSync(catalogPath, "utf8"));
+	/** @type {Record<string, { id: string, name?: string, baseUrl: string, api: string }>} */
+	const models = {};
+	if (!raw || typeof raw !== "object") {
+		throw new Error(`z.ai catalog is not an object: ${catalogPath}`);
+	}
+	for (const [api, entries] of Object.entries(raw)) {
+		if (!entries || typeof entries !== "object") continue;
+		for (const [id, entry] of Object.entries(entries)) {
+			if (!entry || typeof entry !== "object") continue;
+			const baseUrl = typeof entry.baseUrl === "string" ? entry.baseUrl.trim() : "";
+			if (!baseUrl) {
+				throw new Error(`z.ai catalog model ${id} missing baseUrl in ${catalogPath}`);
+			}
+			models[id] = {
+				id,
+				name: typeof entry.name === "string" ? entry.name : undefined,
+				baseUrl: baseUrl.replace(/\/+$/u, ""),
+				api,
+			};
+		}
+	}
+	if (Object.keys(models).length === 0) {
+		throw new Error(`z.ai catalog has no models: ${catalogPath}`);
+	}
+	return { path: catalogPath, models };
+}
 
 /**
- * OpenAI-compatible chat-completions runner for z.ai GLM.
- * Returns the same `{ ok, reason, stdout, stderr, code }` shape as defaultRunCommand
- * so normalize/union/fail-closed stay unchanged. stdout is the assistant message
- * content (the findings document), not the raw HTTP envelope.
+ * Resolve a configured model id against a loaded z.ai catalog.
+ * Fail closed with the real id list when the id is absent.
+ *
+ * @param {ReturnType<typeof loadZaiProviderCatalog>} catalog
+ * @param {string} modelId
+ */
+export function resolveZaiCatalogModel(catalog, modelId) {
+	const id = typeof modelId === "string" ? modelId.trim() : "";
+	const entry = id ? catalog.models[id] : undefined;
+	if (!entry) {
+		const known = Object.keys(catalog.models).sort().join(", ");
+		throw new Error(
+			`GROK_REVIEW_MODEL ${JSON.stringify(modelId)} is not in the z.ai catalog (${catalog.path}). Known ids: ${known}`,
+		);
+	}
+	return entry;
+}
+
+/**
+ * Default path to this monorepo's zai pool catalog. Overridable via ZAI_CATALOG_PATH
+ * (required in CI when only gate-scripts are on disk).
+ *
+ * @param {NodeJS.ProcessEnv} [env]
+ * @param {string} [fromModuleUrl]
+ */
+export function resolveZaiCatalogPath(env = process.env, fromModuleUrl = import.meta.url) {
+	const override = typeof env.ZAI_CATALOG_PATH === "string" ? env.ZAI_CATALOG_PATH.trim() : "";
+	if (override) return override;
+	const here = dirname(fileURLToPath(fromModuleUrl));
+	return join(here, "..", "packages", "ai", "src", "providers", "data", "zai.json");
+}
+
+/**
+ * OpenAI-compatible chat-completions runner for the z.ai pool.
+ * baseUrl is taken from the catalog entry for `spec.model` on every call — never a frozen constant.
+ * Returns the same `{ ok, reason, stdout, stderr, code }` shape as defaultRunCommand.
  *
  * @param {{
- *   baseUrl?: string,
  *   apiKey: string,
+ *   catalog: ReturnType<typeof loadZaiProviderCatalog>,
  *   fetchImpl?: typeof fetch,
  * }} config
  * @returns {(spec: ReviewRunSpec) => Promise<ReviewRunResult>}
  */
 export function createZaiRunCommand(config) {
-	const baseUrl = (config.baseUrl ?? ZAI_CODING_BASE_URL).replace(/\/+$/u, "");
 	const apiKey = config.apiKey;
+	const catalog = config.catalog;
 	const fetchImpl = config.fetchImpl ?? globalThis.fetch;
 	if (typeof apiKey !== "string" || apiKey.trim().length === 0) {
 		throw new Error("createZaiRunCommand requires a non-empty apiKey");
+	}
+	if (!catalog || typeof catalog !== "object" || !catalog.models) {
+		throw new Error("createZaiRunCommand requires a loaded z.ai catalog");
 	}
 	if (typeof fetchImpl !== "function") {
 		throw new Error("createZaiRunCommand requires fetch");
 	}
 
 	return async function zaiRunCommand(spec) {
+		let entry;
+		try {
+			entry = resolveZaiCatalogModel(catalog, spec.model);
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			return {
+				ok: false,
+				reason: "invalid-model",
+				stdout: "",
+				stderr: message,
+				code: null,
+			};
+		}
 		const controller = new AbortController();
 		const timer = setTimeout(() => controller.abort(), Math.max(1, spec.timeoutSec) * 1000);
-		const url = `${baseUrl}/chat/completions`;
+		const url = `${entry.baseUrl}/chat/completions`;
 		try {
 			const response = await fetchImpl(url, {
 				method: "POST",
@@ -387,7 +464,7 @@ export function createZaiRunCommand(config) {
 					authorization: `Bearer ${apiKey}`,
 				},
 				body: JSON.stringify({
-					model: spec.model,
+					model: entry.id,
 					messages: [{ role: "user", content: spec.prompt }],
 					temperature: 0,
 				}),
@@ -454,9 +531,10 @@ export function createZaiRunCommand(config) {
  * - otherwise Copilot CLI (`defaultRunCommand`)
  *
  * Never forwards GITHUB_TOKEN / GH_TOKEN into the z.ai request.
+ * Model id and baseUrl come only from the z.ai catalog + configured model var.
  *
  * @param {NodeJS.ProcessEnv} [env]
- * @param {{ fetchImpl?: typeof fetch }} [opts]
+ * @param {{ fetchImpl?: typeof fetch, catalogPath?: string, catalog?: ReturnType<typeof loadZaiProviderCatalog> }} [opts]
  * @returns {(spec: ReviewRunSpec) => Promise<ReviewRunResult>}
  */
 export function resolveReviewRunCommand(env = process.env, opts = {}) {
@@ -467,14 +545,18 @@ export function resolveReviewRunCommand(env = process.env, opts = {}) {
 		if (!zaiKey) {
 			throw new Error("GROK_REVIEW_BACKEND=zai requires ZAI_API_KEY");
 		}
+		const catalog =
+			opts.catalog ??
+			loadZaiProviderCatalog(opts.catalogPath ?? resolveZaiCatalogPath(env));
 		return createZaiRunCommand({
-			baseUrl: env.ZAI_BASE_URL || ZAI_CODING_BASE_URL,
 			apiKey: zaiKey,
+			catalog,
 			fetchImpl: opts.fetchImpl,
 		});
 	}
 	return defaultRunCommand;
 }
+
 
 /**
  * @param {string} chunkText

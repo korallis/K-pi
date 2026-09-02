@@ -5,9 +5,10 @@
 #   2. infer   — hosted Ubuntu matrix; read-only; no write token; each chunk once
 #   3. Grok review (exact name) — download all groups; union; sticky comment; fail closed
 #
-# Inference backend: z.ai OpenAI-compatible chat completions (GLM), selected from
-# packages/ai/src/providers/data/zai.json (baseUrl + model id). Required secret:
-# ZAI_API_KEY. The check context name stays "Grok review" for branch protection.
+# Inference backend: z.ai OpenAI-compatible chat completions for the `zai` pool.
+# Model id comes from vars.GROK_REVIEW_MODEL and is validated against the checked-out
+# packages/ai/src/providers/data/zai.json catalog (baseUrl + id from that file only).
+# Required secret: ZAI_API_KEY. Check context name stays "Grok review" for branch protection.
 # GitHub's ephemeral write token is introduced only in the final job's comment step.
 # Inference clears GITHUB_TOKEN/GH_TOKEN and never sends a repository token to z.ai.
 #
@@ -51,8 +52,8 @@ jobs:
       BASE_SHA: ${{ github.event.pull_request.base.sha }}
       HEAD_SHA: ${{ github.event.pull_request.head.sha }}
       HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
-      # Catalog default: packages/ai/src/providers/data/zai.json → glm-5.3-flash
-      GROK_REVIEW_MODEL: ${{ vars.GROK_REVIEW_MODEL || 'glm-5.3-flash' }}
+      # Must be a model id present in packages/ai/src/providers/data/zai.json
+      GROK_REVIEW_MODEL: ${{ vars.GROK_REVIEW_MODEL }}
       GROK_REVIEW_BACKEND: zai
     outputs:
       matrix: ${{ steps.prepare.outputs.matrix }}
@@ -73,13 +74,10 @@ jobs:
             echo "::error::ZAI_API_KEY is not configured (z.ai OpenAI-compatible API key)."
             exit 1
           fi
-          case "$GROK_REVIEW_MODEL" in
-            glm-[A-Za-z0-9._-]*|grok-[A-Za-z0-9._-]*) ;;
-            *)
-              echo "::error::GROK_REVIEW_MODEL must name a catalog GLM (zai.json) or legacy Grok model id."
-              exit 1
-              ;;
-          esac
+          if [ -z "$GROK_REVIEW_MODEL" ]; then
+            echo "::error::GROK_REVIEW_MODEL repo variable is not set (must be a zai catalog model id)."
+            exit 1
+          fi
 
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
@@ -205,6 +203,43 @@ jobs:
           # Bundle gate scripts for infer/finalize (immutable copy).
           cp -a "$RUNNER_TEMP/gate-scripts" "$RUNNER_TEMP/prepare/gate-scripts"
 
+          # Ship the z.ai pool catalog with prepare artifacts so infer resolves baseUrl from file.
+          mkdir -p "$RUNNER_TEMP/prepare/catalog"
+          if [ -f untrusted/packages/ai/src/providers/data/zai.json ]; then
+            cp untrusted/packages/ai/src/providers/data/zai.json "$RUNNER_TEMP/prepare/catalog/zai.json"
+          elif [ -f trusted/packages/ai/src/providers/data/zai.json ]; then
+            cp trusted/packages/ai/src/providers/data/zai.json "$RUNNER_TEMP/prepare/catalog/zai.json"
+          else
+            echo "::error::packages/ai/src/providers/data/zai.json missing from base and head"
+            exit 1
+          fi
+
+          CATALOG_PATH="$RUNNER_TEMP/prepare/catalog/zai.json" \
+            node --input-type=module <<'NODE'
+import { readFileSync } from "node:fs";
+const path = process.env.CATALOG_PATH;
+const want = process.env.GROK_REVIEW_MODEL;
+const raw = JSON.parse(readFileSync(path, "utf8"));
+const ids = [];
+for (const entries of Object.values(raw)) {
+  if (entries && typeof entries === "object") ids.push(...Object.keys(entries));
+}
+ids.sort();
+if (!ids.includes(want)) {
+  console.error(`::error::GROK_REVIEW_MODEL ${JSON.stringify(want)} is not in the z.ai catalog. Known ids: ${ids.join(", ")}`);
+  process.exit(1);
+}
+let baseUrl = "";
+for (const entries of Object.values(raw)) {
+  if (entries && typeof entries === "object" && entries[want]?.baseUrl) {
+    baseUrl = entries[want].baseUrl;
+    break;
+  }
+}
+console.log(`zai catalog ok: model=${want} baseUrl=${baseUrl}`);
+NODE
+
+
           chunk_count=$(jq -r '.chunkCount // 0' "$RUNNER_TEMP/prepare/prepare-meta.json")
           group_count=$(jq -r '.groupCount // 0' "$RUNNER_TEMP/prepare/prepare-meta.json")
           echo "chunk_count=$chunk_count" >> "$GITHUB_OUTPUT"
@@ -243,7 +278,7 @@ jobs:
       max-parallel: 8
       matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
     env:
-      GROK_REVIEW_MODEL: ${{ vars.GROK_REVIEW_MODEL || 'glm-5.3-flash' }}
+      GROK_REVIEW_MODEL: ${{ vars.GROK_REVIEW_MODEL }}
       GROK_REVIEW_BACKEND: zai
       GROUP_ID: ${{ matrix.group }}
     steps:
@@ -263,8 +298,8 @@ jobs:
         continue-on-error: true
         env:
           ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
-          # Catalog baseUrl from packages/ai/src/providers/data/zai.json
-          ZAI_BASE_URL: https://api.z.ai/api/coding/paas/v4
+          # Catalog file shipped by prepare — baseUrl/model resolved only from this file.
+          ZAI_CATALOG_PATH: ${{ runner.temp }}/prepare/catalog/zai.json
           GROK_REVIEW_BACKEND: zai
           GITHUB_TOKEN: ""
           GH_TOKEN: ""
@@ -328,7 +363,7 @@ jobs:
       contents: read
       pull-requests: write
     env:
-      GROK_REVIEW_MODEL: ${{ vars.GROK_REVIEW_MODEL || 'glm-5.3-flash' }}
+      GROK_REVIEW_MODEL: ${{ vars.GROK_REVIEW_MODEL }}
       BASE_SHA: ${{ github.event.pull_request.base.sha }}
       HEAD_SHA: ${{ github.event.pull_request.head.sha }}
     steps:

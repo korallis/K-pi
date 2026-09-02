@@ -72,6 +72,12 @@ export async function refreshFooterJobFields(ctx: ExtensionContext, state: Foote
 	}
 }
 
+/** Cosmetic footer work must never take down a session; still record why it failed. */
+function noteFooterFailure(phase: string, error: unknown): void {
+	const message = error instanceof Error ? error.message : String(error);
+	console.warn(`[kpi/status-line] ${phase} failed: ${message}`);
+}
+
 async function loadKpiJobFields(ctx: ExtensionContext): Promise<KpiJobFields | undefined> {
 	const job = await readActiveJob(ctx.cwd);
 	if (job === undefined) return undefined;
@@ -112,7 +118,7 @@ export function registerStatusLine(pi: ExtensionAPI): void {
 			installFooter(ctx, state);
 			void refreshFooterJobFields(ctx, state)
 				.then(() => publishKpiStatus(ctx, state))
-				.catch(() => {});
+				.catch((error) => noteFooterFailure("session_start refresh", error));
 		}
 	});
 
@@ -132,10 +138,10 @@ export function registerStatusLine(pi: ExtensionAPI): void {
 		state.working = false;
 		void refreshFooterJobFields(ctx, state)
 			.then(() => {
-				void publishKpiStatus(ctx, state).catch(() => {});
+				void publishKpiStatus(ctx, state).catch((error) => noteFooterFailure("agent_settled publish", error));
 				state.requestRender?.();
 			})
-			.catch(() => {});
+			.catch((error) => noteFooterFailure("agent_settled refresh", error));
 	});
 
 	pi.on("model_select", () => state.requestRender?.());
@@ -197,10 +203,10 @@ function installFooter(ctx: ExtensionContext, state: FooterState): void {
 		}, 100);
 		state.requestRender = () => tui.requestRender();
 		setFooterRouteChangeListener(() => {
-			void publishKpiStatus(ctx, state).catch(() => {});
+			void publishKpiStatus(ctx, state).catch((error) => noteFooterFailure("route-change publish", error));
 			tui.requestRender();
 		});
-		void publishKpiStatus(ctx, state).catch(() => {});
+		void publishKpiStatus(ctx, state).catch((error) => noteFooterFailure("footer install publish", error));
 
 		return {
 			dispose() {
