@@ -22,7 +22,7 @@
 #   - Fork heads are skipped: `pull_request` withholds secrets from forks, so the
 #     reviewer could not authenticate anyway. Outside contributions are reviewed
 #     by a human.
-#   - The diff is untrusted data. It is capped at 256 KiB, fenced inside the
+#   - The diff is untrusted data. It is capped at 96 KiB, fenced inside the
 #     request body, and the system prompt tells the model to ignore instructions
 #     found within it.
 #

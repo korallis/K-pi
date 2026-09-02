@@ -63,11 +63,13 @@ test("truncation never emits a split multi-byte character", () => {
 	assert.equal(result.originalBytes, 128);
 });
 
-test("the request targets z.ai chat completions at temperature 0 with the configured model", () => {
+test("the request targets z.ai chat completions at temperature 0, thinking off, bounded output", () => {
 	const { url, body } = buildRequest({ model: "glm-5.3-flash", diff: "+const x = 1;\n" });
 	assert.equal(url, ZAI_CHAT_COMPLETIONS_URL);
 	assert.equal(body.model, "glm-5.3-flash");
 	assert.equal(body.temperature, 0);
+	assert.deepEqual(body.thinking, { type: "disabled" }, "deep thinking multiplies latency on a large prompt");
+	assert.ok(Number.isSafeInteger(body.max_tokens) && body.max_tokens > 0, "generation must be bounded");
 	assert.equal(body.messages.length, 2);
 	assert.equal(body.messages[0].role, "system");
 	assert.equal(body.messages[1].role, "user");
@@ -268,6 +270,27 @@ test("the request carries the bearer key and a JSON body", async () => {
 	assert.equal(seen.init.headers.authorization, "Bearer secret-key");
 	assert.equal(seen.init.headers["content-type"], "application/json");
 	assert.deepEqual(JSON.parse(seen.init.body), { model: "m", temperature: 0 });
-	assert.ok(seen.init.signal, "each attempt must be abortable so the 60s budget is real");
-	assert.equal(REQUEST_TIMEOUT_MS, 60_000);
+	assert.ok(seen.init.signal, "each attempt must be abortable so the request budget is real");
+	assert.equal(REQUEST_TIMEOUT_MS, 300_000);
+});
+
+test("a timed-out attempt is terminal: the same prompt is never retried", async () => {
+	let calls = 0;
+	await assert.rejects(
+		requestReview({
+			url: ZAI_CHAT_COMPLETIONS_URL,
+			body: { model: "m" },
+			apiKey: "k",
+			fetchImpl: async (_url, init) => {
+				calls++;
+				// Simulate the abort the 300s timer would fire, without waiting for it.
+				init.signal.dispatchEvent(new Event("abort"));
+				Object.defineProperty(init.signal, "aborted", { value: true });
+				throw new DOMException("The operation was aborted.", "AbortError");
+			},
+			sleepImpl: async () => {},
+		}),
+		/timed out after 300s on attempt 1; not retried/,
+	);
+	assert.equal(calls, 1);
 });

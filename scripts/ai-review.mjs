@@ -13,7 +13,7 @@
  * the `AI_REVIEW_MODEL` repository variable, key from the `ZAI_API_KEY` secret.
  *
  * The diff is untrusted input. It travels in the JSON request body between
- * explicit delimiters, is capped at 256 KiB, and every PR-controlled value
+ * explicit delimiters, is capped at 96 KiB, and every PR-controlled value
  * (numbers, SHAs, repository slug) arrives through the environment and is
  * validated here before it reaches `git` or `gh` argv. Nothing is passed to a
  * shell.
@@ -39,15 +39,25 @@ import { fileURLToPath } from "node:url";
 /** z.ai OpenAI-compatible endpoint (packages/ai/src/providers/data/zai.json baseUrl + /chat/completions). */
 export const ZAI_CHAT_COMPLETIONS_URL = "https://api.z.ai/api/coding/paas/v4/chat/completions";
 
-/** Prompt budget for the diff. Beyond this the review is explicitly partial. */
-export const MAX_DIFF_BYTES = 256 * 1024;
+/**
+ * Prompt budget for the diff. Beyond this the review is explicitly partial.
+ * z.ai latency grows with the prompt: 96 KiB (~25k tokens) keeps a flash-tier
+ * answer inside the request budget below; 256 KiB timed out at every attempt.
+ */
+export const MAX_DIFF_BYTES = 96 * 1024;
 
 /** One comment per PR, found and rewritten by this marker. */
 export const STICKY_MARKER = "<!-- kpi-ai-review -->";
 
-/** Per-attempt wall clock; three attempts keeps the job inside 15 minutes. */
-export const REQUEST_TIMEOUT_MS = 60_000;
+/**
+ * Per-attempt wall clock. A timeout is terminal (the same prompt would only
+ * time out again); 429, 5xx and transport errors get MAX_ATTEMPTS in total.
+ * 300s plus fast retries stays inside the workflow's 15-minute job budget.
+ */
+export const REQUEST_TIMEOUT_MS = 300_000;
 export const MAX_ATTEMPTS = 3;
+/** Bounds generation time; a review that needs more than this is not concise. */
+export const MAX_OUTPUT_TOKENS = 2048;
 const BACKOFF_BASE_MS = 2_000;
 const BACKOFF_CAP_MS = 30_000;
 
@@ -135,6 +145,10 @@ export function buildRequest(input) {
 		body: {
 			model,
 			temperature: 0,
+			max_tokens: MAX_OUTPUT_TOKENS,
+			// Deep thinking multiplies latency on a large prompt and adds nothing a
+			// concise review needs (https://docs.z.ai/guides/capabilities/thinking).
+			thinking: { type: "disabled" },
 			messages: [
 				{ role: "system", content: SYSTEM_PROMPT },
 				{ role: "user", content: lines.join("\n") },
@@ -254,8 +268,9 @@ export async function requestReview(config) {
 			return content.trim();
 		} catch (error) {
 			if (controller.signal.aborted) {
-				lastFailure = `z.ai request timed out after ${REQUEST_TIMEOUT_MS / 1000}s`;
-				continue;
+				throw new Error(
+					`z.ai request timed out after ${REQUEST_TIMEOUT_MS / 1000}s on attempt ${attempt + 1}; not retried`,
+				);
 			}
 			if (isRetryableNetworkError(error)) {
 				lastFailure = error instanceof Error ? error.message : String(error);
