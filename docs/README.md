@@ -23,6 +23,7 @@ Product: **K-π**, a standalone coding-agent harness maintained as a fork of Pi.
 | `implementation-plan.md` | Historical WP-00–WP-23 build record |
 | `remediation-research.md` | Cited completion audit and gap register |
 | `remediation-plan.md` | Active implementation queue and the only completion authority. It names the current package itself. |
+| `traceability-map.json` | Machine-readable requirement→check ownership (RP-19) |
 | `uat.md` | Feature acceptance: one row per US-01–US-30 plus the seven PRD metrics. Runs after every package and the full gates. |
 | `../UPSTREAM.md` | Fork base, upstream remote, sync procedure, patched-file register |
 | `../NOTICE` | MIT attribution for the upstream base and the vendored pstack overlay |

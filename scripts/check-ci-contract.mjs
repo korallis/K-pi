@@ -44,6 +44,8 @@ const REQUIRED_ROOT_SCRIPTS = [
 	"test:kpi",
 	"kstack:sync:check",
 	"upstream:check",
+	"verify:built",
+	"verify:product",
 ];
 
 /** Workflows the fork cannot lose: without them the required gates do not run. */

@@ -25,7 +25,7 @@ const repoRoot = dirname(dirname(guardPath));
 const workflowPath = (name) => join(repoRoot, ".github", "workflows", name);
 
 /** Mirrors the guard's REQUIRED_ROOT_SCRIPTS so a fixture manifest is clean. */
-const REQUIRED_SCRIPTS = ["build", "build:offline", "check", "test", "test:kpi", "kstack:sync:check", "upstream:check"];
+const REQUIRED_SCRIPTS = ["build", "build:offline", "check", "test", "test:kpi", "kstack:sync:check", "upstream:check", "verify:built", "verify:product"];
 
 /**
  * Strings this file must feed the guard but must not contain verbatim: the guard

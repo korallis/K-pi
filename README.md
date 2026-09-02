@@ -63,6 +63,33 @@ To run from source without building, use `./kpi-test.sh` (`kpi-test.ps1` / `kpi-
 kpi update --models
 ```
 
+
+## Verify the built product (RP-19)
+
+After `npm run build:offline`:
+
+```sh
+npm run verify:built
+node scripts/verify-product.mjs --skip-gates --json .kpi/remediation-proof.json
+```
+
+`verify:built` starts the built `kpi` binary under a temporary `HOME` and `KPI_CODING_AGENT_DIR`, checks the `dist/kpi` inventory, and exercises `--mode rpc` offline with no install or trust step.
+
+`verify:product` re-runs M-01–M-07 against fixtures and live hooks, writes secret-free evidence under `.kpi/proof/`, wires `.kpi/uat/<UAT-ID>/` (rows not executed here), and emits `.kpi/remediation-proof.json`. Feature failures name the owning `RP-##` — they are not fixed inside the proof scripts.
+
+Full local gate list (also what closes RP-19):
+
+```sh
+npm run check
+npm test
+npm run test:kpi
+npm run kstack:sync:check
+npm run upstream:check -- --offline
+npm run build:offline
+npm run verify:built
+node scripts/verify-product.mjs --json .kpi/remediation-proof.json
+```
+
 ## Workflows
 
 ```text

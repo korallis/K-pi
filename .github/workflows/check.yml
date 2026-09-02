@@ -150,6 +150,14 @@ jobs:
       - name: K-stack sync check
         run: npm run kstack:sync:check
 
+      - name: Built harness smoke
+        # Clean-HOME / scratch-repo start of the built kpi binary; distribution inventory.
+        run: npm run verify:built
+
+      - name: Whole-product proof
+        # M-01..M-07 collectors + secret-free remediation-proof.json. Gates already ran above.
+        run: node scripts/verify-product.mjs --skip-gates --json "${RUNNER_TEMP}/remediation-proof.json"
+
       - name: Working tree clean after gates
         # Every gate is read-only, and the sync check must not regenerate
         # anything. A dirty tree here is a real failure — including untracked files.
