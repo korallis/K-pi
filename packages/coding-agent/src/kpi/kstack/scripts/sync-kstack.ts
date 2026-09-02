@@ -297,8 +297,14 @@ export async function buildCandidate(options: SyncOptions, work: string): Promis
 	const recorded = await readProvenance(layout.provenance);
 	assertRecordsAgree(recorded, parseUpstreamDocument(await readFile(layout.upstreamDocument, "utf8")));
 
+	// A changed overlay means different things in the two modes. Under `--check` it
+	// is drift: the tree on disk was produced by rules that no longer exist, and
+	// saying so is the whole job. Under a mutating sync it is the *reason* the
+	// operator ran the command, so the new version is adopted and recorded -
+	// otherwise editing a rule would be impossible without hand-writing the very
+	// record this pipeline exists to own.
 	const transformVersion = await computeTransformVersion(layout.overlay);
-	if (transformVersion !== recorded.transformVersion) {
+	if (options.check === true && transformVersion !== recorded.transformVersion) {
 		throw new ProvenanceError(
 			`the overlay has changed: transformVersion is ${transformVersion}, provenance records ${recorded.transformVersion}. Re-run kstack:sync.`,
 		);
@@ -324,10 +330,11 @@ export async function buildCandidate(options: SyncOptions, work: string): Promis
 				`pinned subtree has tree id ${sourceTreeOid}, provenance records ${recorded.origin.treeOid}`,
 			);
 		}
-		provenance = recorded;
+		provenance = { ...recorded, transformVersion };
 	} else {
 		provenance = {
 			...recorded,
+			transformVersion,
 			origin: { ...recorded.origin, commit: options.pin, treeOid: sourceTreeOid },
 			license: deriveLicense(stagedTree, recorded.license.path, recorded.license.spdx),
 		};
@@ -595,7 +602,10 @@ export async function runSync(options: RunOptions): Promise<SyncReport> {
 			candidate.provenance.origin.commit !== recorded.origin.commit ||
 			candidate.provenance.origin.treeOid !== recorded.origin.treeOid ||
 			candidate.provenance.license.sha256 !== recorded.license.sha256 ||
-			candidate.provenance.license.holder !== recorded.license.holder;
+			candidate.provenance.license.holder !== recorded.license.holder ||
+			// An overlay edit is a record change even when the produced bytes happen
+			// to be identical: the next `--check` compares against this field.
+			candidate.provenance.transformVersion !== recorded.transformVersion;
 
 		if (options.check) {
 			if (candidate.digest !== liveDigest) {

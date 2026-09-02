@@ -57,7 +57,7 @@ Do not copy, sync, or resurrect any of these from the upstream tree:
 - `CONTRIBUTING.md`, code of conduct, funding, and community policy files.
 - Anything that advertises this tree as the official Pi distribution.
 
-K-π's CI is Ray Fernando's Actions templates plus the fork-integrity guard `scripts/check-ci-contract.mjs`, which fails the build if publish, release, registry, or governance automation reappears. Upstream CI is not adopted.
+K-π's CI is adapted from Ray Fernando's Actions templates, plus the fork-integrity guard `scripts/check-ci-contract.mjs`, which fails the build if publish, release, registry, or governance automation reappears. The guard is the contract; the templates are where the workflows came from. Upstream CI is not adopted.
 
 ## 6. Sync procedure
 

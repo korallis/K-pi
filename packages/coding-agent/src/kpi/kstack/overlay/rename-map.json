@@ -73,6 +73,26 @@
 			"from": "typescript\": \"latest",
 			"to": "typescript\": \"7.0.2",
 			"boundary": "none"
+		},
+		{
+			"from": "~/.cursor/skills",
+			"to": "~/.kpi/agent/skills",
+			"boundary": "none"
+		},
+		{
+			"from": ".cursor/skills",
+			"to": ".kpi/skills",
+			"boundary": "none"
+		},
+		{
+			"from": "<agent-transcripts>",
+			"to": "<session-directory>",
+			"boundary": "none"
+		},
+		{
+			"from": "where `<slug>` is the workspace path",
+			"to": "where `<project>` is the workspace path",
+			"boundary": "none"
 		}
 	]
 }

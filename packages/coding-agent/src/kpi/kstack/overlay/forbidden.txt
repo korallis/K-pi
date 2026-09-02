@@ -27,3 +27,6 @@ lee barry
 ray fernando
 /Users/
 ~/Projects
+.cursor/skills
+.cursor/plugins
+agent-transcripts

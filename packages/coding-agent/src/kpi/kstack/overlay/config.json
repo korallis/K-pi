@@ -212,6 +212,21 @@
 			"pattern": "(?i)(?<![\\w-])bugbot(?![\\w-])",
 			"replacement": "the isolated reviewer",
 			"note": "hosted bot triage becomes /interrogate plus the K-π reviewer"
+		},
+		{
+			"pattern": "The system prompt names the active workspace's `agent-transcripts/` directory; use that path\\.",
+			"replacement": "Session transcripts live under `~/.kpi/agent/sessions/<project>/`, where `<project>` is the workspace path with separators replaced by hyphens.",
+			"note": "K-π's system prompt names no transcript directory, so the path is stated rather than claimed"
+		},
+		{
+			"pattern": "under the active workspace's `agent-transcripts/` directory \\(the system prompt names the path\\)",
+			"replacement": "under `~/.kpi/agent/sessions/<project>/` for the active workspace",
+			"note": "same false claim, second site"
+		},
+		{
+			"pattern": ", or plugin-installed paths under `~/\\.cursor/plugins/`",
+			"replacement": ", or the skills K-π ships inside the harness",
+			"note": "K-π has no plugin directory: shipped skills load from the harness resource tree"
 		}
 	],
 	"unknownOperatorSentinels": [

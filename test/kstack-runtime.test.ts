@@ -43,6 +43,7 @@ import {
 	writeKStackModels,
 } from "../packages/coding-agent/src/kpi/kstack/models.ts";
 import {
+	assertGeneratedTree,
 	KStackTransformError,
 	matchesGlob,
 	type OverlayConfig,
@@ -182,36 +183,49 @@ test("the whole generated tree passes its own validator", async () => {
 // ---------------------------------------------------------------------------
 
 test("no forbidden residue survives in the loaded roots", async () => {
+	const config = await readOverlayConfig(OVERLAY);
 	const tree = await generatedFiles();
 	const body = [...tree]
-		.filter(([path]) => path !== "LICENSE" && path !== "NOTICE")
+		.filter(([path]) => !config.attributionPaths.includes(path))
 		.map(([, source]) => source)
 		.join("\n")
 		.toLowerCase();
 
-	for (const phrase of [
+	// The net itself is the list. A phrase enforced here but missing from
+	// forbidden.txt, or the reverse, would let the two drift apart.
+	for (const phrase of config.forbidden) {
+		assert.ok(!body.includes(phrase.toLowerCase()), `forbidden residue survived: ${phrase}`);
+	}
+	// Entries the net must keep. Deleting one from forbidden.txt fails here rather
+	// than silently reopening the surface it closed.
+	for (const required of [
 		"make-bot-ui",
 		"benny",
 		"bugbot",
 		"cursor cloud",
 		"cloud agent",
-		"background agent",
-		"cloud worker",
 		"graphite",
 		"gt submit",
 		"cursor-team-kit",
-		"control-cli",
-		"control-ui",
 		"subagent",
-		"subagent_type",
 		"run_in_background",
 		".cursor/rules",
+		".cursor/projects",
+		".cursor/skills",
+		".cursor/plugins",
+		"agent-transcripts",
 		"worktree",
 		"/loop",
 		"create-skill",
+		"poteto",
+		"/Users/",
 	]) {
-		assert.ok(!body.includes(phrase), `forbidden residue survived: ${phrase}`);
+		assert.ok(
+			config.forbidden.includes(required),
+			`forbidden.txt no longer nets ${required}; the surface it closed is open again`,
+		);
 	}
+
 	// Hard model slugs are never required defaults.
 	for (const slug of [
 		"claude-fable-5",
@@ -1250,4 +1264,72 @@ test("K-mode freezes the playbook into the job contract and renders its steps", 
 		}
 		await rm(root, { recursive: true, force: true });
 	}
+});
+
+// ---------------------------------------------------------------------------
+// Host-tool coupling: the paths a K-π skill may name
+// ---------------------------------------------------------------------------
+
+test("a host-tool path the rewrite rules do not match is refused by the net", async () => {
+	const config = await readOverlayConfig(OVERLAY);
+	// `.cursor/skills` is always rewritten, so the net never sees it. These two are
+	// rewritten only where a rule matches the exact upstream clause, and the net is
+	// what stands behind them: a new spelling is refused rather than shipped.
+	for (const scenario of [
+		{ phrase: ".cursor/plugins", body: "Some skills are installed under `~/.cursor/plugins/` on this machine." },
+		{ phrase: "agent-transcripts", body: "Older runs kept their logs in an `agent-transcripts/` folder." },
+	]) {
+		const files = new Map([
+			[
+				"skills/hostpath/SKILL.md",
+				`---\nname: hostpath\ndescription: names a host tool's own directory\n---\n\n${scenario.body}\n`,
+			],
+		]);
+		const diagnostics = validateGeneratedTree(files, config);
+		const located = diagnostics.find((entry) => entry.message.includes(scenario.phrase));
+		assert.ok(located !== undefined, `${scenario.phrase} reached generated/ unrefused`);
+		assert.equal(located.path, "skills/hostpath/SKILL.md");
+		assert.equal(located.rule, "forbidden-string");
+		assert.throws(() => assertGeneratedTree(files, config), KStackTransformError, scenario.phrase);
+	}
+});
+
+test("the generated verification skills name K-π's own skill directories", async () => {
+	const tree = await generatedFiles();
+	const create = tree.get("skills/create-verification-skill/SKILL.md") ?? "";
+	const maintain = tree.get("skills/maintain-verification-skill/SKILL.md") ?? "";
+	assert.ok(create.includes(".kpi/skills/verify-<app>/"), "the generator writes into a K-π project skill directory");
+	assert.ok(maintain.includes(".kpi/skills/verify-*/"), "the maintainer looks in the same place");
+	// resource-loader.ts discovers project skills at <cwd>/.kpi/skills, so the
+	// rewritten path is one the harness actually reads.
+	for (const source of [create, maintain]) {
+		assert.doesNotMatch(source, /\.cursor/u, "no host-tool directory survives");
+	}
+});
+
+test("the generated reflect and show-me-your-work skills name K-π's session directory", async () => {
+	const tree = await generatedFiles();
+	const reflect = tree.get("skills/reflect/SKILL.md") ?? "";
+	const shown = tree.get("skills/show-me-your-work/SKILL.md") ?? "";
+	for (const [name, source] of [
+		["reflect", reflect],
+		["show-me-your-work", shown],
+	] as const) {
+		assert.ok(source.includes("~/.kpi/agent/sessions/<project>/"), `${name} states the real session path`);
+		assert.doesNotMatch(source, /agent-transcripts/u, `${name} drops the host tool's directory name`);
+		// The upstream text claimed the system prompt names that directory. K-π's
+		// does not, so the path is stated rather than claimed.
+		assert.doesNotMatch(source, /system prompt names the active workspace/u, `${name} makes no false claim`);
+	}
+	assert.ok(reflect.includes("<session-directory>"), "the shell snippet uses a placeholder, not a host path");
+});
+
+test("the recall skill explains the placeholder it actually uses", async () => {
+	const tree = await generatedFiles();
+	const recall = tree.get("skills/recall/SKILL.md") ?? "";
+	assert.ok(recall.includes("~/.kpi/agent/sessions/<project>/<session>.jsonl"));
+	// The rewritten path uses <project>; the sentence beside it used to explain
+	// <slug>, a placeholder that no longer appeared anywhere in the path.
+	assert.ok(recall.includes("where `<project>` is the workspace path"));
+	assert.doesNotMatch(recall, /<slug>/u, "no orphan placeholder survives the rewrite");
 });
