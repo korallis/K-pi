@@ -330,7 +330,16 @@ async function readStateCandidate(directory: string): Promise<(ActiveJob & { mod
 	const statePath = join(directory, "state.json");
 	try {
 		const [source, metadata] = await Promise.all([readFile(statePath, "utf8"), stat(statePath)]);
-		const state = JSON.parse(source) as RunState;
+		// Empty or torn mid-write is "not a started run" — never throw into the
+		// fire-and-forget footer refresh path (unhandledRejection under the suite).
+		if (source.trim().length === 0) return undefined;
+		let state: RunState;
+		try {
+			state = JSON.parse(source) as RunState;
+		} catch (error) {
+			if (error instanceof SyntaxError) return undefined;
+			throw error;
+		}
 		const jobId = typeof state.job_id === "string" ? state.job_id : basename(directory);
 		return {
 			directory,

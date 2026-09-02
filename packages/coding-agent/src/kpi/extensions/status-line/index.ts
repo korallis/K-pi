@@ -110,7 +110,9 @@ export function registerStatusLine(pi: ExtensionAPI): void {
 	pi.on("session_start", (_event, ctx) => {
 		if (enabled && ctx.mode === "tui") {
 			installFooter(ctx, state);
-			void refreshFooterJobFields(ctx, state).then(() => publishKpiStatus(ctx, state));
+			void refreshFooterJobFields(ctx, state)
+				.then(() => publishKpiStatus(ctx, state))
+				.catch(() => {});
 		}
 	});
 
@@ -128,10 +130,12 @@ export function registerStatusLine(pi: ExtensionAPI): void {
 
 	pi.on("agent_settled", (_event, ctx) => {
 		state.working = false;
-		void refreshFooterJobFields(ctx, state).then(() => {
-			void publishKpiStatus(ctx, state);
-			state.requestRender?.();
-		});
+		void refreshFooterJobFields(ctx, state)
+			.then(() => {
+				void publishKpiStatus(ctx, state).catch(() => {});
+				state.requestRender?.();
+			})
+			.catch(() => {});
 	});
 
 	pi.on("model_select", () => state.requestRender?.());
@@ -193,10 +197,10 @@ function installFooter(ctx: ExtensionContext, state: FooterState): void {
 		}, 100);
 		state.requestRender = () => tui.requestRender();
 		setFooterRouteChangeListener(() => {
-			void publishKpiStatus(ctx, state);
+			void publishKpiStatus(ctx, state).catch(() => {});
 			tui.requestRender();
 		});
-		void publishKpiStatus(ctx, state);
+		void publishKpiStatus(ctx, state).catch(() => {});
 
 		return {
 			dispose() {
