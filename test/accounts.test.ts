@@ -245,6 +245,7 @@ interface RoutingHarness {
 	readerCalls: string[];
 	setModelCalls: string[];
 	status: Array<string | undefined>;
+	notifications: string[];
 	store: AccountsStore;
 }
 
@@ -261,6 +262,7 @@ async function routingHarness(readerPercent: number | undefined = 42, setModelRe
 	const readerCalls: string[] = [];
 	const setModelCalls: string[] = [];
 	const status: Array<string | undefined> = [];
+	const notifications: string[] = [];
 	const pi = {
 		on(event: string, handler: ProviderHook) {
 			hooks.set(event, handler);
@@ -291,7 +293,9 @@ async function routingHarness(readerPercent: number | undefined = 42, setModelRe
 		async confirm() {
 			return true;
 		},
-		notify() {},
+		notify(message: string) {
+			notifications.push(message);
+		},
 		setStatus(_key: string, value?: string) {
 			status.push(value);
 		},
@@ -315,6 +319,7 @@ async function routingHarness(readerPercent: number | undefined = 42, setModelRe
 		readerCalls,
 		setModelCalls,
 		status,
+		notifications,
 		store,
 	};
 }
@@ -932,6 +937,113 @@ test("two same-provider requests that finish in reverse order each cool only the
 		assert.match(afterA, /work \?% cd 30m/u, "A's own slot cooled with A's own retry-after");
 		assert.match(afterA, /spare \?% cd 10m/u, "and B's earlier cooldown is unchanged");
 		assert.doesNotMatch(afterA, /home \?% cd/u, "the current route was never charged for another request");
+	} finally {
+		await rm(subject.directory, { recursive: true, force: true });
+	}
+});
+
+test("an assistant error pairs only with the one failed response still pending", async () => {
+	const subject = await routingHarness();
+	try {
+		await subject.command("login anthropic home", subject.context);
+		await subject.command("login anthropic work", subject.context);
+		await subject.command("login anthropic spare", subject.context);
+		const beforeHeaders = subject.hooks.get("before_provider_headers")!;
+		const afterResponse = subject.hooks.get("after_provider_response")!;
+		const messageEnd = subject.hooks.get("message_end")!;
+		const context = () => subject.hookContext(anthropicModel(), [anthropicModel()]);
+		const quotaError = {
+			role: "assistant",
+			stopReason: "error",
+			errorMessage: '400 {"error":{"message":"You are out of extra usage"}}',
+		};
+
+		// A on `work` answers 400 with no headers to classify; B on `spare` answers
+		// 200 and is still streaming when A's assistant error ends.
+		await subject.command("pin anthropic/work", subject.context);
+		await beforeHeaders({ type: "before_provider_headers", headers: {}, requestId: "A" }, context());
+		await subject.command("pin anthropic/spare", subject.context);
+		await beforeHeaders({ type: "before_provider_headers", headers: {}, requestId: "B" }, context());
+		await afterResponse({ type: "after_provider_response", requestId: "B", status: 200, headers: {} }, context());
+		await afterResponse({ type: "after_provider_response", requestId: "A", status: 400, headers: {} }, context());
+		// The route is on `spare` now, so A's failure cools `work` without moving
+		// the route (and without a failover diagnostic): attribution, not routing.
+		await messageEnd({ type: "message_end", message: quotaError }, context());
+		const afterA = subject.status.at(-1) ?? "";
+		assert.match(afterA, /work \?% cd/u, "the failed response's slot cooled");
+		assert.doesNotMatch(afterA, /spare \?% cd/u, "the response still streaming was never charged");
+
+		// Two failed responses pending at once is ambiguous: neither is charged,
+		// and the pair is dropped rather than guessed at.
+		await subject.command("pin anthropic/spare", subject.context);
+		await beforeHeaders({ type: "before_provider_headers", headers: {}, requestId: "C" }, context());
+		await subject.command("pin anthropic/home", subject.context);
+		await beforeHeaders({ type: "before_provider_headers", headers: {}, requestId: "D" }, context());
+		await afterResponse({ type: "after_provider_response", requestId: "C", status: 400, headers: {} }, context());
+		await afterResponse({ type: "after_provider_response", requestId: "D", status: 400, headers: {} }, context());
+		const unattributed = (await messageEnd({ type: "message_end", message: quotaError }, context())) as
+			| { message?: { diagnostics?: Array<{ type: string; details?: { candidates?: string } }> } }
+			| undefined;
+		assert.equal(unattributed?.message?.diagnostics?.at(-1)?.type, "kpi_account_unattributed");
+		assert.equal(unattributed?.message?.diagnostics?.at(-1)?.details?.candidates, "anthropic/spare,anthropic/home");
+		assert.ok(
+			subject.notifications.some((note) =>
+				/could not be attributed between anthropic\/spare and anthropic\/home/u.test(note),
+			),
+			subject.notifications.join("\n"),
+		);
+		const afterAmbiguous = subject.status.at(-1) ?? "";
+		assert.doesNotMatch(afterAmbiguous, /spare \?% cd/u);
+		assert.doesNotMatch(afterAmbiguous, /home \?% cd/u);
+		// The evidence is kept, not dropped: a second error is still ambiguous
+		// between the same two, said once, and the run's end clears them.
+		const again = (await messageEnd({ type: "message_end", message: quotaError }, context())) as
+			| { message?: { diagnostics?: Array<{ type: string }> } }
+			| undefined;
+		assert.equal(again?.message?.diagnostics?.at(-1)?.type, "kpi_account_unattributed");
+		assert.equal(
+			subject.notifications.filter((note) => /could not be attributed/u.test(note)).length,
+			1,
+			"the same ambiguity is announced once",
+		);
+		await subject.hooks.get("agent_end")!({ type: "agent_end", messages: [] }, context());
+		assert.equal(
+			await messageEnd({ type: "message_end", message: quotaError }, context()),
+			undefined,
+			"nothing left after the run ended",
+		);
+
+		// A failed transport the runtime recovered from ends well and, alone, is
+		// released like any other lone response.
+		await beforeHeaders({ type: "before_provider_headers", headers: {}, requestId: "R" }, context());
+		await afterResponse({ type: "after_provider_response", requestId: "R", status: 400, headers: {} }, context());
+		await messageEnd({ type: "message_end", message: { role: "assistant", stopReason: "stop" } }, context());
+		assert.equal(
+			await messageEnd({ type: "message_end", message: quotaError }, context()),
+			undefined,
+			"R was released by its own successful end",
+		);
+
+		// A successful end releases the one pending success; with two pending it
+		// releases neither, because which one ended is not known.
+		await beforeHeaders({ type: "before_provider_headers", headers: {}, requestId: "E" }, context());
+		await afterResponse({ type: "after_provider_response", requestId: "E", status: 200, headers: {} }, context());
+		await messageEnd({ type: "message_end", message: { role: "assistant", stopReason: "stop" } }, context());
+		await beforeHeaders({ type: "before_provider_headers", headers: {}, requestId: "F" }, context());
+		await afterResponse({ type: "after_provider_response", requestId: "F", status: 200, headers: {} }, context());
+		const late = (await messageEnd({ type: "message_end", message: quotaError }, context())) as
+			| { message?: { diagnostics?: Array<{ type: string }> } }
+			| undefined;
+		assert.notEqual(late?.message?.diagnostics?.at(-1)?.type, "kpi_account_unattributed", "F alone: one candidate");
+		await beforeHeaders({ type: "before_provider_headers", headers: {}, requestId: "G" }, context());
+		await beforeHeaders({ type: "before_provider_headers", headers: {}, requestId: "H" }, context());
+		await afterResponse({ type: "after_provider_response", requestId: "G", status: 200, headers: {} }, context());
+		await afterResponse({ type: "after_provider_response", requestId: "H", status: 200, headers: {} }, context());
+		await messageEnd({ type: "message_end", message: { role: "assistant", stopReason: "stop" } }, context());
+		const stillTwo = (await messageEnd({ type: "message_end", message: quotaError }, context())) as
+			| { message?: { diagnostics?: Array<{ type: string }> } }
+			| undefined;
+		assert.equal(stillTwo?.message?.diagnostics?.at(-1)?.type, "kpi_account_unattributed", "G and H both kept");
 	} finally {
 		await rm(subject.directory, { recursive: true, force: true });
 	}

@@ -136,8 +136,10 @@ export class AccountBalancer {
 		const pinned = this.sticky.get(poolId);
 		const sticky = healthy.find((slot) => slot.id === pinned);
 		if (sticky !== undefined) {
+			// AC-10.8: a pin yields at 5% remaining whatever the pool's strategy, so
+			// a round-robin or sticky pool does not ride its slot into a refusal.
 			const remainingPercent = usage?.remainingPercent(poolId, sticky.id);
-			if (pool.strategy === "quota-first" && remainingPercent !== undefined) {
+			if (remainingPercent !== undefined) {
 				const alternatives = healthy.filter((slot) => slot.id !== sticky.id);
 				const quotaReplacement = this.chooseByQuota(poolId, alternatives, usage);
 				const replacement =

@@ -495,7 +495,7 @@ async function handleKpiCommand(
 			`K-π job ${outcome.jobId} ${outcome.status}${reason}`,
 			outcome.status === "DONE" ? "info" : "warning",
 		);
-		if (outcome.status === "NEEDS_HUMAN" && ctx.hasUI && /provider failed:/iu.test(outcome.reason ?? "")) {
+		if (outcome.status === "NEEDS_HUMAN" && ctx.hasUI && outcome.recovery === "provider") {
 			const resumeAfterFix = await ctx.ui.confirm(
 				"K-π provider recovery",
 				`${outcome.reason ?? "The provider account is unavailable."}\n\nResolve the account or choose another model, then resume this job?`,

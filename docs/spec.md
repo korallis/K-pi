@@ -323,7 +323,7 @@ Autopilot load rule:
 | `EXHAUSTED` | maxRounds / maxCostUsd / timeoutMs / maxNodeRuns |
 | `NO_PROGRESS` | Repeated output_fingerprint or same failing AC ids two rounds |
 | `UNSAFE` | Write outside bounds, policy deny, secret-shaped path |
-| `NEEDS_HUMAN` | AC changed, untestable review issue, risk left repo-local, healthy research supplied too few sources, or every configured account/model fallback refused. Provider failures preserve the real reason and prompt with the resume command. |
+| `NEEDS_HUMAN` | AC changed, untestable review issue, risk left repo-local, healthy research supplied too few sources, every configured account/model fallback refused, or the ship commit exists but its job branch is not on `origin` or has no pull request (`gh` missing or signed out included). Provider failures preserve the real reason and prompt with the resume command; a delivery failure names what is missing and the resume command, and resuming finalizes the same commit. |
 
 Default caps: `maxRounds=3`, `maxCostUsd=5`, `timeoutMs=1800000`, `maxConcurrency=2`.
 

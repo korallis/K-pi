@@ -78,10 +78,19 @@ export interface LoopInvocation {
 	};
 }
 
+/**
+ * What a `NEEDS_HUMAN` outcome is waiting on, as data rather than as a phrase
+ * in `reason`: a provider account the operator must repair or route around,
+ * or a ship delivery (push, pull request) the operator must complete. The
+ * control plane keys its recovery prompt off this, never off the wording.
+ */
+export type LoopRecovery = "provider" | "delivery";
+
 export interface LoopOutcome {
 	jobId: string;
 	status: TerminalStatus;
 	reason?: string;
+	recovery?: LoopRecovery;
 	graphState?: Readonly<GraphRunState>;
 }
 
@@ -422,6 +431,7 @@ function stateDocument(
 	stop: StopState,
 	terminalStatus?: TerminalStatus,
 	reason?: string,
+	recovery?: LoopRecovery,
 ): Record<string, unknown> {
 	const node = activeNode(state);
 	return {
@@ -446,6 +456,9 @@ function stateDocument(
 						? "RUNNING"
 						: state.status.toUpperCase()),
 		reason,
+		// What a NEEDS_HUMAN is waiting on, persisted with it: a later process
+		// reading this file keys off the field, never off the wording of `reason`.
+		recovery,
 		graph_status: state.status,
 		superstep: state.superstep,
 		pending_question: state.pendingHuman?.question,
@@ -495,10 +508,11 @@ export async function writeState(
 	stop: StopState,
 	terminalStatus?: TerminalStatus,
 	reason?: string,
+	recovery?: LoopRecovery,
 ): Promise<void> {
 	await atomicWrite(
 		join(runDirectory, "state.json"),
-		`${JSON.stringify(stateDocument(task, state, stop, terminalStatus, reason), null, 2)}\n`,
+		`${JSON.stringify(stateDocument(task, state, stop, terminalStatus, reason, recovery), null, 2)}\n`,
 	);
 }
 
@@ -605,6 +619,83 @@ interface ShipDelivery {
 }
 
 /**
+ * The ship commit exists but has not reached origin, or has no pull request:
+ * something the operator can finish by hand, after which resuming the job
+ * finalizes the same commit. Distinct from an integrity failure (no commit,
+ * two commits, a foreign commit), which is `BLOCKED` and not the operator's
+ * to repair by pushing.
+ */
+export class ShipDeliveryError extends Error {
+	constructor(message: string, options?: { cause?: unknown }) {
+		super(message, options);
+		this.name = "ShipDeliveryError";
+	}
+}
+
+/**
+ * The one-commit contract refusing: no commit, two commits, a foreign or
+ * unconventional commit, an ambiguous trailer. A fact about the repository,
+ * distinct from a git or filesystem call that simply failed.
+ */
+export class ShipIntegrityError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "ShipIntegrityError";
+	}
+}
+
+/** A thrown value as a sentence: an Error's message, a string as is, anything else serialized. */
+function describeError(error: unknown): string {
+	if (error instanceof Error) return error.message;
+	if (typeof error === "string") return error;
+	if (error === undefined) return "an undefined value was thrown";
+	try {
+		return JSON.stringify(error) ?? String(error);
+	} catch {
+		return String(error);
+	}
+}
+
+/**
+ * The one place a NEEDS_HUMAN recovery is worded: the real reason, what the
+ * operator does about it, and the exact resume command. `recovery` is the
+ * signal the control plane keys off; this text is for the person reading it.
+ */
+function recoveryReason(kind: LoopRecovery, message: string, jobId: string): string {
+	const advice =
+		kind === "provider"
+			? "Select a healthy model or resolve that provider account"
+			: "Push the branch or open the pull request as named";
+	return `${message}. ${advice}, then resume with /kpi ${jobId}`;
+}
+
+/** The terminal a failed ship finalization writes, and how the operator gets past it. */
+function shipFailure(
+	error: unknown,
+	jobId: string,
+): { terminalStatus: TerminalStatus; reason: string; recovery?: LoopRecovery } {
+	const message = describeError(error);
+	if (error instanceof ShipDeliveryError) {
+		return {
+			terminalStatus: "NEEDS_HUMAN",
+			reason: recoveryReason("delivery", message, jobId),
+			recovery: "delivery",
+		};
+	}
+	if (error instanceof ShipIntegrityError) {
+		// The one-commit contract refusing: a fact about the repository.
+		return { terminalStatus: "BLOCKED", reason: message };
+	}
+	// A git or filesystem call that failed, or a value nothing here throws:
+	// the loop's own trouble, labelled so the operator does not go looking for
+	// a step they missed or a commit that is fine.
+	return {
+		terminalStatus: "BLOCKED",
+		reason: `ship finalization failed unexpectedly (not an operator step): ${message}`,
+	};
+}
+
+/**
  * Verifies that the job's commit reached where the ship node was told to take
  * it: on the job branch, pushed to `origin`, and in front of the merge queue as
  * a pull request. Each failure names what is missing, because the fix is the
@@ -626,21 +717,36 @@ async function verifyShipDelivery(
 	const branch = jobBranchName(jobId);
 	const checkedOut = await currentBranch(projectRoot);
 	if (checkedOut !== branch) {
-		throw new Error(`Ship commit is on ${checkedOut ?? "a detached HEAD"}, not the job branch ${branch}`);
+		throw new ShipDeliveryError(`Ship commit is on ${checkedOut ?? "a detached HEAD"}, not the job branch ${branch}`);
 	}
 	const remoteHead = await pushedHead(projectRoot, branch);
 	if (remoteHead === undefined) {
-		throw new Error(`Job branch ${branch} was not pushed to origin`);
+		throw new ShipDeliveryError(`Job branch ${branch} was not pushed to origin`);
 	}
 	if (remoteHead !== head && !(await isAncestor(projectRoot, head, remoteHead))) {
-		throw new Error(`origin/${branch} is at ${remoteHead.slice(0, 8)}, which does not carry the ship commit`);
+		throw new ShipDeliveryError(
+			`origin/${branch} is at ${remoteHead.slice(0, 8)}, which does not carry the ship commit`,
+		);
 	}
-	const pullRequest = await (readPullRequest ?? readPullRequestWithGh)(projectRoot, branch);
+	let pullRequest: PullRequestRecord | undefined;
+	try {
+		pullRequest = await (readPullRequest ?? readPullRequestWithGh)(projectRoot, branch);
+	} catch (error) {
+		// Only the reader's own named failure - gh missing, signed out, answering
+		// badly - is the operator's to fix. A reader that throws anything else
+		// has a fault of its own, and that is reported as the fault it is.
+		if (error instanceof PullRequestLookupError) {
+			throw new ShipDeliveryError(error.message, { cause: error });
+		}
+		throw error;
+	}
 	if (pullRequest === undefined) {
-		throw new Error(`No pull request is open for ${branch}; open one with gh pr create --head ${branch} --fill`);
+		throw new ShipDeliveryError(
+			`No pull request is open for ${branch}; open one with gh pr create --head ${branch} --fill`,
+		);
 	}
 	if (pullRequest.state !== "OPEN" && pullRequest.state !== "MERGED") {
-		throw new Error(`The pull request for ${branch} is ${pullRequest.state}: ${pullRequest.url}`);
+		throw new ShipDeliveryError(`The pull request for ${branch} is ${pullRequest.state}: ${pullRequest.url}`);
 	}
 	return { branch, prUrl: pullRequest.url };
 }
@@ -838,6 +944,18 @@ export interface PullRequestRecord {
 }
 
 /**
+ * The pull-request reader could not answer: `gh` missing, signed out, or
+ * answering in a shape it never documents. The operator's to repair. Any
+ * other throw from a reader is not this, and is not dressed up as delivery.
+ */
+export class PullRequestLookupError extends Error {
+	constructor(message: string, options?: { cause?: unknown }) {
+		super(message, options);
+		this.name = "PullRequestLookupError";
+	}
+}
+
+/**
  * Reads the pull request for a branch through `gh`. No pull request resolves to
  * nothing; a `gh` that is missing, signed out, or otherwise failing throws with
  * its own message, so the operator sees the real reason the ship could not be
@@ -856,13 +974,27 @@ export async function readPullRequestWithGh(
 			return undefined;
 		}
 		if (detail.code === "ENOENT") {
-			throw new Error("gh is not installed, so the pull request could not be verified");
+			throw new PullRequestLookupError(`No pull request could be verified for ${branch}: gh is not installed`);
 		}
-		throw new Error(`gh pr view ${branch} failed: ${(detail.stderr ?? detail.message).trim()}`);
+		// gh's own first line, not its whole stderr: an update notice or an auth
+		// hint is not the reason, and the operator reads what is missing first.
+		const firstLine =
+			(detail.stderr ?? detail.message)
+				.split(/\r?\n/u)
+				.map((line) => line.trim())
+				.find((line) => line.length > 0) ?? "gh gave no reason";
+		// At most 160 characters shown, the ellipsis counted among them.
+		const shown = firstLine.length > 160 ? `${firstLine.slice(0, 159)}…` : firstLine;
+		throw new PullRequestLookupError(
+			`No pull request could be verified for ${branch}: gh pr view failed (${shown})`,
+			{
+				cause: error,
+			},
+		);
 	}
 	const parsed = JSON.parse(stdout) as { url?: unknown; state?: unknown };
 	if (typeof parsed.url !== "string" || typeof parsed.state !== "string") {
-		throw new Error(`gh pr view ${branch} returned no url and state`);
+		throw new PullRequestLookupError(`gh pr view ${branch} returned no url and state`);
 	}
 	return { url: parsed.url, state: parsed.state };
 }
@@ -965,16 +1097,16 @@ export async function findJobCommit(
 		return undefined;
 	}
 	if (marked.length > 1) {
-		throw new Error(
+		throw new ShipIntegrityError(
 			`Ambiguous ship commits for ${jobId}: ${marked.map((commit) => commit.head.slice(0, 8)).join(", ")}`,
 		);
 	}
 	const [commit] = marked;
 	if (!CONVENTIONAL_COMMIT_PATTERN.test(commit.subject)) {
-		throw new Error(`Ship commit is not Conventional Commits: ${commit.subject}`);
+		throw new ShipIntegrityError(`Ship commit is not Conventional Commits: ${commit.subject}`);
 	}
 	if (!(await isAncestorOfHead(projectRoot, commit.head))) {
-		throw new Error(`Ship commit ${commit.head.slice(0, 8)} is not an ancestor of HEAD`);
+		throw new ShipIntegrityError(`Ship commit ${commit.head.slice(0, 8)} is not an ancestor of HEAD`);
 	}
 	return { head: commit.head, subject: commit.subject };
 }
@@ -1160,6 +1292,7 @@ interface DriveResult {
 	shippedThisRun?: boolean;
 	/** The engine already emitted the one `loop.terminal` event for this run. */
 	terminalEmitted?: boolean;
+	recovery?: LoopRecovery;
 }
 
 async function driveUntilPause(
@@ -1268,7 +1401,8 @@ async function driveUntilPause(
 					stopState: currentStopState,
 					shippedThisRun,
 					terminalStatus: "NEEDS_HUMAN",
-					reason: `${error.message}. Select a healthy model or resolve that provider account, then resume this job.`,
+					reason: recoveryReason("provider", error.message, task.job_id),
+					recovery: "provider",
 				};
 			}
 			// Plan owns stack.json via its response contract. A map the plan cannot
@@ -1408,7 +1542,7 @@ async function writeTerminalState(
 			reason: result.reason,
 		});
 	}
-	await writeState(jobDirectory, task, result.state, result.stopState, status, result.reason);
+	await writeState(jobDirectory, task, result.state, result.stopState, status, result.reason, result.recovery);
 }
 
 /**
@@ -1426,14 +1560,14 @@ export async function verifyShippedCommit(
 ): Promise<string> {
 	const head = await gitHead(projectRoot);
 	if (head === undefined || head === previousHead) {
-		throw new Error("Ship node did not create a commit");
+		throw new ShipIntegrityError("Ship node did not create a commit");
 	}
 	if (previousHead !== undefined) {
 		const { stdout: count } = await execFile("git", ["rev-list", "--count", `${previousHead}..${head}`], {
 			cwd: projectRoot,
 		});
 		if (count.trim() !== "1") {
-			throw new Error(`Ship node created ${count.trim()} commits instead of one`);
+			throw new ShipIntegrityError(`Ship node created ${count.trim()} commits instead of one`);
 		}
 	}
 	const { stdout } = await execFile("git", ["log", "-1", "--pretty=%s"], {
@@ -1441,15 +1575,15 @@ export async function verifyShippedCommit(
 	});
 	const subject = stdout.trim();
 	if (!CONVENTIONAL_COMMIT_PATTERN.test(subject)) {
-		throw new Error(`Ship commit is not Conventional Commits: ${subject}`);
+		throw new ShipIntegrityError(`Ship commit is not Conventional Commits: ${subject}`);
 	}
 	if (jobId !== undefined) {
 		const marked = await findJobCommit(projectRoot, jobId, previousHead);
 		if (marked === undefined) {
-			throw new Error(`Ship commit does not carry ${SHIP_TRAILER_NAME}: ${jobId}`);
+			throw new ShipIntegrityError(`Ship commit does not carry ${SHIP_TRAILER_NAME}: ${jobId}`);
 		}
 		if (marked.head !== head) {
-			throw new Error(`Ship commit ${marked.head.slice(0, 8)} is not HEAD`);
+			throw new ShipIntegrityError(`Ship commit ${marked.head.slice(0, 8)} is not HEAD`);
 		}
 	}
 	return subject;
@@ -1545,7 +1679,13 @@ export async function resumeLoop(
 		);
 		if (result.terminalStatus !== undefined) {
 			await writeTerminalState(jobDirectory, eventsPath, task, result);
-			return { jobId, status: result.terminalStatus, reason: result.reason, graphState: result.state };
+			return {
+				jobId,
+				status: result.terminalStatus,
+				reason: result.reason,
+				recovery: result.recovery,
+				graphState: result.state,
+			};
 		}
 		while (result.state.status === "interrupted") {
 			const pending = result.state.pendingHuman;
@@ -1575,7 +1715,13 @@ export async function resumeLoop(
 			);
 			if (result.terminalStatus !== undefined) {
 				await writeTerminalState(jobDirectory, eventsPath, task, result);
-				return { jobId, status: result.terminalStatus, reason: result.reason, graphState: result.state };
+				return {
+					jobId,
+					status: result.terminalStatus,
+					reason: result.reason,
+					recovery: result.recovery,
+					graphState: result.state,
+				};
 			}
 		}
 		if (result.state.status !== "completed") {
@@ -1607,16 +1753,17 @@ export async function resumeLoop(
 				dependencies.readPullRequest,
 			);
 		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
-			const blocked: DriveResult = {
+			const { terminalStatus, reason, recovery } = shipFailure(error, jobId);
+			const stopped: DriveResult = {
 				state: result.state,
 				stopState: result.stopState,
-				terminalStatus: "BLOCKED",
-				reason: message,
+				terminalStatus,
+				reason,
+				recovery,
 			};
-			await writeTerminalState(jobDirectory, eventsPath, task, blocked);
+			await writeTerminalState(jobDirectory, eventsPath, task, stopped);
 			await dependencies.onStateChange?.();
-			return { jobId, status: "BLOCKED", graphState: result.state };
+			return { jobId, status: terminalStatus, reason, recovery, graphState: result.state };
 		}
 		// DONE is a terminal like any other: it goes through the one writer, so
 		// `events.jsonl` alone shows the run ended rather than only `state.json`.
@@ -1777,6 +1924,7 @@ export async function runLoop(
 				jobId: job.jobId,
 				status: result.terminalStatus,
 				reason: result.reason,
+				recovery: result.recovery,
 				graphState: result.state,
 			};
 		}
@@ -1817,6 +1965,7 @@ export async function runLoop(
 					jobId: job.jobId,
 					status: result.terminalStatus,
 					reason: result.reason,
+					recovery: result.recovery,
 					graphState: result.state,
 				};
 			}
@@ -1849,15 +1998,14 @@ export async function runLoop(
 				dependencies.readPullRequest,
 			);
 		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
-			const blocked: DriveResult = {
-				state,
-				stopState: result.stopState,
-				terminalStatus: "BLOCKED",
-				reason: message,
-			};
-			await writeTerminalState(job.directory, job.eventsPath, task, blocked);
-			throw error;
+			// A failed finalization is a terminal the operator reads like any
+			// other - the reason and, for a delivery, the resume command - rather
+			// than a thrown "loop failed" that hides which job stopped and why.
+			const { terminalStatus, reason, recovery } = shipFailure(error, job.jobId);
+			const stopped: DriveResult = { state, stopState: result.stopState, terminalStatus, reason, recovery };
+			await writeTerminalState(job.directory, job.eventsPath, task, stopped);
+			await dependencies.onStateChange?.();
+			return { jobId: job.jobId, status: terminalStatus, reason, recovery, graphState: state };
 		}
 		// Same one writer as every other terminal, so a finished run is legible
 		// from `events.jsonl` on its own.
