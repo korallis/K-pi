@@ -664,7 +664,15 @@ function shipFailure(
 			recovery: "delivery",
 		};
 	}
-	return { terminalStatus: "BLOCKED", reason: message };
+	// An Error here is the one-commit contract refusing (no commit, two
+	// commits, a foreign commit): a fact about the repository. Anything else
+	// thrown is the loop's own fault and is labelled as such, so the operator
+	// does not go looking for a step they missed.
+	return {
+		terminalStatus: "BLOCKED",
+		reason:
+			error instanceof Error ? message : `unexpected ship failure (a K-π fault, not an operator step): ${message}`,
+	};
 }
 
 /**
@@ -928,9 +936,18 @@ export async function readPullRequestWithGh(
 			return undefined;
 		}
 		if (detail.code === "ENOENT") {
-			throw new Error("gh is not installed, so the pull request could not be verified");
+			throw new Error(`No pull request could be verified for ${branch}: gh is not installed`);
 		}
-		throw new Error(`gh pr view ${branch} failed: ${(detail.stderr ?? detail.message).trim()}`);
+		// gh's own first line, not its whole stderr: an update notice or an auth
+		// hint is not the reason, and the operator reads what is missing first.
+		const firstLine =
+			(detail.stderr ?? detail.message)
+				.split(/\r?\n/u)
+				.map((line) => line.trim())
+				.find((line) => line.length > 0) ?? "gh gave no reason";
+		throw new Error(
+			`No pull request could be verified for ${branch}: gh pr view failed (${firstLine.slice(0, 160)})`,
+		);
 	}
 	const parsed = JSON.parse(stdout) as { url?: unknown; state?: unknown };
 	if (typeof parsed.url !== "string" || typeof parsed.state !== "string") {

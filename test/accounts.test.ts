@@ -245,6 +245,7 @@ interface RoutingHarness {
 	readerCalls: string[];
 	setModelCalls: string[];
 	status: Array<string | undefined>;
+	notifications: string[];
 	store: AccountsStore;
 }
 
@@ -261,6 +262,7 @@ async function routingHarness(readerPercent: number | undefined = 42, setModelRe
 	const readerCalls: string[] = [];
 	const setModelCalls: string[] = [];
 	const status: Array<string | undefined> = [];
+	const notifications: string[] = [];
 	const pi = {
 		on(event: string, handler: ProviderHook) {
 			hooks.set(event, handler);
@@ -291,7 +293,9 @@ async function routingHarness(readerPercent: number | undefined = 42, setModelRe
 		async confirm() {
 			return true;
 		},
-		notify() {},
+		notify(message: string) {
+			notifications.push(message);
+		},
 		setStatus(_key: string, value?: string) {
 			status.push(value);
 		},
@@ -315,6 +319,7 @@ async function routingHarness(readerPercent: number | undefined = 42, setModelRe
 		readerCalls,
 		setModelCalls,
 		status,
+		notifications,
 		store,
 	};
 }
@@ -976,7 +981,17 @@ test("an assistant error pairs only with the one failed response still pending",
 		await beforeHeaders({ type: "before_provider_headers", headers: {}, requestId: "D" }, context());
 		await afterResponse({ type: "after_provider_response", requestId: "C", status: 400, headers: {} }, context());
 		await afterResponse({ type: "after_provider_response", requestId: "D", status: 400, headers: {} }, context());
-		assert.equal(await messageEnd({ type: "message_end", message: quotaError }, context()), undefined);
+		const unattributed = (await messageEnd({ type: "message_end", message: quotaError }, context())) as
+			| { message?: { diagnostics?: Array<{ type: string; details?: { candidates?: string } }> } }
+			| undefined;
+		assert.equal(unattributed?.message?.diagnostics?.at(-1)?.type, "kpi_account_unattributed");
+		assert.equal(unattributed?.message?.diagnostics?.at(-1)?.details?.candidates, "anthropic/spare,anthropic/home");
+		assert.ok(
+			subject.notifications.some((note) =>
+				/could not be attributed between anthropic\/spare and anthropic\/home/u.test(note),
+			),
+			subject.notifications.join("\n"),
+		);
 		const afterAmbiguous = subject.status.at(-1) ?? "";
 		assert.doesNotMatch(afterAmbiguous, /spare \?% cd/u);
 		assert.doesNotMatch(afterAmbiguous, /home \?% cd/u);
@@ -984,6 +999,23 @@ test("an assistant error pairs only with the one failed response still pending",
 			await messageEnd({ type: "message_end", message: quotaError }, context()),
 			undefined,
 			"nothing left",
+		);
+
+		// A successful end releases one pending success, never a streaming one.
+		await beforeHeaders({ type: "before_provider_headers", headers: {}, requestId: "E" }, context());
+		await beforeHeaders({ type: "before_provider_headers", headers: {}, requestId: "F" }, context());
+		await afterResponse({ type: "after_provider_response", requestId: "E", status: 200, headers: {} }, context());
+		await afterResponse({ type: "after_provider_response", requestId: "F", status: 200, headers: {} }, context());
+		await messageEnd({ type: "message_end", message: { role: "assistant", stopReason: "stop" } }, context());
+		// F is still pending, so a later error has exactly one candidate.
+		const late = (await messageEnd({ type: "message_end", message: quotaError }, context())) as
+			| { message?: { diagnostics?: Array<{ type: string }> } }
+			| undefined;
+		assert.notEqual(late?.message?.diagnostics?.at(-1)?.type, "kpi_account_unattributed", "one candidate");
+		assert.equal(
+			await messageEnd({ type: "message_end", message: quotaError }, context()),
+			undefined,
+			"F was consumed by its error; nothing is left",
 		);
 	} finally {
 		await rm(subject.directory, { recursive: true, force: true });

@@ -93,10 +93,8 @@ test("a round-robin pin yields at 5% remaining too; stickiness is not a strategy
 	usage.recordHeaders("anthropic", "A", { "x-ratelimit-limit": "100", "x-ratelimit-remaining": "40" });
 	assert.equal(balancer.select("anthropic", document, usage)?.reason, "sticky", "40% left holds the pin");
 
-	usage.recordHeaders("anthropic", "A", {
-		"x-ratelimit-limit": "100",
-		"x-ratelimit-remaining": String(LOW_QUOTA_REMAINING_PERCENT),
-	});
+	// 5 of a 100 limit is 5% remaining: the yield threshold, stated as headers.
+	usage.recordHeaders("anthropic", "A", { "x-ratelimit-limit": "100", "x-ratelimit-remaining": "5" });
 	const yielded = balancer.select("anthropic", document, usage);
 	assert.equal(yielded?.slot.id, "B");
 	assert.equal(balancer.pinned("anthropic"), "B", "the pin moved with the route");

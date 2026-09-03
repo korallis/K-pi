@@ -701,28 +701,55 @@ export function registerAccounts(pi: ExtensionAPI, dependencies: AccountsDepende
 	}
 	const MAX_PENDING_RESPONSES = 8;
 	const pendingResponses = new Map<string, PendingResponse>();
-	const rememberResponse = (requestId: string, response: PendingResponse): void => {
+	const slotName = (response: PendingResponse): string => `${response.served.poolId}/${response.served.slot.id}`;
+	/**
+	 * Keeps a response until its message ends. Past the cap the oldest is let
+	 * go, and the operator is told which slot's response can no longer be
+	 * attributed: a lost attribution is a visible fact, not a silent one.
+	 */
+	const rememberResponse = (requestId: string, response: PendingResponse, context: ExtensionContext): void => {
 		pendingResponses.delete(requestId);
 		pendingResponses.set(requestId, response);
 		while (pendingResponses.size > MAX_PENDING_RESPONSES) {
-			const oldest = pendingResponses.keys().next().value;
-			if (oldest === undefined) break;
-			pendingResponses.delete(oldest);
+			const [oldestId, oldest] = pendingResponses.entries().next().value ?? [];
+			if (oldestId === undefined || oldest === undefined) break;
+			pendingResponses.delete(oldestId);
+			context.ui.notify(
+				`K-π accounts: more than ${MAX_PENDING_RESPONSES} responses in flight; the one on ${slotName(oldest)} is no longer attributable`,
+				"warning",
+			);
+		}
+	};
+	/**
+	 * A message that ended well releases exactly one pending successful
+	 * response - the oldest, since responses have no other order - and never
+	 * the whole set: another request's success must not erase a response that
+	 * is still streaming and could yet end in an error.
+	 */
+	const releaseSucceededResponse = (): void => {
+		for (const [requestId, response] of pendingResponses) {
+			if (response.status < 400) {
+				pendingResponses.delete(requestId);
+				return;
+			}
 		}
 	};
 	/**
 	 * The one pending response an assistant error can belong to. A failed
 	 * transport status is the strongest evidence; with none, a lone pending
 	 * response is the only candidate. Two candidates are no candidate: the
-	 * ambiguous set is dropped so neither slot is charged for the other's error.
+	 * ambiguous set is dropped so neither slot is charged for the other's
+	 * error, and the caller is handed their names to say so.
 	 */
-	const takeErroredResponse = (): PendingResponse | undefined => {
+	const takeErroredResponse = (): { response: PendingResponse } | { ambiguous: string[] } => {
 		const failed = [...pendingResponses].filter(([, response]) => response.status >= 400);
 		const candidates = failed.length > 0 ? failed : [...pendingResponses];
 		for (const [requestId] of candidates) {
 			pendingResponses.delete(requestId);
 		}
-		return candidates.length === 1 ? candidates[0][1] : undefined;
+		return candidates.length === 1
+			? { response: candidates[0][1] }
+			: { ambiguous: candidates.map(([, response]) => slotName(response)) };
 	};
 
 	if (typeof pi.on === "function") {
@@ -828,7 +855,7 @@ export function registerAccounts(pi: ExtensionAPI, dependencies: AccountsDepende
 				classificationHandled: classification !== undefined || lowQuota,
 				retryOnMovedRoute: false,
 			};
-			rememberResponse(event.requestId, pending);
+			rememberResponse(event.requestId, pending, context);
 			if (classification !== undefined) {
 				pending.retryOnMovedRoute = await applyFailure(served, classification.until, context);
 				return;
@@ -843,15 +870,34 @@ export function registerAccounts(pi: ExtensionAPI, dependencies: AccountsDepende
 			if (event.message.role !== "assistant") return;
 			const message = event.message as AssistantMessage;
 			if (message.stopReason !== "error" || message.errorMessage === undefined) {
-				// A message that ended well belongs to a response that succeeded;
-				// those have nothing left to pair with and are released.
-				for (const [requestId, response] of pendingResponses) {
-					if (response.status < 400) pendingResponses.delete(requestId);
-				}
+				releaseSucceededResponse();
 				return;
 			}
-			const response = takeErroredResponse();
-			if (response === undefined) return;
+			const taken = takeErroredResponse();
+			if ("ambiguous" in taken) {
+				if (taken.ambiguous.length === 0) return;
+				// Two failed responses and one error: attributing it would be a
+				// guess. Nothing cools, and both the operator and the transcript
+				// are told which slots went unjudged rather than nothing at all.
+				context.ui.notify(
+					`K-π accounts: an assistant error could not be attributed between ${taken.ambiguous.join(" and ")}; neither slot was cooled`,
+					"warning",
+				);
+				return {
+					message: {
+						...message,
+						diagnostics: [
+							...(message.diagnostics ?? []),
+							{
+								type: "kpi_account_unattributed",
+								timestamp: nowMs(),
+								details: { candidates: taken.ambiguous.join(",") },
+							},
+						],
+					},
+				};
+			}
+			const { response } = taken;
 			let moved = response.retryOnMovedRoute;
 			if (!response.classificationHandled) {
 				// The provider stream has already been consumed into this assistant error,
