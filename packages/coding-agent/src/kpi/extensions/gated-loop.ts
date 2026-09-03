@@ -431,6 +431,7 @@ function stateDocument(
 	stop: StopState,
 	terminalStatus?: TerminalStatus,
 	reason?: string,
+	recovery?: LoopRecovery,
 ): Record<string, unknown> {
 	const node = activeNode(state);
 	return {
@@ -455,6 +456,9 @@ function stateDocument(
 						? "RUNNING"
 						: state.status.toUpperCase()),
 		reason,
+		// What a NEEDS_HUMAN is waiting on, persisted with it: a later process
+		// reading this file keys off the field, never off the wording of `reason`.
+		recovery,
 		graph_status: state.status,
 		superstep: state.superstep,
 		pending_question: state.pendingHuman?.question,
@@ -504,10 +508,11 @@ export async function writeState(
 	stop: StopState,
 	terminalStatus?: TerminalStatus,
 	reason?: string,
+	recovery?: LoopRecovery,
 ): Promise<void> {
 	await atomicWrite(
 		join(runDirectory, "state.json"),
-		`${JSON.stringify(stateDocument(task, state, stop, terminalStatus, reason), null, 2)}\n`,
+		`${JSON.stringify(stateDocument(task, state, stop, terminalStatus, reason, recovery), null, 2)}\n`,
 	);
 }
 
@@ -627,6 +632,18 @@ export class ShipDeliveryError extends Error {
 	}
 }
 
+/**
+ * The one-commit contract refusing: no commit, two commits, a foreign or
+ * unconventional commit, an ambiguous trailer. A fact about the repository,
+ * distinct from a git or filesystem call that simply failed.
+ */
+export class ShipIntegrityError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "ShipIntegrityError";
+	}
+}
+
 /** A thrown value as a sentence: an Error's message, a string as is, anything else serialized. */
 function describeError(error: unknown): string {
 	if (error instanceof Error) return error.message;
@@ -664,14 +681,16 @@ function shipFailure(
 			recovery: "delivery",
 		};
 	}
-	// An Error here is the one-commit contract refusing (no commit, two
-	// commits, a foreign commit): a fact about the repository. Anything else
-	// thrown is the loop's own fault and is labelled as such, so the operator
-	// does not go looking for a step they missed.
+	if (error instanceof ShipIntegrityError) {
+		// The one-commit contract refusing: a fact about the repository.
+		return { terminalStatus: "BLOCKED", reason: message };
+	}
+	// A git or filesystem call that failed, or a value nothing here throws:
+	// the loop's own trouble, labelled so the operator does not go looking for
+	// a step they missed or a commit that is fine.
 	return {
 		terminalStatus: "BLOCKED",
-		reason:
-			error instanceof Error ? message : `unexpected ship failure (a K-π fault, not an operator step): ${message}`,
+		reason: `ship finalization failed unexpectedly (not an operator step): ${message}`,
 	};
 }
 
@@ -1060,16 +1079,16 @@ export async function findJobCommit(
 		return undefined;
 	}
 	if (marked.length > 1) {
-		throw new Error(
+		throw new ShipIntegrityError(
 			`Ambiguous ship commits for ${jobId}: ${marked.map((commit) => commit.head.slice(0, 8)).join(", ")}`,
 		);
 	}
 	const [commit] = marked;
 	if (!CONVENTIONAL_COMMIT_PATTERN.test(commit.subject)) {
-		throw new Error(`Ship commit is not Conventional Commits: ${commit.subject}`);
+		throw new ShipIntegrityError(`Ship commit is not Conventional Commits: ${commit.subject}`);
 	}
 	if (!(await isAncestorOfHead(projectRoot, commit.head))) {
-		throw new Error(`Ship commit ${commit.head.slice(0, 8)} is not an ancestor of HEAD`);
+		throw new ShipIntegrityError(`Ship commit ${commit.head.slice(0, 8)} is not an ancestor of HEAD`);
 	}
 	return { head: commit.head, subject: commit.subject };
 }
@@ -1505,7 +1524,7 @@ async function writeTerminalState(
 			reason: result.reason,
 		});
 	}
-	await writeState(jobDirectory, task, result.state, result.stopState, status, result.reason);
+	await writeState(jobDirectory, task, result.state, result.stopState, status, result.reason, result.recovery);
 }
 
 /**
@@ -1523,14 +1542,14 @@ export async function verifyShippedCommit(
 ): Promise<string> {
 	const head = await gitHead(projectRoot);
 	if (head === undefined || head === previousHead) {
-		throw new Error("Ship node did not create a commit");
+		throw new ShipIntegrityError("Ship node did not create a commit");
 	}
 	if (previousHead !== undefined) {
 		const { stdout: count } = await execFile("git", ["rev-list", "--count", `${previousHead}..${head}`], {
 			cwd: projectRoot,
 		});
 		if (count.trim() !== "1") {
-			throw new Error(`Ship node created ${count.trim()} commits instead of one`);
+			throw new ShipIntegrityError(`Ship node created ${count.trim()} commits instead of one`);
 		}
 	}
 	const { stdout } = await execFile("git", ["log", "-1", "--pretty=%s"], {
@@ -1538,15 +1557,15 @@ export async function verifyShippedCommit(
 	});
 	const subject = stdout.trim();
 	if (!CONVENTIONAL_COMMIT_PATTERN.test(subject)) {
-		throw new Error(`Ship commit is not Conventional Commits: ${subject}`);
+		throw new ShipIntegrityError(`Ship commit is not Conventional Commits: ${subject}`);
 	}
 	if (jobId !== undefined) {
 		const marked = await findJobCommit(projectRoot, jobId, previousHead);
 		if (marked === undefined) {
-			throw new Error(`Ship commit does not carry ${SHIP_TRAILER_NAME}: ${jobId}`);
+			throw new ShipIntegrityError(`Ship commit does not carry ${SHIP_TRAILER_NAME}: ${jobId}`);
 		}
 		if (marked.head !== head) {
-			throw new Error(`Ship commit ${marked.head.slice(0, 8)} is not HEAD`);
+			throw new ShipIntegrityError(`Ship commit ${marked.head.slice(0, 8)} is not HEAD`);
 		}
 	}
 	return subject;

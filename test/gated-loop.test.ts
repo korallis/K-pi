@@ -569,6 +569,7 @@ test("a pushed job branch with no pull request stops NEEDS_HUMAN and finishes on
 		assert.match(String(stopped.reason), new RegExp(`No pull request is open for ${branch}`, "u"));
 		assert.match(String(stopped.reason), /gh pr create/u);
 		assert.match(String(stopped.reason), new RegExp(`resume with /kpi ${jobId}`, "u"));
+		assert.equal(stopped.recovery, "delivery", "the recovery kind is persisted with the terminal, not only worded");
 		// The operator is told through the job's own terminal, never a thrown "loop failed".
 		assert.ok(
 			first.notifications.some((message) => message.includes(`K-π job ${jobId} NEEDS_HUMAN`)),

@@ -712,41 +712,39 @@ export function registerAccounts(pi: ExtensionAPI, dependencies: AccountsDepende
 		pendingResponses.delete(requestId);
 		pendingResponses.set(requestId, response);
 		while (pendingResponses.size > MAX_PENDING_RESPONSES) {
-			const [oldestId, oldest] = pendingResponses.entries().next().value ?? [];
-			if (oldestId === undefined || oldest === undefined) break;
+			const oldestEntry = pendingResponses.entries().next();
+			if (oldestEntry.done === true) break;
+			const [oldestId, oldest] = oldestEntry.value;
 			pendingResponses.delete(oldestId);
 			// Said once per agent run, not once per eviction: under sustained load
 			// the fact is the same and a notice per response would be noise.
 			if (!evictionReported) {
 				evictionReported = true;
 				context.ui.notify(
-					`K-π accounts: more than ${MAX_PENDING_RESPONSES} responses in flight; the one on ${slotName(oldest)} and any later evictions this run are no longer attributable`,
+					`K-π accounts: more than ${MAX_PENDING_RESPONSES} responses in flight; the one on ${slotName(oldest)} is no longer attributable, and further evictions this run are not reported`,
 					"warning",
 				);
 			}
 		}
 	};
 	/**
-	 * A message that ended well releases exactly one pending successful
-	 * response - the oldest, since responses have no other order - and never
-	 * the whole set: another request's success must not erase a response that
-	 * is still streaming and could yet end in an error.
+	 * A message that ended well releases the pending successful response only
+	 * when there is exactly one: with several, which of them ended is a guess,
+	 * and a guess could release the one still streaming. The rest wait for
+	 * their own end, the run's end, or the cap.
 	 */
 	const releaseSucceededResponse = (): void => {
-		for (const [requestId, response] of pendingResponses) {
-			if (response.status < 400) {
-				pendingResponses.delete(requestId);
-				return;
-			}
+		const succeeded = [...pendingResponses].filter(([, response]) => response.status < 400);
+		if (succeeded.length === 1) {
+			pendingResponses.delete(succeeded[0][0]);
 		}
 	};
 	/**
 	 * The one pending response an assistant error can belong to. A failed
 	 * transport status is the strongest evidence; with none, a lone pending
-	 * response is the only candidate. Two candidates are no candidate: an
-	 * ambiguous pair of failures is dropped so neither slot is charged for the
-	 * other's error, and the caller is handed their names to say so. Ambiguous
-	 * successes are kept: one of them may still end in an error of its own.
+	 * response is the only candidate. Two candidates are no candidate: nothing
+	 * is charged and nothing is dropped - the evidence stays for the run's end
+	 * to clear - and the caller is handed their names to say so.
 	 */
 	const takeErroredResponse = (): { response: PendingResponse } | { ambiguous: string[] } => {
 		const failed = [...pendingResponses].filter(([, response]) => response.status >= 400);
@@ -755,11 +753,10 @@ export function registerAccounts(pi: ExtensionAPI, dependencies: AccountsDepende
 			pendingResponses.delete(candidates[0][0]);
 			return { response: candidates[0][1] };
 		}
-		for (const [requestId] of failed) {
-			pendingResponses.delete(requestId);
-		}
 		return { ambiguous: candidates.map(([, response]) => slotName(response)) };
 	};
+	/** Ambiguities already announced this run; the same pair is said once. */
+	const reportedAmbiguities = new Set<string>();
 
 	if (typeof pi.on === "function") {
 		pi.on("before_provider_headers", async (event, context) => {
@@ -888,10 +885,14 @@ export function registerAccounts(pi: ExtensionAPI, dependencies: AccountsDepende
 				// Two failed responses and one error: attributing it would be a
 				// guess. Nothing cools, and both the operator and the transcript
 				// are told which slots went unjudged rather than nothing at all.
-				context.ui.notify(
-					`K-π accounts: an assistant error could not be attributed between ${taken.ambiguous.join(" and ")}; neither slot was cooled`,
-					"warning",
-				);
+				const key = taken.ambiguous.join(",");
+				if (!reportedAmbiguities.has(key)) {
+					reportedAmbiguities.add(key);
+					context.ui.notify(
+						`K-π accounts: an assistant error could not be attributed between ${taken.ambiguous.join(" and ")}; no slot was cooled`,
+						"warning",
+					);
+				}
 				return {
 					message: {
 						...message,
@@ -937,6 +938,7 @@ export function registerAccounts(pi: ExtensionAPI, dependencies: AccountsDepende
 			// Every request of this run has ended or been abandoned; nothing left
 			// here can still be paired, and the next run starts with a clean slate.
 			pendingResponses.clear();
+			reportedAmbiguities.clear();
 			evictionReported = false;
 		});
 		pi.on("turn_start", async (_event, context) => {

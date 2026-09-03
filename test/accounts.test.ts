@@ -995,28 +995,44 @@ test("an assistant error pairs only with the one failed response still pending",
 		const afterAmbiguous = subject.status.at(-1) ?? "";
 		assert.doesNotMatch(afterAmbiguous, /spare \?% cd/u);
 		assert.doesNotMatch(afterAmbiguous, /home \?% cd/u);
+		// The evidence is kept, not dropped: a second error is still ambiguous
+		// between the same two, said once, and the run's end clears them.
+		const again = (await messageEnd({ type: "message_end", message: quotaError }, context())) as
+			| { message?: { diagnostics?: Array<{ type: string }> } }
+			| undefined;
+		assert.equal(again?.message?.diagnostics?.at(-1)?.type, "kpi_account_unattributed");
+		assert.equal(
+			subject.notifications.filter((note) => /could not be attributed/u.test(note)).length,
+			1,
+			"the same ambiguity is announced once",
+		);
+		await subject.hooks.get("agent_end")!({ type: "agent_end", messages: [] }, context());
 		assert.equal(
 			await messageEnd({ type: "message_end", message: quotaError }, context()),
 			undefined,
-			"nothing left",
+			"nothing left after the run ended",
 		);
 
-		// A successful end releases one pending success, never a streaming one.
+		// A successful end releases the one pending success; with two pending it
+		// releases neither, because which one ended is not known.
 		await beforeHeaders({ type: "before_provider_headers", headers: {}, requestId: "E" }, context());
-		await beforeHeaders({ type: "before_provider_headers", headers: {}, requestId: "F" }, context());
 		await afterResponse({ type: "after_provider_response", requestId: "E", status: 200, headers: {} }, context());
-		await afterResponse({ type: "after_provider_response", requestId: "F", status: 200, headers: {} }, context());
 		await messageEnd({ type: "message_end", message: { role: "assistant", stopReason: "stop" } }, context());
-		// F is still pending, so a later error has exactly one candidate.
+		await beforeHeaders({ type: "before_provider_headers", headers: {}, requestId: "F" }, context());
+		await afterResponse({ type: "after_provider_response", requestId: "F", status: 200, headers: {} }, context());
 		const late = (await messageEnd({ type: "message_end", message: quotaError }, context())) as
 			| { message?: { diagnostics?: Array<{ type: string }> } }
 			| undefined;
-		assert.notEqual(late?.message?.diagnostics?.at(-1)?.type, "kpi_account_unattributed", "one candidate");
-		assert.equal(
-			await messageEnd({ type: "message_end", message: quotaError }, context()),
-			undefined,
-			"F was consumed by its error; nothing is left",
-		);
+		assert.notEqual(late?.message?.diagnostics?.at(-1)?.type, "kpi_account_unattributed", "F alone: one candidate");
+		await beforeHeaders({ type: "before_provider_headers", headers: {}, requestId: "G" }, context());
+		await beforeHeaders({ type: "before_provider_headers", headers: {}, requestId: "H" }, context());
+		await afterResponse({ type: "after_provider_response", requestId: "G", status: 200, headers: {} }, context());
+		await afterResponse({ type: "after_provider_response", requestId: "H", status: 200, headers: {} }, context());
+		await messageEnd({ type: "message_end", message: { role: "assistant", stopReason: "stop" } }, context());
+		const stillTwo = (await messageEnd({ type: "message_end", message: quotaError }, context())) as
+			| { message?: { diagnostics?: Array<{ type: string }> } }
+			| undefined;
+		assert.equal(stillTwo?.message?.diagnostics?.at(-1)?.type, "kpi_account_unattributed", "G and H both kept");
 	} finally {
 		await rm(subject.directory, { recursive: true, force: true });
 	}
