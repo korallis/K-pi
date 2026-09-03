@@ -13,13 +13,14 @@ import {
 	resetSessionsRegistry,
 } from "../packages/coding-agent/src/kpi/extensions/bus/sessions-snapshot.ts";
 import {
+	buildBoardModel,
 	type ControlPlaneDependencies,
 	createStatusWidget,
 	liveLoopSettled,
 	registerControlPlane,
 } from "../packages/coding-agent/src/kpi/extensions/control-plane.ts";
 import type { GraphAgentSessionFactory } from "../packages/coding-agent/src/kpi/extensions/graph/engine.ts";
-import { readLiveJob } from "../packages/coding-agent/src/kpi/extensions/run-store.ts";
+import { readActiveJob, readLiveJob } from "../packages/coding-agent/src/kpi/extensions/run-store.ts";
 import { routingState } from "../packages/coding-agent/src/kpi/extensions/settings.ts";
 
 const execFile = promisify(execFileCallback);
@@ -211,6 +212,11 @@ test("kpi stop appends a terminal STOPPED event", async () => {
 		assert.equal(await verifyChain(join(runDirectory, "events.jsonl")), true);
 		assert.deepEqual(notifications, ["K-π job 2026-08-31-status STOPPED (resume with /kpi 2026-08-31-status)"]);
 		assert.equal(await readLiveJob(directory), undefined, "a STOPPED job is finished, not live");
+		// The widget shows only live jobs, but the Command Centre keeps the job it
+		// opened on: built for that job, the board reads STOP STOPPED.
+		assert.equal(await buildBoardModel(directory), undefined);
+		const stopped = await buildBoardModel(directory, { job: (await readActiveJob(directory))! });
+		assert.equal(stopped?.stop, "STOPPED");
 	});
 });
 

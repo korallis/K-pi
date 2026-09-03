@@ -266,6 +266,12 @@ export interface BoardBuildOptions {
 	activity?: ActivityReader;
 	/** Which surface is being built: the always-on widget or the `/kpi status` overlay. */
 	surface?: BoardModel["surface"];
+	/**
+	 * Build for this job even when it has finished. The widget only ever shows
+	 * a live job; the Command Centre keeps showing the job it opened on so a
+	 * `/kpi stop` paints STOP STOPPED instead of "no active job".
+	 */
+	job?: ActiveJob;
 }
 
 /**
@@ -273,7 +279,7 @@ export interface BoardBuildOptions {
  * Must not call a model client or createAgentSession.
  */
 export async function buildBoardModel(cwd: string, options: BoardBuildOptions = {}): Promise<BoardModel | undefined> {
-	const job = await readLiveJob(cwd);
+	const job = options.job ?? (await readLiveJob(cwd));
 	if (job === undefined) return undefined;
 
 	const state = job.state;
@@ -741,7 +747,14 @@ function commandCentreSources(
 		jobId: job.jobId,
 		runDirectory: job.directory,
 		workerCap: MAX_LIVE_WORKERS,
-		readModel: () => buildBoardModel(ctx.cwd, { now, activity: reader, surface: "overlay" }),
+		// The job the centre opened on, re-read each tick: a `/kpi stop` from the
+		// input line ends it, and the board must then read STOP STOPPED. Only a
+		// different newest job (or a deleted run) is "no active job".
+		readModel: async () => {
+			const current = await readActiveJob(ctx.cwd);
+			if (current === undefined || current.jobId !== job.jobId) return undefined;
+			return buildBoardModel(ctx.cwd, { now, activity: reader, surface: "overlay", job: current });
+		},
 		activity: () => reader.last(),
 		readNodeDetail: async (stage) => {
 			const snapshot = reader.last();
