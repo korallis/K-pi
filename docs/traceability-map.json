@@ -18,16 +18,16 @@
     "shared_title_must_assert_all_bound_ids": true
   },
   "counts": {
-    "ac": 175,
+    "ac": 197,
     "metric": 7,
     "gap": 54,
-    "rp": 21,
+    "rp": 23,
     "req": 28,
     "nfr": 8,
     "schema": 4,
-    "event": 22,
-    "total": 319,
-    "covered": 319,
+    "event": 26,
+    "total": 347,
+    "covered": 347,
     "uncovered": 0
   },
   "shared_titles": [
@@ -115,6 +115,15 @@
       ]
     },
     {
+      "key": "test/graph-engine.test.ts::no counter or clock ends a run: cost, elapsed time, steps, and node runs only report",
+      "ids": [
+        "AC-02.10",
+        "AC-05.8",
+        "GRAPH-06",
+        "RP-03"
+      ]
+    },
+    {
       "key": "test/gated-loop.test.ts::kpi --plan freezes and hashes plan files without executing specify",
       "ids": [
         "AC-03.1",
@@ -138,37 +147,36 @@
       ]
     },
     {
-      "key": "test/stop.test.ts::a terminal state is final: further verifier events cannot revive it",
+      "key": "test/run-store.test.ts::the run vocabulary is exactly RUNNING, NEEDS_HUMAN, DONE, and STOPPED",
       "ids": [
         "AC-05.1",
-        "GRAPH-01",
-        "REQ-GE-01"
+        "GRAPH-01"
       ]
     },
     {
-      "key": "test/stop.test.ts::a repeated output fingerprint stops with NO_PROGRESS",
+      "key": "test/gated-loop.test.ts::a review round with no progress re-plans with the failing criteria as feedback",
       "ids": [
         "AC-05.2",
-        "GRAPH-02",
         "RP-04"
       ]
     },
     {
-      "key": "test/stop.test.ts::the third failed round stops with EXHAUSTED by default",
+      "key": "test/gated-loop.test.ts::no progress after a re-plan pauses NEEDS_HUMAN offering guidance, keep going, or stop",
       "ids": [
         "AC-05.3",
-        "GRAPH-03"
+        "GRAPH-03",
+        "RP-21"
       ]
     },
     {
-      "key": "test/autopilot.test.ts::an autopilot write outside bounds stops UNSAFE without a commit",
+      "key": "test/autopilot.test.ts::an autopilot write outside bounds pauses NEEDS_HUMAN without a commit",
       "ids": [
         "AC-05.4",
         "M-04"
       ]
     },
     {
-      "key": "test/stop.test.ts::a transient 429 retry does not increment the round",
+      "key": "test/graph-engine.test.ts::a transient 429 retry does not increment the round",
       "ids": [
         "AC-05.6",
         "GRAPH-04"
@@ -585,17 +593,17 @@
       ]
     },
     {
+      "key": "test/onboarding.test.ts::a scripted onboarding adds accounts, saves research keys, maps K-stack, and writes no project file",
+      "ids": [
+        "AC-31.1",
+        "AC-31.5"
+      ]
+    },
+    {
       "key": "test/docs-routing.test.ts::every routing surface resolves its next step to the active remediation plan",
       "ids": [
         "DOC-02",
         "RP-00"
-      ]
-    },
-    {
-      "key": "test/graph-engine.test.ts::every configured cap persists EXHAUSTED and exactly one terminal event",
-      "ids": [
-        "GRAPH-06",
-        "RP-03"
       ]
     },
     {
@@ -652,7 +660,11 @@
         "EVT-research.fallback",
         "EVT-research.completed",
         "EVT-agent.spawned",
-        "EVT-agent.message"
+        "EVT-agent.message",
+        "EVT-agent.denied",
+        "EVT-node.started",
+        "EVT-node.finished",
+        "EVT-node.retry"
       ]
     }
   ],
@@ -892,18 +904,94 @@
       "primary_owner": "RP-05",
       "prd_us": "US-02",
       "uat_row": "UAT-02",
-      "summary": "Board widget shows `MODE gated`, current `STAGE`, `ROUND n/max`, and which run files exist.",
+      "summary": "Board widget shows `MODE gated`, current `STAGE`, `ROUND n` (a count, never `n/max`), and which run files exist.",
       "coverage": "covered",
       "named_checks": [
         {
-          "name": "job_overlay_includes_the_k_brand_and_stages_01_through_08",
-          "file": "test/control-plane.test.ts",
-          "test_title": "job overlay includes the K-π brand and stages 01 through 08",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^job overlay includes the K-π brand and stages 01 through 08$' test/control-plane.test.ts",
-          "observable": "board widget surfaces MODE gated, STAGE, ROUND, and run file presence"
+          "name": "the_board_shows_round_without_a_maximum_and_a_retry_row_while_a_node_backs_off",
+          "file": "test/operator-ui.test.ts",
+          "test_title": "the board shows ROUND without a maximum and a retry row while a node backs off",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^the board shows ROUND without a maximum and a retry row while a node backs off$' test/operator-ui.test.ts",
+          "observable": "board reads ROUND <n> with no maximum; RETRY <attempt> · <reason> · next <s>s while a node backs off; STOP box RUNNING | NEEDS_HUMAN <recovery> | DONE | STOPPED"
         }
       ],
       "failure_route": "Reopen RP-05 for AC-02.7; RP-19 does not patch feature behavior"
+    },
+    {
+      "id": "AC-02.8",
+      "kind": "ac",
+      "primary_owner": "RP-05",
+      "prd_us": "US-02",
+      "uat_row": "UAT-02",
+      "summary": "After plan writes `stack.json` the graph pauses on the human node `plan-approval` (operator plan approval, distinct from the Dune structural plan gate of US-30)",
+      "coverage": "covered",
+      "named_checks": [
+        {
+          "name": "the_gated_loop_asks_the_operator_to_approve_the_plan_before_implement_and_record",
+          "file": "test/gated-loop.test.ts",
+          "test_title": "the gated loop asks the operator to approve the plan before implement and records the approval",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^the gated loop asks the operator to approve the plan before implement and records the approval$' test/gated-loop.test.ts",
+          "observable": "plan approval with the stack.json summary and file path in the dialog before the first write; approval.result node plan-approval precedes the release approval; the waiting-on-you notification"
+        }
+      ],
+      "failure_route": "Reopen RP-05 for AC-02.8; RP-19 does not patch feature behavior"
+    },
+    {
+      "id": "AC-02.9",
+      "kind": "ac",
+      "primary_owner": "RP-05",
+      "prd_us": "US-02",
+      "uat_row": "UAT-02",
+      "summary": "Request changes requires non-empty feedback (at most 4000 characters), records it in `approval.result.feedback` and the run state `plan.feedback`, and re-runs p",
+      "coverage": "covered",
+      "named_checks": [
+        {
+          "name": "request_changes_re_plans_with_the_operator_s_feedback_and_refuses_empty_feedback",
+          "file": "test/gated-loop.test.ts",
+          "test_title": "request changes re-plans with the operator's feedback and refuses empty feedback",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^request changes re-plans with the operator's feedback and refuses empty feedback$' test/gated-loop.test.ts",
+          "observable": "empty feedback refused and re-asked; feedback recorded in approval.result.feedback and checkpoint plan.feedback; the re-run planner prompt carries the feedback; the re-planned stack.json is the one frozen before implement"
+        }
+      ],
+      "failure_route": "Reopen RP-05 for AC-02.9; RP-19 does not patch feature behavior"
+    },
+    {
+      "id": "AC-02.10",
+      "kind": "ac",
+      "primary_owner": "RP-05",
+      "prd_us": "US-02",
+      "uat_row": "UAT-02",
+      "summary": "Plan revisions are unbounded: the dialog shows `Revision N` and no cap; the operator is the only bound.",
+      "coverage": "covered",
+      "named_checks": [
+        {
+          "name": "no_counter_or_clock_ends_a_run_cost_elapsed_time_steps_and_node_runs_only_report",
+          "file": "test/graph-engine.test.ts",
+          "test_title": "no counter or clock ends a run: cost, elapsed time, steps, and node runs only report",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^no counter or clock ends a run: cost, elapsed time, steps, and node runs only report$' test/graph-engine.test.ts",
+          "observable": "plan revisions are unbounded: forty node runs complete with no maximum and zero loop.terminal; a graph declaring a run cap is refused; the operator is the bound"
+        }
+      ],
+      "failure_route": "Reopen RP-05 for AC-02.10; RP-19 does not patch feature behavior"
+    },
+    {
+      "id": "AC-02.11",
+      "kind": "ac",
+      "primary_owner": "RP-05",
+      "prd_us": "US-02",
+      "uat_row": "UAT-02",
+      "summary": "A human gate reached without dialog UI, or dismissed, ends `NEEDS_HUMAN` with recovery `approval` and the exact resume command; it is never answered by the harn",
+      "coverage": "covered",
+      "named_checks": [
+        {
+          "name": "a_plan_gate_without_dialog_ui_stops_needs_human_with_the_resume_command_and_neve",
+          "file": "test/gated-loop.test.ts",
+          "test_title": "a plan gate without dialog UI stops NEEDS_HUMAN with the resume command and never answers itself",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^a plan gate without dialog UI stops NEEDS_HUMAN with the resume command and never answers itself$' test/gated-loop.test.ts",
+          "observable": "hasUI false: NEEDS_HUMAN, recovery approval, reason ends with the resume command, one loop.terminal, no approval.result, implement never ran"
+        }
+      ],
+      "failure_route": "Reopen RP-05 for AC-02.11; RP-19 does not patch feature behavior"
     },
     {
       "id": "AC-03.1",
@@ -1082,7 +1170,7 @@
       "primary_owner": "RP-05",
       "prd_us": "US-04",
       "uat_row": "UAT-04",
-      "summary": "Push/deploy/delete/new-dependency attempts set `NEEDS_HUMAN` or `UNSAFE` and do not execute.",
+      "summary": "Push/deploy/delete/new-dependency attempts are denied and do not execute; a job that reaches one shows `NEEDS_HUMAN` with its recovery.",
       "coverage": "covered",
       "named_checks": [
         {
@@ -1090,7 +1178,7 @@
           "file": "test/policy.test.ts",
           "test_title": "production deploy commands are denied",
           "runner": "node --test --experimental-strip-types --test-name-pattern '^production deploy commands are denied$' test/policy.test.ts",
-          "observable": "push/deploy/delete/new-dependency attempts are denied as NEEDS_HUMAN or UNSAFE and do not execute"
+          "observable": "push/deploy/delete/new-dependency attempts are denied and do not execute; the run shows NEEDS_HUMAN with its recovery"
         }
       ],
       "failure_route": "Reopen RP-05 for AC-04.6; RP-19 does not patch feature behavior"
@@ -1098,86 +1186,86 @@
     {
       "id": "AC-05.1",
       "kind": "ac",
-      "primary_owner": "RP-03",
+      "primary_owner": "RP-21",
       "prd_us": "US-05",
       "uat_row": "UAT-05",
-      "summary": "Terminal states are exactly `DONE`, `BLOCKED`, `EXHAUSTED`, `NO_PROGRESS`, `UNSAFE`, `NEEDS_HUMAN`.",
+      "summary": "Run states are exactly `RUNNING`, `NEEDS_HUMAN`, `DONE`, `STOPPED`; `NEEDS_HUMAN` carries a `recovery` reason and the resume command; `NEEDS_HUMAN` and `STOPPED",
       "coverage": "covered",
       "named_checks": [
         {
-          "name": "a_terminal_state_is_final_further_verifier_events_cannot_revive_it",
-          "file": "test/stop.test.ts",
-          "test_title": "a terminal state is final: further verifier events cannot revive it",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^a terminal state is final: further verifier events cannot revive it$' test/stop.test.ts",
-          "observable": "terminal states are exactly DONE|BLOCKED|EXHAUSTED|NO_PROGRESS|UNSAFE|NEEDS_HUMAN"
+          "name": "the_run_vocabulary_is_exactly_running_needs_human_done_and_stopped",
+          "file": "test/run-store.test.ts",
+          "test_title": "the run vocabulary is exactly RUNNING, NEEDS_HUMAN, DONE, and STOPPED",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^the run vocabulary is exactly RUNNING, NEEDS_HUMAN, DONE, and STOPPED$' test/run-store.test.ts",
+          "observable": "RUN_STATUSES is exactly the four tokens; legacy BLOCKED/EXHAUSTED/NO_PROGRESS/UNSAFE on disk read as NEEDS_HUMAN and are finished; only RUNNING is live"
         }
       ],
-      "failure_route": "Reopen RP-03 for AC-05.1; RP-19 does not patch feature behavior"
+      "failure_route": "Reopen RP-21 for AC-05.1; RP-19 does not patch feature behavior"
     },
     {
       "id": "AC-05.2",
       "kind": "ac",
-      "primary_owner": "RP-03",
+      "primary_owner": "RP-21",
       "prd_us": "US-05",
       "uat_row": "UAT-05",
-      "summary": "Same `output_fingerprint` twice → `NO_PROGRESS`.",
+      "summary": "A failed round that repeats a witness — a review whose `output_fingerprint` or failing-AC set was seen before, or a failed test round whose evidence is identica",
       "coverage": "covered",
       "named_checks": [
         {
-          "name": "a_repeated_output_fingerprint_stops_with_no_progress",
-          "file": "test/stop.test.ts",
-          "test_title": "a repeated output fingerprint stops with NO_PROGRESS",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^a repeated output fingerprint stops with NO_PROGRESS$' test/stop.test.ts",
-          "observable": "same output_fingerprint twice → NO_PROGRESS"
+          "name": "a_review_round_with_no_progress_re_plans_with_the_failing_criteria_as_feedback",
+          "file": "test/gated-loop.test.ts",
+          "test_title": "a review round with no progress re-plans with the failing criteria as feedback",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^a review round with no progress re-plans with the failing criteria as feedback$' test/gated-loop.test.ts",
+          "observable": "a repeated review witness routes to plan with repair.json (round, reason, failing_ac, evidence_ref, witness), the slice unfrozen, a re-plan checkpoint and one K-π re-planning notice"
         }
       ],
-      "failure_route": "Reopen RP-03 for AC-05.2; RP-19 does not patch feature behavior"
+      "failure_route": "Reopen RP-21 for AC-05.2; RP-19 does not patch feature behavior"
     },
     {
       "id": "AC-05.3",
       "kind": "ac",
-      "primary_owner": "RP-03",
+      "primary_owner": "RP-21",
       "prd_us": "US-05",
       "uat_row": "UAT-05",
-      "summary": "`round >= maxRounds` (default 3) → `EXHAUSTED`.",
+      "summary": "Rounds are unbounded. Two automatic re-plans are allowed per operator touch; the same witness repeating after them pauses `NEEDS_HUMAN` (`no_progress`), offerin",
       "coverage": "covered",
       "named_checks": [
         {
-          "name": "the_third_failed_round_stops_with_exhausted_by_default",
-          "file": "test/stop.test.ts",
-          "test_title": "the third failed round stops with EXHAUSTED by default",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^the third failed round stops with EXHAUSTED by default$' test/stop.test.ts",
-          "observable": "round >= maxRounds (default 3) → EXHAUSTED"
+          "name": "no_progress_after_a_re_plan_pauses_needs_human_offering_guidance_keep_going_or_s",
+          "file": "test/gated-loop.test.ts",
+          "test_title": "no progress after a re-plan pauses NEEDS_HUMAN offering guidance, keep going, or stop",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^no progress after a re-plan pauses NEEDS_HUMAN offering guidance, keep going, or stop$' test/gated-loop.test.ts",
+          "observable": "after two automatic re-plans the run pauses NEEDS_HUMAN (no_progress); the TUI select offers Give guidance / Keep going / Stop; unattended the pause stands with the resume command"
         }
       ],
-      "failure_route": "Reopen RP-03 for AC-05.3; RP-19 does not patch feature behavior"
+      "failure_route": "Reopen RP-21 for AC-05.3; RP-19 does not patch feature behavior"
     },
     {
       "id": "AC-05.4",
       "kind": "ac",
-      "primary_owner": "RP-04",
+      "primary_owner": "RP-21",
       "prd_us": "US-05",
       "uat_row": "UAT-05",
-      "summary": "Write outside `write_allow` → `UNSAFE`.",
+      "summary": "A write outside `write_allow` pauses `NEEDS_HUMAN` (`bounds`) without a commit; the resume re-runs test.",
       "coverage": "covered",
       "named_checks": [
         {
-          "name": "an_autopilot_write_outside_bounds_stops_unsafe_without_a_commit",
+          "name": "an_autopilot_write_outside_bounds_pauses_needs_human_without_a_commit",
           "file": "test/autopilot.test.ts",
-          "test_title": "an autopilot write outside bounds stops UNSAFE without a commit",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^an autopilot write outside bounds stops UNSAFE without a commit$' test/autopilot.test.ts",
-          "observable": "write outside write_allow → UNSAFE, no commit"
+          "test_title": "an autopilot write outside bounds pauses NEEDS_HUMAN without a commit",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^an autopilot write outside bounds pauses NEEDS_HUMAN without a commit$' test/autopilot.test.ts",
+          "observable": "write outside write_allow → NEEDS_HUMAN (bounds) with the resume command, one loop.terminal NEEDS_HUMAN/bounds, pause.resume [test], no commit"
         }
       ],
-      "failure_route": "Reopen RP-04 for AC-05.4; RP-19 does not patch feature behavior"
+      "failure_route": "Reopen RP-21 for AC-05.4; RP-19 does not patch feature behavior"
     },
     {
       "id": "AC-05.5",
       "kind": "ac",
-      "primary_owner": "RP-04",
+      "primary_owner": "RP-21",
       "prd_us": "US-05",
       "uat_row": "UAT-05",
-      "summary": "Untestable reviewer issue → `NEEDS_HUMAN`.",
+      "summary": "An untestable reviewer issue, or an approved review over failed or stale receipts, pauses `NEEDS_HUMAN` (`review`); the resume re-runs implement.",
       "coverage": "covered",
       "named_checks": [
         {
@@ -1185,29 +1273,86 @@
           "file": "test/autopilot.test.ts",
           "test_title": "an untestable reviewer issue stops autopilot at NEEDS_HUMAN",
           "runner": "node --test --experimental-strip-types --test-name-pattern '^an untestable reviewer issue stops autopilot at NEEDS_HUMAN$' test/autopilot.test.ts",
-          "observable": "untestable reviewer issue → NEEDS_HUMAN"
+          "observable": "untestable reviewer issue → NEEDS_HUMAN (review)"
         }
       ],
-      "failure_route": "Reopen RP-04 for AC-05.5; RP-19 does not patch feature behavior"
+      "failure_route": "Reopen RP-21 for AC-05.5; RP-19 does not patch feature behavior"
     },
     {
       "id": "AC-05.6",
       "kind": "ac",
-      "primary_owner": "RP-05",
+      "primary_owner": "RP-21",
       "prd_us": "US-05",
       "uat_row": "UAT-05",
-      "summary": "Retry of a transient 429 is not a new round. A new round requires new verifier evidence. A provider refusal that cannot fail over ends `NEEDS_HUMAN` with the re",
+      "summary": "Retry of a transient 429 is not a new round. A new round requires new verifier evidence. A provider refusal that cannot fail over pauses `NEEDS_HUMAN` (`provide",
       "coverage": "covered",
       "named_checks": [
         {
           "name": "a_transient_429_retry_does_not_increment_the_round",
-          "file": "test/stop.test.ts",
+          "file": "test/graph-engine.test.ts",
           "test_title": "a transient 429 retry does not increment the round",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^a transient 429 retry does not increment the round$' test/stop.test.ts",
-          "observable": "transient 429 retry is not a new round; new round needs new verifier evidence"
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^a transient 429 retry does not increment the round$' test/graph-engine.test.ts",
+          "observable": "transient 429 retry is not a new round: round 1, runs 1, one onRetry http/429; a provider refusal that cannot fail over is NEEDS_HUMAN (provider) with the real reason"
         }
       ],
-      "failure_route": "Reopen RP-05 for AC-05.6; RP-19 does not patch feature behavior"
+      "failure_route": "Reopen RP-21 for AC-05.6; RP-19 does not patch feature behavior"
+    },
+    {
+      "id": "AC-05.7",
+      "kind": "ac",
+      "primary_owner": "RP-21",
+      "prd_us": "US-05",
+      "uat_row": "UAT-05",
+      "summary": "Transient failures (http 408/429/5xx, timeout, transport) retry the same node run for as long as it takes, with a backoff of 1 s doubling to a 60 s ceiling; eve",
+      "coverage": "covered",
+      "named_checks": [
+        {
+          "name": "transient_failures_retry_for_as_long_as_it_takes_with_a_capped_backoff_and_a_nod",
+          "file": "test/graph-engine.test.ts",
+          "test_title": "transient failures retry for as long as it takes with a capped backoff and a node.retry event each time",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^transient failures retry for as long as it takes with a capped backoff and a node\\.retry event each time$' test/graph-engine.test.ts",
+          "observable": "unbounded retries; delays double from 1 s to the 60 s ceiling; onRetry (node.retry) and a checkpoint before every wait; zero loop.terminal"
+        }
+      ],
+      "failure_route": "Reopen RP-21 for AC-05.7; RP-19 does not patch feature behavior"
+    },
+    {
+      "id": "AC-05.8",
+      "kind": "ac",
+      "primary_owner": "RP-21",
+      "prd_us": "US-05",
+      "uat_row": "UAT-05",
+      "summary": "No spend cap, clock, step, node-run, or round counter ends a run: `cost_usd` and `elapsed_ms` are report-only estimates, `maxConcurrency` is the only graph limi",
+      "coverage": "covered",
+      "named_checks": [
+        {
+          "name": "no_counter_or_clock_ends_a_run_cost_elapsed_time_steps_and_node_runs_only_report",
+          "file": "test/graph-engine.test.ts",
+          "test_title": "no counter or clock ends a run: cost, elapsed time, steps, and node runs only report",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^no counter or clock ends a run: cost, elapsed time, steps, and node runs only report$' test/graph-engine.test.ts",
+          "observable": "forty rounds, ten hours and 99 USD complete with zero loop.terminal; cost and elapsed time are reported as read; maxConcurrency is the only limit and a graph declaring a retired cap is refused"
+        }
+      ],
+      "failure_route": "Reopen RP-21 for AC-05.8; RP-19 does not patch feature behavior"
+    },
+    {
+      "id": "AC-05.9",
+      "kind": "ac",
+      "primary_owner": "RP-21",
+      "prd_us": "US-05",
+      "uat_row": "UAT-05",
+      "summary": "`/kpi stop` writes `stop.json` and `STOPPED`: a loop live in this process stops at once and issues no further prompt, a loop in another process stops at its nex",
+      "coverage": "covered",
+      "named_checks": [
+        {
+          "name": "kpi_stop_written_during_a_backoff_stops_the_loop_at_the_next_wait_and_leaves_a_r",
+          "file": "test/gated-loop.test.ts",
+          "test_title": "kpi stop written during a backoff stops the loop at the next wait and leaves a resumable STOPPED job",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^kpi stop written during a backoff stops the loop at the next wait and leaves a resumable STOPPED job$' test/gated-loop.test.ts",
+          "observable": "stop.json from another session lands after the wait; one loop.terminal STOPPED 'operator stop'; /kpi <job> lifts the marker, finishes the wait and continues the same node"
+        }
+      ],
+      "failure_route": "Reopen RP-21 for AC-05.9; RP-19 does not patch feature behavior"
     },
     {
       "id": "AC-06.1",
@@ -1322,6 +1467,25 @@
         }
       ],
       "failure_route": "Reopen RP-18 for AC-06.6; RP-19 does not patch feature behavior"
+    },
+    {
+      "id": "AC-06.7",
+      "kind": "ac",
+      "primary_owner": "RP-18",
+      "prd_us": "US-06",
+      "uat_row": "UAT-06",
+      "summary": "While a job runs, the chat shows one line when a node starts (`K-π ▶ NN node · run n · model`), one when it finishes (`K-π ■ NN node done · <elapsed> · <cost> ·",
+      "coverage": "covered",
+      "named_checks": [
+        {
+          "name": "narration_is_one_line_per_node_start_and_finish_and_none_per_tool_call",
+          "file": "test/board-activity.test.ts",
+          "test_title": "narration is one line per node start and finish and none per tool call",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^narration is one line per node start and finish and none per tool call$' test/board-activity.test.ts",
+          "observable": "one 'K-π ' chat line per node start, finish and route change; never a line per tool call"
+        }
+      ],
+      "failure_route": "Reopen RP-18 for AC-06.7; RP-19 does not patch feature behavior"
     },
     {
       "id": "AC-07.1",
@@ -1704,6 +1868,44 @@
       "failure_route": "Reopen RP-06 for AC-10.8; RP-19 does not patch feature behavior"
     },
     {
+      "id": "AC-10.9",
+      "kind": "ac",
+      "primary_owner": "RP-06",
+      "prd_us": "US-10",
+      "uat_row": "UAT-10",
+      "summary": "A `claude_code_version_too_old` refusal is explained once per session — K-π's version, the Claude Code version it sent, the floor Anthropic requires, and the up",
+      "coverage": "covered",
+      "named_checks": [
+        {
+          "name": "a_claude_code_version_rejection_is_surfaced_once_and_never_cools_or_fails_over",
+          "file": "test/accounts.test.ts",
+          "test_title": "a Claude Code version rejection is surfaced once and never cools or fails over",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^a Claude Code version rejection is surfaced once and never cools or fails over$' test/accounts.test.ts",
+          "observable": "claude_code_version_too_old is explained once with sent/required versions and the update remedy; no cooldown, no failover"
+        }
+      ],
+      "failure_route": "Reopen RP-06 for AC-10.9; RP-19 does not patch feature behavior"
+    },
+    {
+      "id": "AC-10.10",
+      "kind": "ac",
+      "primary_owner": "RP-06",
+      "prd_us": "US-10",
+      "uat_row": "UAT-10",
+      "summary": "An `invalid_grant` refresh — K-π's own on a non-official slot, or the runtime's on the official `auth.json` grant — marks that slot `needs login` (persisted in ",
+      "coverage": "covered",
+      "named_checks": [
+        {
+          "name": "the_official_slot_is_served_from_auth_json_and_never_refreshed_by_k",
+          "file": "test/accounts-commands.test.ts",
+          "test_title": "the official slot is served from auth.json and never refreshed by K-π",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^the official slot is served from auth\\.json and never refreshed by K-π$' test/accounts-commands.test.ts",
+          "observable": "one grant per slot: the official slot has no secrets copy and is never refreshed by K-π; invalid_grant marks needs-login, never a cooldown or a stack trace"
+        }
+      ],
+      "failure_route": "Reopen RP-06 for AC-10.10; RP-19 does not patch feature behavior"
+    },
+    {
       "id": "AC-11.1",
       "kind": "ac",
       "primary_owner": "RP-07",
@@ -2027,6 +2229,25 @@
       "failure_route": "Reopen RP-01 for AC-14.4; RP-19 does not patch feature behavior"
     },
     {
+      "id": "AC-14.5",
+      "kind": "ac",
+      "primary_owner": "RP-01",
+      "prd_us": "US-14",
+      "uat_row": "UAT-14",
+      "summary": "Every agent node run appends `node.started` {`run`, `model`?} and `node.finished` {`run`, `status` `completed | failed`, `elapsed_ms`, `cost_usd`?, `result`?, `",
+      "coverage": "covered",
+      "named_checks": [
+        {
+          "name": "agent_nodes_append_node_started_and_node_finished_with_run_elapsed_and_cost",
+          "file": "test/graph-engine.test.ts",
+          "test_title": "agent nodes append node.started and node.finished with run, elapsed and cost",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^agent nodes append node\\.started and node\\.finished with run, elapsed and cost$' test/graph-engine.test.ts",
+          "observable": "every agent node run appends node.started {run, model} and node.finished {run, status, elapsed_ms, cost_usd?} to events.jsonl; cost sums the run's attempts and is omitted without billing"
+        }
+      ],
+      "failure_route": "Reopen RP-01 for AC-14.5; RP-19 does not patch feature behavior"
+    },
+    {
       "id": "AC-15.1",
       "kind": "ac",
       "primary_owner": "RP-18",
@@ -2241,7 +2462,7 @@
       "primary_owner": "RP-18",
       "prd_us": "US-16",
       "uat_row": "UAT-16",
-      "summary": "`/kpi status` expands that widget into the full board. No model call.",
+      "summary": "`/kpi status` opens the K-π Command Centre over that widget (AC-16.8); in print/rpc mode it prints the full board as text. No model call.",
       "coverage": "covered",
       "named_checks": [
         {
@@ -2329,6 +2550,63 @@
         }
       ],
       "failure_route": "Reopen RP-18 for AC-16.6; RP-19 does not patch feature behavior"
+    },
+    {
+      "id": "AC-16.7",
+      "kind": "ac",
+      "primary_owner": "RP-18",
+      "prd_us": "US-16",
+      "uat_row": "UAT-16",
+      "summary": "The widget carries a `NOW` row naming the running node, its run number, tool-call count, last tool and target, elapsed and cost (`NOW <node>  run <n>  <k> tools",
+      "coverage": "covered",
+      "named_checks": [
+        {
+          "name": "the_now_row_names_the_running_node_and_tool_and_the_full_board_carries_elapsed_a",
+          "file": "test/operator-ui.test.ts",
+          "test_title": "the NOW row names the running node and tool and the full board carries elapsed and cost per stage",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^the NOW row names the running node and tool and the full board carries elapsed and cost per stage$' test/operator-ui.test.ts",
+          "observable": "NOW <node> run <n> <k> tools ▸ <tool> <target> <elapsed> <cost> MODEL <m>; stage cells DONE `<elapsed> · <n> calls · $<cost> est.`, CURRENT `<tool> <target>  <elapsed>`, PENDING `—`"
+        }
+      ],
+      "failure_route": "Reopen RP-18 for AC-16.7; RP-19 does not patch feature behavior"
+    },
+    {
+      "id": "AC-16.8",
+      "kind": "ac",
+      "primary_owner": "RP-18",
+      "prd_us": "US-16",
+      "uat_row": "UAT-16",
+      "summary": "`/kpi status` in the TUI opens the Command Centre as a full-width overlay with HOME (STAGES 01–08, LIVE › <NN stage>, TELEMETRY without cap tokens, SHARED RUN S",
+      "coverage": "covered",
+      "named_checks": [
+        {
+          "name": "the_status_overlay_selects_stages_with_arrow_keys_opens_the_node_detail_on_enter",
+          "file": "test/command-centre.test.ts",
+          "test_title": "the status overlay selects stages with arrow keys, opens the node detail on enter and closes on q",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^the status overlay selects stages with arrow keys, opens the node detail on enter and closes on q$' test/command-centre.test.ts",
+          "observable": "/kpi status opens the Command Centre: arrow keys select a stage, enter opens the NODE detail, q closes"
+        }
+      ],
+      "failure_route": "Reopen RP-18 for AC-16.8; RP-19 does not patch feature behavior"
+    },
+    {
+      "id": "AC-16.9",
+      "kind": "ac",
+      "primary_owner": "RP-18",
+      "prd_us": "US-16",
+      "uat_row": "UAT-16",
+      "summary": "The Command Centre is live mid-run: while the run is `RUNNING` it re-reads the run files on the same 1 s tick as the widget (run files every fifth tick), paints",
+      "coverage": "covered",
+      "named_checks": [
+        {
+          "name": "the_command_centre_follows_a_running_job_on_the_injected_tick_and_stops_ticking_",
+          "file": "test/command-centre.test.ts",
+          "test_title": "the command centre follows a running job on the injected tick and stops ticking when the job ends",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^the command centre follows a running job on the injected tick and stops ticking when the job ends$' test/command-centre.test.ts",
+          "observable": "while RUNNING the centre re-reads run files on the BOARD_TICK_MS tick, paints EVENTS ✕ <code> on a read failure, and stops ticking when the run ends or the job is gone"
+        }
+      ],
+      "failure_route": "Reopen RP-18 for AC-16.9; RP-19 does not patch feature behavior"
     },
     {
       "id": "AC-17.1",
@@ -3053,6 +3331,44 @@
       "failure_route": "Reopen RP-13 for AC-23.9; RP-19 does not patch feature behavior"
     },
     {
+      "id": "AC-23.10",
+      "kind": "ac",
+      "primary_owner": "RP-13",
+      "prd_us": "US-23",
+      "uat_row": "UAT-23",
+      "summary": "`/agents` lists every live session this kpi process owns — the main session, in-process graph node sessions (node id, context mode, model, elapsed, tool calls) ",
+      "coverage": "covered",
+      "named_checks": [
+        {
+          "name": "agents_prints_every_kind_of_session_and_names_the_mechanism",
+          "file": "test/bus.test.ts",
+          "test_title": "/agents prints every kind of session and names the mechanism",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^/agents prints every kind of session and names the mechanism$' test/bus.test.ts",
+          "observable": "/agents lists the main session, in-process node sessions and worker processes with the per-process caps and the mechanism sentence"
+        }
+      ],
+      "failure_route": "Reopen RP-13 for AC-23.10; RP-19 does not patch feature behavior"
+    },
+    {
+      "id": "AC-23.11",
+      "kind": "ac",
+      "primary_owner": "RP-13",
+      "prd_us": "US-23",
+      "uat_row": "UAT-23",
+      "summary": "The board's `AGENTS n` cell is nodes + workers for the live job with the breakdown `· k nodes · w workers`, and it repaints when a node session or worker starts",
+      "coverage": "covered",
+      "named_checks": [
+        {
+          "name": "the_agents_cell_breaks_live_sessions_into_nodes_and_workers",
+          "file": "test/operator-ui.test.ts",
+          "test_title": "the AGENTS cell breaks live sessions into nodes and workers",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^the AGENTS cell breaks live sessions into nodes and workers$' test/operator-ui.test.ts",
+          "observable": "AGENTS n · k node(s) · w worker(s); AGENTS n alone without the split"
+        }
+      ],
+      "failure_route": "Reopen RP-13 for AC-23.11; RP-19 does not patch feature behavior"
+    },
+    {
       "id": "AC-24.1",
       "kind": "ac",
       "primary_owner": "RP-05",
@@ -3096,7 +3412,7 @@
       "primary_owner": "RP-05",
       "prd_us": "US-24",
       "uat_row": "UAT-24",
-      "summary": "While a job is live, a bare follow-up is steer/followUp into the parent session and `kpi_start_job` refuses to start a second job. A finished run (`DONE`, `BLOC",
+      "summary": "While a job is live, a bare follow-up is steer/followUp into the parent session and `kpi_start_job` refuses to start a second job. A finished run (`DONE`, `NEED",
       "coverage": "covered",
       "named_checks": [
         {
@@ -3104,7 +3420,7 @@
           "file": "test/runtime-milestone.test.ts",
           "test_title": "a live job owns bare follow-ups and kpi_start_job refuses to start a second one",
           "runner": "node --test --experimental-strip-types --test-name-pattern '^a live job owns bare follow-ups and kpi_start_job refuses to start a second one$' test/runtime-milestone.test.ts",
-          "observable": "while a job is live, bare text steers the parent session and kpi_start_job refuses; a finished job owns nothing"
+          "observable": "while a job is live, bare text steers the parent session and kpi_start_job refuses; a finished run (DONE, NEEDS_HUMAN, STOPPED) owns nothing and is not live"
         }
       ],
       "failure_route": "Reopen RP-05 for AC-24.3; RP-19 does not patch feature behavior"
@@ -3514,7 +3830,7 @@
       "primary_owner": "RP-09",
       "prd_us": "US-28",
       "uat_row": "UAT-28",
-      "summary": "`/setup-kstack` offers Exa and Perplexity keys with save or skip. Saving either, both, or neither is valid.",
+      "summary": "`/setup-kstack` offers Exa, Perplexity, and Firecrawl keys with save or skip. Saving any subset, or none, is valid.",
       "coverage": "covered",
       "named_checks": [
         {
@@ -3533,7 +3849,7 @@
       "primary_owner": "RP-09",
       "prd_us": "US-28",
       "uat_row": "UAT-28",
-      "summary": "Keys live in `accounts.secrets.json` at `exa/default` and `perplexity/default`, mode 0600. `EXA_API_KEY` and `PERPLEXITY_API_KEY` are fallbacks.",
+      "summary": "Keys live in `accounts.secrets.json` at `exa/default`, `perplexity/default`, and `firecrawl/default`, mode 0600. `EXA_API_KEY`, `PERPLEXITY_API_KEY`, and `FIREC",
       "coverage": "covered",
       "named_checks": [
         {
@@ -3552,7 +3868,7 @@
       "primary_owner": "RP-09",
       "prd_us": "US-28",
       "uat_row": "UAT-28",
-      "summary": "First-party REST tools cover Exa search and contents plus Perplexity Search. No provider SDK is a runtime dependency.",
+      "summary": "First-party REST tools cover Exa search and contents, Perplexity Search, and Firecrawl Search. No provider SDK is a runtime dependency.",
       "coverage": "covered",
       "named_checks": [
         {
@@ -3590,7 +3906,7 @@
       "primary_owner": "RP-09",
       "prd_us": "US-28",
       "uat_row": "UAT-28",
-      "summary": "A 429, timeout, or unavailable service cools that research service and tries the other configured service. k-pi treats a 402 the same way, as defensive handling",
+      "summary": "A 429, timeout, or unavailable service cools that research service and tries the next configured service. k-pi treats a 402 the same way, as defensive handling ",
       "coverage": "covered",
       "named_checks": [
         {
@@ -3609,7 +3925,7 @@
       "primary_owner": "RP-18",
       "prd_us": "US-28",
       "uat_row": "UAT-28",
-      "summary": "Footer / board can show `EXA`, `PPLX`, or both when keys are present.",
+      "summary": "Footer / board can show `EXA`, `PPLX`, `FC`, or any of them when keys are present.",
       "coverage": "covered",
       "named_checks": [
         {
@@ -3628,7 +3944,7 @@
       "primary_owner": "RP-09",
       "prd_us": "US-28",
       "uat_row": "UAT-28",
-      "summary": "`exa` and `perplexity` are research credential targets, not pool ids. Neither appears in `accounts.json.pools`, `/pool strategy`, `/pool chain`, or the fallback",
+      "summary": "`exa`, `perplexity`, and `firecrawl` are research credential targets, not pool ids. None appears in `accounts.json.pools`, `/pool strategy`, `/pool chain`, or t",
       "coverage": "covered",
       "named_checks": [
         {
@@ -3636,10 +3952,29 @@
           "file": "test/research-control-plane.test.ts",
           "test_title": "/accounts login and logout treat exa and perplexity as research targets, not pools",
           "runner": "node --test --experimental-strip-types --test-name-pattern '^/accounts login and logout treat exa and perplexity as research targets, not pools$' test/research-control-plane.test.ts",
-          "observable": "exa and perplexity are research credential targets, not pool ids in accounts.json pools"
+          "observable": "exa, perplexity, and firecrawl are research credential targets, not pool ids in accounts.json pools"
         }
       ],
       "failure_route": "Reopen RP-09 for AC-28.7; RP-19 does not patch feature behavior"
+    },
+    {
+      "id": "AC-28.8",
+      "kind": "ac",
+      "primary_owner": "RP-20",
+      "prd_us": "US-28",
+      "uat_row": "UAT-28",
+      "summary": "Firecrawl is a third research credential target: first-party `firecrawl_search` over `POST /v2/search` with Bearer auth, `limit` ≤ 10, `sources: [{type: \"web\"}]",
+      "coverage": "covered",
+      "named_checks": [
+        {
+          "name": "firecrawl_search_posts_to_v2_search_with_a_bounded_limit_and_no_scrape_options",
+          "file": "test/research-clients.test.ts",
+          "test_title": "Firecrawl Search posts to v2 search with a bounded limit and no scrape options",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^Firecrawl Search posts to v2 search with a bounded limit and no scrape options$' test/research-clients.test.ts",
+          "observable": "firecrawl_search posts /v2/search with Bearer auth, limit ≤ 10, sources [{type: web}], no scrapeOptions, query ≤ 500 chars; results bounded like the other services"
+        }
+      ],
+      "failure_route": "Reopen RP-20 for AC-28.8; RP-19 does not patch feature behavior"
     },
     {
       "id": "AC-29.1",
@@ -3666,7 +4001,7 @@
       "primary_owner": "RP-10",
       "prd_us": "US-29",
       "uat_row": "UAT-29",
-      "summary": "With an Exa or Perplexity key and `network.state: \"online\"`, `research.json` records at least two **distinct** external sources — different origins, deduplicate",
+      "summary": "With an Exa, Perplexity, or Firecrawl key and `network.state: \"online\"`, `research.json` records at least two **distinct** external sources — different origins,",
       "coverage": "covered",
       "named_checks": [
         {
@@ -3704,7 +4039,7 @@
       "primary_owner": "RP-10",
       "prd_us": "US-29",
       "uat_row": "UAT-29",
-      "summary": "Implement is `UNSAFE` if research files are missing or older than the current `task.json` hash.",
+      "summary": "Implement pauses `NEEDS_HUMAN` (`research`) if research files are missing or older than the current `task.json` hash.",
       "coverage": "covered",
       "named_checks": [
         {
@@ -3712,7 +4047,7 @@
           "file": "test/research-control-plane.test.ts",
           "test_title": "research mode persists and a named service without a key falls back",
           "runner": "node --test --experimental-strip-types --test-name-pattern '^research mode persists and a named service without a key falls back$' test/research-control-plane.test.ts",
-          "observable": "implement UNSAFE if research files missing or older than task.json hash"
+          "observable": "implement pauses NEEDS_HUMAN (research) if research files are missing or older than the current task.json hash"
         }
       ],
       "failure_route": "Reopen RP-10 for AC-29.4; RP-19 does not patch feature behavior"
@@ -3799,7 +4134,7 @@
       "primary_owner": "RP-11",
       "prd_us": "US-30",
       "uat_row": "UAT-30",
-      "summary": "Implement `claim_path` outside the current module folder + test twin is `UNSAFE`.",
+      "summary": "Implement `claim_path` outside the current module folder + test twin is refused as an `UNSAFE` claim and denied; that boundary is the implementer's `write_allow",
       "coverage": "covered",
       "named_checks": [
         {
@@ -3807,7 +4142,7 @@
           "file": "test/stack.test.ts",
           "test_title": "claim_path and implement bounds share one boundary",
           "runner": "node --test --experimental-strip-types --test-name-pattern '^claim_path and implement bounds share one boundary$' test/stack.test.ts",
-          "observable": "implement claim_path outside current module folder + test twin is UNSAFE"
+          "observable": "implement claim_path outside current module folder + test twin pauses NEEDS_HUMAN (stack)"
         }
       ],
       "failure_route": "Reopen RP-11 for AC-30.2; RP-19 does not patch feature behavior"
@@ -3984,6 +4319,101 @@
       "failure_route": "Reopen RP-11 for AC-30.11; RP-19 does not patch feature behavior"
     },
     {
+      "id": "AC-31.1",
+      "kind": "ac",
+      "primary_owner": "RP-20",
+      "prd_us": "US-31",
+      "uat_row": "UAT-31",
+      "summary": "`/onboarding` exists at startup and walks welcome → model accounts → research keys (Exa, Perplexity, Firecrawl) → K-stack roles; each step is skippable and the ",
+      "coverage": "covered",
+      "named_checks": [
+        {
+          "name": "a_scripted_onboarding_adds_accounts_saves_research_keys_maps_k_stack_and_writes_",
+          "file": "test/onboarding.test.ts",
+          "test_title": "a scripted onboarding adds accounts, saves research keys, maps K-stack, and writes no project file",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^a scripted onboarding adds accounts, saves research keys, maps K-stack, and writes no project file$' test/onboarding.test.ts",
+          "observable": "/onboarding walks welcome → model accounts → research keys → K-stack roles; outcome lists the accounts, research services and kstack; no project file written"
+        }
+      ],
+      "failure_route": "Reopen RP-20 for AC-31.1; RP-19 does not patch feature behavior"
+    },
+    {
+      "id": "AC-31.2",
+      "kind": "ac",
+      "primary_owner": "RP-20",
+      "prd_us": "US-31",
+      "uat_row": "UAT-31",
+      "summary": "A TUI startup with no configured slot in any pool and no harness-available model opens the wizard; print/rpc/json sessions never do. \"Not now\" closes it for tha",
+      "coverage": "covered",
+      "named_checks": [
+        {
+          "name": "first_run_onboarding_fires_only_for_a_tui_startup_with_nothing_to_route",
+          "file": "test/onboarding.test.ts",
+          "test_title": "first-run onboarding fires only for a tui startup with nothing to route",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^first-run onboarding fires only for a tui startup with nothing to route$' test/onboarding.test.ts",
+          "observable": "shouldAutoOnboard is true only for tui + startup + hasUI + no slot + no harness model; print/rpc/json never; the session_start hook opens the Welcome to K-π select"
+        }
+      ],
+      "failure_route": "Reopen RP-20 for AC-31.2; RP-19 does not patch feature behavior"
+    },
+    {
+      "id": "AC-31.3",
+      "kind": "ac",
+      "primary_owner": "RP-20",
+      "prd_us": "US-31",
+      "uat_row": "UAT-31",
+      "summary": "Model login reuses the pooled `/accounts login` path (same provider notices, slots, secrets); a cancelled or failed login is reported by pool name (`<pool> logi",
+      "coverage": "covered",
+      "named_checks": [
+        {
+          "name": "onboarding_re_runs_after_setup_and_a_failed_login_is_reported_by_name",
+          "file": "test/onboarding.test.ts",
+          "test_title": "/onboarding re-runs after setup and a failed login is reported by name",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^/onboarding re-runs after setup and a failed login is reported by name$' test/onboarding.test.ts",
+          "observable": "the command re-runs with a configured slot present; a cancelled or failed pooled login is reported by pool name and the wizard continues"
+        }
+      ],
+      "failure_route": "Reopen RP-20 for AC-31.3; RP-19 does not patch feature behavior"
+    },
+    {
+      "id": "AC-31.4",
+      "kind": "ac",
+      "primary_owner": "RP-20",
+      "prd_us": "US-31",
+      "uat_row": "UAT-31",
+      "summary": "A skipped step writes nothing; the wizard writes no project `.kpi/settings.json` and no `~/.kpi/agent/settings.json`.",
+      "coverage": "covered",
+      "named_checks": [
+        {
+          "name": "skipped_onboarding_steps_write_nothing_and_not_now_closes_the_wizard_for_this_la",
+          "file": "test/onboarding.test.ts",
+          "test_title": "skipped onboarding steps write nothing and Not now closes the wizard for this launch",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^skipped onboarding steps write nothing and Not now closes the wizard for this launch$' test/onboarding.test.ts",
+          "observable": "skipped steps leave no accounts.json slot, no accounts.secrets.json and no project .kpi/settings.json; Not now defers and touches nothing"
+        }
+      ],
+      "failure_route": "Reopen RP-20 for AC-31.4; RP-19 does not patch feature behavior"
+    },
+    {
+      "id": "AC-31.5",
+      "kind": "ac",
+      "primary_owner": "RP-20",
+      "prd_us": "US-31",
+      "uat_row": "UAT-31",
+      "summary": "The research step saves Exa/Perplexity/Firecrawl keys through the same writer as `/setup-kstack` (`accounts.secrets.json`, 0600) without writing the project res",
+      "coverage": "covered",
+      "named_checks": [
+        {
+          "name": "a_scripted_onboarding_adds_accounts_saves_research_keys_maps_k_stack_and_writes_",
+          "file": "test/onboarding.test.ts",
+          "test_title": "a scripted onboarding adds accounts, saves research keys, maps K-stack, and writes no project file",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^a scripted onboarding adds accounts, saves research keys, maps K-stack, and writes no project file$' test/onboarding.test.ts",
+          "observable": "research keys are saved through the same writer as /setup-kstack (accounts.secrets.json) and the K-stack step runs the same role-map function"
+        }
+      ],
+      "failure_route": "Reopen RP-20 for AC-31.5; RP-19 does not patch feature behavior"
+    },
+    {
       "id": "M-01",
       "kind": "metric",
       "primary_owner": "RP-05",
@@ -4038,11 +4468,11 @@
       "coverage": "covered",
       "named_checks": [
         {
-          "name": "an_autopilot_write_outside_bounds_stops_unsafe_without_a_commit",
+          "name": "an_autopilot_write_outside_bounds_pauses_needs_human_without_a_commit",
           "file": "test/autopilot.test.ts",
-          "test_title": "an autopilot write outside bounds stops UNSAFE without a commit",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^an autopilot write outside bounds stops UNSAFE without a commit$' test/autopilot.test.ts",
-          "observable": "bounds violation reaches UNSAFE and creates no commit"
+          "test_title": "an autopilot write outside bounds pauses NEEDS_HUMAN without a commit",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^an autopilot write outside bounds pauses NEEDS_HUMAN without a commit$' test/autopilot.test.ts",
+          "observable": "a write outside the declared bounds pauses the run NEEDS_HUMAN (bounds) with one loop.terminal NEEDS_HUMAN/bounds and no commit"
         }
       ],
       "failure_route": "Reopen RP-05 for M-04"
@@ -4390,11 +4820,11 @@
       "coverage": "covered",
       "named_checks": [
         {
-          "name": "a_terminal_state_is_final_further_verifier_events_cannot_revive_it",
-          "file": "test/stop.test.ts",
-          "test_title": "a terminal state is final: further verifier events cannot revive it",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^a terminal state is final: further verifier events cannot revive it$' test/stop.test.ts",
-          "observable": "gap GRAPH-01: terminal stop states are closed and final"
+          "name": "the_run_vocabulary_is_exactly_running_needs_human_done_and_stopped",
+          "file": "test/run-store.test.ts",
+          "test_title": "the run vocabulary is exactly RUNNING, NEEDS_HUMAN, DONE, and STOPPED",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^the run vocabulary is exactly RUNNING, NEEDS_HUMAN, DONE, and STOPPED$' test/run-store.test.ts",
+          "observable": "gap GRAPH-01: run states are exactly RUNNING | NEEDS_HUMAN | DONE | STOPPED; NEEDS_HUMAN and STOPPED are finished but resumable"
         }
       ],
       "failure_route": "Reopen RP-03 for gap GRAPH-01"
@@ -4406,11 +4836,11 @@
       "coverage": "covered",
       "named_checks": [
         {
-          "name": "a_repeated_output_fingerprint_stops_with_no_progress",
+          "name": "a_repeated_output_fingerprint_is_a_repeated_witness_and_a_fresh_one_is_not",
           "file": "test/stop.test.ts",
-          "test_title": "a repeated output fingerprint stops with NO_PROGRESS",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^a repeated output fingerprint stops with NO_PROGRESS$' test/stop.test.ts",
-          "observable": "gap GRAPH-02: NO_PROGRESS on repeated output fingerprint"
+          "test_title": "a repeated output fingerprint is a repeated witness and a fresh one is not",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^a repeated output fingerprint is a repeated witness and a fresh one is not$' test/stop.test.ts",
+          "observable": "gap GRAPH-02: repeated output fingerprint is a no-progress witness that re-plans"
         }
       ],
       "failure_route": "Reopen RP-03 for gap GRAPH-02"
@@ -4422,11 +4852,11 @@
       "coverage": "covered",
       "named_checks": [
         {
-          "name": "the_third_failed_round_stops_with_exhausted_by_default",
-          "file": "test/stop.test.ts",
-          "test_title": "the third failed round stops with EXHAUSTED by default",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^the third failed round stops with EXHAUSTED by default$' test/stop.test.ts",
-          "observable": "gap GRAPH-03: EXHAUSTED at default maxRounds"
+          "name": "no_progress_after_a_re_plan_pauses_needs_human_offering_guidance_keep_going_or_s",
+          "file": "test/gated-loop.test.ts",
+          "test_title": "no progress after a re-plan pauses NEEDS_HUMAN offering guidance, keep going, or stop",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^no progress after a re-plan pauses NEEDS_HUMAN offering guidance, keep going, or stop$' test/gated-loop.test.ts",
+          "observable": "gap GRAPH-03: rounds are unbounded; the same witness after its re-plans pauses NEEDS_HUMAN (no_progress)"
         }
       ],
       "failure_route": "Reopen RP-03 for gap GRAPH-03"
@@ -4439,9 +4869,9 @@
       "named_checks": [
         {
           "name": "a_transient_429_retry_does_not_increment_the_round",
-          "file": "test/stop.test.ts",
+          "file": "test/graph-engine.test.ts",
           "test_title": "a transient 429 retry does not increment the round",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^a transient 429 retry does not increment the round$' test/stop.test.ts",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^a transient 429 retry does not increment the round$' test/graph-engine.test.ts",
           "observable": "gap GRAPH-04: transient retries do not consume rounds"
         }
       ],
@@ -4470,11 +4900,11 @@
       "coverage": "covered",
       "named_checks": [
         {
-          "name": "every_configured_cap_persists_exhausted_and_exactly_one_terminal_event",
+          "name": "no_counter_or_clock_ends_a_run_cost_elapsed_time_steps_and_node_runs_only_report",
           "file": "test/graph-engine.test.ts",
-          "test_title": "every configured cap persists EXHAUSTED and exactly one terminal event",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^every configured cap persists EXHAUSTED and exactly one terminal event$' test/graph-engine.test.ts",
-          "observable": "gap GRAPH-06: cost/time/concurrency caps persist EXHAUSTED"
+          "test_title": "no counter or clock ends a run: cost, elapsed time, steps, and node runs only report",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^no counter or clock ends a run: cost, elapsed time, steps, and node runs only report$' test/graph-engine.test.ts",
+          "observable": "gap GRAPH-06: cost, time, steps and node runs only report; maxConcurrency is the only limit"
         }
       ],
       "failure_route": "Reopen RP-04 for gap GRAPH-06"
@@ -5030,11 +5460,11 @@
       "coverage": "covered",
       "named_checks": [
         {
-          "name": "every_configured_cap_persists_exhausted_and_exactly_one_terminal_event",
+          "name": "no_counter_or_clock_ends_a_run_cost_elapsed_time_steps_and_node_runs_only_report",
           "file": "test/graph-engine.test.ts",
-          "test_title": "every configured cap persists EXHAUSTED and exactly one terminal event",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^every configured cap persists EXHAUSTED and exactly one terminal event$' test/graph-engine.test.ts",
-          "observable": "caps enforce EXHAUSTED durably"
+          "test_title": "no counter or clock ends a run: cost, elapsed time, steps, and node runs only report",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^no counter or clock ends a run: cost, elapsed time, steps, and node runs only report$' test/graph-engine.test.ts",
+          "observable": "graph engine batches, persists and resumes; no cap ends a run (caps superseded by RP-21)"
         }
       ],
       "failure_route": "Reopen RP-03"
@@ -5046,11 +5476,11 @@
       "coverage": "covered",
       "named_checks": [
         {
-          "name": "a_repeated_output_fingerprint_stops_with_no_progress",
-          "file": "test/stop.test.ts",
-          "test_title": "a repeated output fingerprint stops with NO_PROGRESS",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^a repeated output fingerprint stops with NO_PROGRESS$' test/stop.test.ts",
-          "observable": "NO_PROGRESS and stop safety"
+          "name": "a_review_round_with_no_progress_re_plans_with_the_failing_criteria_as_feedback",
+          "file": "test/gated-loop.test.ts",
+          "test_title": "a review round with no progress re-plans with the failing criteria as feedback",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^a review round with no progress re-plans with the failing criteria as feedback$' test/gated-loop.test.ts",
+          "observable": "no-progress detection re-plans with repair.json (the no-progress stop state itself is retired by RP-21)"
         }
       ],
       "failure_route": "Reopen RP-04"
@@ -5296,6 +5726,38 @@
       "failure_route": "Fix RP-19 proof wiring"
     },
     {
+      "id": "RP-20",
+      "kind": "rp",
+      "primary_owner": "RP-20",
+      "coverage": "covered",
+      "named_checks": [
+        {
+          "name": "the_onboarding_factory_registers_onboarding_last_and_one_session_start_hook",
+          "file": "test/onboarding.test.ts",
+          "test_title": "the onboarding factory registers /onboarding last and one session_start hook",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^the onboarding factory registers /onboarding last and one session_start hook$' test/onboarding.test.ts",
+          "observable": "onboarding command and first-run hook registered"
+        }
+      ],
+      "failure_route": "Reopen RP-20"
+    },
+    {
+      "id": "RP-21",
+      "kind": "rp",
+      "primary_owner": "RP-21",
+      "coverage": "covered",
+      "named_checks": [
+        {
+          "name": "no_progress_after_a_re_plan_pauses_needs_human_offering_guidance_keep_going_or_s",
+          "file": "test/gated-loop.test.ts",
+          "test_title": "no progress after a re-plan pauses NEEDS_HUMAN offering guidance, keep going, or stop",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^no progress after a re-plan pauses NEEDS_HUMAN offering guidance, keep going, or stop$' test/gated-loop.test.ts",
+          "observable": "self-healing loop: re-plan, then NEEDS_HUMAN (no_progress) with Give guidance / Keep going / Stop; the operator is the only stop"
+        }
+      ],
+      "failure_route": "Reopen RP-21"
+    },
+    {
       "id": "REQ-CX-01",
       "kind": "req",
       "primary_owner": "RP-01A",
@@ -5430,11 +5892,11 @@
       "coverage": "covered",
       "named_checks": [
         {
-          "name": "a_terminal_state_is_final_further_verifier_events_cannot_revive_it",
+          "name": "rounds_are_unbounded_and_a_passing_verifier_is_never_a_stop",
           "file": "test/stop.test.ts",
-          "test_title": "a terminal state is final: further verifier events cannot revive it",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^a terminal state is final: further verifier events cannot revive it$' test/stop.test.ts",
-          "observable": "spec REQ-GE-01: terminal states are exactly DONE|BLOCKED|EXHAUSTED|NO_PROGRESS|UNSAFE|NEEDS_HUMAN"
+          "test_title": "rounds are unbounded and a passing verifier is never a stop",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^rounds are unbounded and a passing verifier is never a stop$' test/stop.test.ts",
+          "observable": "spec REQ-GE-01: the in-tree graph engine's stop reducer: rounds are unbounded and a passing verifier never stops a run"
         }
       ],
       "failure_route": "Reopen RP-03 for REQ-GE-01"
@@ -6283,6 +6745,70 @@
           "test_title": "event schema has one valid normalized branch per event type",
           "runner": "node --test --experimental-strip-types --test-name-pattern '^event schema has one valid normalized branch per event type$' test/schema-conformance.test.ts",
           "observable": "EVENT_TYPES includes agent.message; schema oneOf accepts normalized agent.message"
+        }
+      ],
+      "failure_route": "Reopen RP-01 (or domain emitter RP) for event contract"
+    },
+    {
+      "id": "EVT-agent.denied",
+      "kind": "event",
+      "primary_owner": "RP-01",
+      "coverage": "covered",
+      "named_checks": [
+        {
+          "name": "event_schema_has_one_valid_normalized_branch_per_event_type",
+          "file": "test/schema-conformance.test.ts",
+          "test_title": "event schema has one valid normalized branch per event type",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^event schema has one valid normalized branch per event type$' test/schema-conformance.test.ts",
+          "observable": "EVENT_TYPES includes agent.denied; schema oneOf accepts normalized agent.denied"
+        }
+      ],
+      "failure_route": "Reopen RP-01 (or domain emitter RP) for event contract"
+    },
+    {
+      "id": "EVT-node.started",
+      "kind": "event",
+      "primary_owner": "RP-01",
+      "coverage": "covered",
+      "named_checks": [
+        {
+          "name": "event_schema_has_one_valid_normalized_branch_per_event_type",
+          "file": "test/schema-conformance.test.ts",
+          "test_title": "event schema has one valid normalized branch per event type",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^event schema has one valid normalized branch per event type$' test/schema-conformance.test.ts",
+          "observable": "EVENT_TYPES includes node.started; schema oneOf accepts normalized node.started"
+        }
+      ],
+      "failure_route": "Reopen RP-01 (or domain emitter RP) for event contract"
+    },
+    {
+      "id": "EVT-node.finished",
+      "kind": "event",
+      "primary_owner": "RP-01",
+      "coverage": "covered",
+      "named_checks": [
+        {
+          "name": "event_schema_has_one_valid_normalized_branch_per_event_type",
+          "file": "test/schema-conformance.test.ts",
+          "test_title": "event schema has one valid normalized branch per event type",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^event schema has one valid normalized branch per event type$' test/schema-conformance.test.ts",
+          "observable": "EVENT_TYPES includes node.finished; schema oneOf accepts normalized node.finished"
+        }
+      ],
+      "failure_route": "Reopen RP-01 (or domain emitter RP) for event contract"
+    },
+    {
+      "id": "EVT-node.retry",
+      "kind": "event",
+      "primary_owner": "RP-01",
+      "coverage": "covered",
+      "named_checks": [
+        {
+          "name": "event_schema_has_one_valid_normalized_branch_per_event_type",
+          "file": "test/schema-conformance.test.ts",
+          "test_title": "event schema has one valid normalized branch per event type",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^event schema has one valid normalized branch per event type$' test/schema-conformance.test.ts",
+          "observable": "EVENT_TYPES includes node.retry; schema oneOf accepts normalized node.retry"
         }
       ],
       "failure_route": "Reopen RP-01 (or domain emitter RP) for event contract"

@@ -77,7 +77,7 @@ function planGraph() {
 			confirmProjectGraph: true,
 			confirmMutatingNodes: false,
 		},
-		limits: { maxSteps: 4, maxNodeRuns: 2, maxConcurrency: 1, maxCostUsd: 1, timeoutMs: 60_000 },
+		limits: { maxConcurrency: 1 },
 		nodes: [
 			{
 				id: "plan",
@@ -186,7 +186,14 @@ describe("plan stack.json response contract", () => {
 			createAgentSession: async () => ({ session: mockSession(bad) }),
 		});
 
-		await expect(engine.runSuperstep()).rejects.toThrow(/Layer folder|failed response validation/i);
+		// A contract failure never throws out of the engine: the run pauses
+		// NEEDS_HUMAN (contract) with the failed node as its resume target.
+		const state = await engine.runSuperstep();
+		expect(state.status).toBe("paused");
+		expect(state.pause?.recovery).toBe("contract");
+		expect(state.pause?.reason).toMatch(/Layer folder|failed response validation/i);
+		expect(state.pause?.resume).toEqual(["plan"]);
+		expect(state.nodes.plan.status).toBe("failed");
 		// Must not invent a stack.json on failed validation
 		expect(() => readFileSync(join(root, ".kpi", "runs", jobId, "stack.json"), "utf8")).toThrow();
 	});

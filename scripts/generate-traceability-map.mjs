@@ -106,9 +106,29 @@ const AC = {
 		"ship commits on kpi/<job>, pushes only that branch to origin, opens a PR; main, force, delete, tags, merge denied",
 	],
 	"AC-02.7": [
-		"test/control-plane.test.ts",
-		"job overlay includes the K-π brand and stages 01 through 08",
-		"board widget surfaces MODE gated, STAGE, ROUND, and run file presence",
+		"test/operator-ui.test.ts",
+		"the board shows ROUND without a maximum and a retry row while a node backs off",
+		"board reads ROUND <n> with no maximum; RETRY <attempt> · <reason> · next <s>s while a node backs off; STOP box RUNNING | NEEDS_HUMAN <recovery> | DONE | STOPPED",
+	],
+	"AC-02.8": [
+		"test/gated-loop.test.ts",
+		"the gated loop asks the operator to approve the plan before implement and records the approval",
+		"plan approval with the stack.json summary and file path in the dialog before the first write; approval.result node plan-approval precedes the release approval; the waiting-on-you notification",
+	],
+	"AC-02.9": [
+		"test/gated-loop.test.ts",
+		"request changes re-plans with the operator's feedback and refuses empty feedback",
+		"empty feedback refused and re-asked; feedback recorded in approval.result.feedback and checkpoint plan.feedback; the re-run planner prompt carries the feedback; the re-planned stack.json is the one frozen before implement",
+	],
+	"AC-02.10": [
+		"test/graph-engine.test.ts",
+		"no counter or clock ends a run: cost, elapsed time, steps, and node runs only report",
+		"plan revisions are unbounded: forty node runs complete with no maximum and zero loop.terminal; a graph declaring a run cap is refused; the operator is the bound",
+	],
+	"AC-02.11": [
+		"test/gated-loop.test.ts",
+		"a plan gate without dialog UI stops NEEDS_HUMAN with the resume command and never answers itself",
+		"hasUI false: NEEDS_HUMAN, recovery approval, reason ends with the resume command, one loop.terminal, no approval.result, implement never ran",
 	],
 
 	// US-03
@@ -162,39 +182,54 @@ const AC = {
 	"AC-04.6": [
 		"test/policy.test.ts",
 		"production deploy commands are denied",
-		"push/deploy/delete/new-dependency attempts are denied as NEEDS_HUMAN or UNSAFE and do not execute",
+		"push/deploy/delete/new-dependency attempts are denied and do not execute; the run shows NEEDS_HUMAN with its recovery",
 	],
 
 	// US-05
 	"AC-05.1": [
-		"test/stop.test.ts",
-		"a terminal state is final: further verifier events cannot revive it",
-		"terminal states are exactly DONE|BLOCKED|EXHAUSTED|NO_PROGRESS|UNSAFE|NEEDS_HUMAN",
+		"test/run-store.test.ts",
+		"the run vocabulary is exactly RUNNING, NEEDS_HUMAN, DONE, and STOPPED",
+		"RUN_STATUSES is exactly the four tokens; legacy BLOCKED/EXHAUSTED/NO_PROGRESS/UNSAFE on disk read as NEEDS_HUMAN and are finished; only RUNNING is live",
 	],
 	"AC-05.2": [
-		"test/stop.test.ts",
-		"a repeated output fingerprint stops with NO_PROGRESS",
-		"same output_fingerprint twice → NO_PROGRESS",
+		"test/gated-loop.test.ts",
+		"a review round with no progress re-plans with the failing criteria as feedback",
+		"a repeated review witness routes to plan with repair.json (round, reason, failing_ac, evidence_ref, witness), the slice unfrozen, a re-plan checkpoint and one K-π re-planning notice",
 	],
 	"AC-05.3": [
-		"test/stop.test.ts",
-		"the third failed round stops with EXHAUSTED by default",
-		"round >= maxRounds (default 3) → EXHAUSTED",
+		"test/gated-loop.test.ts",
+		"no progress after a re-plan pauses NEEDS_HUMAN offering guidance, keep going, or stop",
+		"after two automatic re-plans the run pauses NEEDS_HUMAN (no_progress); the TUI select offers Give guidance / Keep going / Stop; unattended the pause stands with the resume command",
 	],
 	"AC-05.4": [
 		"test/autopilot.test.ts",
-		"an autopilot write outside bounds stops UNSAFE without a commit",
-		"write outside write_allow → UNSAFE, no commit",
+		"an autopilot write outside bounds pauses NEEDS_HUMAN without a commit",
+		"write outside write_allow → NEEDS_HUMAN (bounds) with the resume command, one loop.terminal NEEDS_HUMAN/bounds, pause.resume [test], no commit",
 	],
 	"AC-05.5": [
 		"test/autopilot.test.ts",
 		"an untestable reviewer issue stops autopilot at NEEDS_HUMAN",
-		"untestable reviewer issue → NEEDS_HUMAN",
+		"untestable reviewer issue → NEEDS_HUMAN (review)",
 	],
 	"AC-05.6": [
-		"test/stop.test.ts",
+		"test/graph-engine.test.ts",
 		"a transient 429 retry does not increment the round",
-		"transient 429 retry is not a new round; new round needs new verifier evidence",
+		"transient 429 retry is not a new round: round 1, runs 1, one onRetry http/429; a provider refusal that cannot fail over is NEEDS_HUMAN (provider) with the real reason",
+	],
+	"AC-05.7": [
+		"test/graph-engine.test.ts",
+		"transient failures retry for as long as it takes with a capped backoff and a node.retry event each time",
+		"unbounded retries; delays double from 1 s to the 60 s ceiling; onRetry (node.retry) and a checkpoint before every wait; zero loop.terminal",
+	],
+	"AC-05.8": [
+		"test/graph-engine.test.ts",
+		"no counter or clock ends a run: cost, elapsed time, steps, and node runs only report",
+		"forty rounds, ten hours and 99 USD complete with zero loop.terminal; cost and elapsed time are reported as read; maxConcurrency is the only limit and a graph declaring a retired cap is refused",
+	],
+	"AC-05.9": [
+		"test/gated-loop.test.ts",
+		"kpi stop written during a backoff stops the loop at the next wait and leaves a resumable STOPPED job",
+		"stop.json from another session lands after the wait; one loop.terminal STOPPED 'operator stop'; /kpi <job> lifts the marker, finishes the wait and continues the same node",
 	],
 
 	// US-06
@@ -227,6 +262,11 @@ const AC = {
 		"test/control-plane.test.ts",
 		"kpi status reports no active job without requesting a provider",
 		"/kpi status draws board from state.json + events.jsonl with no model call",
+	],
+	"AC-06.7": [
+		"test/board-activity.test.ts",
+		"narration is one line per node start and finish and none per tool call",
+		"one 'K-π ' chat line per node start, finish and route change; never a line per tool call",
 	],
 
 	// US-07
@@ -336,6 +376,16 @@ const AC = {
 		"a pin holds until the slot is exhausted",
 		"session stickiness holds until pinned slot exhausted then releases",
 	],
+	"AC-10.9": [
+		"test/accounts.test.ts",
+		"a Claude Code version rejection is surfaced once and never cools or fails over",
+		"claude_code_version_too_old is explained once with sent/required versions and the update remedy; no cooldown, no failover",
+	],
+	"AC-10.10": [
+		"test/accounts-commands.test.ts",
+		"the official slot is served from auth.json and never refreshed by K-π",
+		"one grant per slot: the official slot has no secrets copy and is never refreshed by K-π; invalid_grant marks needs-login, never a cooldown or a stack trace",
+	],
 
 	// US-11
 	"AC-11.1": [
@@ -429,6 +479,11 @@ const AC = {
 		"restored checkpoint does not rerun completed plan and implement nodes",
 		"kill mid-implementer leaves checkpoint /kpi status can read; resume restores progress",
 	],
+	"AC-14.5": [
+		"test/graph-engine.test.ts",
+		"agent nodes append node.started and node.finished with run, elapsed and cost",
+		"every agent node run appends node.started {run, model} and node.finished {run, status, elapsed_ms, cost_usd?} to events.jsonl; cost sums the run's attempts and is omitted without billing",
+	],
 
 	// US-15
 	"AC-15.1": [
@@ -512,6 +567,21 @@ const AC = {
 		"test/operator-ui.test.ts",
 		"narrow width keeps CURRENT stage and STOP visible",
 		"required fields present; narrow terminals may wrap; pixel match not required",
+	],
+	"AC-16.7": [
+		"test/operator-ui.test.ts",
+		"the NOW row names the running node and tool and the full board carries elapsed and cost per stage",
+		"NOW <node> run <n> <k> tools ▸ <tool> <target> <elapsed> <cost> MODEL <m>; stage cells DONE `<elapsed> · <n> calls · $<cost> est.`, CURRENT `<tool> <target>  <elapsed>`, PENDING `—`",
+	],
+	"AC-16.8": [
+		"test/command-centre.test.ts",
+		"the status overlay selects stages with arrow keys, opens the node detail on enter and closes on q",
+		"/kpi status opens the Command Centre: arrow keys select a stage, enter opens the NODE detail, q closes",
+	],
+	"AC-16.9": [
+		"test/command-centre.test.ts",
+		"the command centre follows a running job on the injected tick and stops ticking when the job ends",
+		"while RUNNING the centre re-reads run files on the BOARD_TICK_MS tick, paints EVENTS ✕ <code> on a read failure, and stops ticking when the run ends or the job is gone",
 	],
 
 	// US-17
@@ -717,6 +787,16 @@ const AC = {
 		"write_contract refuses the wrong agent, job, role, path, schema, or a link out",
 		"write_contract is not write/edit; reviewer/tester with only write_contract is not a writer",
 	],
+	"AC-23.10": [
+		"test/bus.test.ts",
+		"/agents prints every kind of session and names the mechanism",
+		"/agents lists the main session, in-process node sessions and worker processes with the per-process caps and the mechanism sentence",
+	],
+	"AC-23.11": [
+		"test/operator-ui.test.ts",
+		"the AGENTS cell breaks live sessions into nodes and workers",
+		"AGENTS n · k node(s) · w worker(s); AGENTS n alone without the split",
+	],
 
 	// US-24
 	"AC-24.1": [
@@ -732,7 +812,7 @@ const AC = {
 	"AC-24.3": [
 		"test/runtime-milestone.test.ts",
 		"a live job owns bare follow-ups and kpi_start_job refuses to start a second one",
-		"while a job is live, bare text steers the parent session and kpi_start_job refuses; a finished job owns nothing",
+		"while a job is live, bare text steers the parent session and kpi_start_job refuses; a finished run (DONE, NEEDS_HUMAN, STOPPED) owns nothing and is not live",
 	],
 	"AC-24.4": [
 		"test/runtime-milestone.test.ts",
@@ -880,7 +960,12 @@ const AC = {
 	"AC-28.7": [
 		"test/research-control-plane.test.ts",
 		"/accounts login and logout treat exa and perplexity as research targets, not pools",
-		"exa and perplexity are research credential targets, not pool ids in accounts.json pools",
+		"exa, perplexity, and firecrawl are research credential targets, not pool ids in accounts.json pools",
+	],
+	"AC-28.8": [
+		"test/research-clients.test.ts",
+		"Firecrawl Search posts to v2 search with a bounded limit and no scrape options",
+		"firecrawl_search posts /v2/search with Bearer auth, limit ≤ 10, sources [{type: web}], no scrapeOptions, query ≤ 500 chars; results bounded like the other services",
 	],
 
 	// US-29
@@ -902,7 +987,7 @@ const AC = {
 	"AC-29.4": [
 		"test/research-control-plane.test.ts",
 		"research mode persists and a named service without a key falls back",
-		"implement UNSAFE if research files missing or older than task.json hash",
+		"implement pauses NEEDS_HUMAN (research) if research files are missing or older than the current task.json hash",
 	],
 	"AC-29.5": [
 		"test/research-clients.test.ts",
@@ -929,7 +1014,7 @@ const AC = {
 	"AC-30.2": [
 		"test/stack.test.ts",
 		"claim_path and implement bounds share one boundary",
-		"implement claim_path outside current module folder + test twin is UNSAFE",
+		"implement claim_path outside current module folder + test twin pauses NEEDS_HUMAN (stack)",
 	],
 	"AC-30.3": [
 		"test/stack.test.ts",
@@ -976,6 +1061,33 @@ const AC = {
 		"shared is extracted only when a second slice needs it",
 		"shared abstractions extracted only when a second slice needs them",
 	],
+
+	// US-31
+	"AC-31.1": [
+		"test/onboarding.test.ts",
+		"a scripted onboarding adds accounts, saves research keys, maps K-stack, and writes no project file",
+		"/onboarding walks welcome → model accounts → research keys → K-stack roles; outcome lists the accounts, research services and kstack; no project file written",
+	],
+	"AC-31.2": [
+		"test/onboarding.test.ts",
+		"first-run onboarding fires only for a tui startup with nothing to route",
+		"shouldAutoOnboard is true only for tui + startup + hasUI + no slot + no harness model; print/rpc/json never; the session_start hook opens the Welcome to K-π select",
+	],
+	"AC-31.3": [
+		"test/onboarding.test.ts",
+		"/onboarding re-runs after setup and a failed login is reported by name",
+		"the command re-runs with a configured slot present; a cancelled or failed pooled login is reported by pool name and the wizard continues",
+	],
+	"AC-31.4": [
+		"test/onboarding.test.ts",
+		"skipped onboarding steps write nothing and Not now closes the wizard for this launch",
+		"skipped steps leave no accounts.json slot, no accounts.secrets.json and no project .kpi/settings.json; Not now defers and touches nothing",
+	],
+	"AC-31.5": [
+		"test/onboarding.test.ts",
+		"a scripted onboarding adds accounts, saves research keys, maps K-stack, and writes no project file",
+		"research keys are saved through the same writer as /setup-kstack (accounts.secrets.json) and the K-stack step runs the same role-map function",
+	],
 };
 
 // Metrics
@@ -997,8 +1109,8 @@ const METRICS = {
 	],
 	"M-04": [
 		"test/autopilot.test.ts",
-		"an autopilot write outside bounds stops UNSAFE without a commit",
-		"bounds violation reaches UNSAFE and creates no commit",
+		"an autopilot write outside bounds pauses NEEDS_HUMAN without a commit",
+		"a write outside the declared bounds pauses the run NEEDS_HUMAN (bounds) with one loop.terminal NEEDS_HUMAN/bounds and no commit",
 	],
 	"M-05": [
 		"test/accounts.test.ts",
@@ -1041,13 +1153,13 @@ const RP = {
 	],
 	"RP-03": [
 		"test/graph-engine.test.ts",
-		"every configured cap persists EXHAUSTED and exactly one terminal event",
-		"caps enforce EXHAUSTED durably",
+		"no counter or clock ends a run: cost, elapsed time, steps, and node runs only report",
+		"graph engine batches, persists and resumes; no cap ends a run (caps superseded by RP-21)",
 	],
 	"RP-04": [
-		"test/stop.test.ts",
-		"a repeated output fingerprint stops with NO_PROGRESS",
-		"NO_PROGRESS and stop safety",
+		"test/gated-loop.test.ts",
+		"a review round with no progress re-plans with the failing criteria as feedback",
+		"no-progress detection re-plans with repair.json (the no-progress stop state itself is retired by RP-21)",
 	],
 	"RP-05": [
 		"test/gated-loop.test.ts",
@@ -1124,6 +1236,16 @@ const RP = {
 		"every named check binds an exact test title that exists and is selectable",
 		"traceability map binds exact test titles, not whole-file runners",
 	],
+	"RP-20": [
+		"test/onboarding.test.ts",
+		"the onboarding factory registers /onboarding last and one session_start hook",
+		"onboarding command and first-run hook registered",
+	],
+	"RP-21": [
+		"test/gated-loop.test.ts",
+		"no progress after a re-plan pauses NEEDS_HUMAN offering guidance, keep going, or stop",
+		"self-healing loop: re-plan, then NEEDS_HUMAN (no_progress) with Give guidance / Keep going / Stop; the operator is the only stop",
+	],
 };
 
 const EVENT_TYPES = [
@@ -1149,6 +1271,10 @@ const EVENT_TYPES = [
 	"research.completed",
 	"agent.spawned",
 	"agent.message",
+	"agent.denied",
+	"node.started",
+	"node.finished",
+	"node.retry",
 ];
 
 function bind(triple) {
@@ -1199,7 +1325,7 @@ function main() {
 		"US-02": "RP-05",
 		"US-03": "RP-05",
 		"US-04": "RP-05",
-		"US-05": "RP-04",
+		"US-05": "RP-21",
 		"US-06": "RP-18",
 		"US-07": "RP-18",
 		"US-08": "RP-14",
@@ -1225,14 +1351,9 @@ function main() {
 		"US-28": "RP-09",
 		"US-29": "RP-10",
 		"US-30": "RP-11",
+		"US-31": "RP-20",
 	};
 	const acOwnerOverride = {
-		"AC-05.1": "RP-03",
-		"AC-05.2": "RP-03",
-		"AC-05.3": "RP-03",
-		"AC-05.4": "RP-04",
-		"AC-05.5": "RP-04",
-		"AC-05.6": "RP-05",
 		"AC-13.1": "RP-02",
 		"AC-13.2": "RP-02",
 		"AC-13.3": "RP-02",
@@ -1240,6 +1361,7 @@ function main() {
 		"AC-13.5": "RP-02",
 		"AC-13.6": "RP-02",
 		"AC-28.6": "RP-18",
+		"AC-28.8": "RP-20",
 	};
 
 	const metricOwner = {
@@ -1365,22 +1487,22 @@ const gapSpecific = {
 			"unknown commands split by mode",
 		],
 		"GRAPH-01": [
-			"test/stop.test.ts",
-			"a terminal state is final: further verifier events cannot revive it",
-			"terminal stop states are closed and final",
+			"test/run-store.test.ts",
+			"the run vocabulary is exactly RUNNING, NEEDS_HUMAN, DONE, and STOPPED",
+			"run states are exactly RUNNING | NEEDS_HUMAN | DONE | STOPPED; NEEDS_HUMAN and STOPPED are finished but resumable",
 		],
 		"GRAPH-02": [
 			"test/stop.test.ts",
-			"a repeated output fingerprint stops with NO_PROGRESS",
-			"NO_PROGRESS on repeated output fingerprint",
+			"a repeated output fingerprint is a repeated witness and a fresh one is not",
+			"repeated output fingerprint is a no-progress witness that re-plans",
 		],
 		"GRAPH-03": [
-			"test/stop.test.ts",
-			"the third failed round stops with EXHAUSTED by default",
-			"EXHAUSTED at default maxRounds",
+			"test/gated-loop.test.ts",
+			"no progress after a re-plan pauses NEEDS_HUMAN offering guidance, keep going, or stop",
+			"rounds are unbounded; the same witness after its re-plans pauses NEEDS_HUMAN (no_progress)",
 		],
 		"GRAPH-04": [
-			"test/stop.test.ts",
+			"test/graph-engine.test.ts",
 			"a transient 429 retry does not increment the round",
 			"transient retries do not consume rounds",
 		],
@@ -1391,8 +1513,8 @@ const gapSpecific = {
 		],
 		"GRAPH-06": [
 			"test/graph-engine.test.ts",
-			"every configured cap persists EXHAUSTED and exactly one terminal event",
-			"cost/time/concurrency caps persist EXHAUSTED",
+			"no counter or clock ends a run: cost, elapsed time, steps, and node runs only report",
+			"cost, time, steps and node runs only report; maxConcurrency is the only limit",
 		],
 		"GRAPH-07": [
 			"test/graph-routing.test.ts",
@@ -1628,7 +1750,11 @@ const gapSpecific = {
 		"REQ-DIST-06": AC["AC-01.1"],
 		"REQ-DIST-07": AC["AC-01.4"],
 		"REQ-CX-01": AC["AC-01.3"],
-		"REQ-GE-01": AC["AC-05.1"],
+		"REQ-GE-01": [
+			"test/stop.test.ts",
+			"rounds are unbounded and a passing verifier is never a stop",
+			"the in-tree graph engine's stop reducer: rounds are unbounded and a passing verifier never stops a run",
+		],
 		"REQ-GE-02": AC["AC-05.3"],
 		"REQ-GE-03": AC["AC-05.2"],
 		"REQ-PR-01": AC["AC-10.1"],

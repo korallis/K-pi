@@ -1,13 +1,14 @@
-# Exa and Perplexity research in K-π
+# Exa, Perplexity, and Firecrawl research in K-π
 
-**Normative.** Optional. Implement both integrations as first-party REST clients using the runtime `fetch`. Do not add `exa-js`, `@perplexity-ai/perplexity_ai`, a community research package, or an MCP dependency at runtime.
+**Normative.** Optional. Implement all three integrations as first-party REST clients using the runtime `fetch`. Do not add `exa-js`, `@perplexity-ai/perplexity_ai`, a Firecrawl SDK, a community research package, or an MCP dependency at runtime.
 
-Exa and Perplexity are **research credential targets**, never model pools. Neither is a `PoolId`. They never appear in `accounts.json.pools`, `/pool strategy`, `/pool chain`, or the cross-family fallback chain, and they never call `registerProvider`. `/accounts login exa|perplexity` stores a research credential; it never creates a routing slot and never changes which model answers a turn. These keys also grant no provider-native web search: every external research call is one of the three first-party REST tools below.
+Exa, Perplexity, and Firecrawl are **research credential targets**, never model pools. None is a `PoolId`. They never appear in `accounts.json.pools`, `/pool strategy`, `/pool chain`, or the cross-family fallback chain, and they never call `registerProvider`. `/accounts login exa|perplexity|firecrawl` stores a research credential; it never creates a routing slot and never changes which model answers a turn. These keys also grant no provider-native web search: every external research call is one of the four first-party REST tools below.
 
 | Service | Base | Auth | Secret key |
 |---|---|---|---|
 | Exa | `https://api.exa.ai` | `Authorization: Bearer` | `exa/default`; env fallback `EXA_API_KEY` |
 | Perplexity | `https://api.perplexity.ai` | `Authorization: Bearer` | `perplexity/default`; env fallback `PERPLEXITY_API_KEY` |
+| Firecrawl | `https://api.firecrawl.dev` (`FIRECRAWL_BASE_URL` overrides) | `Authorization: Bearer` | `firecrawl/default`; env fallback `FIRECRAWL_API_KEY` |
 
 Secrets live in `~/.kpi/agent/accounts.secrets.json`, mode 0600.
 
@@ -16,22 +17,25 @@ Official references:
 - Exa Search: https://exa.ai/docs/reference/search-api-guide-for-coding-agents
 - Exa Contents: https://exa.ai/docs/reference/contents-api-guide-for-coding-agents
 - Perplexity Search: https://docs.perplexity.ai/docs/search/quickstart
+- Firecrawl Search: https://docs.firecrawl.dev/api-reference/endpoint/search
 
 ## Setup
 
-`/setup-kstack`, after the model map, offers two independent prompts:
+`/setup-kstack`, after the model map, offers three independent prompts:
 
 ```
 Exa API key for research (Enter to save, s to skip)
 Perplexity API key for research (Enter to save, s to skip)
+Firecrawl API key for research (Enter to save, s to skip)
 ```
 
-- Save either key → write that secret and set `kpi.research = auto`.
-- Save both → Exa is preferred for developer/code research; Perplexity is the live fallback.
-- Skip both → set `kpi.research = local`. Planning still runs the research gate on repo files.
-- `/accounts login exa|perplexity` and `/accounts logout exa|perplexity` manage the same keys later.
+- Save any key → write that secret and set `kpi.research = auto`.
+- Save several → `auto` asks Exa first, then Perplexity, then Firecrawl.
+- Skip all → set `kpi.research = local`. Planning still runs the research gate on repo files.
+- `/accounts login exa|perplexity|firecrawl` and `/accounts logout exa|perplexity|firecrawl` manage the same keys later.
+- `/onboarding` asks the same three prompts through the same writer but never writes the project research mode; only `/setup-kstack` writes `.kpi/settings.json`.
 
-No key is not a crash. It is a narrower research mode. Operators may set `kpi.research = exa|perplexity|auto|local`; a selected service without a key falls back through `auto`, then local.
+No key is not a crash. It is a narrower research mode. Operators may set `kpi.research = exa|perplexity|firecrawl|auto|local`; a selected service without a key falls back through `auto`, then local.
 
 ## Tools
 
@@ -40,6 +44,7 @@ No key is not a crash. It is a narrower research mode. Operators may set `kpi.re
 | `exa_search` | `POST https://api.exa.ai/search` | Natural-language web search. Default `type: "auto"`, `numResults: 5`, `contents.highlights: true`. |
 | `exa_contents` | `POST https://api.exa.ai/contents` | Extract capped text or highlights for known URLs. At most 10 URLs. `text.maxCharacters` and `highlights.maxCharacters` are at most 10,000. |
 | `pplx_search` | `POST https://api.perplexity.ai/search` | Ranked web results with extracted snippets. Default `max_results: 5`. Hard bounds are token-based: send `max_tokens` and/or `max_tokens_per_page` and omit `search_context_size`, which is qualitative and bounds nothing. |
+| `firecrawl_search` | `POST https://api.firecrawl.dev/v2/search` | Web search with bounded excerpts. Body is `query` (≤ 500 characters), `limit` (1–10, default 5), `sources: [{type: "web"}]`, `timeout`; never `scrapeOptions`. Only http(s) results are kept; the excerpt is the result `description` (else its `markdown`), clamped to 10,000 characters. |
 
 Return titles, URLs, dates, and bounded highlights/snippets. Do not dump full pages into model context. Write every call to `events.jsonl` as `research.*`; never log a key or authorization header.
 
@@ -54,13 +59,13 @@ Specify and plan must write `.kpi/runs/<job>/research.md` and `research.json` be
 3. Retrieve Exa contents only for the two or three URLs that materially affect the plan.
 4. Online success requires **at least two distinct external sources**: two different origins, not two paths on one host and not one URL twice. Canonicalize and deduplicate before counting.
 
-`auto` uses Exa first, then Perplexity.
+`auto` uses Exa first, then Perplexity, then Firecrawl.
 
 ### When a service fails
 
-A 429, timeout, abort, or unavailable service cools that service and tries the other configured service. k-pi also treats a 402 as a cooling failure; that is defensive handling on our side, not a documented Perplexity Search response. Classify on HTTP status and transport first — error envelopes vary, especially on 429.
+A 429, timeout, abort, or unavailable service cools that service and tries the next configured service. k-pi also treats a 402 as a cooling failure; that is defensive handling on our side, not a documented Perplexity or Firecrawl response (Firecrawl documents 408 and 500). A Firecrawl 200 whose body carries `success: false` is classified `unavailable` and cools the service too. Classify on HTTP status and transport first — error envelopes vary, especially on 429.
 
-Attempts per service are bounded. Every failure is recorded in `research.json.network.failures[]` and emitted as a redacted `research.*` event. The graph never hangs and never retries without a bound.
+Attempts per service are bounded. Every failure is recorded in `research.json.network.failures[]` and emitted as a redacted `research.*` event. The research gate never hangs and a research call never retries without a bound.
 
 ### Effective no-network
 

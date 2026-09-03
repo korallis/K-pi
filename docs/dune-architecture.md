@@ -54,7 +54,7 @@ Before feature logic, the implementer creates the empty map:
 4. Then types
 5. Then behaviour
 
-An implement node that writes behaviour into an existing unrelated folder, instead of creating the feature folder, is `UNSAFE`.
+An implement node that writes behaviour into an existing unrelated folder, instead of creating the feature folder, leaves the module's bounds: the write is denied, and a write that lands anyway pauses the run `NEEDS_HUMAN` (`bounds`).
 
 ## `stack.json`
 
@@ -78,16 +78,16 @@ An implement node that writes behaviour into an existing unrelated folder, inste
 }
 ```
 
-`folder` is required. `allowed_paths` must be that folder plus its test twin. `claim_path` outside those globs is `UNSAFE`.
+`folder` is required. `allowed_paths` must be that folder plus its test twin. `claim_path` outside those globs is refused as an `UNSAFE` claim; the same globs are the implementer's `write_allow`, so a write that leaves them pauses the run `NEEDS_HUMAN` (`bounds`).
 
 ## Mandatory stack and current slice
 
 The stack is a precondition, not a convenience. Implement reads a frozen contract; it never guesses one.
 
-- Plan writes `stack.json`. The control plane freezes it before implement.
-- Implement with no `stack.json`, or with a `stack.json` older than the current `task.json`, is `UNSAFE`. The node stops before its first write. There is no default shape and no on-the-fly regeneration.
+- Plan writes `stack.json`. The operator approves it at `plan-approval` or requests changes; a change request re-runs plan with the feedback and overwrites `stack.json`. When a round repeated its witness the re-run reads `repair.json` first (the round, the failing acceptance criteria, the verdict or evidence, any operator guidance) and must produce a materially different map. The control plane freezes the approved map before implement.
+- Implement with no `stack.json`, or with a `stack.json` older than the current `task.json`, pauses `NEEDS_HUMAN` (`stack`) before its first write, and `/kpi <job>` resumes once the map is repaired. There is no default shape and no on-the-fly regeneration.
 - `task.json.current_module_id` is required for implement and must equal exactly one `stack.json.modules[].id`.
-- Position is not identity. `modules[0]` is never the current slice — not as a default, not as a fallback after a failed lookup. A missing, empty, or unmatched `current_module_id` is `UNSAFE`.
+- Position is not identity. `modules[0]` is never the current slice — not as a default, not as a fallback after a failed lookup. A missing, empty, or unmatched `current_module_id` pauses `NEEDS_HUMAN` (`stack`).
 - One implement round owns one `current_module_id`. Advancing to the next slice is a plan edit that re-freezes the contract, not an implementer decision.
 - Implement bounds and `claim_path` read the module named by `current_module_id` — its `folder`, `interface`, and `allowed_paths` — never the union of every module.
 
