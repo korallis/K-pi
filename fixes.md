@@ -36,7 +36,7 @@ The written contract currently *specifies* 2 and 3 — AGENTS.md hard rule "Bare
 | Source | Pinned | Latest | Verdict |
 |---|---|---|---|
 | Pi (`upstream.json`) | v0.84.4 @ `b79e4cc` | v0.84.4 is the latest tag; `main` is 21 commits ahead (`e266507`), all untagged | **Current.** `npm run upstream:check` exit 0. Next Pi tag is a reviewed merge per UPSTREAM.md §6, not part of this queue. |
-| K-stack (`kstack/UPSTREAM.md`) | pstack `efa2a53` (2026-09-02) | same commit | **Current.** `npm run kstack:status`: local pin honest, remote current. |
+| K-stack (`kstack/UPSTREAM.md`) | pstack `efa2a53` (2026-09-02) → `7314f72` (synced 2026-09-03; only the vendored `upstream/` tree changed, the generated runtime is byte-identical) | same commit | **Current.** `npm run kstack:status`: local pin honest, remote current. |
 | `npm audit --omit=dev` | — | 0 vulnerabilities | clean |
 | npm dependencies | identical to upstream Pi `main` pins | many majors behind (table in FX-04) | **Stale by policy choice; bumping (FX-04).** |
 

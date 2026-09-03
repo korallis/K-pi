@@ -38,7 +38,7 @@ Grader discipline: prefer a deterministic check — exit code, exact string, fil
 ### UAT-01 — US-01 Build and run the harness
 - **Real-user question:** Can I clone this, build it, and run it with no install step?
 - **Action:** Clean clone → `npm install && npm run build:offline` → `node packages/coding-agent/dist/bundle/cli.js --version` → start it in an untrusted scratch repo and type `/` to list commands → open `/settings`.
-- **Pass evidence:** Version reads K-π's own `0.1.0`, not a Pi version. `/kpi`, `/loop`, `/accounts`, `/specify`, `/plan`, `/review`, `/verify`, `/ship`, `/statusbar` all appear with no `/trust` and no install command. Theme `loop-amber` is selectable. No manifest declares `keywords:["pi-package"]`, a `pi` key, or `@earendil-works/pi-*` peer dependencies.
+- **Pass evidence:** Version reads K-π's own `0.2.0`, not a Pi version. `/kpi`, `/loop`, `/accounts`, `/specify`, `/plan`, `/review`, `/verify`, `/ship`, `/statusbar` all appear with no `/trust` and no install command. Theme `loop-amber` is selectable. No manifest declares `keywords:["pi-package"]`, a `pi` key, or `@earendil-works/pi-*` peer dependencies.
 - **ACs:** AC-01.1–01.6 · **Owner:** RP-01A, re-proved by RP-19
 
 ### UAT-02 — US-02 Start from a task (gated)
