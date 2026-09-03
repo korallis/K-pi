@@ -19,6 +19,9 @@ model id.
   the ladder's confidence for that role.
 - `review_panel` takes models from different families, in ladder order, capped at
   three, because a panel of one family reviews its own habits.
+- `fallback_models` is the exact live cross-provider order used only after every
+  account slot for the current provider is low or exhausted. The command derives
+  it from the ladder and lets the operator edit it before the atomic write.
 - A role with no live match is written as `inherit-parent`: it runs on the parent
   session's model.
 - Any line may be edited before the file is written. An edit that names a slug
@@ -38,8 +41,10 @@ model id.
 | review_panel | the ordered cross-family review panel |
 
 No remote runner is ever offered, and no slug is required as a default.
-Failover stays in the K-π accounts balancer: a role is a model id, and slots
-live in `accounts.json`.
+Failover stays in the K-π accounts balancer. It preserves the exact model while
+healthy sibling subscription slots remain, hands off at 5% remaining or on a
+classified limit, and only then follows `fallback_models`. Slots live in
+`accounts.json`.
 
 ## After the model map
 

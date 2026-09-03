@@ -146,7 +146,7 @@
 		{
 			"id": "ship",
 			"type": "agent",
-			"prompt": "Apply the conventional-commit skill. Create exactly one approved commit whose subject matches ^(feat|fix|docs|refactor|test|chore)(\\(.+\\))?: and whose message ends with this exact trailer line, with no quoting or punctuation around it:\nKPI-Job: {{job_id}}\nThat trailer is how the control plane recognises this job's commit, so it must appear exactly once. Never push.",
+			"prompt": "Apply the conventional-commit skill. The control plane has put the worktree on the job branch kpi/{{job_id}}; stay on it. Stage the approved candidate with git add, then create exactly one approved commit whose subject matches ^(feat|fix|docs|refactor|test|chore)(\\(.+\\))?: and whose message ends with this exact trailer line, with no quoting or punctuation around it:\nKPI-Job: {{job_id}}\nThat trailer is how the control plane recognises this job's commit, so it must appear exactly once. If the repository has an origin remote, push exactly that branch with: git push -u origin kpi/{{job_id}}\nthen open the pull request with: gh pr create --head kpi/{{job_id}} --fill\nNever push any other branch, never force-push, never push tags, never delete a branch, and never merge: the auto-merge workflow merges after the required check passes.",
 			"context": {
 				"mode": "thread",
 				"threadKey": "ship"

@@ -102,6 +102,7 @@ import { isInstallReportAllowed } from "../../core/telemetry.ts";
 import type { TruncationResult } from "../../core/tools/truncate.ts";
 import { hasTrustRequiringProjectResources, ProjectTrustStore } from "../../core/trust-manager.ts";
 import { getUsageCostBreakdown } from "../../core/usage-totals.ts";
+import { isPoolId } from "../../kpi/extensions/accounts/store.ts";
 import { getChangelogPath, getNewEntries, normalizeChangelogLinks, parseChangelog } from "../../utils/changelog.ts";
 import { copyToClipboard, readClipboardText } from "../../utils/clipboard.ts";
 import { extensionForImageMimeType, readClipboardImage } from "../../utils/clipboard-image.ts";
@@ -5494,7 +5495,16 @@ export class InteractiveMode {
 	}
 
 	private async startProviderLogin(providerOption: AuthSelectorProvider): Promise<void> {
-		if (providerOption.authType === "oauth") {
+		if (
+			providerOption.authType === "oauth" &&
+			isPoolId(providerOption.id) &&
+			this.session.extensionRunner.getCommand("accounts") !== undefined
+		) {
+			// K-π subscriptions are account slots, including when the operator uses
+			// Pi's familiar /login surface. The accounts command owns the warning,
+			// slot allocation, persistence, and activation as one operation.
+			await this.session.prompt(`/accounts login-active ${providerOption.id}`);
+		} else if (providerOption.authType === "oauth") {
 			await this.showLoginDialog(providerOption.id, providerOption.name);
 		} else if (providerOption.method?.login) {
 			await this.showApiKeyLoginDialog(providerOption.id, providerOption.name);

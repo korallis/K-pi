@@ -2874,6 +2874,10 @@ export class AgentSession {
 	private _isRetryableError(message: AssistantMessage): boolean {
 		// Context overflow is handled by compaction, not retry.
 		if (isContextOverflow(message, this.model?.contextWindow ?? 0)) return false;
+		// The pooled-account extension marks only errors for which it already moved
+		// the route. Retry immediately on that healthy sibling/fallback rather than
+		// treating a spent subscription as a permanent failure.
+		if (message.diagnostics?.some((diagnostic) => diagnostic.type === "kpi_account_failover")) return true;
 		return isRetryableAssistantError(message);
 	}
 
@@ -3490,6 +3494,15 @@ export class AgentSession {
 	 * Useful for /copy command.
 	 * @returns Text content, or undefined if no assistant message exists
 	 */
+	getLastAssistantError(): string | undefined {
+		const lastAssistant = this.messages
+			.slice()
+			.reverse()
+			.find((message): message is AssistantMessage => message.role === "assistant");
+		if (lastAssistant?.stopReason !== "error") return undefined;
+		return lastAssistant.errorMessage?.trim() || "Provider request failed without an error message";
+	}
+
 	getLastAssistantText(): string | undefined {
 		const lastAssistant = this.messages
 			.slice()

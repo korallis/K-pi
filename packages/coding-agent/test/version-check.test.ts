@@ -13,6 +13,7 @@ const originalSkipVersionCheck = process.env.PI_SKIP_VERSION_CHECK;
 
 beforeEach(() => {
 	allowNetwork();
+	delete process.env.PI_SKIP_VERSION_CHECK;
 });
 
 afterEach(() => {

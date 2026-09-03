@@ -408,7 +408,7 @@
       ]
     },
     {
-      "key": "test/kstack-runtime.test.ts::setup offers only live models in a K-π pool",
+      "key": "test/kstack-runtime.test.ts::setup offers only live models in a configured K-π pool",
       "ids": [
         "AC-18.1",
         "AC-18.3",
@@ -873,15 +873,15 @@
       "primary_owner": "RP-05",
       "prd_us": "US-02",
       "uat_row": "UAT-02",
-      "summary": "`git push` is never run by the ship node in v1.",
+      "summary": "The ship node commits on the job branch `kpi/<job_id>`, pushes only that branch to `origin` after release approval, and opens a pull request; it never pushes an",
       "coverage": "covered",
       "named_checks": [
         {
-          "name": "git_push_origin_main_is_denied",
-          "file": "test/policy.test.ts",
-          "test_title": "git push origin main is denied",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^git push origin main is denied$' test/policy.test.ts",
-          "observable": "ship node never runs git push; policy denies push in both modes"
+          "name": "the_ship_node_commits_on_the_job_branch_pushes_only_that_branch_and_opens_the_pu",
+          "file": "test/gated-loop.test.ts",
+          "test_title": "the ship node commits on the job branch, pushes only that branch, and opens the pull request",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^the ship node commits on the job branch, pushes only that branch, and opens the pull request$' test/gated-loop.test.ts",
+          "observable": "ship commits on kpi/<job>, pushes only that branch to origin, opens a PR; main, force, delete, tags, merge denied"
         }
       ],
       "failure_route": "Reopen RP-05 for AC-02.6; RP-19 does not patch feature behavior"
@@ -1196,7 +1196,7 @@
       "primary_owner": "RP-05",
       "prd_us": "US-05",
       "uat_row": "UAT-05",
-      "summary": "Retry of a transient 429 is not a new round. A new round requires new verifier evidence.",
+      "summary": "Retry of a transient 429 is not a new round. A new round requires new verifier evidence. A provider refusal that cannot fail over ends `NEEDS_HUMAN` with the re",
       "coverage": "covered",
       "named_checks": [
         {
@@ -1576,7 +1576,7 @@
       "primary_owner": "RP-06",
       "prd_us": "US-10",
       "uat_row": "UAT-10",
-      "summary": "`/accounts login anthropic` adds a slot without deleting existing Anthropic slots.",
+      "summary": "`/login anthropic` and `/accounts login anthropic` add a slot without deleting existing Anthropic slots; the `/login` subscription path activates the newly auth",
       "coverage": "covered",
       "named_checks": [
         {
@@ -1614,7 +1614,7 @@
       "primary_owner": "RP-06",
       "prd_us": "US-10",
       "uat_row": "UAT-10",
-      "summary": "On classified usage-limit (429/402/403-quota), the slot cools until parsed reset (else default 5h) and the next healthy sibling of the same family is used with ",
+      "summary": "On classified usage-limit (429/402/403-quota or a finalized quota-shaped 400 assistant error), the slot cools until parsed reset (else default 5h) and the next ",
       "coverage": "covered",
       "named_checks": [
         {
@@ -1633,7 +1633,7 @@
       "primary_owner": "RP-06",
       "prd_us": "US-10",
       "uat_row": "UAT-10",
-      "summary": "Cross-family fallback happens only when the whole family is cooling. Default order: anthropic → openai-codex → xai → zai → kimi-coding → cursor.",
+      "summary": "Cross-family fallback happens only when the whole family is cooling. `/setup-kstack` derives an exact live-model fallback order from `model-ladder.md`, lets the",
       "coverage": "covered",
       "named_checks": [
         {
@@ -1671,7 +1671,7 @@
       "primary_owner": "RP-06",
       "prd_us": "US-10",
       "uat_row": "UAT-10",
-      "summary": "Widget lists remaining % per slot.",
+      "summary": "Widget lists remaining % per slot, including Codex subscription used-percent windows converted to remaining percent.",
       "coverage": "covered",
       "named_checks": [
         {
@@ -1690,7 +1690,7 @@
       "primary_owner": "RP-06",
       "prd_us": "US-10",
       "uat_row": "UAT-10",
-      "summary": "Session stickiness holds until the pinned slot is exhausted, then releases (prompt-cache friendly).",
+      "summary": "Session stickiness yields at 5% remaining to preserve the current provider/model on a healthier sibling; otherwise it holds until exhaustion (prompt-cache frien",
       "coverage": "covered",
       "named_checks": [
         {
@@ -1842,7 +1842,7 @@
       "primary_owner": "RP-02",
       "prd_us": "US-13",
       "uat_row": "UAT-13",
-      "summary": "`tool_call` hook denies `git push`, force-push, `rm -rf`, production deploy, and writes outside `write_allow`.",
+      "summary": "`tool_call` hook denies every push except `git push [-u] origin kpi/<branch>` inside a job after `release.approved` (so `main`, force-push, tag pushes, branch d",
       "coverage": "covered",
       "named_checks": [
         {
@@ -1850,7 +1850,7 @@
           "file": "test/policy.test.ts",
           "test_title": "the registered hook keeps every AC-13.1 denial",
           "runner": "node --test --experimental-strip-types --test-name-pattern '^the registered hook keeps every AC-13\\.1 denial$' test/policy.test.ts",
-          "observable": "tool_call denies git push, force-push, rm -rf, production deploy, writes outside write_allow"
+          "observable": "tool_call denies git push origin main, force-push, rm -rf, production deploy, writes outside write_allow; only kpi/* after release"
         }
       ],
       "failure_route": "Reopen RP-02 for AC-13.1; RP-19 does not patch feature behavior"
@@ -2416,10 +2416,10 @@
       "coverage": "covered",
       "named_checks": [
         {
-          "name": "setup_offers_only_live_models_in_a_k_pool",
+          "name": "setup_offers_only_live_models_in_a_configured_k_pool",
           "file": "test/kstack-runtime.test.ts",
-          "test_title": "setup offers only live models in a K-π pool",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^setup offers only live models in a K-π pool$' test/kstack-runtime.test.ts",
+          "test_title": "setup offers only live models in a configured K-π pool",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^setup offers only live models in a configured K-π pool$' test/kstack-runtime.test.ts",
           "observable": "offered slugs ⊆ getAvailable() ∩ configured pools"
         }
       ],
@@ -2454,10 +2454,10 @@
       "coverage": "covered",
       "named_checks": [
         {
-          "name": "setup_offers_only_live_models_in_a_k_pool",
+          "name": "setup_offers_only_live_models_in_a_configured_k_pool",
           "file": "test/kstack-runtime.test.ts",
-          "test_title": "setup offers only live models in a K-π pool",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^setup offers only live models in a K-π pool$' test/kstack-runtime.test.ts",
+          "test_title": "setup offers only live models in a configured K-π pool",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^setup offers only live models in a configured K-π pool$' test/kstack-runtime.test.ts",
           "observable": "no Cursor Cloud Agent target is listed in setup offers"
         }
       ],
@@ -2488,7 +2488,7 @@
       "primary_owner": "RP-16",
       "prd_us": "US-18",
       "uat_row": "UAT-18",
-      "summary": "Setup prints an auto map from `model-ladder.md` against the live set. Operator applies or edits before write.",
+      "summary": "Setup prints an auto role map and ordered `fallback_models` from `model-ladder.md` against the live set. Operator applies or edits both before write. The saved ",
       "coverage": "covered",
       "named_checks": [
         {
@@ -2887,7 +2887,7 @@
       "primary_owner": "RP-13",
       "prd_us": "US-23",
       "uat_row": "UAT-23",
-      "summary": "`spawn_background` starts a `kpi --mode rpc` (or SDK session) with its own session file under `.kpi/runs/<job>/agents/`.",
+      "summary": "`spawn_background` starts a `kpi --mode rpc` (or SDK session) with its own session file under `.kpi/runs/<job>/agents/`. Explorer workers may use `bash` only wh",
       "coverage": "covered",
       "named_checks": [
         {
@@ -4582,10 +4582,10 @@
       "coverage": "covered",
       "named_checks": [
         {
-          "name": "setup_offers_only_live_models_in_a_k_pool",
+          "name": "setup_offers_only_live_models_in_a_configured_k_pool",
           "file": "test/kstack-runtime.test.ts",
-          "test_title": "setup offers only live models in a K-π pool",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^setup offers only live models in a K-π pool$' test/kstack-runtime.test.ts",
+          "test_title": "setup offers only live models in a configured K-π pool",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^setup offers only live models in a configured K-π pool$' test/kstack-runtime.test.ts",
           "observable": "gap KSTACK-02: setup never writes unavailable slugs"
         }
       ],

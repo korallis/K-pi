@@ -7,7 +7,11 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
-import type { ExtensionCommandContext } from "../packages/coding-agent/src/core/extensions/types.ts";
+import type {
+	ExtensionCommandContext,
+	ToolCallEvent,
+	ToolCallEventResult,
+} from "../packages/coding-agent/src/core/extensions/types.ts";
 import { verifyChain } from "../packages/coding-agent/src/kpi/extensions/append-log.ts";
 import { researchCellFromDocument } from "../packages/coding-agent/src/kpi/extensions/board.ts";
 import type { BusDependencies } from "../packages/coding-agent/src/kpi/extensions/bus/spawn.ts";
@@ -15,6 +19,8 @@ import { registerControlPlane } from "../packages/coding-agent/src/kpi/extension
 import {
 	CONVENTIONAL_COMMIT_PATTERN,
 	findJobCommit,
+	type LoopDependencies,
+	type PullRequestRecord,
 	verifyShippedCommit,
 } from "../packages/coding-agent/src/kpi/extensions/gated-loop.ts";
 import {
@@ -22,6 +28,7 @@ import {
 	GraphEngine,
 } from "../packages/coding-agent/src/kpi/extensions/graph/engine.ts";
 import type { GraphDefinition } from "../packages/coding-agent/src/kpi/extensions/graph/schema.ts";
+import { registerPolicy } from "../packages/coding-agent/src/kpi/extensions/policy.ts";
 import { reviewerBusDependencies } from "./helpers/reviewer-bus.ts";
 
 const execFile = promisify(execFileCallback);
@@ -141,6 +148,8 @@ function loopSessions(
 		 * written onto `task.json.playbook` before implement.
 		 */
 		playbook?: string;
+		/** What the ship node does with its prompt, in place of the plain local commit. */
+		ship?: (prompt: string, trailer: string) => Promise<void>;
 	} = {},
 ): GraphAgentSessionFactory {
 	let sessionNumber = 0;
@@ -220,8 +229,12 @@ function loopSessions(
 						// The commit carries the trailer the prompt asked for: that is how
 						// the control plane recognises this job's own commit.
 						const trailer = /^KPI-Job: [^\s`]+$/mu.exec(prompt)?.[0] ?? "";
-						await git(directory, "add", "-A");
-						await git(directory, "commit", "-m", `feat(health): add healthcheck endpoint\n\n${trailer}`);
+						if (options.ship !== undefined) {
+							await options.ship(prompt, trailer);
+						} else {
+							await git(directory, "add", "-A");
+							await git(directory, "commit", "-m", `feat(health): add healthcheck endpoint\n\n${trailer}`);
+						}
 					}
 				},
 				getLastAssistantText: () => lastAssistantText,
@@ -238,6 +251,7 @@ function commandHarness(
 	jobId: string,
 	confirmations: string[],
 	busDependencies: BusDependencies = reviewerBusDependencies(),
+	dependencies: Pick<LoopDependencies, "readPullRequest"> = {},
 ): {
 	commands: Map<string, CommandHandler>;
 	context: ExtensionCommandContext;
@@ -255,6 +269,7 @@ function commandHarness(
 		createAgentSession: factory,
 		busDependencies,
 		jobId,
+		...dependencies,
 	});
 	const context = {
 		cwd: directory,
@@ -332,6 +347,314 @@ test("loop on healthcheck fixture reaches human confirm with green gates", async
 		assert.equal(terminals[0]?.status, "DONE");
 		assert.equal(terminals[0]?.job_id, jobId);
 		assert.equal(await verifyChain(join(directory, ".kpi", "runs", jobId, "events.jsonl")), true);
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+type PolicyHook = (
+	event: ToolCallEvent,
+	context: { cwd: string; ui: { confirm: (title: string, question: string) => Promise<boolean> } },
+) => Promise<ToolCallEventResult | undefined>;
+
+/**
+ * The policy hook exactly as the harness registers it for a graph node's
+ * session: it reads the live job's mode, release flag, and bounds from the run
+ * store itself. What it answers here is what a real ship node's bash tool
+ * would have been allowed to do.
+ */
+function livePolicyHook(): PolicyHook {
+	let hook: PolicyHook | undefined;
+	registerPolicy({
+		on(event: string, handler: unknown) {
+			if (event === "tool_call") hook = handler as PolicyHook;
+		},
+	} as unknown as Parameters<typeof registerPolicy>[0]);
+	assert.ok(hook, "registerPolicy must register a tool_call hook");
+	return hook;
+}
+
+function bashCall(command: string): ToolCallEvent {
+	return { type: "tool_call", toolCallId: "call-ship", toolName: "bash", input: { command } };
+}
+
+/** A bare `origin` the fixture can push to, with no GitHub behind it. */
+async function bareOrigin(directory: string): Promise<string> {
+	const origin = await mkdtemp(join(tmpdir(), "k-pi-origin-"));
+	await git(origin, "init", "--bare", "--initial-branch=main");
+	await git(directory, "remote", "add", "origin", origin);
+	return origin;
+}
+
+/** The ship node as the prompt asks for it, every command judged by the live policy first. */
+function shipThroughPolicy(
+	directory: string,
+	branch: string,
+	hook: PolicyHook,
+	judged: { command: string; blocked: boolean; reason?: string }[],
+	prompts: string[],
+	openPullRequest: () => void,
+): (prompt: string, trailer: string) => Promise<void> {
+	const context = {
+		cwd: directory,
+		ui: {
+			confirm: async (title: string, question: string) => {
+				prompts.push(`${title}\n${question}`);
+				return true;
+			},
+		},
+	};
+	const judge = async (command: string): Promise<boolean> => {
+		const result = await hook(bashCall(command), context);
+		judged.push({ command, blocked: result?.block === true, reason: result?.reason });
+		return result?.block !== true;
+	};
+	return async (prompt, trailer) => {
+		// The prompt names the branch, the exact push, and the exact pull request command.
+		assert.match(prompt, new RegExp(`job branch ${branch.replaceAll("/", "\\/")}`, "u"));
+		assert.ok(prompt.includes(`git push -u origin ${branch}`), prompt);
+		assert.ok(prompt.includes(`gh pr create --head ${branch} --fill`), prompt);
+		assert.equal(
+			await git(directory, "branch", "--show-current"),
+			branch,
+			"the control plane put the worktree on the job branch",
+		);
+
+		// What a ship node must never be able to do, even now that release is approved.
+		for (const forbidden of [
+			"git push origin main",
+			`git push --force origin ${branch}`,
+			`git push origin --delete ${branch}`,
+			"git push origin v0.2.1",
+			`git push upstream ${branch}`,
+			"gh pr merge --auto --merge",
+		]) {
+			assert.equal(await judge(forbidden), false, `${forbidden} must be blocked`);
+		}
+
+		assert.ok(await judge("git add -A"));
+		await git(directory, "add", "-A");
+		const message = `feat(health): add healthcheck endpoint\n\n${trailer}`;
+		assert.ok(await judge(`git commit -m "${message.replaceAll("\n", "\\n")}"`));
+		await git(directory, "commit", "-m", message);
+		assert.ok(await judge(`git push -u origin ${branch}`));
+		await git(directory, "push", "-u", "origin", branch);
+		assert.ok(await judge(`gh pr create --head ${branch} --fill`));
+		openPullRequest();
+		assert.ok(await judge(`gh pr view ${branch} --json url,state`));
+	};
+}
+
+async function runDocument(directory: string, jobId: string, name: string): Promise<Record<string, unknown>> {
+	return JSON.parse(await readFile(join(directory, ".kpi", "runs", jobId, name), "utf8")) as Record<string, unknown>;
+}
+
+test("the ship node commits on the job branch, pushes only that branch, and opens the pull request", async () => {
+	const directory = await fixture();
+	const origin = await bareOrigin(directory);
+	const jobId = "20260903-healthcheck-ship";
+	const branch = `kpi/${jobId}`;
+	const executed: string[] = [];
+	const confirmations: string[] = [];
+	const judged: { command: string; blocked: boolean; reason?: string }[] = [];
+	const prompts: string[] = [];
+	const pullRequests = new Map<string, PullRequestRecord>();
+	const pullRequestLookups: string[] = [];
+	try {
+		const seedHead = await git(directory, "rev-parse", "HEAD");
+		const harness = commandHarness(
+			directory,
+			loopSessions(directory, executed, {
+				jobId,
+				ship: shipThroughPolicy(directory, branch, livePolicyHook(), judged, prompts, () => {
+					pullRequests.set(branch, { url: "https://github.com/example/fixture/pull/1", state: "OPEN" });
+				}),
+			}),
+			jobId,
+			confirmations,
+			reviewerBusDependencies(),
+			{
+				readPullRequest: async (_projectRoot, head) => {
+					pullRequestLookups.push(head);
+					return pullRequests.get(head);
+				},
+			},
+		);
+		await harness.commands.get("loop")!(await readFile(join(directory, "task.txt"), "utf8"), harness.context);
+
+		const state = await runDocument(directory, jobId, "state.json");
+		assert.equal(state.status, "DONE", `${state.reason}\n${harness.notifications.join("\n")}`);
+		assert.deepEqual(confirmations, ["Approve gated release"]);
+
+		// The contract froze the branch rule, not "Never push".
+		const task = await runDocument(directory, jobId, "task.json");
+		assert.equal((task.constraints as string[]).includes("Never push"), false);
+		assert.ok((task.constraints as string[]).some((constraint) => constraint.includes(branch)));
+
+		// Every forbidden push was blocked by the live policy; the prescribed steps ran.
+		const blocked = judged.filter((entry) => entry.blocked).map((entry) => entry.command);
+		assert.deepEqual(blocked, [
+			"git push origin main",
+			`git push --force origin ${branch}`,
+			`git push origin --delete ${branch}`,
+			"git push origin v0.2.1",
+			`git push upstream ${branch}`,
+			"gh pr merge --auto --merge",
+		]);
+		for (const entry of judged.filter((item) => item.blocked)) {
+			assert.match(entry.reason ?? "", /Policy denied/u, entry.command);
+		}
+		assert.deepEqual(
+			judged.filter((entry) => !entry.blocked).map((entry) => entry.command.split(" ").slice(0, 3).join(" ")),
+			["git add -A", "git commit -m", `git push -u`, "gh pr create", "gh pr view"],
+		);
+		// The gated commit still asked, with the real diff stat; nothing else did.
+		assert.equal(prompts.length, 1, prompts.join("\n---\n"));
+		assert.match(prompts[0], /^Approve git commit\n/u);
+		assert.match(prompts[0], /files changed/u);
+
+		// The commit is on the job branch, the job branch is on origin, and the
+		// marker records the branch and the pull request.
+		assert.equal(await git(directory, "branch", "--show-current"), branch);
+		const head = await git(directory, "rev-parse", "HEAD");
+		assert.equal(await git(directory, "rev-list", "--count", `${seedHead}..HEAD`), "1");
+		assert.equal(
+			await git(origin, "rev-parse", `refs/heads/${branch}`),
+			head,
+			"origin carries the job branch at HEAD",
+		);
+		await assert.rejects(git(origin, "rev-parse", "--verify", "--quiet", "refs/heads/main"), "main was never pushed");
+		assert.deepEqual(pullRequestLookups, [branch]);
+		const marker = await runDocument(directory, jobId, "ship.json");
+		assert.equal(marker.job_id, jobId);
+		assert.equal(marker.head, head);
+		assert.equal(marker.branch, branch);
+		assert.equal(marker.pr_url, "https://github.com/example/fixture/pull/1");
+		assert.equal(await verifyChain(join(directory, ".kpi", "runs", jobId, "events.jsonl")), true);
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+		await rm(origin, { recursive: true, force: true });
+	}
+});
+
+test("a pushed job branch with no pull request stops BLOCKED and finishes on resume without a second commit", async () => {
+	const directory = await fixture();
+	const origin = await bareOrigin(directory);
+	const jobId = "20260903-healthcheck-no-pr";
+	const branch = `kpi/${jobId}`;
+	const executed: string[] = [];
+	const pullRequests = new Map<string, PullRequestRecord>();
+	const readPullRequest = async (_projectRoot: string, head: string) => pullRequests.get(head);
+	try {
+		const seedHead = await git(directory, "rev-parse", "HEAD");
+		const first = commandHarness(
+			directory,
+			loopSessions(directory, executed, {
+				jobId,
+				ship: async (_prompt, trailer) => {
+					await git(directory, "add", "-A");
+					await git(directory, "commit", "-m", `feat(health): add healthcheck endpoint\n\n${trailer}`);
+					await git(directory, "push", "-u", "origin", branch);
+					// gh pr create failed: signed out, say. No pull request exists.
+				},
+			}),
+			jobId,
+			[],
+			reviewerBusDependencies(),
+			{ readPullRequest },
+		);
+		await first.commands.get("loop")!(await readFile(join(directory, "task.txt"), "utf8"), first.context);
+		const blocked = await runDocument(directory, jobId, "state.json");
+		assert.equal(blocked.status, "BLOCKED");
+		assert.match(String(blocked.reason), new RegExp(`No pull request is open for ${branch}`, "u"));
+		assert.match(String(blocked.reason), /gh pr create/u);
+		await assert.rejects(readFile(join(directory, ".kpi", "runs", jobId, "ship.json"), "utf8"), { code: "ENOENT" });
+		const shipped = await git(directory, "rev-parse", "HEAD");
+
+		// The operator opens the pull request by hand and resumes the job.
+		pullRequests.set(branch, { url: "https://github.com/example/fixture/pull/2", state: "OPEN" });
+		const resumeExecuted: string[] = [];
+		const second = commandHarness(
+			directory,
+			loopSessions(directory, resumeExecuted, { jobId }),
+			jobId,
+			[],
+			reviewerBusDependencies(),
+			{ readPullRequest },
+		);
+		await second.commands.get("kpi")!(jobId, second.context);
+		const done = await runDocument(directory, jobId, "state.json");
+		assert.equal(done.status, "DONE", `${done.reason}\n${second.notifications.join("\n")}`);
+		assert.equal(resumeExecuted.includes("ship"), false, "the ship node never ran again");
+		assert.equal(await git(directory, "rev-parse", "HEAD"), shipped, "no second commit");
+		assert.equal(await git(directory, "rev-list", "--count", `${seedHead}..HEAD`), "1");
+		const marker = await runDocument(directory, jobId, "ship.json");
+		assert.equal(marker.head, shipped);
+		assert.equal(marker.branch, branch);
+		assert.equal(marker.pr_url, "https://github.com/example/fixture/pull/2");
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+		await rm(origin, { recursive: true, force: true });
+	}
+});
+
+test("a ship that never pushed its job branch is BLOCKED naming that branch", async () => {
+	const directory = await fixture();
+	const origin = await bareOrigin(directory);
+	const jobId = "20260903-healthcheck-unpushed";
+	const branch = `kpi/${jobId}`;
+	try {
+		const harness = commandHarness(
+			directory,
+			loopSessions(directory, [], { jobId }),
+			jobId,
+			[],
+			reviewerBusDependencies(),
+			{ readPullRequest: async () => undefined },
+		);
+		await harness.commands.get("loop")!(await readFile(join(directory, "task.txt"), "utf8"), harness.context);
+		const state = await runDocument(directory, jobId, "state.json");
+		assert.equal(state.status, "BLOCKED");
+		assert.equal(state.reason, `Job branch ${branch} was not pushed to origin`);
+		assert.equal(await git(directory, "branch", "--show-current"), branch);
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+		await rm(origin, { recursive: true, force: true });
+	}
+});
+
+test("a provider refusal becomes actionable NEEDS_HUMAN with the provider's reason", async () => {
+	const directory = await fixture();
+	const jobId = "20260903-provider-refusal";
+	const providerFailure =
+		'400 {"type":"error","error":{"message":"You\'re out of extra usage. Add more and keep going."}}';
+	const factory: GraphAgentSessionFactory = async (options) => ({
+		session: {
+			sessionId: "provider-refusal",
+			async prompt() {},
+			getLastAssistantError: () => providerFailure,
+			getActiveToolNames: () => [...(options.tools ?? [])],
+			dispose() {},
+		},
+	});
+	try {
+		const confirmations: string[] = [];
+		const harness = commandHarness(directory, factory, jobId, confirmations);
+		await harness.commands.get("kpi")!("fix the account integration", harness.context);
+
+		const state = JSON.parse(await readFile(join(directory, ".kpi", "runs", jobId, "state.json"), "utf8")) as {
+			status: string;
+			reason: string;
+		};
+		assert.equal(state.status, "NEEDS_HUMAN", harness.notifications.join("\n"));
+		assert.match(state.reason, /out of extra usage/u);
+		assert.doesNotMatch(state.reason, /stack\.json is missing|assistant response text is unavailable/u);
+		assert.ok(
+			harness.notifications.some((message) => /NEEDS_HUMAN.*out of extra usage/iu.test(message)),
+			`operator notification must include the actionable cause: ${harness.notifications.join("\n")}`,
+		);
+		assert.deepEqual(confirmations, ["K-π provider recovery"]);
+		assert.ok(harness.notifications.some((message) => message.includes(`/kpi ${jobId}`)));
 	} finally {
 		await rm(directory, { recursive: true, force: true });
 	}

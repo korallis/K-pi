@@ -61,9 +61,11 @@ import {
 } from "../packages/coding-agent/src/kpi/extensions/bus/launch.ts";
 import { WorkerProtocol } from "../packages/coding-agent/src/kpi/extensions/bus/protocol.ts";
 import {
+	hasReadOnlyShell,
 	hasTestShellOnly,
 	isWriterToolSet,
 	MUTATION_TOOLS,
+	READ_ONLY_SHELL_ROLES,
 	ROLE_CONTRACT_FILE,
 	ROLE_RESULT_FILE,
 	ROLE_TOOLS,
@@ -609,20 +611,24 @@ test("no role that publishes a contract holds a mutation tool", () => {
 	assert.equal(isWriterToolSet(ROLE_TOOLS.explorer), false);
 });
 
-test("reviewer and tester both hold the test shell, and only they are restricted", () => {
+test("reviewer and tester hold gate-only shells while explorer holds a read-only shell", () => {
 	assert.ok(ROLE_TOOLS.reviewer.includes("bash"), "a reviewer that cannot run the gates cannot review red tests");
 	assert.ok(ROLE_TOOLS.tester.includes("bash"));
+	assert.ok(ROLE_TOOLS.explorer.includes("bash"), "an explorer needs shell inspection without mutation authority");
 	assert.deepEqual([...TEST_SHELL_ROLES].sort(), ["reviewer", "tester"]);
+	assert.deepEqual([...READ_ONLY_SHELL_ROLES], ["explorer"]);
 	assert.equal(hasTestShellOnly("reviewer"), true);
 	assert.equal(hasTestShellOnly("tester"), true);
-	assert.equal(hasTestShellOnly("implementer"), false);
-	assert.equal(hasTestShellOnly("arena"), false);
+	assert.equal(hasTestShellOnly("explorer"), false);
+	assert.equal(hasReadOnlyShell("explorer"), true);
+	assert.equal(hasReadOnlyShell("reviewer"), false);
+	assert.equal(hasReadOnlyShell("implementer"), false);
 });
 
 test("a caller may narrow a role's tools and may never widen them", () => {
 	assert.deepEqual(resolveRoleTools("reviewer", ["read", "write_contract"]), ["read", "write_contract"]);
 	assert.throws(() => resolveRoleTools("reviewer", ["read", "write"]), /may not hold write/u);
-	assert.throws(() => resolveRoleTools("explorer", ["bash"]), /may not hold bash/u);
+	assert.deepEqual(resolveRoleTools("explorer", ["read", "bash"]), ["read", "bash"]);
 	assert.throws(() => resolveRoleTools("tester", ["claim_path"]), /may not hold claim_path/u);
 	assert.deepEqual(resolveRoleTools("explorer"), [...ROLE_TOOLS.explorer]);
 });
@@ -3144,6 +3150,22 @@ test("a role with no test shell carries no gates, however the descriptor is writ
 			const identity = await resolveWorkerIdentity(fixture.directory, descriptorEnv(forged));
 			assert.equal(identity?.qualityGates, undefined, `${role} gets none even when the descriptor supplies them`);
 		}
+	} finally {
+		await rm(fixture.directory, { recursive: true, force: true });
+	}
+});
+
+test("explorer bash allows inspection and refuses mutation", async () => {
+	const fixture = await jobFixture();
+	try {
+		const harness = await workerHarness(fixture, "explorer");
+		assert.equal(
+			await harness.guard("bash", { command: "rg -n login packages/coding-agent/src | head -20" }),
+			undefined,
+		);
+		const mutation = await harness.guard("bash", { command: "printf x > changed.txt" });
+		assert.equal(mutation?.block, true);
+		assert.match(mutation?.reason ?? "", /explorer workers may only run read-only shell commands/u);
 	} finally {
 		await rm(fixture.directory, { recursive: true, force: true });
 	}

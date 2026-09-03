@@ -110,7 +110,7 @@ Each AC is written so a later agent can turn it into a check. IDs are stable.
 - **AC-02.3** If `ac.quality != executable`, mode stays `gated` even if autopilot was requested without `--mode autopilot` force.
 - **AC-02.4** Implementer tools include write/edit/bash. Planner, reviewer, and tester hold no general `write` or `edit`; their product tools are read-only (`read`,`grep`,`find`,`ls`). A read-only node publishes its run contract only through `write_contract` (`spec.md` §5 REQ-RS-06).
 - **AC-02.5** After isolated review `approved: true`, a human confirm dialog is shown before `git commit`.
-- **AC-02.6** `git push` is never run by the ship node in v1.
+- **AC-02.6** The ship node commits on the job branch `kpi/<job_id>`, pushes only that branch to `origin` after release approval, and opens a pull request; it never pushes another branch, force-pushes, pushes tags, deletes a branch, or merges. Merging is the `auto-merge` workflow's after the required check passes.
 - **AC-02.7** Board widget shows `MODE gated`, current `STAGE`, `ROUND n/max`, and which run files exist.
 
 ### US-03 — Start from a frozen plan
@@ -142,7 +142,7 @@ Each AC is written so a later agent can turn it into a check. IDs are stable.
 - **AC-05.3** `round >= maxRounds` (default 3) → `EXHAUSTED`.
 - **AC-05.4** Write outside `write_allow` → `UNSAFE`.
 - **AC-05.5** Untestable reviewer issue → `NEEDS_HUMAN`.
-- **AC-05.6** Retry of a transient 429 is not a new round. A new round requires new verifier evidence.
+- **AC-05.6** Retry of a transient 429 is not a new round. A new round requires new verifier evidence. A provider refusal that cannot fail over ends `NEEDS_HUMAN` with the real reason, a recovery question, and the exact resume command.
 
 ### US-06 — Control-board TUI
 
@@ -187,13 +187,13 @@ Each AC is written so a later agent can turn it into a check. IDs are stable.
 **Story.** As an operator, I attach multiple Anthropic / OpenAI / Codex / xAI / z.ai / Kimi / Cursor seats and work continues when one window dies.
 
 - **AC-10.1** `~/.kpi/agent/accounts.json` holds pools and slots. Secrets are not in the repo.
-- **AC-10.2** `/accounts login anthropic` adds a slot without deleting existing Anthropic slots.
+- **AC-10.2** `/login anthropic` and `/accounts login anthropic` add a slot without deleting existing Anthropic slots; the `/login` subscription path activates the newly authenticated slot. Expiring OAuth credentials refresh independently per slot, never by substituting the provider's current `auth.json` credential.
 - **AC-10.3** Official `/model` ids stay `anthropic/<official-id>`. No `anthropic-account-2/claude-…` duplicate catalog.
-- **AC-10.4** On classified usage-limit (429/402/403-quota), the slot cools until parsed reset (else default 5h) and the next healthy sibling of the same family is used with the same model and thinking level.
-- **AC-10.5** Cross-family fallback happens only when the whole family is cooling. Default order: anthropic → openai-codex → xai → zai → kimi-coding → cursor.
+- **AC-10.4** On classified usage-limit (429/402/403-quota or a finalized quota-shaped 400 assistant error), the slot cools until parsed reset (else default 5h) and the next healthy sibling of the same family is used with the same model and thinking level.
+- **AC-10.5** Cross-family fallback happens only when the whole family is cooling. `/setup-kstack` derives an exact live-model fallback order from `model-ladder.md`, lets the operator edit it, and persists it; the default provider chain applies until setup writes one.
 - **AC-10.6** An exhausted sibling is never selected while a healthy sibling exists (regression of the known Oh My Pi Codex bug).
-- **AC-10.7** Widget lists remaining % per slot.
-- **AC-10.8** Session stickiness holds until the pinned slot is exhausted, then releases (prompt-cache friendly).
+- **AC-10.7** Widget lists remaining % per slot, including Codex subscription used-percent windows converted to remaining percent.
+- **AC-10.8** Session stickiness yields at 5% remaining to preserve the current provider/model on a healthier sibling; otherwise it holds until exhaustion (prompt-cache friendly).
 
 ### US-11 — Official catalogs stay live
 
@@ -216,7 +216,7 @@ Each AC is written so a later agent can turn it into a check. IDs are stable.
 
 **Story.** As an operator, irreversible external actions cannot happen because a prompt “remembered” not to.
 
-- **AC-13.1** `tool_call` hook denies `git push`, force-push, `rm -rf`, production deploy, and writes outside `write_allow`.
+- **AC-13.1** `tool_call` hook denies every push except `git push [-u] origin kpi/<branch>` inside a job after `release.approved` (so `main`, force-push, tag pushes, branch deletion, and other remotes are denied), `gh pr merge`, `rm -rf`, production deploy, and writes outside `write_allow`.
 - **AC-13.2** In gated mode, `git commit` on the job branch asks confirm with diff stat.
 - **AC-13.3** In autopilot, `git commit` is allowed only after `release.approved == true`.
 - **AC-13.4** Unknown commands: confirm in gated, deny in autopilot.
@@ -277,7 +277,7 @@ Reference files: `visual/omp-statusbar-codemod.jpg`, `visual/omp-statusbar-colla
 - **AC-18.2** A slug not in that set cannot be written to `~/.kpi/agent/kstack/models.json`.
 - **AC-18.3** No Cursor Cloud Agent target is listed.
 - **AC-18.4** Re-running setup overwrites the file idempotently.
-- **AC-18.5** Setup prints an auto map from `model-ladder.md` against the live set. Operator applies or edits before write.
+- **AC-18.5** Setup prints an auto role map and ordered `fallback_models` from `model-ladder.md` against the live set. Operator applies or edits both before write. The saved order is exact: same-provider slots are exhausted first, then cross-provider failover follows that model order.
 - **AC-18.6** Suggestion never writes a slug absent from the live filter.
 
 ### US-19 — K-mode follows a playbook and the graph
@@ -325,7 +325,7 @@ Source: https://github.com/alirezarezvani/claude-skills/blob/main/engineering/mi
 
 **Story.** As an operator, review/arena/swarm work runs as background K-π sessions that message each other. Not subagents.
 
-- **AC-23.1** `spawn_background` starts a `kpi --mode rpc` (or SDK session) with its own session file under `.kpi/runs/<job>/agents/`.
+- **AC-23.1** `spawn_background` starts a `kpi --mode rpc` (or SDK session) with its own session file under `.kpi/runs/<job>/agents/`. Explorer workers may use `bash` only when the shared classifier proves every segment read-only; mutation and project-code execution remain denied.
 - **AC-23.2** `communicate` delivers via `sendUserMessage` / RPC `prompt` with `deliverAs` steer|followUp.
 - **AC-23.3** Parent reads `verdict.json` / `evidence.json`, not the worker transcript.
 - **AC-23.4** Max 2 live workers. Third spawn is denied.

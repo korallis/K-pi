@@ -94,11 +94,11 @@ test("the source CLI reports K-π's own version, not the pinned upstream Pi vers
 	};
 	const upstream = JSON.parse(await readFile(new URL("upstream.json", repoRoot), "utf8")) as { version: string };
 
-	assert.equal(version, "0.2.0", "the K-π CLI package carries the fork's own version");
+	assert.equal(version, "0.2.1", "the K-π CLI package carries the fork's own version");
 	assert.notEqual(version, upstream.version, "K-π's version must not track the pinned Pi release");
 
 	const { stdout } = await runCli(["--version"]);
-	assert.equal(stdout.trim(), "0.2.0");
+	assert.equal(stdout.trim(), "0.2.1");
 });
 
 test("the source CLI documents itself as kpi, not pi", async () => {

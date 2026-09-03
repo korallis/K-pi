@@ -7,7 +7,8 @@ export type ResponseHeaders = Readonly<Record<string, string | undefined>>;
  * triple. Only headers a provider publishes in its own docs appear here:
  *
  * - Anthropic `anthropic-ratelimit-*` (requests, tokens, input, output, unified)
- * - OpenAI and Codex `x-ratelimit-*-requests` / `x-ratelimit-*-tokens`
+ * - OpenAI API `x-ratelimit-*-requests` / `x-ratelimit-*-tokens`
+ * - Codex subscription `x-codex-{primary,secondary}-used-percent` windows
  * - the IETF `RateLimit-*` draft, which xAI and z.ai emit
  * - the widely used generic `x-ratelimit-*`
  */
@@ -49,6 +50,27 @@ const LIMIT_FAMILIES: readonly { limit: string; remaining: string; reset: string
 	},
 	{ limit: "ratelimit-limit", remaining: "ratelimit-remaining", reset: "ratelimit-reset" },
 	{ limit: "x-ratelimit-limit", remaining: "x-ratelimit-remaining", reset: "x-ratelimit-reset" },
+];
+
+/** Codex subscription windows report used percent rather than remaining counts. */
+const USED_PERCENT_FAMILIES: readonly {
+	used: string;
+	resetAt: string;
+	resetAfter: string;
+	windowMinutes: string;
+}[] = [
+	{
+		used: "x-codex-primary-used-percent",
+		resetAt: "x-codex-primary-reset-at",
+		resetAfter: "x-codex-primary-reset-after-seconds",
+		windowMinutes: "x-codex-primary-window-minutes",
+	},
+	{
+		used: "x-codex-secondary-used-percent",
+		resetAt: "x-codex-secondary-reset-at",
+		resetAfter: "x-codex-secondary-reset-after-seconds",
+		windowMinutes: "x-codex-secondary-window-minutes",
+	},
 ];
 
 /** Windows a provider states directly rather than as a reset instant. */
@@ -115,6 +137,7 @@ function parseReset(raw: string | undefined, nowMs: number): number | undefined 
 export function readUsageHeaders(headers: ResponseHeaders, nowMs: number): UsageReading | undefined {
 	let remainingPercent: number | undefined;
 	let resetAt: number | undefined;
+	let bindingWindow: string | undefined;
 
 	for (const family of LIMIT_FAMILIES) {
 		const limit = parseCount(headerValue(headers, family.limit));
@@ -129,15 +152,31 @@ export function readUsageHeaders(headers: ResponseHeaders, nowMs: number): Usage
 		}
 	}
 
+	for (const family of USED_PERCENT_FAMILIES) {
+		const used = parseCount(headerValue(headers, family.used));
+		if (used === undefined) continue;
+		const percent = Math.max(0, Math.min(100, Math.round(100 - used)));
+		if (remainingPercent === undefined || percent < remainingPercent) {
+			remainingPercent = percent;
+			const resetAfterSeconds = parseCount(headerValue(headers, family.resetAfter));
+			resetAt =
+				parseReset(headerValue(headers, family.resetAt), nowMs) ??
+				(resetAfterSeconds === undefined ? undefined : nowMs + resetAfterSeconds * 1_000);
+			const windowMinutes = headerValue(headers, family.windowMinutes);
+			bindingWindow = parseCount(windowMinutes) === undefined ? undefined : `${windowMinutes}m`;
+		}
+	}
+
 	// `retry-after` states when the slot recovers even when no family is present.
 	const retryAfter = parseReset(headerValue(headers, "retry-after"), nowMs);
 	if (resetAt === undefined && retryAfter !== undefined) {
 		resetAt = retryAfter;
 	}
 
-	const window = WINDOW_HEADERS.map((name) => headerValue(headers, name)).find(
+	const genericWindow = WINDOW_HEADERS.map((name) => headerValue(headers, name)).find(
 		(value) => value !== undefined && value.length > 0,
 	);
+	const window = genericWindow ?? bindingWindow;
 
 	if (remainingPercent === undefined && resetAt === undefined && window === undefined) {
 		return undefined;

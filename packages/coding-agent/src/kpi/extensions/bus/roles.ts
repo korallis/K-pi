@@ -22,7 +22,7 @@ export const ROLE_TOOLS: Record<WorkerRole, readonly string[]> = {
 	reviewer: ["read", "grep", "find", "ls", "bash", "write_contract"],
 	tester: ["read", "grep", "find", "ls", "bash", "write_contract"],
 	arena: ["read", "grep", "find", "ls", "bash", "write", "edit", "claim_path", "release_path"],
-	explorer: ["read", "grep", "find", "ls"],
+	explorer: ["read", "grep", "find", "ls", "bash"],
 };
 
 /**
@@ -42,9 +42,17 @@ export const ROLE_TOOLS: Record<WorkerRole, readonly string[]> = {
  */
 export const TEST_SHELL_ROLES: ReadonlySet<WorkerRole> = new Set<WorkerRole>(["reviewer", "tester"]);
 
+/** Roles whose shell accepts only commands mechanically classified read-only. */
+export const READ_ONLY_SHELL_ROLES: ReadonlySet<WorkerRole> = new Set<WorkerRole>(["explorer"]);
+
 /** Whether this role's shell is restricted to the declared quality gates. */
 export function hasTestShellOnly(role: WorkerRole): boolean {
 	return TEST_SHELL_ROLES.has(role);
+}
+
+/** Whether this role's shell is restricted to read-only inspection commands. */
+export function hasReadOnlyShell(role: WorkerRole): boolean {
+	return READ_ONLY_SHELL_ROLES.has(role);
 }
 
 /**

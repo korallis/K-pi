@@ -323,7 +323,7 @@ Autopilot load rule:
 | `EXHAUSTED` | maxRounds / maxCostUsd / timeoutMs / maxNodeRuns |
 | `NO_PROGRESS` | Repeated output_fingerprint or same failing AC ids two rounds |
 | `UNSAFE` | Write outside bounds, policy deny, secret-shaped path |
-| `NEEDS_HUMAN` | AC changed, untestable review issue, risk left repo-local, or a healthy research service that supplies fewer than two distinct external sources |
+| `NEEDS_HUMAN` | AC changed, untestable review issue, risk left repo-local, healthy research supplied too few sources, or every configured account/model fallback refused. Provider failures preserve the real reason and prompt with the resume command. |
 
 Default caps: `maxRounds=3`, `maxCostUsd=5`, `timeoutMs=1800000`, `maxConcurrency=2`.
 
@@ -333,7 +333,7 @@ Retry ≠ round. Transient transport/429/timeout: same round key, max 2 retries,
 
 Node types we implement: `agent | set | human`.
 
-Context modes for agent nodes: `isolated | thread`. Default thread key = node id. Reviewer and planner and ac-compiler and specify are `isolated` + `readOnly`. Implementer is `thread` key `coder`.
+Context modes for agent nodes: `isolated | thread`. Default thread key = node id. Reviewer and planner and ac-compiler and specify are `isolated` + `readOnly`. Implementer is `thread` key `coder`. A node with no explicit model inherits the parent session's provider, model id, and thinking level; it never silently resolves a different paid provider.
 
 ### coding-loop.gated.json (normative shape)
 
@@ -387,7 +387,7 @@ only if all evidence flags are true. Engine evaluates this as data, not as model
 | review | read, grep, find, ls, `write_contract` → `verdict.json` | read-only for product files |
 | human | none | n/a |
 | release.set | set | n/a |
-| ship | bash: `git add` `git commit` on job branch only | false |
+| ship | bash: `git add`, `git commit`, `git push -u origin kpi/<job_id>`, `gh pr create --head kpi/<job_id>` on the job branch the control plane checked out | false |
 
 Neither `test` nor `review` receives `write` or `edit`. `write_contract` (REQ-RS-06) is their only mutation path and reaches exactly one declared file.
 
@@ -548,7 +548,6 @@ Custom entry renderers for EVT types listed above.
 ```json
 {
   "deny": [
-    "git push",
     "git push --force",
     "git reset --hard",
     "rm -rf",
@@ -568,7 +567,7 @@ Custom entry renderers for EVT types listed above.
 }
 ```
 
-A file written before `allow` and the `chat` keys existed still loads: missing keys take these defaults. The file is seeded at session start only in a project directory (one with `.kpi/` or a git root), and a missing file reads as the default without being created.
+A file written before `allow` and the `chat` keys existed still loads: missing keys take these defaults, and the `git push` entry every earlier template seeded is dropped on load because pushing is a structural rule (below), not a deny entry. The file is seeded at session start only in a project directory (one with `.kpi/` or a git root), and a missing file reads as the default without being created.
 
 Hook: `pi.on("tool_call", …)`.
 
@@ -584,16 +583,18 @@ A live job whose `task.json` will not parse resolves to gated with no bounds, ne
 
 ### Order of evaluation
 
+First, any command containing `git push` is judged by shape alone and never confirmed or allowlisted: exactly one unchained `git push [-u|--set-upstream|-q|-v] origin kpi/<branch>` is allowed inside a job after `release.approved`; every other push — another branch (`main` included), a force (`--force`, `-f`, `--force-with-lease`, a `+` refspec), `--delete`, `--tags`, `--all`, `--mirror`, a colon refspec, a tag, another remote, no refspec, a chained or `-C` form, or chat scope — is denied with the reason named.
+
 Deny if, in every scope:
 
-- command matches the deny list, is a `git push`, a recursive forced `rm`, or a production/publish/dependency-adding command
+- command matches the deny list, is a recursive forced `rm`, a `gh pr merge`, or a production/publish/dependency-adding command
 - a `write_contract` call whose target is not the declared contract path for that agent, job, and role, or whose payload fails `SCH-verdict` / `SCH-evidence`
 - path names a reserved run artifact (`verdict.json`, `release.approved`, `ship.json`) or the authoritative knowledge graph
 - path looks like `.env`, `id_rsa`, `auth.json`, `accounts.secrets.json` — read or written, `write`/`edit` or shell
 
 Then, in a job scope only, deny a shell write target outside the active job's `write_allow`.
 
-Then, in order: a standalone `git commit` follows `commit.<scope>`; an exact `quality_gates` command is allowed; a command every segment of which the read-only classifier accepts is allowed; an exact entry of `allow[]` is allowed; anything else is unknown and follows `unknown.<scope>`.
+Then, in order: a standalone `git commit` follows `commit.<scope>`; in a job after `release.approved`, a standalone `git add` and a standalone `gh pr create` (whose `--head`, when given, is a `kpi/*` branch) are allowed, and before it `gh pr create` is denied; an exact `quality_gates` command is allowed; a command every segment of which the read-only classifier accepts is allowed (`gh pr view|list|status|checks|diff`, `gh auth status`, `gh repo view`, `gh run list|view` included); an exact entry of `allow[]` is allowed; anything else is unknown and follows `unknown.<scope>`.
 
 ### Read-only classifier (`shell-classifier.ts`)
 
@@ -645,7 +646,7 @@ Local pools use official llama.cpp (`LLAMA_BASE_URL`) or first-party `refreshMod
 
 Secrets in `~/.kpi/agent/accounts.secrets.json` keyed by `pool/slot`. Never log them. A `local` slot with no `secretRef` has no entry here.
 
-Official `~/.kpi/agent/auth.json` primary credential is imported as slot `default` if present.
+Official `~/.kpi/agent/auth.json` primary credential is imported as slot `default` if present. Subscription OAuth selected through `/login` delegates to the pooled login path, allocates a new slot when no name is supplied, and activates that slot without deleting siblings. Each OAuth slot refreshes independently before expiry; the provider's single primary `auth.json` entry is not a substitute for slot refresh.
 
 ### Official catalogs
 
@@ -653,21 +654,21 @@ Official `~/.kpi/agent/auth.json` primary credential is imported as slot `defaul
 
 Credential injection: `before_provider_headers` sets `Authorization` from the selected slot for that provider family.
 
-Detection: the global `after_provider_response` hook carries status and headers only, never a response body. Classifier in `accounts/errors.ts` treats 429, 402, and quota-shaped 403, together with `retry-after` and reset headers, as cooldown events at that layer. Body tokens such as `usage limit`, `rate_limit`, and `quota` may be classified only inside a custom fetch client that owns and safely consumes that body. Global classification never depends on body inspection.
+Detection: the global `after_provider_response` hook carries status and headers only, never a response body. Classifier in `accounts/errors.ts` treats 429, 402, and quota-shaped 403, together with `retry-after` and reset headers, as cooldown events at that layer. A custom fetch client may classify a body it owns. After a provider stream has already been consumed, the finalized assistant error may classify quota-shaped 400 text such as `out of extra usage`; no hook consumes the response body. OpenAI API count headers and Codex subscription `x-codex-{primary,secondary}-used-percent` windows populate the slot cache.
 
-Cooldown: parsed reset timestamp if present, else 5 hours. Slot is skipped while cooling.
+Cooldown: parsed reset timestamp if present, else 5 hours. Slot is skipped while cooling. A successful response reporting 5% remaining or less proactively cools that slot and moves the next request before a hard refusal.
 
 Selection order:
 
-1. Sticky slot if healthy
-2. quota-first among healthy siblings (usage readers in `accounts/usage/*`)
-3. else round-robin among healthy
-4. else cross-family fallback + `pi.setModel` to mapped equivalent
+1. Sticky slot if healthy and above the low-quota threshold
+2. quota-first among healthy siblings (usage readers and response headers in `accounts/usage/*`)
+3. else round-robin among healthy siblings
+4. only when the whole family is unavailable, follow `fallback_models` + `pi.setModel`
 5. else wait or `NEEDS_HUMAN`
 
 **REQ-PR-02** Never select a cooling slot when a healthy sibling exists.
 
-Model mapping for fallback is a table in `accounts/balancer.ts` updated when catalogs refresh (`ctx.modelRegistry.getAvailable()`). Prefer same-class: opus→strongest available, sonnet→mid, etc. If no mapping, skip that family.
+Fallback invariant: same-provider slot rotation preserves the exact provider, model id, and thinking level. Cross-provider fallback uses the exact `fallback_models` order written by `/setup-kstack`; each slug must be in the live registry intersected with configured K-π pools. If no configured live model exists for a fallback family, skip it. The older `/pool chain` remains the fallback only when `fallback_models` has never been configured.
 
 ### Anthropic warning (normative text)
 

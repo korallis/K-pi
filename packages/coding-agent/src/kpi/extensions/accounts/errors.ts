@@ -1,5 +1,5 @@
 const DEFAULT_COOLDOWN_MS = 5 * 60 * 60 * 1000;
-const QUOTA_TOKENS = /usage[ _-]?limit|rate[ _-]?limit|quota/iu;
+const QUOTA_TOKENS = /usage[ _-]?limit|rate[ _-]?limit|extra[ _-]?usage|quota/iu;
 
 /** What the global response hook carries: a status and headers, never a body. */
 export interface ProviderFailure {
@@ -46,8 +46,14 @@ function parsedReset(failure: ProviderFailure, now: number): number | undefined 
 	return undefined;
 }
 
-function classify(failure: ProviderBodyFailure, quotaText: string, now: number): CooldownClassification | undefined {
-	const quotaShaped = failure.status === 403 && QUOTA_TOKENS.test(quotaText);
+function classify(
+	failure: ProviderBodyFailure,
+	quotaText: string,
+	now: number,
+	allowQuotaBadRequest = false,
+): CooldownClassification | undefined {
+	const quotaShaped =
+		(failure.status === 403 || (allowQuotaBadRequest && failure.status === 400)) && QUOTA_TOKENS.test(quotaText);
 	if (failure.status !== 429 && failure.status !== 402 && !quotaShaped) return undefined;
 	return {
 		kind: "cooldown",
@@ -75,14 +81,19 @@ export function classifyProviderFailure(
 }
 
 /**
- * The same rules plus body tokens, for a fetch client K-π owns and whose body it
- * has already safely read. Never reachable from the global hook.
+ * The same rules plus body tokens, for a fetch client K-π owns or an assistant
+ * error message emitted after the provider stream has already been consumed.
  */
 export function classifyProviderBodyFailure(
 	failure: ProviderBodyFailure,
 	now = Date.now(),
 ): CooldownClassification | undefined {
-	return classify(failure, [failure.body, ...Object.values(failure.headers ?? {})].filter(Boolean).join(" "), now);
+	return classify(
+		failure,
+		[failure.body, ...Object.values(failure.headers ?? {})].filter(Boolean).join(" "),
+		now,
+		true,
+	);
 }
 
 export { DEFAULT_COOLDOWN_MS };

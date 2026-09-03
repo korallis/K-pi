@@ -102,6 +102,9 @@ Verified against `git diff b79e4cc..worktree`, upstream-owned paths only. `src/k
 | `src/cli.ts` | `AI_AGENT` env uses `APP_NAME` instead of literal `"pi"`; sets `PI_SKIP_VERSION_CHECK` for any non-`pi` identity so the inherited release check cannot advertise upstream Pi builds to a K-π user. |
 | `src/rpc-entry.ts` | Same `AI_AGENT = APP_NAME` substitution for the RPC entry. |
 | `src/cli/args.ts` | Help text: `update` usage line derives from `APP_NAME` and drops the literal `pi` target. |
+| `src/core/model-registry.ts` | Exposes the existing runtime-owned `login()` operation so K-π pooled login can use provider OAuth while preserving official auth storage and refresh semantics. No catalog is overlaid. |
+| `src/core/agent-session.ts` | Exposes the finalized assistant provider error to graph sessions and retries an error only when K-π's account extension diagnostic proves the route already moved to another healthy slot/model. |
+| `src/modes/interactive/interactive-mode.ts` | Subscription OAuth for a K-π pool delegates `/login` to the built-in pooled account command; non-pool OAuth and API-key login keep upstream behavior. |
 | `src/package-manager-cli.ts` | **Narrow self-update guard, no machinery deleted.** Every self-update form (`update --self`, `update --all`, `update self`, `update pi`, bare `update`) is rejected locally before any network or package-manager work, because self-update resolves the upstream Pi release and K-π is never distributed through pi.dev or a registry. `update --extensions` and `update --models` still work. The update machinery itself is untouched so upstream changes to it merge normally. |
 | `test/package-command-paths.test.ts` | Project fixtures and command help derive from `CONFIG_DIR_NAME`/`APP_NAME`. Upstream self-update cases remain gated behind `APP_NAME === "pi"`, so they resurrect on an upstream merge; K-π's local self-update refusal remains active. |
 | `test/{credential-print,package-distribution,session-file-invalid,session-manager/file-operations,stdout-cleanliness}.test.ts` | Branding and executable assertions derive from the fork identity; distribution asserts exactly the `kpi` and `k-pi` bins. |
@@ -109,8 +112,17 @@ Verified against `git diff b79e4cc..worktree`, upstream-owned paths only. `src/k
 | `test/suite/regressions/{2781-skill-collision-precedence,2791-fswatch-error-crash,8337-utf8-bom-parsing}.test.ts` | Regression fixtures derive project resource paths from `CONFIG_DIR_NAME`. |
 | `test/first-time-setup.test.ts` | Keeps upstream's first-time-setup mechanics tested under the official Pi identity and explicitly proves that the rebranded K-π distribution does not enter Pi's analytics/theme onboarding. |
 | `test/agent-session-concurrent.test.ts` | Uses in-memory credentials and condition-based streaming waits; this suite tests session concurrency, not auth-file revisions or scheduler timing. |
+| `test/agent-session-retry.test.ts` | Proves a quota refusal is retried only when K-π's pooled-account diagnostic states that routing already moved; an unchanged exhausted route is not retried. |
+| `test/version-check.test.ts` | Clears the inherited `PI_SKIP_VERSION_CHECK` before each case and restores it afterward, so K-π's parent process cannot make upstream's version-check unit cases order- or environment-dependent. |
 | `vitest.config.ts` | Excludes the vendored K-stack subtree (its maintainer tests target Bun, not Vitest) and caps workers at four so filesystem-watcher contracts are not invalidated by per-process watcher exhaustion. |
 | `tsconfig.build.json` | Excludes `src/kpi/kstack/{generated,upstream,overlay,scripts}` from the package build. |
+
+**TUI renderer — `packages/tui/`**
+
+| File | Patch |
+|---|---|
+| `src/tui-main-screen.ts` | Forces one full redraw when a growing live region first exceeds the terminal height, preventing the animated working row from being committed repeatedly into scrollback as reasoning or tool rows arrive. |
+| `test/tui-render.test.ts` | Reproduces the five-row-to-six-row overflow with a working spinner and proves the transition clears before drawing the new frame. |
 
 **Dependency refresh (2026-09-02, `fixes.md` FX-04)**
 

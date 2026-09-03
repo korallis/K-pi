@@ -72,10 +72,13 @@ describe("AgentSession retry", () => {
 		failCount?: number;
 		maxRetries?: number;
 		delayAssistantMessageEndMs?: number;
+		failureMessage?: string;
+		accountFailover?: boolean;
 	}) {
 		const failCount = options?.failCount ?? 1;
 		const maxRetries = options?.maxRetries ?? 3;
 		const delayAssistantMessageEndMs = options?.delayAssistantMessageEndMs ?? 0;
+		const failureMessage = options?.failureMessage ?? "overloaded_error";
 		let callCount = 0;
 
 		const model = getModel("anthropic", "claude-sonnet-4-5")!;
@@ -89,7 +92,11 @@ describe("AgentSession retry", () => {
 					if (callCount <= failCount) {
 						const msg = createAssistantMessage("", {
 							stopReason: "error",
-							errorMessage: "overloaded_error",
+							errorMessage: failureMessage,
+							diagnostics:
+								options?.accountFailover === true
+									? [{ type: "kpi_account_failover", timestamp: Date.now() }]
+									: undefined,
 						});
 						stream.push({ type: "start", partial: msg });
 						stream.push({ type: "error", reason: "error", error: msg });
@@ -146,6 +153,21 @@ describe("AgentSession retry", () => {
 		expect(created.getCallCount()).toBe(2);
 		expect(events).toEqual(["start:1", "end:success=true"]);
 		expect(created.session.isRetrying).toBe(false);
+	});
+
+	it("retries a non-transient quota error only after pooled routing moved", async () => {
+		const moved = await createSession({
+			failCount: 1,
+			failureMessage: "400 out of extra usage",
+			accountFailover: true,
+		});
+		await moved.session.prompt("Test");
+		expect(moved.getCallCount()).toBe(2);
+
+		moved.session.dispose();
+		const unmoved = await createSession({ failCount: 1, failureMessage: "400 out of extra usage" });
+		await unmoved.session.prompt("Test");
+		expect(unmoved.getCallCount()).toBe(1);
 	});
 
 	it("exhausts max retries and emits failure", async () => {

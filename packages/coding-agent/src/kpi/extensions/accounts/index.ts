@@ -1,5 +1,12 @@
-import type { AuthEvent, AuthPrompt, Credential, ProviderAuthInteraction } from "@earendil-works/pi-ai";
-import type { ExtensionAPI, ExtensionCommandContext } from "../../../core/extensions/types.ts";
+import type {
+	AssistantMessage,
+	AuthEvent,
+	AuthPrompt,
+	Credential,
+	ProviderAuthInteraction,
+} from "@earendil-works/pi-ai";
+import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "../../../core/extensions/types.ts";
+import { resolveFallbackModels } from "../../kstack/models.ts";
 import { appendEvent } from "../append-log.ts";
 import { DEFAULT_LOCAL_BASE_URLS, type LocalProviderId } from "../local/providers.ts";
 import type { ResearchService } from "../research/session.ts";
@@ -7,8 +14,8 @@ import { removeResearchKey, saveResearchKeys } from "../research/setup.ts";
 import { readActiveJob } from "../run-store.ts";
 import { writeResearchMode } from "../settings.ts";
 import { setFooterRouteSnapshot } from "../status-line/route-snapshot.ts";
-import { AccountBalancer, type SelectedSlot } from "./balancer.ts";
-import { classifyProviderFailure } from "./errors.ts";
+import { AccountBalancer, LOW_QUOTA_REMAINING_PERCENT, type SelectedSlot } from "./balancer.ts";
+import { classifyProviderBodyFailure, classifyProviderFailure, DEFAULT_COOLDOWN_MS } from "./errors.ts";
 import {
 	type AccountsDocument,
 	AccountsStore,
@@ -125,6 +132,8 @@ export interface AccountsDependencies {
 	 * provider without a documented signal stays unknown rather than polled.
 	 */
 	usageReaders?: Partial<Record<PoolId, UsageReader>>;
+	/** Injected in tests; production reads the exact order written by setup-kstack. */
+	fallbackModels?: () => Promise<readonly string[] | undefined>;
 }
 
 class LoginCancelledError extends Error {
@@ -205,7 +214,7 @@ async function loginWithOfficialProvider(
 				context.ui.notify(authEventMessage(event), "info");
 			},
 		};
-		return auth.oauth.login(interaction);
+		return context.modelRegistry.login(providerId, "oauth", interaction);
 	}
 	if (auth?.apiKey !== undefined) {
 		const answer = await context.ui.input(auth.apiKey.name, "Paste the key, or Enter to cancel", {
@@ -240,7 +249,7 @@ async function loginAccount(
 	login: NonNullable<AccountsDependencies["login"]>,
 	now: () => Date,
 	context: ExtensionCommandContext,
-): Promise<void> {
+): Promise<{ poolId: PoolId; slotId: string } | undefined> {
 	if (providerName === undefined || !isPoolId(providerName)) {
 		throw new Error("Usage: /accounts login <provider> [slot]");
 	}
@@ -252,7 +261,7 @@ async function loginAccount(
 	if (notice !== undefined) {
 		if (notice.kind === "confirm" && !(await context.ui.confirm(notice.title, notice.message))) {
 			context.ui.notify(`${providerName} login cancelled`, "info");
-			return;
+			return undefined;
 		}
 		if (notice.kind === "note") {
 			context.ui.notify(notice.message, "info");
@@ -276,7 +285,7 @@ async function loginAccount(
 			baseUrl,
 		});
 		context.ui.notify(`Added local account ${providerName}/${slotId} on ${baseUrl}`, "info");
-		return;
+		return { poolId: providerName, slotId };
 	}
 
 	const credential = await login(providerName, slotId, context);
@@ -291,6 +300,7 @@ async function loginAccount(
 		credential,
 	);
 	context.ui.notify(`Added account ${providerName}/${slotId}`, "info");
+	return { poolId: providerName, slotId };
 }
 
 function isResearchService(value: string | undefined): value is ResearchService {
@@ -384,17 +394,30 @@ async function handleAccountsCommand(
 	if (extra.length > 0) {
 		throw new Error("Too many /accounts arguments");
 	}
-	if (action === "login") {
+	if (action === "login" || action === "login-active") {
 		// `exa` and `perplexity` are research credential targets, never pools: they
 		// create no slot, join no fallback chain, and change no routing.
 		if (isResearchService(first)) {
-			if (second !== undefined) {
+			if (action === "login-active" || second !== undefined) {
 				throw new Error(`Usage: /accounts login ${first}`);
 			}
 			await loginResearchService(first, context);
 			return false;
 		}
-		await loginAccount(first, second, dependencies.store, dependencies.login, dependencies.now, context);
+		const loggedIn = await loginAccount(
+			first,
+			second,
+			dependencies.store,
+			dependencies.login,
+			dependencies.now,
+			context,
+		);
+		if (loggedIn === undefined) {
+			return false;
+		}
+		if (action === "login-active") {
+			await routing.pin(loggedIn.poolId, loggedIn.slotId);
+		}
 		return true;
 	}
 	if (action === "logout") {
@@ -494,6 +517,7 @@ export function registerAccounts(pi: ExtensionAPI, dependencies: AccountsDepende
 			((providerId, slotId, context) =>
 				loginWithOfficialProvider(providerId, slotId, context, (url) => openAuthUrl(pi, url))),
 		usageReaders: dependencies.usageReaders ?? {},
+		fallbackModels: dependencies.fallbackModels ?? resolveFallbackModels,
 	};
 	const nowMs = () => resolved.now().getTime();
 	const balancer = new AccountBalancer(nowMs);
@@ -531,6 +555,34 @@ export function registerAccounts(pi: ExtensionAPI, dependencies: AccountsDepende
 		Object.entries(accounts.pools).flatMap(([poolId, pool]) =>
 			(pool?.slots ?? []).map((slot) => ({ poolId: poolId as PoolId, slotId: slot.id })),
 		);
+
+	const refreshExpiringCredentials = async (context: ExtensionContext): Promise<void> => {
+		if (context.modelRegistry === undefined) return;
+		const [accounts, secrets] = await Promise.all([resolved.store.read(), resolved.store.readSecrets()]);
+		for (const [poolName, pool] of Object.entries(accounts.pools)) {
+			if (pool === undefined || !isPoolId(poolName)) continue;
+			const oauth = context.modelRegistry.getProvider(poolName)?.auth?.oauth;
+			if (oauth === undefined) continue;
+			for (const slot of pool.slots) {
+				const credential = secrets[`${poolName}/${slot.id}`];
+				if (
+					credential?.type !== "oauth" ||
+					credential.expires === undefined ||
+					credential.expires > nowMs() + 5 * 60 * 1_000
+				) {
+					continue;
+				}
+				try {
+					const refreshed = await oauth.refresh(credential, context.signal ?? new AbortController().signal);
+					await resolved.store.putSlot(poolName, slot, refreshed);
+				} catch (error) {
+					balancer.markCooling(poolName, slot.id, nowMs() + DEFAULT_COOLDOWN_MS);
+					const reason = error instanceof Error ? error.message : String(error);
+					context.ui.notify(`Could not refresh ${poolName}/${slot.id}: ${reason}`, "warning");
+				}
+			}
+		}
+	};
 
 	/**
 	 * Renders the current account picture. `accounts` is passed in wherever the
@@ -584,6 +636,58 @@ export function registerAccounts(pi: ExtensionAPI, dependencies: AccountsDepende
 		}
 	};
 
+	const applyFailure = async (served: SelectedSlot, until: number, context: ExtensionContext): Promise<boolean> => {
+		balancer.markCooling(served.poolId, served.slot.id, until);
+		const accounts = await resolved.store.read();
+		const preferredModels = await resolved.fallbackModels().catch(() => undefined);
+		const plan = balancer.planFailover(
+			served,
+			accounts,
+			context.modelRegistry.getAvailable(),
+			context.model,
+			usage,
+			preferredModels,
+		);
+		if (plan === undefined) {
+			await publishWidget(context, accounts);
+			return false;
+		}
+
+		// Only the request that is still the current route may move it. An older
+		// response must not re-point a route a newer request already chose.
+		const stillCurrent = active?.poolId === served.poolId && active.slot.id === served.slot.id;
+		let moved = false;
+		if (plan.sameFamily && stillCurrent) {
+			active = { poolId: plan.to.poolId, slot: plan.to.slot };
+			moved = true;
+		} else if (!plan.sameFamily && stillCurrent && plan.model !== undefined && (await pi.setModel(plan.model))) {
+			active = { poolId: plan.to.poolId, slot: plan.to.slot };
+			activeModel = plan.model.id;
+			moved = true;
+		}
+
+		if (moved) {
+			const job = await readActiveJob(context.cwd);
+			if (job !== undefined) {
+				await appendEvent(job.eventsPath, {
+					ts: resolved.now().toISOString(),
+					type: "accounts.failover",
+					job_id: job.jobId,
+					round: typeof job.state.round === "number" ? job.state.round : 0,
+					node: typeof job.state.node === "string" ? job.state.node : "accounts",
+					from: `${plan.from.poolId}/${plan.from.slot.id}`,
+					to: `${plan.to.poolId}/${plan.to.slot.id}`,
+				});
+			}
+		}
+		await publishWidget(context, accounts);
+		return moved;
+	};
+
+	let lastResponse:
+		| { served: SelectedSlot; status: number; classificationHandled: boolean; retryOnMovedRoute: boolean }
+		| undefined;
+
 	if (typeof pi.on === "function") {
 		pi.on("before_provider_headers", async (event, context) => {
 			const modelProvider = context.model?.provider;
@@ -620,6 +724,14 @@ export function registerAccounts(pi: ExtensionAPI, dependencies: AccountsDepende
 			// The route is only real once a slot is chosen, so publish here.
 			await publishWidget(context, accounts);
 			if (active === undefined || active.poolId !== provider) {
+				// Once a provider has a pool, pool health is authoritative. Leaving the
+				// runtime's primary auth header intact here would silently reuse a cooled
+				// subscription from auth.json after every slot was exhausted.
+				if (accounts.pools[provider] !== undefined) {
+					for (const name of ["authorization", "x-api-key", "x-goog-api-key", "api-key"]) {
+						if (event.headers[name] !== undefined) event.headers[name] = null;
+					}
+				}
 				return;
 			}
 			// A local slot carries no credential unless the operator referenced one:
@@ -658,7 +770,7 @@ export function registerAccounts(pi: ExtensionAPI, dependencies: AccountsDepende
 			if (served === undefined) return;
 			// Off the hot path: record what the response's own headers stated. Every
 			// response carries limits, not just the failures, so publish either way.
-			usage.recordHeaders(served.poolId, served.slot.id, event.headers ?? {});
+			const snapshot = usage.recordHeaders(served.poolId, served.slot.id, event.headers ?? {});
 			// The same clock the balancer checks health against: a cooldown parsed
 			// on a different time base would expire at the wrong moment.
 			const classification = classifyProviderFailure(
@@ -668,62 +780,61 @@ export function registerAccounts(pi: ExtensionAPI, dependencies: AccountsDepende
 				},
 				nowMs(),
 			);
-			if (classification === undefined) {
-				await publishWidget(context);
-				return;
-			}
-			balancer.markCooling(served.poolId, served.slot.id, classification.until);
-
-			const accounts = await resolved.store.read();
-			const plan = balancer.planFailover(
+			const lowQuota =
+				event.status >= 200 &&
+				event.status < 400 &&
+				snapshot?.remainingPercent !== undefined &&
+				snapshot.remainingPercent <= LOW_QUOTA_REMAINING_PERCENT;
+			lastResponse = {
 				served,
-				accounts,
-				context.modelRegistry.getAvailable(),
-				context.model,
-				usage,
-			);
-			if (plan === undefined) {
-				// Still a state change: this slot is now cooling.
-				await publishWidget(context, accounts);
+				status: event.status,
+				classificationHandled: classification !== undefined || lowQuota,
+				retryOnMovedRoute: false,
+			};
+			if (classification !== undefined) {
+				lastResponse.retryOnMovedRoute = await applyFailure(served, classification.until, context);
 				return;
 			}
-			// A same-family sibling speaks the same catalog, so the request keeps its
-			// exact model and thinking level and the route may move immediately.
-			//
-			// Crossing families may only be recorded once the model has actually been
-			// re-pointed: without a mapped equivalent, or if the harness refuses the
-			// change, the route must stay where it is rather than name a slot whose
-			// credential this provider would never accept.
-			let moved = false;
-			// Only the request that is still the current route may move it: an older
-			// response must not re-point a route a newer request already chose.
-			const stillCurrent = active?.poolId === served.poolId && active.slot.id === served.slot.id;
-			if (plan.sameFamily) {
-				if (stillCurrent) active = { poolId: plan.to.poolId, slot: plan.to.slot };
-				moved = true;
-			} else if (plan.model !== undefined && (await pi.setModel(plan.model))) {
-				if (stillCurrent) {
-					active = { poolId: plan.to.poolId, slot: plan.to.slot };
-					activeModel = plan.model.id;
-				}
-				moved = true;
+			if (lowQuota && snapshot !== undefined) {
+				await applyFailure(served, snapshot.resetAt ?? nowMs() + DEFAULT_COOLDOWN_MS, context);
+				return;
 			}
-
-			if (moved) {
-				const job = await readActiveJob(context.cwd);
-				if (job !== undefined) {
-					await appendEvent(job.eventsPath, {
-						ts: resolved.now().toISOString(),
-						type: "accounts.failover",
-						job_id: job.jobId,
-						round: typeof job.state.round === "number" ? job.state.round : 0,
-						node: typeof job.state.node === "string" ? job.state.node : "accounts",
-						from: `${plan.from.poolId}/${plan.from.slot.id}`,
-						to: `${plan.to.poolId}/${plan.to.slot.id}`,
-					});
-				}
+			await publishWidget(context);
+		});
+		pi.on("message_end", async (event, context) => {
+			if (event.message.role !== "assistant") return;
+			const response = lastResponse;
+			lastResponse = undefined;
+			const message = event.message as AssistantMessage;
+			if (response === undefined || message.stopReason !== "error" || message.errorMessage === undefined) return;
+			let moved = response.retryOnMovedRoute;
+			if (!response.classificationHandled) {
+				// The provider stream has already been consumed into this assistant error,
+				// so quota-shaped 400 bodies can be classified without stealing bytes.
+				const classification = classifyProviderBodyFailure(
+					{ status: response.status, body: message.errorMessage },
+					nowMs(),
+				);
+				if (classification === undefined) return;
+				moved = await applyFailure(response.served, classification.until, context);
 			}
-			await publishWidget(context, accounts);
+			if (!moved) return;
+			return {
+				message: {
+					...message,
+					diagnostics: [
+						...(message.diagnostics ?? []),
+						{
+							type: "kpi_account_failover",
+							timestamp: nowMs(),
+							details: { from: `${response.served.poolId}/${response.served.slot.id}` },
+						},
+					],
+				},
+			};
+		});
+		pi.on("turn_start", async (_event, context) => {
+			await refreshExpiringCredentials(context);
 		});
 		pi.on("session_start", async (_event, context) => {
 			// The official primary credential becomes slot `default` before any
@@ -732,7 +843,10 @@ export function registerAccounts(pi: ExtensionAPI, dependencies: AccountsDepende
 			if (imported.length > 0) {
 				context.ui.notify(`Imported official credentials as ${imported.join(", ")}`, "info");
 			}
-			// Refresh off the request path, before any turn needs a decision.
+			// OAuth refresh and usage readers stay off the request-header hot path.
+			// Each subscription refreshes independently, so a stale slot never wins
+			// merely because another login updated the provider's primary auth.json.
+			await refreshExpiringCredentials(context);
 			await usage.refreshAll(configuredSlots(await resolved.store.read()), context.signal);
 			await publishWidget(context);
 		});

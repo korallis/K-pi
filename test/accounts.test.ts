@@ -153,20 +153,15 @@ test("Anthropic warning precedes the official OAuth window", async () => {
 		signal: undefined,
 		modelRegistry: {
 			getProvider() {
-				return {
-					auth: {
-						oauth: {
-							async login(interaction: ProviderAuthInteraction) {
-								sequence.push("oauth");
-								interaction.notify({
-									type: "auth_url",
-									url: "https://example.test/oauth",
-								});
-								return oauthCredential("home");
-							},
-						},
-					},
-				};
+				return { auth: { oauth: {} } };
+			},
+			async login(_providerId: string, _method: string, interaction: ProviderAuthInteraction) {
+				sequence.push("oauth");
+				interaction.notify({
+					type: "auth_url",
+					url: "https://example.test/oauth",
+				});
+				return oauthCredential("home");
 			},
 		},
 		ui: {
@@ -238,7 +233,7 @@ test("accounts logout removes only the selected slot and secret", async () => {
 	}
 });
 
-type ProviderHook = (event: Record<string, unknown>, context: Record<string, unknown>) => Promise<void>;
+type ProviderHook = (event: Record<string, unknown>, context: Record<string, unknown>) => Promise<unknown>;
 
 interface RoutingHarness {
 	command: CommandHandler;
@@ -281,6 +276,7 @@ async function routingHarness(readerPercent: number | undefined = 42, setModelRe
 	registerAccounts(pi as unknown as Parameters<typeof registerAccounts>[0], {
 		store,
 		now: () => FIXED_TIME,
+		fallbackModels: async () => undefined,
 		async login(_providerId, slotId) {
 			return oauthCredential(slotId);
 		},
@@ -322,6 +318,60 @@ async function routingHarness(readerPercent: number | undefined = 42, setModelRe
 		store,
 	};
 }
+
+test("session start refreshes each expired subscription slot independently", async () => {
+	const subject = await routingHarness();
+	try {
+		await subject.command("login anthropic home", subject.context);
+		await subject.command("login anthropic work", subject.context);
+		for (const slotId of ["home", "work"]) {
+			const slot = await subject.store.getSlot("anthropic", slotId);
+			assert.ok(slot);
+			await subject.store.putSlot("anthropic", slot, {
+				type: "oauth",
+				access: `expired-${slotId}`,
+				refresh: `refresh-${slotId}`,
+				expires: FIXED_TIME.getTime() - 1,
+			});
+		}
+		const refreshed: string[] = [];
+		const context = {
+			...subject.hookContext(),
+			modelRegistry: {
+				getAvailable: () => [],
+				getProvider: () => ({
+					auth: {
+						oauth: {
+							async refresh(credential: Credential) {
+								assert.equal(credential.type, "oauth");
+								refreshed.push(credential.refresh);
+								return {
+									...credential,
+									access: `fresh-${credential.refresh}`,
+									expires: FIXED_TIME.getTime() + 3_600_000,
+								};
+							},
+						},
+					},
+				}),
+			},
+		};
+
+		await subject.hooks.get("session_start")!({ type: "session_start" }, context);
+		assert.deepEqual(refreshed.sort(), ["refresh-home", "refresh-work"]);
+		const secrets = await subject.store.readSecrets();
+		assert.equal(
+			secrets["anthropic/home"]?.type === "oauth" && secrets["anthropic/home"].access,
+			"fresh-refresh-home",
+		);
+		assert.equal(
+			secrets["anthropic/work"]?.type === "oauth" && secrets["anthropic/work"].access,
+			"fresh-refresh-work",
+		);
+	} finally {
+		await rm(subject.directory, { recursive: true, force: true });
+	}
+});
 
 test("the request-header hook reads cached usage and never refreshes on the hot path", async () => {
 	const subject = await routingHarness();
@@ -426,6 +476,117 @@ test("the widget follows the route from unknown, to selected, to parsed usage, t
 			/ROUTE {3}anthropic\/claude-opus-4-6 {2}via work/u,
 			"with no healthy successor the route still names the slot that ran, beside its cooldown",
 		);
+	} finally {
+		await rm(subject.directory, { recursive: true, force: true });
+	}
+});
+
+test("a 98%-used Codex plan hands the same model to its sibling before the next request", async () => {
+	const subject = await routingHarness();
+	try {
+		await subject.command("login openai-codex plan-1", subject.context);
+		await subject.command("login openai-codex plan-2", subject.context);
+		const model = { provider: "openai-codex", id: "gpt-5.6-sol", name: "gpt-5.6-sol" };
+		await subject.hooks.get("before_provider_headers")!(
+			{ type: "before_provider_headers", headers: {}, requestId: "codex-near-limit" },
+			subject.hookContext(model, [model]),
+		);
+		await subject.hooks.get("after_provider_response")!(
+			{
+				type: "after_provider_response",
+				requestId: "codex-near-limit",
+				status: 200,
+				headers: {
+					"x-codex-primary-used-percent": "98",
+					"x-codex-primary-reset-after-seconds": "3600",
+					"x-codex-primary-window-minutes": "300",
+				},
+			},
+			subject.hookContext(model, [model]),
+		);
+
+		const nextHeaders: Record<string, string> = {};
+		await subject.hooks.get("before_provider_headers")!(
+			{ type: "before_provider_headers", headers: nextHeaders, requestId: "codex-sibling" },
+			subject.hookContext(model, [model]),
+		);
+		assert.equal(nextHeaders.authorization, "Bearer access-plan-2");
+		assert.deepEqual(subject.setModelCalls, [], "same-provider handoff preserves the exact GPT model");
+	} finally {
+		await rm(subject.directory, { recursive: true, force: true });
+	}
+});
+
+test("a classified 402 marks the moved sibling route for an automatic retry", async () => {
+	const subject = await routingHarness();
+	try {
+		await subject.command("login anthropic home", subject.context);
+		await subject.command("login anthropic work", subject.context);
+		await subject.hooks.get("before_provider_headers")!(
+			{ type: "before_provider_headers", headers: {}, requestId: "payment-home" },
+			subject.hookContext(anthropicModel(), [anthropicModel()]),
+		);
+		await subject.hooks.get("after_provider_response")!(
+			{ type: "after_provider_response", requestId: "payment-home", status: 402, headers: {} },
+			subject.hookContext(anthropicModel(), [anthropicModel()]),
+		);
+		const retry = (await subject.hooks.get("message_end")!(
+			{
+				type: "message_end",
+				message: { role: "assistant", stopReason: "error", errorMessage: "402 payment required" },
+			},
+			subject.hookContext(anthropicModel(), [anthropicModel()]),
+		)) as { message?: { diagnostics?: Array<{ type: string }> } } | undefined;
+
+		assert.equal(retry?.message?.diagnostics?.at(-1)?.type, "kpi_account_failover");
+		assert.deepEqual(subject.setModelCalls, []);
+	} finally {
+		await rm(subject.directory, { recursive: true, force: true });
+	}
+});
+
+test("quota-shaped 400 assistant errors exhaust sibling plans before changing provider", async () => {
+	const subject = await routingHarness();
+	try {
+		await subject.command("login anthropic home", subject.context);
+		await subject.command("login anthropic work", subject.context);
+		await subject.command("login xai grok", subject.context);
+		const available = [anthropicModel(), { provider: "xai", id: "grok-5", name: "grok-5" }];
+		const assistantError = {
+			role: "assistant",
+			stopReason: "error",
+			errorMessage: '400 {"error":{"message":"You are out of extra usage"}}',
+		};
+
+		await subject.hooks.get("before_provider_headers")!(
+			{ type: "before_provider_headers", headers: {}, requestId: "quota-home" },
+			subject.hookContext(anthropicModel(), available),
+		);
+		await subject.hooks.get("after_provider_response")!(
+			{ type: "after_provider_response", requestId: "quota-home", status: 400, headers: {} },
+			subject.hookContext(anthropicModel(), available),
+		);
+		const siblingRetry = (await subject.hooks.get("message_end")!(
+			{ type: "message_end", message: assistantError },
+			subject.hookContext(anthropicModel(), available),
+		)) as { message?: { diagnostics?: Array<{ type: string }> } } | undefined;
+		assert.deepEqual(subject.setModelCalls, [], "the same GPT/Claude model survives sibling-plan handoff");
+		assert.equal(siblingRetry?.message?.diagnostics?.at(-1)?.type, "kpi_account_failover");
+
+		await subject.hooks.get("before_provider_headers")!(
+			{ type: "before_provider_headers", headers: {}, requestId: "quota-work" },
+			subject.hookContext(anthropicModel(), available),
+		);
+		await subject.hooks.get("after_provider_response")!(
+			{ type: "after_provider_response", requestId: "quota-work", status: 400, headers: {} },
+			subject.hookContext(anthropicModel(), available),
+		);
+		const providerRetry = (await subject.hooks.get("message_end")!(
+			{ type: "message_end", message: assistantError },
+			subject.hookContext(anthropicModel(), available),
+		)) as { message?: { diagnostics?: Array<{ type: string }> } } | undefined;
+		assert.deepEqual(subject.setModelCalls, ["xai/grok-5"], "provider fallback waits for both plans to cool");
+		assert.equal(providerRetry?.message?.diagnostics?.at(-1)?.type, "kpi_account_failover");
 	} finally {
 		await rm(subject.directory, { recursive: true, force: true });
 	}
@@ -648,12 +809,12 @@ test("an unavailable fallback model never substitutes another provider's credent
 
 		// The next anthropic request has no healthy sibling, so it carries no token
 		// at all rather than the xai credential.
-		const retry: Record<string, string> = {};
+		const retry: Record<string, string | null> = { authorization: "Bearer primary-auth-json-token" };
 		await subject.hooks.get("before_provider_headers")!(
 			{ type: "before_provider_headers", headers: retry, requestId: "request-11" },
 			subject.hookContext(anthropicModel(), available),
 		);
-		assert.equal(retry.authorization, undefined, "a foreign credential must never reach an anthropic request");
+		assert.equal(retry.authorization, null, "a cooled pool must not fall through to auth.json's primary token");
 	} finally {
 		await rm(subject.directory, { recursive: true, force: true });
 	}
@@ -929,6 +1090,13 @@ async function providerLoginHarness(
 			getProvider(id: string) {
 				return providers[id];
 			},
+			async login(id: string, type: "oauth" | "api_key", interaction: ProviderAuthInteraction) {
+				sequence.push("runtime-login");
+				if (type !== "oauth" || providers[id]?.auth.oauth === undefined) {
+					throw new Error(`Provider ${id} has no ${type} login`);
+				}
+				return providers[id].auth.oauth.login(interaction);
+			},
 		},
 		ui: {
 			async confirm() {
@@ -1044,6 +1212,10 @@ test("kimi-coding still logs in through OAuth although it also declares an API k
 		await subject.command("login kimi-coding home", subject.context);
 
 		assert.deepEqual(oauthLogins, ["kimi-coding"], "the provider's own oauth login ran");
+		assert.ok(
+			subject.sequence.includes("runtime-login"),
+			"the core runtime persists and refreshes the OAuth credential",
+		);
 		assert.deepEqual(subject.inputs, [], "a subscription provider is never asked for a key");
 		assert.equal((await subject.store.read()).pools["kimi-coding"]?.slots[0]?.kind, "oauth");
 	} finally {

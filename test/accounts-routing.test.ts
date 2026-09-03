@@ -7,6 +7,7 @@ import type { Model } from "@earendil-works/pi-ai";
 import {
 	AccountBalancer,
 	DEFAULT_FALLBACK_CHAIN,
+	LOW_QUOTA_REMAINING_PERCENT,
 } from "../packages/coding-agent/src/kpi/extensions/accounts/balancer.ts";
 import type { AccountsDocument, PoolId } from "../packages/coding-agent/src/kpi/extensions/accounts/store.ts";
 import { UsageCache } from "../packages/coding-agent/src/kpi/extensions/accounts/usage/cache.ts";
@@ -57,6 +58,43 @@ test("quota-first selects the highest healthy cached percentage", () => {
 	assert.equal(selection?.slot.id, "B");
 	assert.equal(selection?.reason, "quota-first");
 	assert.equal(selection?.remainingPercent, 85);
+});
+
+test("a quota-first pin hands off before exhaustion when a sibling has materially more quota", () => {
+	const document = accounts({ "openai-codex": pool("quota-first", "plan-1", "plan-2") });
+	const usage = new UsageCache({ now: () => NOW });
+	usage.recordHeaders("openai-codex", "plan-1", {
+		"x-ratelimit-limit": "100",
+		"x-ratelimit-remaining": "60",
+	});
+	usage.recordHeaders("openai-codex", "plan-2", {
+		"x-ratelimit-limit": "100",
+		"x-ratelimit-remaining": "50",
+	});
+	const balancer = new AccountBalancer(() => NOW);
+	assert.equal(balancer.select("openai-codex", document, usage)?.slot.id, "plan-1");
+
+	usage.recordHeaders("openai-codex", "plan-1", {
+		"x-ratelimit-limit": "100",
+		"x-ratelimit-remaining": String(LOW_QUOTA_REMAINING_PERCENT),
+	});
+	const handoff = balancer.select("openai-codex", document, usage);
+
+	assert.equal(handoff?.slot.id, "plan-2");
+	assert.equal(handoff?.reason, "quota-first");
+	assert.equal(handoff?.remainingPercent, 50);
+});
+
+test("a near-limit pin yields to a healthy sibling whose quota is still unknown", () => {
+	const document = accounts({ anthropic: pool("quota-first", "A", "B") });
+	const usage = new UsageCache({ now: () => NOW });
+	usage.recordHeaders("anthropic", "A", { "x-ratelimit-limit": "100", "x-ratelimit-remaining": "2" });
+	const balancer = new AccountBalancer(() => NOW);
+	assert.equal(balancer.selectInFamily("anthropic", document, usage)?.slot.id, "A");
+
+	const selected = balancer.selectInFamily("anthropic", document, usage);
+	assert.equal(selected?.slot.id, "B");
+	assert.equal(selected?.remainingPercent, undefined);
 });
 
 test("quota-first skips a cooling slot even when it holds the highest percentage", () => {
@@ -190,6 +228,31 @@ test("cross-family fallback begins only after the whole family cools and follows
 		true,
 		"codex precedes xai in the default chain",
 	);
+});
+
+test("cross-family fallback honors the exact live model order saved by setup-kstack", () => {
+	const document = accounts({
+		"openai-codex": pool("round-robin", "plan-1", "plan-2"),
+		anthropic: pool("round-robin", "claude"),
+		xai: pool("round-robin", "grok"),
+	});
+	const balancer = new AccountBalancer(() => NOW);
+	balancer.markCooling("openai-codex", "plan-1", NOW + 60_000);
+	balancer.markCooling("openai-codex", "plan-2", NOW + 60_000);
+	const source = model("openai-codex", "gpt-5.6-sol");
+	const available = [source, model("anthropic", "claude-opus"), model("xai", "grok-fast")];
+
+	const plan = balancer.planFailover(
+		{ poolId: "openai-codex", slot: { id: "plan-2", kind: "oauth" } },
+		document,
+		available,
+		source,
+		undefined,
+		["xai/grok-fast", "anthropic/claude-opus"],
+	);
+
+	assert.equal(plan?.to.poolId, "xai", "the saved model order outranks the legacy provider chain");
+	assert.equal(plan?.model?.id, "grok-fast");
 });
 
 test("cross-family fallback skips a family whose every slot is cooling", () => {

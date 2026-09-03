@@ -449,6 +449,30 @@ function gitRefinement(rawArgs: readonly string[]): boolean {
 	}
 }
 
+/**
+ * The GitHub CLI's reads: looking at a pull request, a check run, or the
+ * signed-in account changes nothing. `pr create` is a release step judged by
+ * policy, and `pr merge` is denied outright — neither is read-only.
+ */
+function ghRefinement(args: readonly string[]): boolean {
+	const [group, verb] = args;
+	if (group === undefined) return false;
+	switch (group) {
+		case "--version":
+			return true;
+		case "pr":
+			return ["view", "list", "status", "checks", "diff"].includes(verb ?? "");
+		case "auth":
+			return verb === "status";
+		case "repo":
+			return verb === "view";
+		case "run":
+			return verb === "list" || verb === "view";
+		default:
+			return false;
+	}
+}
+
 function npmRefinement(args: readonly string[]): boolean {
 	const [verb, ...rest] = args;
 	if (verb === undefined) return false;
@@ -562,6 +586,7 @@ const READ_ONLY_HEADS: Record<string, Refinement> = {
 	find: findRefinement,
 	fd: withoutFlags("-x", "--exec", "-X", "--exec-batch"),
 	git: gitRefinement,
+	gh: ghRefinement,
 	npm: npmRefinement,
 	pnpm: (args) => ["ls", "list", "why", "outdated", "--version", "-v"].includes(args[0] ?? ""),
 	yarn: (args) => ["--version", "-v", "list", "why", "info"].includes(args[0] ?? ""),

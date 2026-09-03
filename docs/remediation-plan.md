@@ -29,7 +29,7 @@ IDs: `RP-##`. Stories and ACs: `PRD.md`. Normative contracts: `spec.md`, `../UPS
 - `APPROVAL` is a derived protocol-blue board lamp while a human node is paused, never a serialized stop state. Persisted stop states remain `DONE | BLOCKED | EXHAUSTED | NO_PROGRESS | UNSAFE | NEEDS_HUMAN`.
 - Exa and Perplexity are research credential targets, not model pools.
 - Exa content is capped at 10,000 characters before model handoff or persistence.
-- Global `after_provider_response` classification uses status and headers. Body classification is limited to custom fetch clients that own the body.
+- Global `after_provider_response` classification uses status and headers and never consumes a body. Custom fetch clients may classify bodies they own; the accounts extension may also classify a finalized assistant provider error after the stream has already been consumed.
 - The current Dune module is explicit; `modules[0]` is never an implicit current module.
 - Generated, harness-loadable K-stack output is the only runtime truth. `make-bot-ui` and the documented drop list are excluded.
 - Relevant K-stack upstream drift is a changed pstack tree, not an unrelated repository HEAD change.

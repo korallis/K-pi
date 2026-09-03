@@ -618,6 +618,27 @@ describe("TUI content shrinkage", () => {
 });
 
 describe("TUI differential rendering", () => {
+	it("clears before a growing live region pushes the working row into scrollback", async () => {
+		const terminal = new LoggingVirtualTerminal(40, 5);
+		const tui: TUI = new TuiMainScreen(terminal);
+		const component = new TestComponent();
+		tui.addChild(component);
+
+		component.lines = ["Chat 0", "Chat 1", "Chat 2", "Chat 3", "⠸ Working..."];
+		tui.start();
+		await terminal.waitForRender();
+		const redrawsBeforeOverflow = tui.fullRedraws;
+		terminal.clearWrites();
+
+		component.lines = ["Chat 0", "Chat 1", "Chat 2", "Chat 3", "Reasoning summary", "⠼ Working..."];
+		tui.requestRender();
+		await terminal.waitForRender();
+
+		assert.ok(tui.fullRedraws > redrawsBeforeOverflow, "first viewport overflow must reset renderer bookkeeping");
+		assert.ok(terminal.getWrites().includes("\x1b[2J"), "the stale working row must be cleared before it scrolls");
+		tui.stop();
+	});
+
 	it("tracks cursor correctly when content shrinks with unchanged remaining lines", async () => {
 		const terminal = new VirtualTerminal(40, 10);
 		const tui: TUI = new TuiMainScreen(terminal);

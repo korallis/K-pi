@@ -11,7 +11,7 @@ import { kModeState, renderTodos } from "../kstack/mode.ts";
 import { appendEvent } from "./append-log.ts";
 import type { BusDependencies } from "./bus/spawn.ts";
 import { compileAcceptanceCriteria } from "./graph/ac-compiler.ts";
-import { type GraphAgentSessionFactory, GraphEngine, loadNamedGraph } from "./graph/engine.ts";
+import { type GraphAgentSessionFactory, GraphEngine, GraphNodeProviderError, loadNamedGraph } from "./graph/engine.ts";
 import { type GraphRunState, isJsonObject, type JsonObject } from "./graph/schema.ts";
 import {
 	canonicalFingerprint,
@@ -56,6 +56,12 @@ export interface LoopDependencies {
 	sleep?: Sleeper;
 	/** Test/DI first backoff step. Production uses DEFAULT_RETRY_BASE_MS. */
 	retryBaseDelayMs?: number;
+	/**
+	 * How the pull request for a pushed job branch is looked up. Production asks
+	 * `gh`; a test stands in for the GitHub it has no access to. Not an operator
+	 * flag and not a way to skip the check.
+	 */
+	readPullRequest?: (projectRoot: string, branch: string) => Promise<PullRequestRecord | undefined>;
 }
 
 export interface LoopInvocation {
@@ -75,6 +81,7 @@ export interface LoopInvocation {
 export interface LoopOutcome {
 	jobId: string;
 	status: TerminalStatus;
+	reason?: string;
 	graphState?: Readonly<GraphRunState>;
 }
 
@@ -532,10 +539,110 @@ async function gitHead(projectRoot: string): Promise<string | undefined> {
 	}
 }
 
-async function createJobBranch(projectRoot: string, jobId: string): Promise<void> {
-	await execFile("git", ["switch", "-c", `kpi/${jobId}`], {
-		cwd: projectRoot,
-	});
+/** The branch a job commits, pushes, and opens its pull request from. */
+export function jobBranchName(jobId: string): string {
+	return `kpi/${jobId}`;
+}
+
+async function currentBranch(projectRoot: string): Promise<string | undefined> {
+	try {
+		const { stdout } = await execFile("git", ["branch", "--show-current"], { cwd: projectRoot });
+		return stdout.trim() || undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+async function branchExists(projectRoot: string, branch: string): Promise<boolean> {
+	try {
+		await execFile("git", ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], { cwd: projectRoot });
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * Puts the worktree on the job branch, creating it from the current HEAD when
+ * it does not exist yet. The control plane does this itself, right before the
+ * ship node runs, so the commit, the push, and the pull request can only ever
+ * be on `kpi/<job id>`: a branch the ship node did not have to get right.
+ */
+export async function ensureJobBranch(projectRoot: string, jobId: string): Promise<string> {
+	const branch = jobBranchName(jobId);
+	if ((await currentBranch(projectRoot)) === branch) {
+		return branch;
+	}
+	const args = (await branchExists(projectRoot, branch)) ? ["switch", branch] : ["switch", "-c", branch];
+	await execFile("git", args, { cwd: projectRoot });
+	return branch;
+}
+
+async function hasRemote(projectRoot: string, remote: string): Promise<boolean> {
+	try {
+		await execFile("git", ["remote", "get-url", remote], { cwd: projectRoot });
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+/** The ref a push of `branch` to `origin` leaves behind locally. */
+async function pushedHead(projectRoot: string, branch: string): Promise<string | undefined> {
+	try {
+		const { stdout } = await execFile("git", ["rev-parse", "--verify", "--quiet", `refs/remotes/origin/${branch}`], {
+			cwd: projectRoot,
+		});
+		return stdout.trim() || undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+interface ShipDelivery {
+	branch: string;
+	prUrl: string;
+}
+
+/**
+ * Verifies that the job's commit reached where the ship node was told to take
+ * it: on the job branch, pushed to `origin`, and in front of the merge queue as
+ * a pull request. Each failure names what is missing, because the fix is the
+ * operator's: push the branch, sign `gh` in, or open the pull request, then
+ * resume the job and the recovered commit is finalized without a second commit.
+ *
+ * A repository with no `origin` has nowhere to push and nothing to verify: the
+ * commit alone is the ship, exactly as before.
+ */
+async function verifyShipDelivery(
+	projectRoot: string,
+	jobId: string,
+	head: string,
+	readPullRequest: LoopDependencies["readPullRequest"],
+): Promise<ShipDelivery | undefined> {
+	if (!(await hasRemote(projectRoot, "origin"))) {
+		return undefined;
+	}
+	const branch = jobBranchName(jobId);
+	const checkedOut = await currentBranch(projectRoot);
+	if (checkedOut !== branch) {
+		throw new Error(`Ship commit is on ${checkedOut ?? "a detached HEAD"}, not the job branch ${branch}`);
+	}
+	const remoteHead = await pushedHead(projectRoot, branch);
+	if (remoteHead === undefined) {
+		throw new Error(`Job branch ${branch} was not pushed to origin`);
+	}
+	if (remoteHead !== head && !(await isAncestor(projectRoot, head, remoteHead))) {
+		throw new Error(`origin/${branch} is at ${remoteHead.slice(0, 8)}, which does not carry the ship commit`);
+	}
+	const pullRequest = await (readPullRequest ?? readPullRequestWithGh)(projectRoot, branch);
+	if (pullRequest === undefined) {
+		throw new Error(`No pull request is open for ${branch}; open one with gh pr create --head ${branch} --fill`);
+	}
+	if (pullRequest.state !== "OPEN" && pullRequest.state !== "MERGED") {
+		throw new Error(`The pull request for ${branch} is ${pullRequest.state}: ${pullRequest.url}`);
+	}
+	return { branch, prUrl: pullRequest.url };
 }
 
 /**
@@ -709,12 +816,55 @@ async function planWasProvided(jobDirectory: string): Promise<boolean> {
 	}
 }
 
-/** The durable record that this job's commit decision was already made. */
+/**
+ * The durable record that this job's commit decision was already made, and -
+ * when the repository has an origin - where it went: the job branch that was
+ * pushed and the pull request that was opened. A marker written by an earlier
+ * release carries only the commit; it stays valid evidence as it is.
+ */
 interface ShipMarker {
 	job_id: string;
 	head: string;
 	subject: string;
 	at: string;
+	branch?: string;
+	pr_url?: string;
+}
+
+/** The pull request the ship node opened for a job branch, as `gh` reports it. */
+export interface PullRequestRecord {
+	url: string;
+	state: string;
+}
+
+/**
+ * Reads the pull request for a branch through `gh`. No pull request resolves to
+ * nothing; a `gh` that is missing, signed out, or otherwise failing throws with
+ * its own message, so the operator sees the real reason the ship could not be
+ * verified.
+ */
+export async function readPullRequestWithGh(
+	projectRoot: string,
+	branch: string,
+): Promise<PullRequestRecord | undefined> {
+	let stdout: string;
+	try {
+		({ stdout } = await execFile("gh", ["pr", "view", branch, "--json", "url,state"], { cwd: projectRoot }));
+	} catch (error) {
+		const detail = error as NodeJS.ErrnoException & { stderr?: string };
+		if (/no pull requests found/iu.test(detail.stderr ?? "")) {
+			return undefined;
+		}
+		if (detail.code === "ENOENT") {
+			throw new Error("gh is not installed, so the pull request could not be verified");
+		}
+		throw new Error(`gh pr view ${branch} failed: ${(detail.stderr ?? detail.message).trim()}`);
+	}
+	const parsed = JSON.parse(stdout) as { url?: unknown; state?: unknown };
+	if (typeof parsed.url !== "string" || typeof parsed.state !== "string") {
+		throw new Error(`gh pr view ${branch} returned no url and state`);
+	}
+	return { url: parsed.url, state: parsed.state };
 }
 
 function shipMarkerPath(jobDirectory: string): string {
@@ -736,8 +886,19 @@ function parseShipMarker(value: unknown): ShipMarker | undefined {
 	if (typeof head !== "string" || !COMMIT_SHA_PATTERN.test(head)) return undefined;
 	if (typeof subject !== "string" || subject.length === 0) return undefined;
 	if (typeof at !== "string" || Number.isNaN(Date.parse(at))) return undefined;
-	if (Object.keys(value).length !== 4) return undefined;
-	return { job_id: jobId, head, subject, at };
+	const { branch, pr_url: prUrl } = value;
+	if (branch !== undefined && (typeof branch !== "string" || branch.length === 0)) return undefined;
+	if (prUrl !== undefined && (typeof prUrl !== "string" || prUrl.length === 0)) return undefined;
+	const known = 4 + (branch === undefined ? 0 : 1) + (prUrl === undefined ? 0 : 1);
+	if (Object.keys(value).length !== known) return undefined;
+	return {
+		job_id: jobId,
+		head,
+		subject,
+		at,
+		...(branch === undefined ? {} : { branch }),
+		...(prUrl === undefined ? {} : { pr_url: prUrl }),
+	};
 }
 
 interface ShipCommit {
@@ -771,13 +932,17 @@ function carriesJobTrailer(body: string, jobId: string): boolean {
 	return body.split(/\r?\n/u).some((line) => line.trimEnd() === `${SHIP_TRAILER_NAME}: ${jobId}`);
 }
 
-async function isAncestorOfHead(projectRoot: string, head: string): Promise<boolean> {
+async function isAncestor(projectRoot: string, commit: string, of: string): Promise<boolean> {
 	try {
-		await execFile("git", ["merge-base", "--is-ancestor", head, "HEAD"], { cwd: projectRoot });
+		await execFile("git", ["merge-base", "--is-ancestor", commit, of], { cwd: projectRoot });
 		return true;
 	} catch {
 		return false;
 	}
+}
+
+function isAncestorOfHead(projectRoot: string, head: string): Promise<boolean> {
+	return isAncestor(projectRoot, head, "HEAD");
 }
 
 /**
@@ -888,7 +1053,8 @@ async function writeShipMarker(
 	jobDirectory: string,
 	jobId: string,
 	subject: string,
-	head?: string,
+	head: string | undefined,
+	delivery: ShipDelivery | undefined,
 ): Promise<void> {
 	// The marker names the commit that was verified, not whatever HEAD happens to
 	// be when the record is written.
@@ -896,7 +1062,13 @@ async function writeShipMarker(
 	if (recorded === undefined) {
 		return;
 	}
-	const marker: ShipMarker = { job_id: jobId, head: recorded, subject, at: new Date().toISOString() };
+	const marker: ShipMarker = {
+		job_id: jobId,
+		head: recorded,
+		subject,
+		at: new Date().toISOString(),
+		...(delivery === undefined ? {} : { branch: delivery.branch, pr_url: delivery.prUrl }),
+	};
 	await atomicWrite(shipMarkerPath(jobDirectory), `${JSON.stringify(marker, null, 2)}\n`);
 }
 
@@ -1069,11 +1241,36 @@ async function driveUntilPause(
 			// The commit decision is being made in this pass, whatever the superstep
 			// goes on to do with it.
 			shippedThisRun = true;
+			// The branch is the control plane's to get right, not the model's: the
+			// ship node commits, pushes, and opens its pull request from wherever
+			// the worktree is, so the worktree is put on kpi/<job id> first.
+			try {
+				await ensureJobBranch(projectRoot, task.job_id);
+			} catch (error) {
+				return {
+					state,
+					stopState: currentStopState,
+					shippedThisRun,
+					terminalStatus: "BLOCKED",
+					reason: `could not switch to the job branch ${jobBranchName(task.job_id)}: ${
+						error instanceof Error ? error.message : String(error)
+					}`,
+				};
+			}
 		}
 		const prePlan = state.active.includes("plan");
 		try {
 			state = await engine.runSuperstep();
 		} catch (error) {
+			if (error instanceof GraphNodeProviderError) {
+				return {
+					state,
+					stopState: currentStopState,
+					shippedThisRun,
+					terminalStatus: "NEEDS_HUMAN",
+					reason: `${error.message}. Select a healthy model or resolve that provider account, then resume this job.`,
+				};
+			}
 			// Plan owns stack.json via its response contract. A map the plan cannot
 			// freeze is the same Dune refusal implement would raise — UNSAFE with the
 			// semantic reason, never a generic BLOCKED graph crash.
@@ -1271,20 +1468,27 @@ async function finalizeShip(
 	jobId: string,
 	previousHead: string | undefined,
 	shippedThisRun: boolean,
+	readPullRequest: LoopDependencies["readPullRequest"],
 ): Promise<void> {
 	if ((await readShipMarker(projectRoot, jobDirectory, jobId)) !== undefined) {
 		return;
 	}
 	if (shippedThisRun) {
 		const subject = await verifyShippedCommit(projectRoot, previousHead, jobId);
-		await writeShipMarker(projectRoot, jobDirectory, jobId, subject);
+		const head = await gitHead(projectRoot);
+		const delivery =
+			head === undefined ? undefined : await verifyShipDelivery(projectRoot, jobId, head, readPullRequest);
+		await writeShipMarker(projectRoot, jobDirectory, jobId, subject, head, delivery);
 		return;
 	}
 	const recovered = await findJobCommit(projectRoot, jobId, previousHead);
 	if (recovered === undefined) {
 		throw new Error(`No commit carries ${SHIP_TRAILER_NAME}: ${jobId}`);
 	}
-	await writeShipMarker(projectRoot, jobDirectory, jobId, recovered.subject, recovered.head);
+	// A recovered decision is held to the same delivery: a job whose push or
+	// pull request failed resumes here once the operator has put it right.
+	const delivery = await verifyShipDelivery(projectRoot, jobId, recovered.head, readPullRequest);
+	await writeShipMarker(projectRoot, jobDirectory, jobId, recovered.subject, recovered.head, delivery);
 }
 export async function resumeLoop(
 	jobId: string,
@@ -1324,6 +1528,8 @@ export async function resumeLoop(
 		sleep: dependencies.sleep,
 		retryBaseDelayMs: dependencies.retryBaseDelayMs,
 		resolveFacts: facts.resolve,
+		model: ctx.model,
+		thinkingLevel: ctx.thinkingLevel,
 	});
 	const eventsPath = join(jobDirectory, "events.jsonl");
 	const stopState = restoreStopState(stateDocument, engine.limits.maxRounds);
@@ -1339,7 +1545,7 @@ export async function resumeLoop(
 		);
 		if (result.terminalStatus !== undefined) {
 			await writeTerminalState(jobDirectory, eventsPath, task, result);
-			return { jobId, status: result.terminalStatus, graphState: result.state };
+			return { jobId, status: result.terminalStatus, reason: result.reason, graphState: result.state };
 		}
 		while (result.state.status === "interrupted") {
 			const pending = result.state.pendingHuman;
@@ -1354,6 +1560,10 @@ export async function resumeLoop(
 				approved,
 			});
 			await engine.submitHuman(approved);
+			// The approval is durable before the ship node runs: policy reads
+			// `release.approved` from state.json, and a push or a pull request is
+			// allowed on that flag alone.
+			await writeState(jobDirectory, task, engine.state, result.stopState);
 			result = await driveUntilPause(
 				engine,
 				ctx.cwd,
@@ -1365,7 +1575,7 @@ export async function resumeLoop(
 			);
 			if (result.terminalStatus !== undefined) {
 				await writeTerminalState(jobDirectory, eventsPath, task, result);
-				return { jobId, status: result.terminalStatus, graphState: result.state };
+				return { jobId, status: result.terminalStatus, reason: result.reason, graphState: result.state };
 			}
 		}
 		if (result.state.status !== "completed") {
@@ -1394,6 +1604,7 @@ export async function resumeLoop(
 				jobId,
 				await startingHeadFor(jobDirectory),
 				result.shippedThisRun === true,
+				dependencies.readPullRequest,
 			);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
@@ -1433,16 +1644,23 @@ export async function runLoop(
 	if (gates.source === "none") {
 		ctx.ui.notify(`K-π quality gates: ${gates.reason}`, "warning");
 	}
+	const jobId = dependencies.jobId ?? makeJobId(invocation.goal);
 	const task: Task = {
-		job_id: dependencies.jobId ?? makeJobId(invocation.goal),
+		job_id: jobId,
 		mode: invocation.mode,
 		goal: invocation.goal,
 		nongoals: [],
 		acceptance: compilation.acceptance,
 		constraints:
 			invocation.mode === "autopilot"
-				? ["Never push", "Commit only after deterministic release approval"]
-				: ["Never push", "Human approval is required before commit"],
+				? [
+						"Commit only after deterministic release approval",
+						`Push only the job branch kpi/${jobId} to origin after release approval, then open a pull request; never push another branch, force-push, push tags, delete a branch, or merge`,
+					]
+				: [
+						"Human approval is required before commit",
+						`Push only the job branch kpi/${jobId} to origin after approval, then open a pull request; never push another branch, force-push, push tags, delete a branch, or merge`,
+					],
 		quality_gates: gates.commands,
 		ac: { quality: compilation.quality },
 		dependency_baseline: await runtimeDependencies(ctx.cwd),
@@ -1498,7 +1716,7 @@ export async function runLoop(
 			)}\n`,
 		);
 		await dependencies.onStateChange?.();
-		return { jobId: job.jobId, status: "NEEDS_HUMAN" };
+		return { jobId: job.jobId, status: "NEEDS_HUMAN", reason };
 	}
 
 	await appendEvent(job.eventsPath, {
@@ -1516,9 +1734,6 @@ export async function runLoop(
 	// driver performs on the graph it loaded.
 	const graph = await loadNamedGraph(ctx.cwd, graphName);
 	const previousHead = await gitHead(ctx.cwd);
-	if (invocation.mode === "autopilot") {
-		await createJobBranch(ctx.cwd, job.jobId);
-	}
 	const baseline = await worktreeSnapshot(ctx.cwd);
 	await atomicWrite(
 		join(job.directory, "baseline.json"),
@@ -1538,6 +1753,8 @@ export async function runLoop(
 		retryBaseDelayMs: dependencies.retryBaseDelayMs,
 		resolveFacts: facts.resolve,
 		uiContext: ctx.ui,
+		model: ctx.model,
+		thinkingLevel: ctx.thinkingLevel,
 	});
 
 	try {
@@ -1559,6 +1776,7 @@ export async function runLoop(
 			return {
 				jobId: job.jobId,
 				status: result.terminalStatus,
+				reason: result.reason,
 				graphState: result.state,
 			};
 		}
@@ -1579,6 +1797,10 @@ export async function runLoop(
 			});
 			const resumed = await engine.submitHuman(approved);
 			stopState = result.stopState;
+			// Same durable approval as on resume: the ship node's push and pull
+			// request are judged on state.json, so the flag is written first.
+			await writeState(job.directory, task, engine.state, stopState);
+			await dependencies.onStateChange?.();
 			result = await driveUntilPause(
 				engine,
 				ctx.cwd,
@@ -1594,6 +1816,7 @@ export async function runLoop(
 				return {
 					jobId: job.jobId,
 					status: result.terminalStatus,
+					reason: result.reason,
 					graphState: result.state,
 				};
 			}
@@ -1617,7 +1840,14 @@ export async function runLoop(
 
 		try {
 			// One job, one commit decision, identified by this job's own trailer.
-			await finalizeShip(ctx.cwd, job.directory, job.jobId, previousHead, result.shippedThisRun === true);
+			await finalizeShip(
+				ctx.cwd,
+				job.directory,
+				job.jobId,
+				previousHead,
+				result.shippedThisRun === true,
+				dependencies.readPullRequest,
+			);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			const blocked: DriveResult = {

@@ -80,6 +80,8 @@ test("429 usage limit classifies to the default cooldown", () => {
 	// Body tokens are only available to a fetch client that owns the body.
 	assert.equal(classifyProviderBodyFailure({ status: 403, body: "permission denied" }, now), undefined);
 	assert.equal(classifyProviderBodyFailure({ status: 403, body: "quota exhausted" }, now)?.kind, "cooldown");
+	assert.equal(classifyProviderBodyFailure({ status: 400, body: "out of extra usage" }, now)?.kind, "cooldown");
+	assert.equal(classifyProviderBodyFailure({ status: 400, body: "invalid request" }, now), undefined);
 	assert.equal(classifyProviderBodyFailure({ status: 429, body: "usage limit" }, now)?.kind, "cooldown");
 });
 

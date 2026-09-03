@@ -1,8 +1,11 @@
 import type {
 	Api,
 	AssistantMessage,
+	AuthInteraction,
 	AuthResult,
+	AuthType,
 	Context,
+	Credential,
 	Model,
 	ModelsApiStreamOptions,
 	ModelsRefreshOptions,
@@ -98,6 +101,11 @@ export class ModelRegistry {
 
 	getProvider(provider: string): Provider | undefined {
 		return this.runtime.getProvider(provider);
+	}
+
+	/** Run a provider-owned login flow and synchronize the runtime catalogue. */
+	login(provider: string, type: AuthType, interaction: AuthInteraction): Promise<Credential> {
+		return this.runtime.login(provider, type, interaction);
 	}
 
 	complete<TApi extends Api>(
