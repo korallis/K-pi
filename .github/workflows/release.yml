@@ -145,7 +145,9 @@ jobs:
           if npm view "@korallis/k-pi@${VERSION}" version >/dev/null 2>&1; then
             echo "@korallis/k-pi@${VERSION} is already on the registry, skipping publish"
           else
-            npm publish --provenance --access public "$TARBALL"
+            # Verbose so the OIDC exchange (trusted publisher match or mismatch)
+            # is visible in the run log; npm redacts credentials in its output.
+            npm publish --provenance --access public --loglevel verbose "$TARBALL"
           fi
 
       - name: Publish the GitHub release
