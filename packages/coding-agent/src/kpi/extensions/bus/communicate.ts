@@ -29,6 +29,8 @@ import {
 	WORKER_ROLES,
 	type WorkerRole,
 } from "./roles.ts";
+import { registerSessionsCommand } from "./sessions-command.ts";
+import { liveWorkerCount, registerLiveBus } from "./sessions-snapshot.ts";
 import { BackgroundBus, type BusDependencies, MAX_LIVE_WORKERS, MAX_LIVE_WRITERS } from "./spawn.ts";
 import { mintContractPin, writeContract } from "./write-contract.ts";
 
@@ -284,13 +286,11 @@ export function evaluateWorkerToolCall(
 /** Tools that manage workers. They exist only in a parent session. */
 function registerParentTools(pi: ExtensionAPI, options: BusRegistrationOptions): void {
 	const buses = new Map<string, BackgroundBus>();
-	setLiveWorkerCountProvider(() => {
-		let count = 0;
-		for (const bus of buses.values()) {
-			count += bus.countLiveProcesses();
-		}
-		return count;
-	});
+	/** Each bus's registration in the sessions registry, released at shutdown. */
+	const busReleases = new Map<string, () => void>();
+	// Bridge for the board's old count provider until control-plane reads the registry directly.
+	setLiveWorkerCountProvider(() => liveWorkerCount());
+	registerSessionsCommand(pi, { admission: options.admission, now: options.now });
 	/**
 	 * One parent-level queue for spawn and stop-all.
 	 *
@@ -325,6 +325,7 @@ function registerParentTools(pi: ExtensionAPI, options: BusRegistrationOptions):
 		if (bus === undefined) {
 			bus = new BackgroundBus(cwd, job.directory, job.jobId, options);
 			buses.set(job.jobId, bus);
+			busReleases.set(job.jobId, registerLiveBus(bus));
 		}
 		return bus;
 	};
@@ -597,6 +598,10 @@ function registerParentTools(pi: ExtensionAPI, options: BusRegistrationOptions):
 			for (const bus of buses.values()) {
 				await bus.stopAll().catch(() => undefined);
 			}
+			for (const release of busReleases.values()) {
+				release();
+			}
+			busReleases.clear();
 			buses.clear();
 		});
 	}

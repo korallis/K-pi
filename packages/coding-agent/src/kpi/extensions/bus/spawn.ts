@@ -151,6 +151,8 @@ export interface WorkerRecord {
 	launch: WorkerLaunch;
 	spawnedAt: string;
 	lastEvent: string;
+	/** The graph node that started this worker, when one did. */
+	node?: string;
 	/**
 	 * Settlement of the initial spawn prompt. Installed on the protocol *before*
 	 * that prompt is sent, so a fast `agent_settled` cannot race past the parent.
@@ -171,6 +173,19 @@ export interface WorkerStatus {
 	last_event: string;
 	contract_path?: string;
 	diagnostics: WorkerDiagnostics;
+	node?: string;
+}
+
+/** One worker as the sessions registry sees it: the bus's own liveness answer, no I/O. */
+export interface LiveWorker {
+	agentId: string;
+	role: WorkerRole;
+	pid: number;
+	alive: boolean;
+	isWriter: boolean;
+	spawnedAt: string;
+	lastEvent: string;
+	node?: string;
 }
 
 export type { LeaseRecord };
@@ -377,17 +392,29 @@ export class BackgroundBus {
 	}
 
 	/**
+	 * Synchronous listing for the sessions registry: every worker in the table
+	 * with this bus's own liveness answer (launch and PID through the injected
+	 * predicate). Does not reap or release — render must never mutate bus state.
+	 */
+	liveWorkers(): LiveWorker[] {
+		return [...this.workers.values()].map((worker) => ({
+			agentId: worker.agentId,
+			role: worker.role,
+			pid: worker.pid,
+			alive: worker.launch.isAlive() && this.isProcessAlive(worker.pid),
+			isWriter: worker.isWriter,
+			spawnedAt: worker.spawnedAt,
+			lastEvent: worker.lastEvent,
+			...(worker.node === undefined ? {} : { node: worker.node }),
+		}));
+	}
+
+	/**
 	 * Synchronous board/provider count: only workers whose launch and PID are live.
 	 * Does not reap or release — render must never mutate bus state.
 	 */
 	countLiveProcesses(): number {
-		let count = 0;
-		for (const worker of this.workers.values()) {
-			if (worker.launch.isAlive() && this.isProcessAlive(worker.pid)) {
-				count += 1;
-			}
-		}
-		return count;
+		return this.liveWorkers().filter((worker) => worker.alive).length;
 	}
 
 	/** Whether a live worker currently holds the single-writer slot. */
@@ -415,6 +442,8 @@ export class BackgroundBus {
 		prompt: string;
 		model?: string;
 		tools?: readonly string[];
+		/** The graph node starting this worker, when one is. */
+		node?: string;
 	}): Promise<WorkerRecord> {
 		return this.serialize(async () => {
 			if (this.closing) {
@@ -513,6 +542,7 @@ export class BackgroundBus {
 					launch,
 					spawnedAt: this.now().toISOString(),
 					lastEvent: "agent.spawned",
+					...(options.node === undefined ? {} : { node: options.node }),
 					initialSettlement,
 					releaseAdmission: returnAdmission,
 				};
@@ -564,6 +594,7 @@ export class BackgroundBus {
 				last_event: worker.lastEvent,
 				contract_path: worker.contractPin?.declaredPath,
 				diagnostics: worker.launch.protocol.snapshot,
+				...(worker.node === undefined ? {} : { node: worker.node }),
 			}));
 		});
 	}
