@@ -41,11 +41,21 @@ export interface PolicyConfig {
 }
 
 export const DEFAULT_POLICY_CONFIG: PolicyConfig = {
-	deny: ["git push", "git push --force", "git reset --hard", "rm -rf", "chmod 777"],
+	deny: ["git push --force", "git reset --hard", "rm -rf", "chmod 777"],
 	allow: [],
 	commit: { chat: "allow", gated: "confirm", autopilot: "after-release" },
 	unknown: { chat: "allow", gated: "confirm", autopilot: "deny" },
 };
+
+/**
+ * The deny entry every 0.2.0 project was seeded with. Pushing is now a
+ * structural rule (`git push [-u] origin kpi/<branch>` after `release.approved`,
+ * nothing else), so that seeded entry is dropped on load rather than left to
+ * block the ship node in every project that took the old template. An operator
+ * who wants no pushes at all can still deny a narrower literal such as
+ * `git push origin`.
+ */
+const LEGACY_PUSH_DENY_ENTRY = "git push";
 
 /**
  * The scope a tool call is judged in. `chat` is a session with no live K-π
@@ -136,7 +146,28 @@ const PRODUCTION_COMMAND_PATTERNS = [
 	/\bdeploy\b[^;&|\n]*\bprod(?:uction)?\b/i,
 	/\bnpm\s+(?:install|i)\b/i,
 	/\b(?:pnpm|yarn|bun)\s+add\b/i,
+	// Merging is the auto-merge workflow's decision, made only after the
+	// required check passes. No node and no operator approval merges by hand.
+	/\bgh\s+pr\s+merge\b/i,
 ] as const;
+
+/**
+ * The one branch shape a job may push: its own `kpi/<job id>` feature branch,
+ * or another `kpi/*` branch of the same family. Job ids are lowercase words
+ * joined by hyphens; the pattern is a little wider so an operator-named
+ * `kpi/` branch is not refused on spelling alone. No slash after the prefix,
+ * no colon, no `+`: none of those can name a deletion, a rename, or a force.
+ */
+const JOB_BRANCH_PATTERN = /^kpi\/[A-Za-z0-9][A-Za-z0-9._-]*$/u;
+
+/** The only remote a job may push to. `upstream` is fetch-only by contract. */
+const JOB_PUSH_REMOTE = "origin";
+
+/** Push options that change nothing about what is pushed or where. */
+const JOB_PUSH_FLAGS = new Set(["-u", "--set-upstream", "-q", "--quiet", "-v", "--verbose"]);
+
+/** Flags of `gh pr create` that name the head branch. */
+const PR_HEAD_FLAGS = new Set(["--head", "-H"]);
 
 /**
  * Shell syntax that can attach a second command to the first. A command holding
@@ -194,11 +225,7 @@ function includesRecursiveForceRemove(command: string): boolean {
 }
 
 function commandDenied(command: string, deny: readonly string[]): boolean {
-	if (
-		includesGitPush(command) ||
-		includesRecursiveForceRemove(command) ||
-		PRODUCTION_COMMAND_PATTERNS.some((pattern) => pattern.test(command))
-	) {
+	if (includesRecursiveForceRemove(command) || PRODUCTION_COMMAND_PATTERNS.some((pattern) => pattern.test(command))) {
 		return true;
 	}
 
@@ -206,13 +233,101 @@ function commandDenied(command: string, deny: readonly string[]): boolean {
 	return deny.some((entry) => normalized.includes(normalizeCommand(entry)));
 }
 
+/** The words of one unchained command, or nothing when the shell could attach a second one. */
+function standaloneWords(command: string): string[] | undefined {
+	if (SHELL_COMPOSITION_PATTERN.test(command)) {
+		return undefined;
+	}
+	return collapseWhitespace(command).split(" ");
+}
+
+/** True only for one unchained command whose program is `git` and verb is `verb`. */
+function isStandaloneGit(command: string, verb: string): boolean {
+	const tokens = standaloneWords(command);
+	return tokens !== undefined && tokens[0] === "git" && tokens[1] === verb;
+}
+
 /** True only for one unchained command whose program is `git` and verb is `commit`. */
 function isStandaloneGitCommit(command: string): boolean {
-	if (SHELL_COMPOSITION_PATTERN.test(command)) {
+	return isStandaloneGit(command, "commit");
+}
+
+/**
+ * The one push a job may make, or why this one is not it.
+ *
+ * Every deny is structural, not a pattern: a flag outside the harmless set
+ * (`--force`, `-f`, `--force-with-lease`, `--delete`, `--tags`, `--all`,
+ * `--mirror`, `--prune`, and anything not listed), a remote other than
+ * `origin`, a refspec with a colon (a rename or a deletion), a leading `+` (a
+ * force), a tag ref, or a branch outside `kpi/*` — `main` included — each names
+ * itself in the reason. `git push` with no refspec is refused too: it would
+ * push whatever branch happens to be checked out, and the policy judges the
+ * command, not the working tree.
+ */
+export function parseJobBranchPush(command: string): { branch: string } | { reason: string } {
+	const tokens = standaloneWords(command);
+	if (tokens === undefined) {
+		return { reason: "a push may not be chained with another command" };
+	}
+	if (tokens[0] !== "git" || tokens[1] !== "push") {
+		return { reason: "only a standalone `git push` is allowed" };
+	}
+	const positionals: string[] = [];
+	for (const token of tokens.slice(2)) {
+		if (token.startsWith("-")) {
+			if (!JOB_PUSH_FLAGS.has(token)) {
+				return { reason: `push option ${token} is not allowed` };
+			}
+			continue;
+		}
+		positionals.push(token);
+	}
+	if (positionals.length !== 2) {
+		return {
+			reason: `a push must name the remote and exactly one kpi/* branch, as git push -u ${JOB_PUSH_REMOTE} kpi/<job>`,
+		};
+	}
+	const [remote, refspec] = positionals;
+	if (remote !== JOB_PUSH_REMOTE) {
+		return { reason: `only ${JOB_PUSH_REMOTE} may be pushed to, not ${remote}` };
+	}
+	if (refspec.startsWith("+")) {
+		return { reason: "a leading + is a force push" };
+	}
+	if (refspec.includes(":")) {
+		return { reason: "a refspec with a destination can delete or rename a remote branch" };
+	}
+	if (!JOB_BRANCH_PATTERN.test(refspec)) {
+		return { reason: `only a kpi/* branch may be pushed, not ${refspec}` };
+	}
+	return { branch: refspec };
+}
+
+/**
+ * Whether one unchained `gh pr create` names an acceptable head. The head is
+ * optional (gh takes the checked-out branch); when given it must be a `kpi/*`
+ * branch, so a job cannot open a pull request from anything it could not have
+ * pushed.
+ */
+function isJobPullRequestCreate(command: string): boolean {
+	const tokens = standaloneWords(command);
+	if (tokens === undefined || tokens[0] !== "gh" || tokens[1] !== "pr" || tokens[2] !== "create") {
 		return false;
 	}
-	const tokens = collapseWhitespace(command).split(" ");
-	return tokens[0] === "git" && tokens[1] === "commit";
+	for (const [index, token] of tokens.entries()) {
+		if (PR_HEAD_FLAGS.has(token)) {
+			const head = tokens[index + 1];
+			if (head === undefined || !JOB_BRANCH_PATTERN.test(unquote(head))) {
+				return false;
+			}
+		} else {
+			const [flag, value] = token.split("=", 2);
+			if (PR_HEAD_FLAGS.has(flag) && (value === undefined || !JOB_BRANCH_PATTERN.test(unquote(value)))) {
+				return false;
+			}
+		}
+	}
+	return true;
 }
 
 /** A declared gate is allowed verbatim and never as part of a composition. */
@@ -513,6 +628,50 @@ async function evaluateGitCommit(command: string, options: PolicyEvaluationOptio
 		: { kind: "deny", reason: `Policy denied git commit before release.approved: ${command}` };
 }
 
+/**
+ * A push is never confirmed and never allowlisted: the shape decides, then the
+ * release gate. Chat has no job and so no release; a job pushes only after its
+ * own `release.approved`, which the loop assigns after green receipts bound to
+ * HEAD (autopilot) or the operator's approval at the human node (gated).
+ */
+function evaluateGitPush(command: string, options: PolicyEvaluationOptions): PolicyDecision {
+	const parsed = parseJobBranchPush(command);
+	if ("reason" in parsed) {
+		return { kind: "deny", reason: `Policy denied git push (${parsed.reason}): ${command}` };
+	}
+	if (options.active.mode === "chat") {
+		return { kind: "deny", reason: `Policy denied git push outside a K-π job: ${command}` };
+	}
+	if (!options.active.releaseApproved) {
+		return { kind: "deny", reason: `Policy denied git push before release.approved: ${command}` };
+	}
+	return ALLOW;
+}
+
+/**
+ * The ship node's other steps, judged in a job after `release.approved`:
+ * staging the approved candidate and opening the pull request. Before release
+ * they are what they always were — `git add` an unknown command that gated
+ * confirms and autopilot refuses, and a pull request a hard deny, because
+ * opening one early would put unreviewed work in front of the merge queue.
+ * Chat is untouched: no job, no release step.
+ */
+function releaseStep(command: string, options: PolicyEvaluationOptions): PolicyDecision | undefined {
+	const { active } = options;
+	if (active.mode === "chat") {
+		return undefined;
+	}
+	if (isStandaloneGit(command, "add")) {
+		return active.releaseApproved ? ALLOW : undefined;
+	}
+	if (isJobPullRequestCreate(command)) {
+		return active.releaseApproved
+			? ALLOW
+			: { kind: "deny", reason: `Policy denied gh pr create before release.approved: ${command}` };
+	}
+	return undefined;
+}
+
 function unknownCommand(command: string, options: PolicyEvaluationOptions, why: string): PolicyDecision {
 	const { active, policy } = options;
 	const rule = active.mode === "chat" ? policy.unknown.chat : policy.unknown[active.mode];
@@ -534,11 +693,17 @@ function unknownCommand(command: string, options: PolicyEvaluationOptions, why: 
 /**
  * Order matters and is the contract: every hard deny comes first, so nothing
  * an operator allows can launder a push, a secret read, a write outside the
- * bounds, or a commit gate. Reads are allowed on their own merits; `allow[]`
- * is consulted only after them, and only for what would otherwise be unknown.
+ * bounds, or a commit gate. A push is judged by its shape and the release gate
+ * alone — never by `allow[]`, never by a confirm. Reads are allowed on their
+ * own merits; `allow[]` is consulted only after them, and only for what would
+ * otherwise be unknown.
  */
 async function evaluateCommand(command: string, options: PolicyEvaluationOptions): Promise<PolicyDecision> {
 	const { active, policy } = options;
+	if (includesGitPush(command)) {
+		return evaluateGitPush(command, options);
+	}
+
 	if (commandDenied(command, policy.deny)) {
 		return { kind: "deny", reason: `Policy denied command: ${command}` };
 	}
@@ -573,6 +738,11 @@ async function evaluateCommand(command: string, options: PolicyEvaluationOptions
 
 	if (isStandaloneGitCommit(command)) {
 		return await evaluateGitCommit(command, options);
+	}
+
+	const release = releaseStep(command, options);
+	if (release !== undefined) {
+		return release;
 	}
 
 	if (isDeclaredQualityGate(command, active.qualityGates)) {
@@ -681,8 +851,10 @@ function chatRule(value: unknown, source: string, field: string): ChatRule {
 
 /**
  * A policy file written before `allow[]` and the `chat` keys existed still
- * loads: the missing keys take the defaults. A malformed file is an error the
- * operator must see, not a silent fall back to something they did not write.
+ * loads: the missing keys take the defaults, and the `git push` entry every
+ * earlier template seeded is dropped in favour of the structural push rule. A
+ * malformed file is an error the operator must see, not a silent fall back to
+ * something they did not write.
  */
 export function normalizePolicy(raw: unknown, source: string): PolicyConfig {
 	if (!isJsonObject(raw) || !Array.isArray(raw.deny)) {
@@ -695,7 +867,9 @@ export function normalizePolicy(raw: unknown, source: string): PolicyConfig {
 	const commit = isJsonObject(raw.commit) ? raw.commit : {};
 	const unknown = isJsonObject(raw.unknown) ? raw.unknown : {};
 	return {
-		deny: raw.deny.filter((entry): entry is string => typeof entry === "string"),
+		deny: raw.deny.filter(
+			(entry): entry is string => typeof entry === "string" && normalizeCommand(entry) !== LEGACY_PUSH_DENY_ENTRY,
+		),
 		allow,
 		commit: {
 			chat: chatRule(commit.chat, source, "commit.chat"),

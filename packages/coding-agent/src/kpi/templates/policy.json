@@ -1,6 +1,5 @@
 {
   "deny": [
-    "git push",
     "git push --force",
     "git reset --hard",
     "rm -rf",

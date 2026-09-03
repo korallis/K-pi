@@ -283,11 +283,16 @@ test("autopilot healthcheck reaches DONE with one commit and no human node", asy
 		assert.deepEqual(document.release, { approved: true });
 		const taskDocument = JSON.parse(await readFile(join(directory, ".kpi", "runs", jobId, "task.json"), "utf8")) as {
 			acceptance: Array<{ bounds?: unknown; check?: unknown }>;
+			constraints: string[];
 		};
 		assert.equal(taskDocument.acceptance.length, 5);
 		assert.ok(
 			taskDocument.acceptance.every((criterion) => criterion.check !== undefined && criterion.bounds !== undefined),
 		);
+		// The contract names the one branch the job may push and forbids the rest;
+		// "Never push" is no longer a constraint a new job freezes.
+		assert.equal(taskDocument.constraints.includes("Never push"), false);
+		assert.ok(taskDocument.constraints.some((constraint) => constraint.includes(`kpi/${jobId}`)));
 		assert.equal(await git(directory, "rev-parse", "--abbrev-ref", "HEAD"), `kpi/${jobId}`);
 		assert.equal(await git(directory, "rev-list", "--count", `${initialHead}..HEAD`), "1");
 	} finally {

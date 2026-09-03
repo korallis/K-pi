@@ -126,8 +126,8 @@ function assertVersion(env, scratch) {
 	const result = runCli(["--version"], env, scratch);
 	if (result.status !== 0) fail("cli --version failed", result);
 	const text = `${result.stdout}\n${result.stderr}`.trim();
-	if (!/\b0\.2\.0\b/.test(text)) {
-		fail("cli --version must report fork version 0.2.0", { text });
+	if (!/\b0\.2\.1\b/.test(text)) {
+		fail("cli --version must report fork version 0.2.1", { text });
 	}
 	assertNoDiagnostics("version", text);
 	return text.split("\n")[0]?.trim() ?? text;

@@ -20,6 +20,7 @@ import {
 	type PolicyConfig,
 	type PolicyRegistrationOptions,
 	parseDiffStat,
+	parseJobBranchPush,
 	readGitDiffStat,
 	readPolicy,
 	registerPolicy,
@@ -31,7 +32,7 @@ import { classifyShellCommand } from "../packages/coding-agent/src/kpi/extension
 const execFile = promisify(execFileCallback);
 
 const policy: PolicyConfig = {
-	deny: ["git push", "git push --force", "git reset --hard", "rm -rf", "chmod 777"],
+	deny: ["git push --force", "git reset --hard", "rm -rf", "chmod 777"],
 	allow: [],
 	commit: { chat: "allow", gated: "confirm", autopilot: "after-release" },
 	unknown: { chat: "allow", gated: "confirm", autopilot: "deny" },
@@ -171,6 +172,140 @@ async function seedRepository(directory: string, content: string): Promise<void>
 test("git push origin main is denied", async () => {
 	const decision = await decide(bash("git push origin main"));
 	assert.equal(decision.kind, "deny");
+	assert.match(decision.kind === "deny" ? decision.reason : "", /only a kpi\/\* branch may be pushed, not main/u);
+	for (const active of [
+		gated,
+		autopilot,
+		chat,
+		{ ...gated, releaseApproved: true },
+		{ ...autopilot, releaseApproved: true },
+	]) {
+		assert.equal((await decide(bash("git push origin main"), active)).kind, "deny", active.mode);
+		assert.equal((await decide(bash("git push -u origin master"), active)).kind, "deny", active.mode);
+	}
+});
+
+test("the job branch push is allowed only inside a job after release.approved", async () => {
+	const push = "git push -u origin kpi/20260903-add-healthcheck";
+	const chatDenied = await decide(bash(push), chat);
+	assert.equal(chatDenied.kind, "deny");
+	assert.match(chatDenied.kind === "deny" ? chatDenied.reason : "", /outside a K-π job/u);
+	for (const active of [gated, autopilot]) {
+		const before = await decide(bash(push), active);
+		assert.equal(before.kind, "deny", active.mode);
+		assert.match(before.kind === "deny" ? before.reason : "", /before release\.approved/u);
+		assert.deepEqual(await decide(bash(push), { ...active, releaseApproved: true }), { kind: "allow" }, active.mode);
+	}
+	// The harmless options, in any order; the remote and the branch, quoted or not.
+	const released = { ...gated, releaseApproved: true };
+	for (const command of [
+		"git push origin kpi/job-1",
+		"git push --set-upstream origin kpi/job-1",
+		"git   push  -u   origin   kpi/job-1",
+		"git push -q -u origin kpi/job-1",
+		"git push -u origin kpi/Job_1.a",
+	]) {
+		assert.deepEqual(await decide(bash(command), released), { kind: "allow" }, command);
+	}
+	assert.deepEqual(parseJobBranchPush("git push -u origin kpi/job-1"), { branch: "kpi/job-1" });
+});
+
+test("every other push shape stays denied after release, each for its own reason", async () => {
+	const released = { ...autopilot, releaseApproved: true };
+	const cases: [string, RegExp][] = [
+		["git push --force origin kpi/job-1", /option --force/u],
+		["git push -f origin kpi/job-1", /option -f/u],
+		["git push --force-with-lease origin kpi/job-1", /option --force-with-lease/u],
+		["git push -fu origin kpi/job-1", /option -fu/u],
+		["git push --delete origin kpi/job-1", /option --delete/u],
+		["git push -d origin kpi/job-1", /option -d/u],
+		["git push --tags origin kpi/job-1", /option --tags/u],
+		["git push --all origin", /option --all/u],
+		["git push --mirror origin", /option --mirror/u],
+		["git push --prune origin kpi/job-1", /option --prune/u],
+		["git push --no-verify origin kpi/job-1", /option --no-verify/u],
+		["git push -o merge_request.create origin kpi/job-1", /option -o/u],
+		["git push origin +kpi/job-1", /leading \+ is a force push/u],
+		["git push origin :kpi/job-1", /delete or rename/u],
+		["git push origin kpi/job-1:main", /delete or rename/u],
+		["git push origin HEAD:refs/heads/kpi/job-1", /delete or rename/u],
+		["git push origin v0.2.1", /only a kpi\/\* branch may be pushed, not v0\.2\.1/u],
+		["git push origin refs/tags/v0.2.1", /only a kpi\/\* branch/u],
+		["git push origin HEAD", /only a kpi\/\* branch may be pushed, not HEAD/u],
+		["git push origin kpi/job-1/nested", /only a kpi\/\* branch/u],
+		["git push origin kpi/", /only a kpi\/\* branch/u],
+		["git push upstream kpi/job-1", /only origin may be pushed to, not upstream/u],
+		["git push git@github.com:korallis/K-pi.git kpi/job-1", /only origin may be pushed to/u],
+		["git push", /must name the remote and exactly one kpi\/\* branch/u],
+		["git push origin", /must name the remote and exactly one kpi\/\* branch/u],
+		["git push -u origin kpi/job-1 kpi/job-2", /must name the remote and exactly one kpi\/\* branch/u],
+		["git push origin kpi/job-1 && echo done", /chained/u],
+		["git status; git push origin kpi/job-1", /chained/u],
+		["git -C . push origin kpi/job-1", /standalone/u],
+		["sudo git push origin kpi/job-1", /standalone/u],
+		["git -c push.default=current push origin kpi/job-1", /standalone/u],
+	];
+	for (const [command, reason] of cases) {
+		const decision = await decide(bash(command), released);
+		assert.equal(decision.kind, "deny", command);
+		assert.match(decision.kind === "deny" ? decision.reason : "", reason, command);
+	}
+	// Neither an operator allow entry nor a declared gate can widen the rule.
+	const widened: PolicyConfig = { ...policy, allow: ["git push --force origin kpi/job-1", "git push origin main"] };
+	const options = { cwd, policy: widened, active: { ...released, qualityGates: ["git push origin main"] } };
+	assert.equal((await evaluateToolCall(bash("git push --force origin kpi/job-1"), options)).kind, "deny");
+	assert.equal((await evaluateToolCall(bash("git push origin main"), options)).kind, "deny");
+});
+
+test("the ship node's other release steps follow the same gate", async () => {
+	// Staging: unknown before release (gated asks, autopilot refuses), allowed after.
+	assert.equal((await decide(bash("git add -A"), gated)).kind, "confirm");
+	assert.equal((await decide(bash("git add src/health/server.js"), autopilot)).kind, "deny");
+	for (const active of [gated, autopilot]) {
+		assert.deepEqual(await decide(bash("git add -A"), { ...active, releaseApproved: true }), { kind: "allow" });
+		assert.deepEqual(await decide(bash("git add src test"), { ...active, releaseApproved: true }), { kind: "allow" });
+	}
+	// Opening the pull request: a hard deny before release inside a job, allowed after.
+	const create = "gh pr create --head kpi/job-1 --fill";
+	for (const active of [gated, autopilot]) {
+		const before = await decide(bash(create), active);
+		assert.equal(before.kind, "deny", active.mode);
+		assert.match(before.kind === "deny" ? before.reason : "", /gh pr create before release\.approved/u);
+		const released = { ...active, releaseApproved: true };
+		for (const command of [
+			create,
+			"gh pr create --fill",
+			"gh pr create --base main --head kpi/job-1 --title 'feat: x' --body 'y'",
+			"gh pr create -H kpi/job-1 --fill",
+			"gh pr create --head=kpi/job-1 --fill",
+		]) {
+			assert.deepEqual(await decide(bash(command), released), { kind: "allow" }, command);
+		}
+		// A head outside kpi/* is not a release step: it is the unknown command it always was.
+		assert.equal(
+			(await decide(bash("gh pr create --head main --fill"), released)).kind,
+			active.mode === "gated" ? "confirm" : "deny",
+		);
+		assert.equal((await decide(bash(`${create} && gh pr merge --auto`), released)).kind, "deny");
+	}
+	// Chat has no job and no release step: gh pr create is an ordinary unknown command there.
+	assert.deepEqual(await decide(bash(create), chat), { kind: "allow" });
+	// Merging is the auto-merge workflow's decision, never a node's or an operator's.
+	for (const active of [
+		chat,
+		gated,
+		autopilot,
+		{ ...gated, releaseApproved: true },
+		{ ...autopilot, releaseApproved: true },
+	]) {
+		for (const command of ["gh pr merge --auto --merge", "gh pr merge 12 --squash", "gh pr merge"]) {
+			assert.equal((await decide(bash(command), active)).kind, "deny", `${active.mode}: ${command}`);
+		}
+	}
+	// Looking at the pull request afterwards is a read.
+	for (const command of ["gh pr view kpi/job-1 --json url,state", "gh pr checks kpi/job-1", "gh auth status"]) {
+		assert.deepEqual(await decide(bash(command), autopilot), { kind: "allow" }, command);
+	}
 });
 
 test("recursive forced removal is denied", async () => {
@@ -522,13 +657,18 @@ test("an exact allow entry is honoured after every hard deny", async () => {
 test("a policy file written before allow and chat existed still loads, and a malformed one does not", () => {
 	const legacy = normalizePolicy(
 		{
-			deny: ["git push"],
+			deny: ["git push", "git reset --hard"],
 			commit: { gated: "confirm", autopilot: "after-release" },
 			unknown: { gated: "confirm", autopilot: "deny" },
 		},
 		"policy.json",
 	);
-	assert.deepEqual(legacy, { ...DEFAULT_POLICY_CONFIG, deny: ["git push"] });
+	// The `git push` every earlier template seeded gives way to the structural
+	// push rule; a narrower literal an operator wrote themselves is kept.
+	assert.deepEqual(legacy, { ...DEFAULT_POLICY_CONFIG, deny: ["git reset --hard"] });
+	assert.deepEqual(normalizePolicy({ deny: ["Git  Push", "git push origin"] }, "policy.json").deny, [
+		"git push origin",
+	]);
 	assert.throws(() => normalizePolicy({ commit: {} }, "policy.json"), /must define a deny array/u);
 	assert.throws(() => normalizePolicy({ deny: [], allow: "ls" }, "policy.json"), /allow must be an array/u);
 	assert.throws(() => normalizePolicy({ deny: [], unknown: { chat: "yes" } }, "policy.json"), /unknown\.chat/u);
@@ -576,7 +716,8 @@ test("the default policy is copied without replacing consumer changes", async ()
 	await withProject(async (directory) => {
 		const path = await ensurePolicyFile(directory);
 		const copied = JSON.parse(await readFile(path, "utf8")) as PolicyConfig;
-		assert.ok(copied.deny.includes("git push"));
+		assert.ok(copied.deny.includes("git push --force"));
+		assert.equal(copied.deny.includes("git push"), false, "the push rule is structural, not a deny entry");
 		assert.deepEqual(copied, DEFAULT_POLICY_CONFIG, "the shipped template is the in-code default");
 
 		await writeFile(path, '{"deny":["consumer rule"]}\n');
@@ -883,7 +1024,7 @@ test("always allow persists to policy.json allow[] and is honoured by a fresh se
 		assert.equal(await hook(bash("frobnicate   --all"), always.context), undefined);
 		const written = JSON.parse(await readFile(join(directory, ".kpi", "policy.json"), "utf8")) as PolicyConfig;
 		assert.deepEqual(written.allow, ["frobnicate --all"], "collapsed and remembered");
-		assert.ok(written.deny.includes("git push"), "the rest of the template came with it");
+		assert.ok(written.deny.includes("git push --force"), "the rest of the template came with it");
 		assert.match(always.notices[0] ?? "", /Always allowed in .kpi\/policy\.json: frobnicate --all/u);
 
 		const fresh = policyHook({ resolveActiveState: () => gated, readDiffStat: stubDiffStat });

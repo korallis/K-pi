@@ -1,7 +1,10 @@
 import type { Model } from "@earendil-works/pi-ai";
 
-import { type AccountSlot, type AccountsDocument, isLocalPool, type PoolId } from "./store.ts";
+import { type AccountSlot, type AccountsDocument, isLocalPool, isPoolId, type PoolId } from "./store.ts";
 import type { UsageView } from "./usage/types.ts";
+
+/** A plan at 95% used yields before another healthy sibling is exhausted. */
+export const LOW_QUOTA_REMAINING_PERCENT = 5;
 
 export const DEFAULT_FALLBACK_CHAIN: readonly PoolId[] = [
 	"anthropic",
@@ -133,11 +136,29 @@ export class AccountBalancer {
 		const pinned = this.sticky.get(poolId);
 		const sticky = healthy.find((slot) => slot.id === pinned);
 		if (sticky !== undefined) {
+			const remainingPercent = usage?.remainingPercent(poolId, sticky.id);
+			if (pool.strategy === "quota-first" && remainingPercent !== undefined) {
+				const alternatives = healthy.filter((slot) => slot.id !== sticky.id);
+				const quotaReplacement = this.chooseByQuota(poolId, alternatives, usage);
+				const replacement =
+					quotaReplacement ??
+					(alternatives.length === 0
+						? undefined
+						: { poolId, slot: this.rotate(poolId, alternatives), reason: "round-robin" as const });
+				if (
+					remainingPercent <= LOW_QUOTA_REMAINING_PERCENT &&
+					replacement !== undefined &&
+					(replacement.remainingPercent === undefined || replacement.remainingPercent > remainingPercent)
+				) {
+					this.pin(poolId, replacement.slot.id);
+					return replacement;
+				}
+			}
 			return {
 				poolId,
 				slot: sticky,
 				reason: "sticky",
-				remainingPercent: usage?.remainingPercent(poolId, sticky.id),
+				remainingPercent,
 			};
 		}
 
@@ -216,14 +237,30 @@ export class AccountBalancer {
 		available: readonly Model<any>[],
 		source?: Model<any>,
 		usage?: UsageView,
+		preferredModelSlugs?: readonly string[],
 	): FailoverPlan | undefined {
-		const to = this.select(from.poolId, accounts, usage);
-		if (to === undefined || (to.poolId === from.poolId && to.slot.id === from.slot.id)) {
+		const sibling = this.selectInFamily(from.poolId, accounts, usage);
+		if (sibling !== undefined && sibling.slot.id !== from.slot.id) {
+			return { from, to: sibling, sameFamily: true };
+		}
+
+		if (preferredModelSlugs !== undefined) {
+			for (const slug of preferredModelSlugs) {
+				const slash = slug.indexOf("/");
+				const poolName = slash < 1 ? undefined : slug.slice(0, slash);
+				if (poolName === undefined || !isPoolId(poolName) || poolName === from.poolId) continue;
+				const model = available.find(
+					(candidate) => candidate.provider === poolName && candidate.id === slug.slice(slash + 1),
+				);
+				if (model === undefined) continue;
+				const to = this.selectInFamily(poolName, accounts, usage);
+				if (to !== undefined) return { from, to, sameFamily: false, model };
+			}
 			return undefined;
 		}
-		if (to.poolId === from.poolId) {
-			return { from, to, sameFamily: true };
-		}
+
+		const to = this.select(from.poolId, accounts, usage);
+		if (to === undefined || to.poolId === from.poolId) return undefined;
 		const model = source === undefined ? undefined : this.findFallbackModel(source, to.poolId, available);
 		return { from, to, sameFamily: false, model };
 	}

@@ -4,11 +4,12 @@ import { dirname, join } from "node:path";
 import type { Model } from "@earendil-works/pi-ai";
 import { getAgentDir } from "../../config.ts";
 import type { ExtensionAPI, ExtensionCommandContext } from "../../core/extensions/types.ts";
-import { POOL_IDS } from "../extensions/accounts/store.ts";
+import { AccountsStore, POOL_IDS } from "../extensions/accounts/store.ts";
 import { promptResearchSetup } from "../extensions/research/setup.ts";
 import {
 	type KStackRole,
 	type ModelLadder,
+	orderCandidates,
 	PANEL_CAP,
 	REQUIRED_ROLES,
 	type RoleSuggestion,
@@ -23,6 +24,8 @@ export const INHERIT_PARENT = "inherit-parent";
 export interface KStackModels {
 	version: 1;
 	roles: Record<string, string | string[]>;
+	/** Exact cross-provider fallback order selected from the live registry. */
+	fallback_models?: string[];
 	inherit_parent: false;
 }
 
@@ -39,11 +42,11 @@ export const HEALTHY_POOLS: ReadonlySet<string> = new Set(POOL_IDS);
  * session; the pool half means K-π can route and fail it over. A model that
  * passes only one of the two is not offered.
  */
-export function liveCandidates(models: readonly Model<any>[]): string[] {
+export function liveCandidates(models: readonly Model<any>[], configuredPools: ReadonlySet<string>): string[] {
 	const seen = new Set<string>();
 	const candidates: string[] = [];
 	for (const model of models) {
-		if (!HEALTHY_POOLS.has(model.provider)) {
+		if (!HEALTHY_POOLS.has(model.provider) || !configuredPools.has(model.provider)) {
 			continue;
 		}
 		const slug = `${model.provider}/${model.id}`;
@@ -88,12 +91,16 @@ export function planModels(ladder: ModelLadder, candidates: readonly string[]): 
 	});
 }
 
-export function planToDocument(plan: readonly RolePlan[]): KStackModels {
+export function suggestFallbackModels(ladder: ModelLadder, candidates: readonly string[]): string[] {
+	return orderCandidates(candidates, ladder.workingOrder);
+}
+
+export function planToDocument(plan: readonly RolePlan[], fallbackModels: readonly string[] = []): KStackModels {
 	const roles: Record<string, string | string[]> = {};
 	for (const entry of plan) {
 		roles[entry.role] = entry.value;
 	}
-	return { version: 1, roles, inherit_parent: false };
+	return { version: 1, roles, fallback_models: [...fallbackModels], inherit_parent: false };
 }
 
 /** One readable line per role: chosen, next best, and how sure the ladder is. */
@@ -123,6 +130,11 @@ export function assertKnownModels(document: KStackModels, candidates: readonly s
 			if (!allowed.has(value)) {
 				throw new Error(`Unknown model slug: ${value}`);
 			}
+		}
+	}
+	for (const value of document.fallback_models ?? []) {
+		if (!allowed.has(value) || value === INHERIT_PARENT) {
+			throw new Error(`Unknown fallback model slug: ${value}`);
 		}
 	}
 }
@@ -170,7 +182,10 @@ export async function readKStackModels(path = modelsPath()): Promise<KStackModel
 		return undefined;
 	}
 	const parsed = JSON.parse(source) as KStackModels;
-	return parsed.version === 1 && typeof parsed.roles === "object" ? parsed : undefined;
+	const fallbackValid =
+		parsed.fallback_models === undefined ||
+		(Array.isArray(parsed.fallback_models) && parsed.fallback_models.every((value) => typeof value === "string"));
+	return parsed.version === 1 && typeof parsed.roles === "object" && fallbackValid ? parsed : undefined;
 }
 
 /**
@@ -194,7 +209,13 @@ export async function resolvePanel(path = modelsPath()): Promise<string[]> {
 	return values.filter((value) => value !== INHERIT_PARENT);
 }
 
+export async function resolveFallbackModels(path = modelsPath()): Promise<string[] | undefined> {
+	const fallbackModels = (await readKStackModels(path))?.fallback_models;
+	return fallbackModels === undefined ? undefined : [...fallbackModels];
+}
+
 const APPLY = "apply this map";
+const APPLY_FALLBACKS = "apply this fallback order";
 
 /**
  * The interactive edit loop.
@@ -248,11 +269,50 @@ export async function editPlan(
 	}
 }
 
+/** Lets the operator edit the exact cross-provider order before setup writes it. */
+export async function editFallbackPlan(
+	fallbackModels: readonly string[],
+	candidates: readonly string[],
+	ui: Pick<ExtensionCommandContext["ui"], "select" | "input" | "notify">,
+): Promise<string[] | undefined> {
+	let current = [...fallbackModels];
+	while (true) {
+		const line = `fallback_models → ${current.length === 0 ? "none" : current.join(", ")}`;
+		const choice = await ui.select("K-stack fallback models", [APPLY_FALLBACKS, line, "cancel"]);
+		if (choice === undefined || choice === "cancel") return undefined;
+		if (choice === APPLY_FALLBACKS) return current;
+		if (choice !== line) continue;
+		const typed = await ui.input("fallback_models", `comma-separated model slugs (${candidates.length} live)`);
+		if (typed === undefined || typed.trim().length === 0) continue;
+		const values = [
+			...new Set(
+				typed
+					.split(",")
+					.map((value) => value.trim())
+					.filter((value) => value.length > 0),
+			),
+		];
+		const allowed = new Set(candidates);
+		const rejected = values.filter((value) => !allowed.has(value));
+		if (rejected.length > 0) {
+			ui.notify(`Not a live model in this session: ${rejected.join(", ")}`, "error");
+			continue;
+		}
+		current = values;
+	}
+}
+
 export function registerKStackSetup(pi: ExtensionAPI): void {
 	pi.registerCommand("setup-kstack", {
 		description: "Map K-stack roles onto live K-π models using the committed model ladder",
 		handler: async (_args, context) => {
-			const candidates = liveCandidates(context.modelRegistry.getAvailable());
+			const accounts = await new AccountsStore().read();
+			const configuredPools = new Set(
+				Object.entries(accounts.pools)
+					.filter(([, pool]) => (pool?.slots.length ?? 0) > 0)
+					.map(([poolId]) => poolId),
+			);
+			const candidates = liveCandidates(context.modelRegistry.getAvailable(), configuredPools);
 			if (candidates.length === 0) {
 				context.ui.notify(
 					"No live model in a K-π pool; K-stack roles will inherit the parent session model.",
@@ -261,12 +321,21 @@ export function registerKStackSetup(pi: ExtensionAPI): void {
 			} else {
 				const ladder = await readModelLadder();
 				const plan = planModels(ladder, candidates);
-				context.ui.notify(renderPlan(plan).join("\n"), "info");
+				const fallbackPlan = suggestFallbackModels(ladder, candidates);
+				context.ui.notify(
+					[
+						...renderPlan(plan),
+						`fallback_models → ${fallbackPlan.length === 0 ? "none" : fallbackPlan.join(", ")}`,
+					].join("\n"),
+					"info",
+				);
 				const edited = await editPlan(plan, candidates, context.ui);
-				if (edited === undefined) {
+				const editedFallbacks =
+					edited === undefined ? undefined : await editFallbackPlan(fallbackPlan, candidates, context.ui);
+				if (edited === undefined || editedFallbacks === undefined) {
 					context.ui.notify("K-stack model map unchanged", "info");
 				} else {
-					await writeKStackModels(planToDocument(edited), candidates);
+					await writeKStackModels(planToDocument(edited, editedFallbacks), candidates);
 					context.ui.notify(`K-stack model map saved to ${modelsPath()}`, "info");
 				}
 			}

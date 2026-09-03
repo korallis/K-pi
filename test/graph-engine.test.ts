@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import type { Model } from "@earendil-works/pi-ai";
 import {
 	appendEvent,
 	buildReviewVerdictEventFields,
@@ -95,6 +96,36 @@ test("set nodes write nested state and checkpoint the superstep", async () => {
 		assert.deepEqual(await readdir(join(projectRoot, ".kpi", "runs", "set-job", "graph")), [
 			"checkpoint-000001.json",
 		]);
+	} finally {
+		await rm(projectRoot, { recursive: true, force: true });
+	}
+});
+
+test("agent nodes inherit the operator session model instead of resolving a different paid provider", async () => {
+	const projectRoot = await fixture();
+	const inheritedModel = { provider: "openai-codex", id: "gpt-test" } as Model<any>;
+	const received: Array<Model<any> | undefined> = [];
+	const createSession: GraphAgentSessionFactory = async (options) => {
+		received.push(options.model);
+		return {
+			session: {
+				sessionId: "inherited-model",
+				async prompt() {},
+				getActiveToolNames: () => [...(options.tools ?? [])],
+				dispose() {},
+			},
+		};
+	};
+	try {
+		const engine = new GraphEngine(flakyGraph("inherit-model"), {
+			projectRoot,
+			jobId: "inherit-model-job",
+			createAgentSession: createSession,
+			model: inheritedModel,
+		});
+
+		assert.equal((await engine.runUntilPause()).status, "completed");
+		assert.deepEqual(received, [inheritedModel]);
 	} finally {
 		await rm(projectRoot, { recursive: true, force: true });
 	}
@@ -771,6 +802,34 @@ test("a third transient failure ends the run as EXHAUSTED without a third sleep"
 		assert.equal(events.length, 1, "exactly one terminal event");
 		assert.equal(events[0].status, "EXHAUSTED");
 		engine.dispose();
+	} finally {
+		await rm(projectRoot, { recursive: true, force: true });
+	}
+});
+
+test("an assistant provider failure keeps its real reason instead of becoming missing response text", async () => {
+	const projectRoot = await fixture();
+	const providerFailure =
+		'400 {"type":"error","error":{"message":"You\'re out of extra usage. Add more and keep going."}}';
+	const createSession: GraphAgentSessionFactory = async (options) => ({
+		session: {
+			sessionId: "provider-failure",
+			async prompt() {},
+			getLastAssistantError: () => providerFailure,
+			getActiveToolNames: () => [...(options.tools ?? [])],
+			dispose() {},
+		},
+	});
+	try {
+		const engine = new GraphEngine(flakyGraph("provider-failure"), {
+			projectRoot,
+			jobId: "provider-failure-job",
+			createAgentSession: createSession,
+		});
+
+		await assert.rejects(engine.runSuperstep(), /out of extra usage/u);
+		assert.match(engine.state.nodes.implement.error ?? "", /out of extra usage/u);
+		assert.doesNotMatch(engine.state.nodes.implement.error ?? "", /assistant response text is unavailable/u);
 	} finally {
 		await rm(projectRoot, { recursive: true, force: true });
 	}

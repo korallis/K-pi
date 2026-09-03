@@ -2,7 +2,7 @@
 
 **K-π is a standalone terminal coding agent — a maintained fork of [Pi](https://github.com/earendil-works/pi), not a plugin for it.**
 
-This repository is the whole harness: TUI, agent loop, providers, sessions, tools, RPC. On top of that base, K-π compiles in its own gated or autonomous engineering loop — specify, research, plan, implement, test, bounds, isolated review, and one local ship commit.
+This repository is the whole harness: TUI, agent loop, providers, sessions, tools, RPC. On top of that base, K-π compiles in its own gated or autonomous engineering loop — specify, research, plan, implement, test, bounds, isolated review, and one ship commit on a `kpi/<job>` branch that is pushed and opened as a pull request.
 
 You do not install Pi. There is no `pi install`, no peer dependency, and no Pi package to trust. You install `@korallis/k-pi`, or build this repository, and run `kpi`.
 
@@ -180,9 +180,11 @@ Never commit `accounts.secrets.json` or `auth.json`.
 
 ## 5. Signing in
 
-Two surfaces. `/login` is the base harness's provider login. `/accounts login` is
-K-π's pooled login, which adds a *slot* to a *pool* without replacing its
-siblings — that is what lets you stack several subscriptions of the same family.
+Two surfaces, one subscription store. `/login` keeps the familiar harness UI;
+when you choose subscription OAuth for a K-π pool it delegates to the pooled
+login, adds a new *slot* without replacing siblings, and activates it. `/accounts
+login` is the explicit pooled form, with an optional slot name. API-key choices
+that are not subscription OAuth keep the base harness flow.
 
 ### `/login`
 
@@ -306,7 +308,9 @@ fallback chain and stickiness, which are written for you:
 ```
 
 A new local pool defaults to `round-robin`; a new cloud pool defaults to
-`quota-first`.
+`quota-first`. OAuth credentials refresh independently for every slot at session
+start, so the provider's most recent `auth.json` login cannot make an older slot
+serve a stale access token.
 
 ## 6. Inspecting and steering accounts
 
@@ -319,7 +323,7 @@ A new local pool defaults to `round-robin`; a new cloud pool defaults to
 | `/accounts pin <pool>/<slot>` | pin this session to one slot |
 | `/accounts next` | advance past the pinned slot |
 | `/pool strategy <pool> <quota-first\|round-robin\|sticky>` | set a pool's strategy |
-| `/pool chain a,b,c` | set the fallback chain |
+| `/pool chain a,b,c` | set the legacy provider chain used until K-stack `fallback_models` is configured |
 
 `/pool` with no arguments prints its own grammar:
 
@@ -348,10 +352,12 @@ ROUTE   local-openai/uat-stub  via home
 ```
 
 A `local` slot shows `(local) $0` and never a quota percentage. A slot whose
-quota is not yet known shows `?%`. When a provider refuses with a 429 or a quota
-error, the slot is cooled and the widget appends the wait — `home ?% cd 60m` is a
-slot cooling for sixty more minutes, rounded up from the deadline the provider
-itself stated — and the route moves to a healthy sibling.
+quota is not yet known shows `?%`. K-π also reads Codex subscription used-percent
+windows. At 5% remaining it proactively moves to a healthy sibling while keeping
+the exact model and thinking level. A 429/402/403 quota refusal or finalized
+quota-shaped 400 error also cools the slot; `home ?% cd 60m` means sixty minutes
+remain. Only after every slot in that provider is unavailable does routing change
+models/providers.
 
 ## 7. Models and K-stack roles
 
@@ -364,7 +370,10 @@ kpi update --models
 ```
 
 `/setup-kstack` maps K-stack roles onto models that are actually live in your
-configured registry, then offers to save research keys. With nothing configured
+configured registry and proposes an editable, exact `fallback_models` order from
+the same ladder. Same-provider plans are always tried first; cross-provider
+routing follows this saved order. Setup then offers to save research keys. With
+nothing configured
 it tells you so rather than inventing a mapping:
 
 ```text
@@ -616,7 +625,7 @@ when you give them no job id.
   events.jsonl              hash-chained event log
   state.json                current stop state and stage
   stack.json                the frozen Dune slice
-  ship.json                 the ship decision and the commit it made
+  ship.json                 the ship decision: the commit, the job branch pushed, the pull request
   research.json             research provenance
   research.md               research notes
   baseline.json             pre-run file snapshot
@@ -964,7 +973,7 @@ node scripts/verify-product.mjs --json .kpi/remediation-proof.json
 `verify:built` starts the built `kpi` binary under a temporary `HOME` and
 `KPI_CODING_AGENT_DIR`, checks the `dist/kpi` inventory, and exercises `--mode
 rpc` offline with no install or trust step. It prints, for example,
-`verify-built-harness: ok version=0.2.0 shipped=379 rpc_ui=true`.
+`verify-built-harness: ok version=0.2.1 shipped=379 rpc_ui=true`.
 
 `verify-product.mjs` re-runs M-01–M-07 against the built binary, writes
 secret-free evidence under `.kpi/proof/`, rolls up `.kpi/uat/<UAT-ID>/` row

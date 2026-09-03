@@ -119,6 +119,25 @@ test("pool strategy and chain persist and survive a reload", async () => {
 	}
 });
 
+test("the pooled /login path allocates distinct slots and activates the newest subscription", async () => {
+	const subject = await harness();
+	try {
+		await subject.accounts("login-active anthropic", subject.context);
+		await subject.accounts("login-active anthropic", subject.context);
+
+		assert.deepEqual(
+			(await subject.store.read()).pools.anthropic?.slots.map((slot) => slot.id),
+			["default", "slot-2"],
+			"each successful unnamed login keeps the existing subscription",
+		);
+		assert.equal(await subject.route(), "Bearer access-slot-2", "the newly authenticated subscription is active");
+		assert.equal(subject.prompts.length, 2, "each new Anthropic seat gets its own warning");
+		assert.deepEqual(subject.errors, []);
+	} finally {
+		await rm(subject.directory, { recursive: true, force: true });
+	}
+});
+
 test("an invalid pool, strategy, chain, or slot fails without a partial write", async () => {
 	const subject = await harness();
 	try {

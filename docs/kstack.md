@@ -136,7 +136,7 @@ Do not use a git submodule of `cursor/plugins` inside this repository. Fetch is 
 
 | Command | Behavior |
 |---|---|
-| `/setup-kstack` | Detect models. Print auto map from `model-ladder.md`. Apply or tweak. Then offer Exa and Perplexity keys (save either, both, or skip). Offer a project `verify-*` skill. |
+| `/setup-kstack` | Detect models. Print the role map and cross-provider fallback order from `model-ladder.md`. Apply or edit both. Then offer Exa and Perplexity keys (save either, both, or skip). Offer a project `verify-*` skill. |
 | `/k-mode [task]` | Sticky rigor mode. Match a playbook, copy steps into the job todo, fire skills, stay on until `/k-mode off`. |
 | `/k-mode off` | Clear sticky flag. |
 | `/how` `/why` `/teach` `/recall` | Understanding skills. Read-only. |
@@ -180,6 +180,7 @@ It must not:
     "fast": "xai/<id>",
     "review_panel": ["anthropic/<id>", "openai-codex/<id>"]
   },
+  "fallback_models": ["openai-codex/<id>", "anthropic/<id>", "xai/<id>"],
   "inherit_parent": false
 }
 ```
@@ -194,12 +195,13 @@ Setup must print a proposed map before writing.
 2. For each role, walk the prefer list in `model-ladder.md`. First hit wins.
 3. `review_panel` takes two different families, cap 3. UI slices use the `frontend` role (`kimi-k3` first).
 4. Show: role → suggested slug → next-best → confidence.
-5. Operator picks **apply** or edits any line, then write.
-6. Never write a slug that failed the live filter, even if the ladder names it.
+5. Sort the same live set by the ladder's overall order to propose `fallback_models`.
+6. Operator applies or edits the role lines and exact fallback order, then write.
+7. Never write a slug that failed the live filter, even if the ladder names it.
 
 Hard-coded pstack ids are still forbidden as *required* defaults. The ladder is a suggestion table, not a lock.
 
-Failover still goes through the k-pi accounts balancer. A K-stack role is a model id, not a slot. Slots stay in `accounts.json`.
+Failover still goes through the k-pi accounts balancer. A K-stack role is a model id, not a slot. Slots stay in `accounts.json`. The balancer uses every healthy same-provider slot with the exact current model before it follows `fallback_models`; `/pool chain` remains the legacy fallback until setup writes that model order.
 
 ---
 

@@ -208,11 +208,18 @@ test("the global response classifier never reads a body", async () => {
 		new URL("../packages/coding-agent/src/kpi/extensions/accounts/index.ts", import.meta.url),
 		"utf8",
 	);
-	const hook = source.slice(source.indexOf('pi.on("after_provider_response"'));
+	const afterResponse = source.slice(
+		source.indexOf('pi.on("after_provider_response"'),
+		source.indexOf('pi.on("message_end"'),
+	);
 
-	assert.match(hook, /classifyProviderFailure\(/u, "the hook classifies status and headers");
-	assert.doesNotMatch(hook, /classifyProviderBodyFailure/u, "the global hook must not reach the body classifier");
-	assert.doesNotMatch(hook.slice(0, hook.indexOf("session_start")), /\bbody\b/u, "no body is consumed in the hook");
+	assert.match(afterResponse, /classifyProviderFailure\(/u, "the hook classifies status and headers");
+	assert.doesNotMatch(
+		afterResponse,
+		/classifyProviderBodyFailure/u,
+		"the global response hook must not reach the body classifier",
+	);
+	assert.doesNotMatch(afterResponse, /event\.body/u, "no response body is consumed in the hook");
 });
 
 test("an offline or empty refresh returns the stored catalog and never overwrites it", async () => {

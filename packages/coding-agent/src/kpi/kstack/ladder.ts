@@ -209,6 +209,11 @@ function tieBreak(left: string, right: string, workingOrder: readonly string[]):
 	return difference !== 0 ? difference : left.localeCompare(right);
 }
 
+/** Orders only live candidates by the committed overall ladder. */
+export function orderCandidates(candidates: readonly string[], workingOrder: readonly string[]): string[] {
+	return [...candidates].sort((left, right) => tieBreak(left, right, workingOrder));
+}
+
 function normalizeName(name: string): string {
 	return name
 		.toLowerCase()

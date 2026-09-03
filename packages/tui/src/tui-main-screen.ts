@@ -349,6 +349,16 @@ export class TuiMainScreen extends TuiBase implements TUI {
 			return;
 		}
 
+		// The first row added beyond the viewport makes the terminal scroll. Reset
+		// before that transition so a transient status row (for example the working
+		// spinner) cannot be committed to scrollback while our logical cursor still
+		// treats it as rewritable live content.
+		if (newLines.length > height && this.previousLines.length <= height) {
+			logRedraw(`live region growing past screen height (${newLines.length} > ${height})`);
+			fullRender(true);
+			return;
+		}
+
 		// Content shrunk below the working area and no overlays - re-render to clear empty rows
 		// (overlays need the padding, so only do this when no overlays are active)
 		// Configurable via setClearOnShrink() or PI_CLEAR_ON_SHRINK=0 env var

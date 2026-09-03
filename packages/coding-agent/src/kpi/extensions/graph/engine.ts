@@ -1,6 +1,8 @@
 import { mkdir, readdir, readFile } from "node:fs/promises";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
+import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { Model } from "@earendil-works/pi-ai";
 
 import { CONFIG_DIR_NAME, getAgentDir, getKpiResourceDir } from "../../../config.ts";
 import type { ExtensionUIContext, InlineExtension } from "../../../core/extensions/types.ts";
@@ -53,6 +55,7 @@ export interface GraphAgentSession {
 	readonly sessionId: string;
 	prompt(text: string): Promise<void>;
 	getLastAssistantText?(): string | undefined;
+	getLastAssistantError?(): string | undefined;
 	/**
 	 * Session-billed USD so far (provider usage × model.cost). Graph budget
 	 * accumulates deltas after each node; optional so test fakes stay thin.
@@ -98,6 +101,9 @@ export interface GraphEngineOptions {
 	retryBaseDelayMs?: number;
 	/** Host UI so nested agent policy confirms reach the operator. */
 	uiContext?: ExtensionUIContext;
+	/** Parent-session routing inherited by every graph and worker node. */
+	model?: Model<any>;
+	thinkingLevel?: ThinkingLevel;
 }
 
 export interface GraphHumanUI {
@@ -122,6 +128,20 @@ export class GraphNodeContractError extends Error {
 		super(message);
 		this.name = "GraphNodeContractError";
 		this.nodeId = nodeId;
+	}
+}
+
+/** A provider refusal recorded by the assistant message rather than thrown by prompt(). */
+export class GraphNodeProviderError extends Error {
+	readonly nodeId: string;
+	readonly status?: number;
+
+	constructor(nodeId: string, reason: string) {
+		super(`agent node ${nodeId} provider failed: ${reason}`);
+		this.name = "GraphNodeProviderError";
+		this.nodeId = nodeId;
+		const status = /^(\d{3})\b/u.exec(reason.trim());
+		if (status !== null) this.status = Number(status[1]);
 	}
 }
 
@@ -841,6 +861,8 @@ export class GraphEngine {
 			sessionManager,
 			settingsManager,
 			resourceLoader,
+			model: this.options.model,
+			thinkingLevel: this.options.thinkingLevel,
 			tools: [...node.tools],
 			excludeTools: node.readOnly ? ["bash", "edit", "write"] : undefined,
 		});
@@ -900,6 +922,10 @@ export class GraphEngine {
 		try {
 			if (node.response === undefined) {
 				await session.prompt(this.nodePrompt(node));
+				const providerError = session.getLastAssistantError?.();
+				if (providerError !== undefined) {
+					throw new GraphNodeProviderError(node.id, providerError);
+				}
 				return { nodeId: node.id, assignments: {} };
 			}
 
@@ -911,6 +937,10 @@ export class GraphEngine {
 						? this.nodePrompt(node)
 						: `Your previous response failed ${node.response.schema}: ${validationErrors.join("; ")}. Return corrected JSON only.`;
 				await session.prompt(prompt);
+				const providerError = session.getLastAssistantError?.();
+				if (providerError !== undefined) {
+					throw new GraphNodeProviderError(node.id, providerError);
+				}
 				const source = session.getLastAssistantText?.();
 				if (source === undefined) {
 					validationErrors = ["assistant response text is unavailable"];
@@ -1001,6 +1031,8 @@ export class GraphEngine {
 			const worker = await bus.spawn({
 				role: node.workerRole,
 				prompt: this.workerNodePrompt(node),
+				model:
+					this.options.model === undefined ? undefined : `${this.options.model.provider}/${this.options.model.id}`,
 			});
 			agentId = worker.agentId;
 			const nodeState = this.runState.nodes[node.id];
@@ -1122,7 +1154,7 @@ export class GraphEngine {
 		}
 	}
 
-	private async fail(message: string, nodeIds: readonly string[]): Promise<never> {
+	private async fail(message: string, nodeIds: readonly string[], cause?: Error): Promise<never> {
 		this.runState.status = "failed";
 		for (const nodeId of nodeIds) {
 			this.runState.nodes[nodeId].status = "failed";
@@ -1130,7 +1162,9 @@ export class GraphEngine {
 		}
 		this.runState.superstep += 1;
 		await this.writeCheckpoint();
-		throw new Error(message);
+		// Preserve typed provider/contract failures so the outer loop can choose an
+		// actionable terminal instead of flattening every rejection into Error.
+		throw cause ?? new Error(message);
 	}
 
 	/**
@@ -1333,6 +1367,7 @@ export class GraphEngine {
 				return this.fail(
 					first instanceof Error ? first.message : String(first),
 					rejected.map((entry) => entry.node.id),
+					first instanceof Error ? first : undefined,
 				);
 			}
 			this.runState.budget.batches += 1;

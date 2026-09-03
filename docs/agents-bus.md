@@ -32,7 +32,7 @@ Starts `kpi --mode rpc` (or in-process `createAgentSession` when tests need it) 
 
 - session file `.kpi/runs/<job>/agents/<role>-<id>.jsonl`
 - same cwd as the job
-- tool allowlist for that role (reviewer and tester: read + grep + test bash, plus the pinned `write_contract` below — never `write` / `edit`)
+- tool allowlist for that role (reviewer and tester: read + grep + gate-only test bash plus pinned `write_contract`; explorer: read + grep + classifier-restricted read-only bash; never `write` / `edit`)
 - model from K-stack role map, failed over through accounts
 
 Returns `{ agent_id, session_path, pid }`. Writes `agent.spawned` to `events.jsonl`. Cap: `maxConcurrency = 2` live workers per job.

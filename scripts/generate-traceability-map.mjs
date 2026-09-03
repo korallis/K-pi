@@ -101,9 +101,9 @@ const AC = {
 		"after approved review the gated path shows human confirm before git commit",
 	],
 	"AC-02.6": [
-		"test/policy.test.ts",
-		"git push origin main is denied",
-		"ship node never runs git push; policy denies push in both modes",
+		"test/gated-loop.test.ts",
+		"the ship node commits on the job branch, pushes only that branch, and opens the pull request",
+		"ship commits on kpi/<job>, pushes only that branch to origin, opens a PR; main, force, delete, tags, merge denied",
 	],
 	"AC-02.7": [
 		"test/control-plane.test.ts",
@@ -380,7 +380,7 @@ const AC = {
 	"AC-13.1": [
 		"test/policy.test.ts",
 		"the registered hook keeps every AC-13.1 denial",
-		"tool_call denies git push, force-push, rm -rf, production deploy, writes outside write_allow",
+		"tool_call denies git push origin main, force-push, rm -rf, production deploy, writes outside write_allow; only kpi/* after release",
 	],
 	"AC-13.2": [
 		"test/policy.test.ts",
@@ -539,7 +539,7 @@ const AC = {
 	// US-18
 	"AC-18.1": [
 		"test/kstack-runtime.test.ts",
-		"setup offers only live models in a K-π pool",
+		"setup offers only live models in a configured K-π pool",
 		"offered slugs ⊆ getAvailable() ∩ configured pools",
 	],
 	"AC-18.2": [
@@ -549,7 +549,7 @@ const AC = {
 	],
 	"AC-18.3": [
 		"test/kstack-runtime.test.ts",
-		"setup offers only live models in a K-π pool",
+		"setup offers only live models in a configured K-π pool",
 		"no Cursor Cloud Agent target is listed in setup offers",
 	],
 	"AC-18.4": [
@@ -1536,7 +1536,7 @@ const gapSpecific = {
 		],
 		"KSTACK-02": [
 			"test/kstack-runtime.test.ts",
-			"setup offers only live models in a K-π pool",
+			"setup offers only live models in a configured K-π pool",
 			"setup never writes unavailable slugs",
 		],
 		"KSTACK-03": [

@@ -38,13 +38,13 @@ Grader discipline: prefer a deterministic check — exit code, exact string, fil
 ### UAT-01 — US-01 Build and run the harness
 - **Real-user question:** Can I clone this, build it, and run it with no install step?
 - **Action:** Clean clone → `npm install && npm run build:offline` → `node packages/coding-agent/dist/bundle/cli.js --version` → start it in an untrusted scratch repo and type `/` to list commands → open `/settings`.
-- **Pass evidence:** Version reads K-π's own `0.2.0`, not a Pi version. `/kpi`, `/loop`, `/accounts`, `/specify`, `/plan`, `/review`, `/verify`, `/ship`, `/statusbar` all appear with no `/trust` and no install command. Theme `loop-amber` is selectable. No manifest declares `keywords:["pi-package"]`, a `pi` key, or `@earendil-works/pi-*` peer dependencies.
+- **Pass evidence:** Version reads K-π's own `0.2.1`, not a Pi version. `/kpi`, `/loop`, `/accounts`, `/specify`, `/plan`, `/review`, `/verify`, `/ship`, `/statusbar` all appear with no `/trust` and no install command. Theme `loop-amber` is selectable. No manifest declares `keywords:["pi-package"]`, a `pi` key, or `@earendil-works/pi-*` peer dependencies.
 - **ACs:** AC-01.1–01.6 · **Owner:** RP-01A, re-proved by RP-19
 
 ### UAT-02 — US-02 Start from a task (gated)
 - **Real-user question:** If I type a goal, does it plan, implement, test, review, and then ask me before committing?
 - **Action:** In `fixtures/healthcheck-gated/`, run `/kpi add a healthcheck endpoint and verify it` and answer the confirm dialog.
-- **Pass evidence:** `.kpi/runs/<job>/` holds `task.json` (with `goal`, `acceptance[]`, `nongoals`, `constraints`, `quality_gates`), `context.md`, `events.jsonl`. A human confirm dialog carrying a real diff stat appears before any commit. The board shows `MODE gated`, the current stage, `ROUND n/max`, and which run files exist. `git push` never runs.
+- **Pass evidence:** `.kpi/runs/<job>/` holds `task.json` (with `goal`, `acceptance[]`, `nongoals`, `constraints`, `quality_gates`), `context.md`, `events.jsonl`. A human confirm dialog carrying a real diff stat appears before any commit. The board shows `MODE gated`, the current stage, `ROUND n/max`, and which run files exist. After approval the commit lands on `kpi/<job>`, only that branch is pushed to `origin`, and a pull request is opened; `main` is never pushed.
 - **ACs:** AC-02.1–02.7 · **Owner:** RP-02, RP-05
 
 ### UAT-03 — US-03 Start from a frozen plan
@@ -56,7 +56,7 @@ Grader discipline: prefer a deterministic check — exit code, exact string, fil
 ### UAT-04 — US-04 Autopilot when AC are executable
 - **Real-user question:** With fully executable criteria, can I walk away and come back to a finished commit?
 - **Action:** In `fixtures/healthcheck-auto/`, run `/kpi --mode autopilot <goal>`, leave, then inspect `git log -1` and `git status`.
-- **Pass evidence:** No human node on the happy path. Terminal state `DONE`. Exactly one Conventional Commits commit on the job branch. `evidence.json` is bound to the `git rev-parse HEAD` it was produced against. The implementer wrote neither `verdict.json` nor `release.approved`. Any push, deploy, delete, or new-dependency attempt shows `NEEDS_HUMAN` or `UNSAFE` and did not execute.
+- **Pass evidence:** No human node on the happy path. Terminal state `DONE`. Exactly one Conventional Commits commit on the job branch. `evidence.json` is bound to the `git rev-parse HEAD` it was produced against. The implementer wrote neither `verdict.json` nor `release.approved`. The job branch `kpi/<job>` is pushed to `origin` and a pull request is open for it; a push of any other branch, a force-push, a deploy, a delete, or a new-dependency attempt shows `NEEDS_HUMAN` or `UNSAFE` and did not execute.
 - **ACs:** AC-04.1–04.6 · **Owner:** RP-02, RP-05, RP-14
 
 ### UAT-05 — US-05 Autopilot stop states
@@ -109,8 +109,8 @@ Grader discipline: prefer a deterministic check — exit code, exact string, fil
 
 ### UAT-13 — US-13 Policy layers
 - **Real-user question:** Can it do something irreversible to my repository, and does it stop asking me about things that cannot?
-- **Action:** Attempt `git push`, force-push, `rm -rf`, a production deploy, a write outside `write_allow`, and an unknown command — in gated and again in autopilot. Then, in plain chat with no job, run `ls -la /etc`, a compound read-only command (`printf '%s\n' "$HOME"; command -v node || true`), `node --version | head -n 1` and `git commit`; then, inside a gated job, run an unknown command, choose *Always allow in this project*, restart the harness, and run it again.
-- **Pass evidence:** All five are denied by the `tool_call` hook and never execute. Gated `git commit` asks for confirmation with files changed, insertions, and deletions. Autopilot `git commit` is denied without fresh `release.approved === true`. An unknown command asks in gated and is denied in autopilot. Chat never prompts and `git push` is still denied there. The confirm offers three choices; after *Always allow* `.kpi/policy.json` `allow[]` holds the exact command and the restarted session runs it silently.
+- **Action:** Attempt `git push origin main`, force-push, `rm -rf`, a production deploy, a write outside `write_allow`, and an unknown command — in gated and again in autopilot; then, after release approval, `git push -u origin kpi/<job>` and `gh pr create --head kpi/<job> --fill`. Then, in plain chat with no job, run `ls -la /etc`, a compound read-only command (`printf '%s\n' "$HOME"; command -v node || true`), `node --version | head -n 1` and `git commit`; then, inside a gated job, run an unknown command, choose *Always allow in this project*, restart the harness, and run it again.
+- **Pass evidence:** All five are denied by the `tool_call` hook and never execute; the job-branch push and `gh pr create` are denied before release approval and run silently after it. Gated `git commit` asks for confirmation with files changed, insertions, and deletions. Autopilot `git commit` is denied without fresh `release.approved === true`. An unknown command asks in gated and is denied in autopilot. Chat never prompts and `git push` is still denied there. The confirm offers three choices; after *Always allow* `.kpi/policy.json` `allow[]` holds the exact command and the restarted session runs it silently.
 - **ACs:** AC-13.1–13.6 · **Owner:** RP-02
 
 ### UAT-14 — US-14 Observability

@@ -30,6 +30,7 @@ import {
 } from "../packages/coding-agent/src/kpi/kstack/mode.ts";
 import {
 	assertKnownModels,
+	editFallbackPlan,
 	editPlan,
 	HEALTHY_POOLS,
 	INHERIT_PARENT,
@@ -38,8 +39,10 @@ import {
 	planToDocument,
 	readKStackModels,
 	renderPlan,
+	resolveFallbackModels,
 	resolvePanel,
 	resolveRoleModel,
+	suggestFallbackModels,
 	writeKStackModels,
 } from "../packages/coding-agent/src/kpi/kstack/models.ts";
 import {
@@ -698,15 +701,15 @@ test("a ladder missing a role or a pattern is refused", () => {
 	);
 });
 
-test("setup offers only live models in a K-π pool", () => {
+test("setup offers only live models in a configured K-π pool", () => {
 	const models = [
 		{ provider: "anthropic", id: "opus-x" },
 		{ provider: "xai", id: "sol-x" },
 		{ provider: "not-a-kpi-pool", id: "whatever" },
 		{ provider: "anthropic", id: "opus-x" },
 	] as never[];
-	const candidates = liveCandidates(models);
-	assert.deepEqual(candidates, ["anthropic/opus-x", "xai/sol-x"]);
+	const candidates = liveCandidates(models, new Set(["anthropic", "not-a-kpi-pool"]));
+	assert.deepEqual(candidates, ["anthropic/opus-x"]);
 	assert.ok(HEALTHY_POOLS.has("anthropic") && HEALTHY_POOLS.has("ollama"));
 	assert.equal(HEALTHY_POOLS.has("not-a-kpi-pool"), false);
 });
@@ -759,6 +762,25 @@ test("each role reports chosen, next best, and the ladder's confidence", () => {
 	const rendered = renderPlan(plan);
 	assert.ok(rendered.some((line) => line.includes("next best:") && line.includes("confidence:")));
 	assert.ok(rendered.some((line) => line.startsWith(`fast → ${INHERIT_PARENT}`)));
+});
+
+test("setup derives an optimized exact fallback order from the live ladder intersection", () => {
+	const ladder = fixtureLadder();
+	const candidates = [
+		"anthropic/claude-opus-4-8",
+		"kimi-coding/kimi-k3",
+		"openai/gpt-5.6-sol-max",
+		"anthropic/claude-opus-5-thinking",
+		"xai/unranked",
+	];
+
+	assert.deepEqual(suggestFallbackModels(ladder, candidates), [
+		"openai/gpt-5.6-sol-max",
+		"anthropic/claude-opus-5-thinking",
+		"kimi-coding/kimi-k3",
+		"anthropic/claude-opus-4-8",
+		"xai/unranked",
+	]);
 });
 
 test("the review panel is ordered, cross-family, and capped", () => {
@@ -829,6 +851,24 @@ test("a per-line edit is accepted, and an unavailable slug is refused in place",
 	);
 });
 
+test("the setup fallback line is editable and refuses unavailable models", async () => {
+	const candidates = ["openai/gpt-5.6-sol-max", "anthropic/claude-opus-5-thinking"];
+	const notices: string[] = [];
+	const inputs = ["ghost/model", "anthropic/claude-opus-5-thinking, openai/gpt-5.6-sol-max"];
+	let round = 0;
+	const edited = await editFallbackPlan(candidates, candidates, {
+		select: async (_title, options) => {
+			round += 1;
+			return round > 2 ? options[0] : options.find((option) => option.startsWith("fallback_models → "));
+		},
+		input: async () => inputs.shift(),
+		notify: (message) => notices.push(message),
+	});
+
+	assert.deepEqual(edited, ["anthropic/claude-opus-5-thinking", "openai/gpt-5.6-sol-max"]);
+	assert.ok(notices.some((message) => message.includes("ghost/model")));
+});
+
 test("cancelling the edit loop writes nothing", async () => {
 	const plan = planModels(fixtureLadder(), ["anthropic/claude-opus-5-thinking"]);
 	assert.equal(
@@ -847,7 +887,8 @@ test("the model map is written atomically and read back per role", async () => {
 	try {
 		const ladder = fixtureLadder();
 		const candidates = ["anthropic/claude-opus-5-thinking", "openai/gpt-5.6-sol-max", "kimi-coding/kimi-k3"];
-		const document = planToDocument(planModels(ladder, candidates));
+		const fallbackModels = suggestFallbackModels(ladder, candidates);
+		const document = planToDocument(planModels(ladder, candidates), fallbackModels);
 		await writeKStackModels(document, candidates, path);
 
 		const info = await stat(path);
@@ -861,6 +902,7 @@ test("the model map is written atomically and read back per role", async () => {
 		assert.equal(readBack?.version, 1);
 		assert.equal(readBack?.inherit_parent, false);
 		assert.equal(await resolveRoleModel("judgment", path), "anthropic/claude-opus-5-thinking");
+		assert.deepEqual(await resolveFallbackModels(path), fallbackModels);
 		assert.deepEqual(await resolvePanel(path), [
 			"anthropic/claude-opus-5-thinking",
 			"openai/gpt-5.6-sol-max",

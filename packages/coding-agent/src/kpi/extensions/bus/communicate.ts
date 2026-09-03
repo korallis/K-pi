@@ -7,6 +7,7 @@ import {
 } from "../../../core/extensions/types.ts";
 
 import { readActiveJob, readTaskForJob } from "../run-store.ts";
+import { classifyShellCommand } from "../shell-classifier.ts";
 import { assertClaimInModule, canonicalProjectPath, freezeCurrentSlice, stackRequiredFor } from "../stack.ts";
 import { appendBusDenial } from "./denials.ts";
 import {
@@ -19,6 +20,7 @@ import {
 import { claimLease, defaultIsProcessAlive, type LeaseDependencies, releaseLease } from "./leases.ts";
 import { setLiveWorkerCountProvider } from "./live-snapshot.ts";
 import {
+	hasReadOnlyShell,
 	hasTestShellOnly,
 	isWorkerRole,
 	isWriterToolSet,
@@ -242,6 +244,17 @@ export function evaluateWorkerToolCall(
 			block: true,
 			reason: `${identity.role} workers publish through write_contract and never write files directly`,
 		};
+	}
+
+	if (isToolCallEventType("bash", event) && hasReadOnlyShell(identity.role)) {
+		const command = typeof event.input.command === "string" ? event.input.command.trim() : "";
+		const classification = classifyShellCommand(command);
+		if (!classification.readOnly) {
+			return {
+				block: true,
+				reason: `${identity.role} workers may only run read-only shell commands: ${classification.reason}`,
+			};
+		}
 	}
 
 	if (isToolCallEventType("bash", event) && hasTestShellOnly(identity.role)) {

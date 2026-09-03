@@ -490,7 +490,23 @@ async function handleKpiCommand(
 		const outcome: LoopOutcome = resume
 			? await resumeLoop(command, ctx, { ...dependencies, onStateChange })
 			: await runLoop(parseLoopInvocation(command), ctx, { ...dependencies, onStateChange });
-		ctx.ui.notify(`K-π job ${outcome.jobId} ${outcome.status}`, "info");
+		const reason = outcome.reason === undefined ? "" : `: ${outcome.reason}`;
+		ctx.ui.notify(
+			`K-π job ${outcome.jobId} ${outcome.status}${reason}`,
+			outcome.status === "DONE" ? "info" : "warning",
+		);
+		if (outcome.status === "NEEDS_HUMAN" && ctx.hasUI && /provider failed:/iu.test(outcome.reason ?? "")) {
+			const resumeAfterFix = await ctx.ui.confirm(
+				"K-π provider recovery",
+				`${outcome.reason ?? "The provider account is unavailable."}\n\nResolve the account or choose another model, then resume this job?`,
+			);
+			ctx.ui.notify(
+				resumeAfterFix
+					? `After resolving the provider, run /kpi ${outcome.jobId}`
+					: `K-π job ${outcome.jobId} remains at NEEDS_HUMAN`,
+				"info",
+			);
+		}
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		ctx.ui.notify(`K-π loop failed: ${message}`, "error");

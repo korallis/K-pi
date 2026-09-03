@@ -752,7 +752,7 @@ Node policy:
 | review | isolated, read-only | read, grep, find, ls | strong, different from implementer | `verdict.json` (schema-validated) |
 | human | pause | none | you | `release.approved` (gated only) |
 | release.set | `set` | none | deterministic | `release.approved = true` iff evidence contract holds |
-| ship | set / narrow bash | git commit on feature branch; never push | deterministic | completion marker |
+| ship | set / narrow bash | git commit on `kpi/<job>`, push only that branch, `gh pr create`; never main, force, tags, delete, merge | deterministic | completion marker |
 
 Conditional edges:
 
