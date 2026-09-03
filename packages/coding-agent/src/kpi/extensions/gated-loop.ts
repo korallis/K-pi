@@ -712,7 +712,13 @@ async function verifyShipDelivery(
 	try {
 		pullRequest = await (readPullRequest ?? readPullRequestWithGh)(projectRoot, branch);
 	} catch (error) {
-		throw new ShipDeliveryError(error instanceof Error ? error.message : String(error));
+		// The reader states its own failures as Errors: gh missing, signed out,
+		// answering badly. Those are the operator's to fix. Anything else thrown
+		// is not a delivery problem and is not dressed up as one.
+		if (error instanceof Error) {
+			throw new ShipDeliveryError(error.message);
+		}
+		throw error;
 	}
 	if (pullRequest === undefined) {
 		throw new ShipDeliveryError(
@@ -1710,11 +1716,17 @@ export async function resumeLoop(
 				dependencies.readPullRequest,
 			);
 		} catch (error) {
-			const failure = shipFailure(error, jobId);
-			const stopped: DriveResult = { state: result.state, stopState: result.stopState, ...failure };
+			const { terminalStatus, reason, recovery } = shipFailure(error, jobId);
+			const stopped: DriveResult = {
+				state: result.state,
+				stopState: result.stopState,
+				terminalStatus,
+				reason,
+				recovery,
+			};
 			await writeTerminalState(jobDirectory, eventsPath, task, stopped);
 			await dependencies.onStateChange?.();
-			return { jobId, ...failure, status: failure.terminalStatus, graphState: result.state };
+			return { jobId, status: terminalStatus, reason, recovery, graphState: result.state };
 		}
 		// DONE is a terminal like any other: it goes through the one writer, so
 		// `events.jsonl` alone shows the run ended rather than only `state.json`.
@@ -1952,11 +1964,11 @@ export async function runLoop(
 			// A failed finalization is a terminal the operator reads like any
 			// other - the reason and, for a delivery, the resume command - rather
 			// than a thrown "loop failed" that hides which job stopped and why.
-			const failure = shipFailure(error, job.jobId);
-			const stopped: DriveResult = { state, stopState: result.stopState, ...failure };
+			const { terminalStatus, reason, recovery } = shipFailure(error, job.jobId);
+			const stopped: DriveResult = { state, stopState: result.stopState, terminalStatus, reason, recovery };
 			await writeTerminalState(job.directory, job.eventsPath, task, stopped);
 			await dependencies.onStateChange?.();
-			return { jobId: job.jobId, ...failure, status: failure.terminalStatus, graphState: state };
+			return { jobId: job.jobId, status: terminalStatus, reason, recovery, graphState: state };
 		}
 		// Same one writer as every other terminal, so a finished run is legible
 		// from `events.jsonl` on its own.

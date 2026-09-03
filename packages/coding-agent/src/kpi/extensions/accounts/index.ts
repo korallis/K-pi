@@ -707,6 +707,7 @@ export function registerAccounts(pi: ExtensionAPI, dependencies: AccountsDepende
 	 * go, and the operator is told which slot's response can no longer be
 	 * attributed: a lost attribution is a visible fact, not a silent one.
 	 */
+	let evictionReported = false;
 	const rememberResponse = (requestId: string, response: PendingResponse, context: ExtensionContext): void => {
 		pendingResponses.delete(requestId);
 		pendingResponses.set(requestId, response);
@@ -714,10 +715,15 @@ export function registerAccounts(pi: ExtensionAPI, dependencies: AccountsDepende
 			const [oldestId, oldest] = pendingResponses.entries().next().value ?? [];
 			if (oldestId === undefined || oldest === undefined) break;
 			pendingResponses.delete(oldestId);
-			context.ui.notify(
-				`K-π accounts: more than ${MAX_PENDING_RESPONSES} responses in flight; the one on ${slotName(oldest)} is no longer attributable`,
-				"warning",
-			);
+			// Said once per agent run, not once per eviction: under sustained load
+			// the fact is the same and a notice per response would be noise.
+			if (!evictionReported) {
+				evictionReported = true;
+				context.ui.notify(
+					`K-π accounts: more than ${MAX_PENDING_RESPONSES} responses in flight; the one on ${slotName(oldest)} and any later evictions this run are no longer attributable`,
+					"warning",
+				);
+			}
 		}
 	};
 	/**
@@ -737,19 +743,22 @@ export function registerAccounts(pi: ExtensionAPI, dependencies: AccountsDepende
 	/**
 	 * The one pending response an assistant error can belong to. A failed
 	 * transport status is the strongest evidence; with none, a lone pending
-	 * response is the only candidate. Two candidates are no candidate: the
-	 * ambiguous set is dropped so neither slot is charged for the other's
-	 * error, and the caller is handed their names to say so.
+	 * response is the only candidate. Two candidates are no candidate: an
+	 * ambiguous pair of failures is dropped so neither slot is charged for the
+	 * other's error, and the caller is handed their names to say so. Ambiguous
+	 * successes are kept: one of them may still end in an error of its own.
 	 */
 	const takeErroredResponse = (): { response: PendingResponse } | { ambiguous: string[] } => {
 		const failed = [...pendingResponses].filter(([, response]) => response.status >= 400);
 		const candidates = failed.length > 0 ? failed : [...pendingResponses];
-		for (const [requestId] of candidates) {
+		if (candidates.length === 1) {
+			pendingResponses.delete(candidates[0][0]);
+			return { response: candidates[0][1] };
+		}
+		for (const [requestId] of failed) {
 			pendingResponses.delete(requestId);
 		}
-		return candidates.length === 1
-			? { response: candidates[0][1] }
-			: { ambiguous: candidates.map(([, response]) => slotName(response)) };
+		return { ambiguous: candidates.map(([, response]) => slotName(response)) };
 	};
 
 	if (typeof pi.on === "function") {
@@ -923,6 +932,12 @@ export function registerAccounts(pi: ExtensionAPI, dependencies: AccountsDepende
 					],
 				},
 			};
+		});
+		pi.on("agent_end", async () => {
+			// Every request of this run has ended or been abandoned; nothing left
+			// here can still be paired, and the next run starts with a clean slate.
+			pendingResponses.clear();
+			evictionReported = false;
 		});
 		pi.on("turn_start", async (_event, context) => {
 			await refreshExpiringCredentials(context);

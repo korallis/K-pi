@@ -100,6 +100,18 @@ test("a round-robin pin yields at 5% remaining too; stickiness is not a strategy
 	assert.equal(balancer.pinned("anthropic"), "B", "the pin moved with the route");
 });
 
+test("a lone slot at 5% keeps its pin: there is nothing to yield to", () => {
+	const document = accounts({ anthropic: pool("sticky", "only") });
+	const usage = new UsageCache({ now: () => NOW });
+	const balancer = new AccountBalancer(() => NOW);
+	assert.equal(balancer.select("anthropic", document, usage)?.slot.id, "only");
+	usage.recordHeaders("anthropic", "only", { "x-ratelimit-limit": "100", "x-ratelimit-remaining": "3" });
+	const held = balancer.select("anthropic", document, usage);
+	assert.equal(held?.slot.id, "only");
+	assert.equal(held?.reason, "sticky");
+	assert.equal(balancer.pinned("anthropic"), "only");
+});
+
 test("a near-limit pin yields to a healthy sibling whose quota is still unknown", () => {
 	const document = accounts({ anthropic: pool("quota-first", "A", "B") });
 	const usage = new UsageCache({ now: () => NOW });
