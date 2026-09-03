@@ -626,8 +626,8 @@ interface ShipDelivery {
  * to repair by pushing.
  */
 export class ShipDeliveryError extends Error {
-	constructor(message: string) {
-		super(message);
+	constructor(message: string, options?: { cause?: unknown }) {
+		super(message, options);
 		this.name = "ShipDeliveryError";
 	}
 }
@@ -731,11 +731,11 @@ async function verifyShipDelivery(
 	try {
 		pullRequest = await (readPullRequest ?? readPullRequestWithGh)(projectRoot, branch);
 	} catch (error) {
-		// The reader states its own failures as Errors: gh missing, signed out,
-		// answering badly. Those are the operator's to fix. Anything else thrown
-		// is not a delivery problem and is not dressed up as one.
-		if (error instanceof Error) {
-			throw new ShipDeliveryError(error.message);
+		// Only the reader's own named failure - gh missing, signed out, answering
+		// badly - is the operator's to fix. A reader that throws anything else
+		// has a fault of its own, and that is reported as the fault it is.
+		if (error instanceof PullRequestLookupError) {
+			throw new ShipDeliveryError(error.message, { cause: error });
 		}
 		throw error;
 	}
@@ -943,6 +943,18 @@ export interface PullRequestRecord {
 }
 
 /**
+ * The pull-request reader could not answer: `gh` missing, signed out, or
+ * answering in a shape it never documents. The operator's to repair. Any
+ * other throw from a reader is not this, and is not dressed up as delivery.
+ */
+export class PullRequestLookupError extends Error {
+	constructor(message: string, options?: { cause?: unknown }) {
+		super(message, options);
+		this.name = "PullRequestLookupError";
+	}
+}
+
+/**
  * Reads the pull request for a branch through `gh`. No pull request resolves to
  * nothing; a `gh` that is missing, signed out, or otherwise failing throws with
  * its own message, so the operator sees the real reason the ship could not be
@@ -961,7 +973,7 @@ export async function readPullRequestWithGh(
 			return undefined;
 		}
 		if (detail.code === "ENOENT") {
-			throw new Error(`No pull request could be verified for ${branch}: gh is not installed`);
+			throw new PullRequestLookupError(`No pull request could be verified for ${branch}: gh is not installed`);
 		}
 		// gh's own first line, not its whole stderr: an update notice or an auth
 		// hint is not the reason, and the operator reads what is missing first.
@@ -970,13 +982,17 @@ export async function readPullRequestWithGh(
 				.split(/\r?\n/u)
 				.map((line) => line.trim())
 				.find((line) => line.length > 0) ?? "gh gave no reason";
-		throw new Error(
-			`No pull request could be verified for ${branch}: gh pr view failed (${firstLine.slice(0, 160)})`,
+		const shown = firstLine.length > 160 ? `${firstLine.slice(0, 159)}…` : firstLine;
+		throw new PullRequestLookupError(
+			`No pull request could be verified for ${branch}: gh pr view failed (${shown})`,
+			{
+				cause: error,
+			},
 		);
 	}
 	const parsed = JSON.parse(stdout) as { url?: unknown; state?: unknown };
 	if (typeof parsed.url !== "string" || typeof parsed.state !== "string") {
-		throw new Error(`gh pr view ${branch} returned no url and state`);
+		throw new PullRequestLookupError(`gh pr view ${branch} returned no url and state`);
 	}
 	return { url: parsed.url, state: parsed.state };
 }

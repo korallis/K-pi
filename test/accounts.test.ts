@@ -1013,6 +1013,17 @@ test("an assistant error pairs only with the one failed response still pending",
 			"nothing left after the run ended",
 		);
 
+		// A failed transport the runtime recovered from ends well and, alone, is
+		// released like any other lone response.
+		await beforeHeaders({ type: "before_provider_headers", headers: {}, requestId: "R" }, context());
+		await afterResponse({ type: "after_provider_response", requestId: "R", status: 400, headers: {} }, context());
+		await messageEnd({ type: "message_end", message: { role: "assistant", stopReason: "stop" } }, context());
+		assert.equal(
+			await messageEnd({ type: "message_end", message: quotaError }, context()),
+			undefined,
+			"R was released by its own successful end",
+		);
+
 		// A successful end releases the one pending success; with two pending it
 		// releases neither, because which one ended is not known.
 		await beforeHeaders({ type: "before_provider_headers", headers: {}, requestId: "E" }, context());

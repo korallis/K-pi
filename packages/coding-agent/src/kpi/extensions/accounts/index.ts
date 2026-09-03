@@ -734,6 +734,13 @@ export function registerAccounts(pi: ExtensionAPI, dependencies: AccountsDepende
 	 * their own end, the run's end, or the cap.
 	 */
 	const releaseSucceededResponse = (): void => {
+		// The sole pending response of any status is the one that ended: a failed
+		// transport the runtime recovered from ends well too, and left pending it
+		// would only make a later error look ambiguous.
+		if (pendingResponses.size === 1) {
+			pendingResponses.clear();
+			return;
+		}
 		const succeeded = [...pendingResponses].filter(([, response]) => response.status < 400);
 		if (succeeded.length === 1) {
 			pendingResponses.delete(succeeded[0][0]);
