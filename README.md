@@ -964,7 +964,7 @@ node scripts/verify-product.mjs --json .kpi/remediation-proof.json
 `verify:built` starts the built `kpi` binary under a temporary `HOME` and
 `KPI_CODING_AGENT_DIR`, checks the `dist/kpi` inventory, and exercises `--mode
 rpc` offline with no install or trust step. It prints, for example,
-`verify-built-harness: ok version=0.1.0 shipped=367 rpc_ui=true`.
+`verify-built-harness: ok version=0.2.0 shipped=379 rpc_ui=true`.
 
 `verify-product.mjs` re-runs M-01–M-07 against the built binary, writes
 secret-free evidence under `.kpi/proof/`, rolls up `.kpi/uat/<UAT-ID>/` row

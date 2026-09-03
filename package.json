@@ -1,8 +1,8 @@
 {
 	"name": "k-pi-monorepo",
 	"private": true,
-	"version": "0.1.0",
-	"description": "K-\u03c0: a first-party graph-engineered coding agent harness, forked from Pi",
+	"version": "0.2.0",
+	"description": "K-π: a first-party graph-engineered coding agent harness, forked from Pi",
 	"license": "MIT",
 	"repository": {
 		"type": "git",
