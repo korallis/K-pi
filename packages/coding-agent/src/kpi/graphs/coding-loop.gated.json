@@ -52,7 +52,8 @@
 				"schema": "stack.schema.json",
 				"retries": 2,
 				"state": {}
-			}
+			},
+			"feedbackPath": "plan.feedback"
 		},
 		{
 			"id": "plan-check",
@@ -68,6 +69,15 @@
 				"ls"
 			],
 			"readOnly": true
+		},
+		{
+			"id": "plan-approval",
+			"type": "human",
+			"title": "Plan approval",
+			"question": "The plan is frozen as stack.json. Approve it for implementation, or request changes?",
+			"statePath": "plan.approved",
+			"detail": "stack.json",
+			"feedbackPath": "plan.feedback"
 		},
 		{
 			"id": "implement",
@@ -191,7 +201,23 @@
 		},
 		{
 			"from": "plan",
-			"to": "implement"
+			"to": "plan-approval"
+		},
+		{
+			"from": "plan-approval",
+			"to": "implement",
+			"when": {
+				"path": "plan.approved",
+				"equals": true
+			}
+		},
+		{
+			"from": "plan-approval",
+			"to": "plan",
+			"when": {
+				"path": "plan.approved",
+				"equals": false
+			}
 		},
 		{
 			"from": "plan-check",

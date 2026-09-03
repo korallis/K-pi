@@ -30,6 +30,8 @@ export const EVENT_TYPES = [
 	"agent.spawned",
 	"agent.message",
 	"agent.denied",
+	"node.started",
+	"node.finished",
 ] as const;
 
 export type EventType = (typeof EVENT_TYPES)[number];
@@ -76,7 +78,7 @@ export interface ResearchPayload {
 	from?: string;
 	to?: string;
 	reason?: string;
-	mode?: "exa" | "perplexity" | "auto" | "local";
+	mode?: "exa" | "perplexity" | "firecrawl" | "auto" | "local";
 	network_state?: "online" | "no-network";
 }
 
@@ -84,7 +86,7 @@ export type EventInput =
 	| Event<BareEventType>
 	| Event<"checkpoint", { detail?: string }>
 	| Event<"handoff.created", { mode: "gated" | "autopilot" }>
-	| Event<"approval.result", { approved: boolean; question?: string }>
+	| Event<"approval.result", { approved: boolean; question?: string; feedback?: string }>
 	| Event<"ac.refused", { quality: "executable" | "partial" | "narrative"; reason: string }>
 	| Event<"accounts.failover", { from: string; to: string; reason?: string }>
 	| Event<"loop.terminal", { status: TerminalStatus; reason?: string }>
@@ -148,7 +150,23 @@ export type EventInput =
 				expect?: string;
 				status?: string;
 			}
+	  >
+	| Event<"node.started", { run: number; model?: string }>
+	| Event<
+			"node.finished",
+			{
+				run: number;
+				status: "completed" | "failed";
+				elapsed_ms: number;
+				cost_usd?: number;
+				result?: string;
+				session?: string;
+				error?: string;
+			}
 	  >;
+
+/** One graph node run starting or settling, as the board reads it back. */
+export type NodeLifecycleEvent = Extract<EventInput, { type: "node.started" | "node.finished" }>;
 
 /**
  * A line read back from an event log: the base envelope plus the chain hashes.

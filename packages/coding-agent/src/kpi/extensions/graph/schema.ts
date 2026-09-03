@@ -38,6 +38,12 @@ export interface AgentGraphNode {
 	response?: AgentResponseContract;
 	/** When set, run as an RP-13 background worker of this role. */
 	workerRole?: AgentWorkerRole;
+	/**
+	 * State path a human gate writes the operator's change request to. When the
+	 * run state holds a non-empty string there, it is appended to this node's
+	 * prompt, so a re-run in an isolated session still sees what to change.
+	 */
+	feedbackPath?: string;
 }
 
 export interface SetGraphNode {
@@ -52,6 +58,24 @@ export interface HumanGraphNode {
 	title: string;
 	question: string;
 	statePath: string;
+	/**
+	 * The run file whose summary the driver shows with the question. Only
+	 * stack.json has a renderer, so only it is allowed here; a second file widens
+	 * this union together with its renderer.
+	 */
+	detail?: "stack.json";
+	/**
+	 * State path the operator's change request is written to on denial. A gate
+	 * with one requires non-empty feedback to deny; one without takes none.
+	 */
+	feedbackPath?: string;
+}
+
+/** What the operator answered at a human gate. */
+export interface HumanAnswer {
+	approved: boolean;
+	/** The change request, required to deny a gate with a feedbackPath. */
+	feedback?: string;
 }
 
 /**

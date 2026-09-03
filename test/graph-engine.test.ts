@@ -15,6 +15,7 @@ import {
 	type GraphAgentSessionFactory,
 	GraphEngine,
 	loadNamedGraph,
+	validateGraphDefinition,
 } from "../packages/coding-agent/src/kpi/extensions/graph/engine.ts";
 import type {
 	AgentGraphNode,
@@ -176,7 +177,7 @@ test("human nodes pause and a restored true response continues", async () => {
 			projectRoot,
 			jobId: "human-job",
 		});
-		const completed = await restored.resume(true);
+		const completed = await restored.resume({ approved: true });
 		assert.equal(completed.status, "completed");
 		assert.deepEqual(completed.values, {
 			// The graph's own configuration is seeded so edges can read it as data.
@@ -931,6 +932,104 @@ test("review.verdict is a first-class event and fields stay concise", async () =
 		assert.equal(event.type, "review.verdict");
 		assert.equal(event.blocking_count, 0);
 		assert.doesNotMatch(JSON.stringify(event), /blockingIssues|nit|evidence\.json/);
+	} finally {
+		await rm(projectRoot, { recursive: true, force: true });
+	}
+});
+
+test("a denied human node with a feedback path writes the feedback and the re-run node reads it in its prompt", async () => {
+	const projectRoot = await fixture();
+	const prompts: string[] = [];
+	const factory: GraphAgentSessionFactory = async (options) => ({
+		session: {
+			sessionId: `draft-${prompts.length + 1}`,
+			async prompt(prompt) {
+				prompts.push(prompt);
+			},
+			getActiveToolNames: () => [...(options.tools ?? [])],
+			dispose() {},
+		},
+	});
+	const definition = graph(
+		"feedback-loop",
+		[
+			{
+				id: "draft",
+				type: "agent",
+				prompt: "Draft the plan",
+				context: { mode: "isolated" },
+				tools: ["read"],
+				readOnly: true,
+				feedbackPath: "draft.feedback",
+			},
+			{
+				id: "check",
+				type: "human",
+				title: "Check the draft",
+				question: "Keep it?",
+				statePath: "draft.ok",
+				feedbackPath: "draft.feedback",
+			},
+		],
+		[
+			{ from: "draft", to: "check" },
+			{ from: "check", to: "draft", when: { path: "draft.ok", equals: false } },
+			{ from: "check", to: "__end__", when: { path: "draft.ok", equals: true } },
+		],
+	);
+	try {
+		const engine = new GraphEngine(definition, { projectRoot, jobId: "feedback-job", createAgentSession: factory });
+		const paused = await engine.runUntilPause();
+		assert.equal(paused.status, "interrupted");
+		assert.equal(prompts.length, 1);
+		assert.doesNotMatch(prompts[0] ?? "", /Operator feedback/u);
+
+		// A denial of a node that carries feedback must say what to change.
+		await assert.rejects(engine.submitHuman({ approved: false }), /human node check was denied without feedback/u);
+		await assert.rejects(engine.submitHuman({ approved: false, feedback: "   " }), /denied without feedback/u);
+		assert.equal(engine.state.status, "interrupted", "a refused answer leaves the gate pending");
+
+		const again = await engine.resume({ approved: false, feedback: "  tighter " });
+		assert.equal(again.status, "interrupted", "the change request routed back to draft, which asked again");
+		assert.equal((again.values.draft as { feedback?: string }).feedback, "tighter");
+		assert.equal(prompts.length, 2);
+		assert.ok(
+			(prompts[1] ?? "").includes(
+				"Operator feedback on your previous response (node run 2):\ntighter\nAddress every point, then return the corrected JSON only.",
+			),
+			prompts[1],
+		);
+		const completed = await engine.resume({ approved: true });
+		assert.equal(completed.status, "completed");
+		engine.dispose();
+
+		// A gate without a feedback path takes no feedback at all.
+		const plain = graph(
+			"plain-gate",
+			[{ id: "gate", type: "human", title: "Gate", question: "Go?", statePath: "gate.ok" }],
+			[{ from: "gate", to: "__end__", when: { path: "gate.ok", equals: true } }],
+		);
+		const plainEngine = new GraphEngine(plain, { projectRoot, jobId: "plain-job" });
+		await plainEngine.runUntilPause();
+		await assert.rejects(
+			plainEngine.submitHuman({ approved: true, feedback: "x" }),
+			/human node gate accepts no feedback/u,
+		);
+
+		// The new fields are validated like every other node field.
+		const [draft, check] = definition.nodes;
+		assert.throws(
+			() => validateGraphDefinition({ ...definition, nodes: [draft, { ...check, feedbackPath: "a..b" }] }),
+			/human node check contains an invalid state path: a\.\.b/u,
+		);
+		assert.throws(
+			() => validateGraphDefinition({ ...definition, nodes: [draft, { ...check, detail: "verdict.json" }] }),
+			/human node check\.detail must be stack\.json/u,
+		);
+		assert.throws(
+			() => validateGraphDefinition({ ...definition, nodes: [{ ...draft, feedbackPath: "" }, check] }),
+			/agent node draft\.feedbackPath must be a non-empty string/u,
+		);
 	} finally {
 		await rm(projectRoot, { recursive: true, force: true });
 	}

@@ -20,6 +20,7 @@ import {
 	CONVENTIONAL_COMMIT_PATTERN,
 	findJobCommit,
 	type LoopDependencies,
+	PLAN_GATE_OPTIONS,
 	type PullRequestRecord,
 	verifyShippedCommit,
 } from "../packages/coding-agent/src/kpi/extensions/gated-loop.ts";
@@ -134,6 +135,12 @@ const healthStack = JSON.stringify(
 	2,
 );
 
+/** The map a re-run planner writes after a change request: the same slice, reworded. */
+const REVISED_HEALTH_PURPOSE = "serve GET /health as api and server";
+const healthStackRevised = healthStack.replace("healthcheck endpoint and its tests", REVISED_HEALTH_PURPOSE);
+
+const PLAN_APPROVAL_QUESTION = "The plan is frozen as stack.json. Approve it for implementation, or request changes?";
+
 function loopSessions(
 	directory: string,
 	executed: string[],
@@ -150,6 +157,10 @@ function loopSessions(
 		playbook?: string;
 		/** What the ship node does with its prompt, in place of the plain local commit. */
 		ship?: (prompt: string, trailer: string) => Promise<void>;
+		/** One map per plan run, in order; once spent the plan answers `stack` as usual. */
+		stacks?: string[];
+		/** Every prompt a session received, as `<node>\n<prompt>`. */
+		prompts?: string[];
 	} = {},
 ): GraphAgentSessionFactory {
 	let sessionNumber = 0;
@@ -165,16 +176,18 @@ function loopSessions(
 					const detected = nodeId(prompt);
 					if (detected !== "retry") currentNode = detected;
 					executed.push(currentNode || detected);
+					options.prompts?.push(`${currentNode || detected}\n${prompt}`);
 					// Response contracts read getLastAssistantText after prompt; never leak
 					// a prior node's JSON (plan stack) into a later schema (evidence).
 					lastAssistantText = undefined;
 
 					if (currentNode === "plan" || currentNode === "plan-check") {
 						// Plan returns stack JSON; the graph engine validates and writes stack.json.
-						if (options.stack === null) {
+						const scripted = options.stacks?.shift();
+						if (scripted !== undefined) {
+							lastAssistantText = scripted;
+						} else if (options.stack === null) {
 							lastAssistantText = undefined;
-						} else if (options.stack === "") {
-							lastAssistantText = "";
 						} else {
 							lastAssistantText = options.stack ?? healthStack;
 						}
@@ -245,6 +258,20 @@ function loopSessions(
 	};
 }
 
+/** How the fake operator answers the plan gate's select and editor dialogs. */
+interface GateScript {
+	/** First line of every select title, in order. */
+	selections?: string[];
+	/** Select answers in order; an explicit `undefined` is a dismissed dialog. Spent: Approve plan. */
+	answers?: (string | undefined)[];
+	/** Editor answers in order; spent: a dismissed editor. */
+	feedbacks?: (string | undefined)[];
+	/** The node log the select checks: implement must not have run while a plan gate is open. */
+	executed?: string[];
+	/** Whether the context has dialog UI; a function is read on every gate. */
+	hasUI?: boolean | (() => boolean);
+}
+
 function commandHarness(
 	directory: string,
 	factory: GraphAgentSessionFactory,
@@ -252,13 +279,18 @@ function commandHarness(
 	confirmations: string[],
 	busDependencies: BusDependencies = reviewerBusDependencies(),
 	dependencies: Pick<LoopDependencies, "readPullRequest"> = {},
+	gate: GateScript = {},
 ): {
 	commands: Map<string, CommandHandler>;
 	context: ExtensionCommandContext;
 	notifications: string[];
+	/** Every select title in full, in order. */
+	selectTitles: string[];
 } {
 	const commands = new Map<string, CommandHandler>();
 	const notifications: string[] = [];
+	const selectTitles: string[] = [];
+	const hasUI = (): boolean => (typeof gate.hasUI === "function" ? gate.hasUI() : (gate.hasUI ?? true));
 	const pi = {
 		on() {},
 		registerCommand(name: string, options: { handler: CommandHandler }) {
@@ -273,12 +305,34 @@ function commandHarness(
 	});
 	const context = {
 		cwd: directory,
-		hasUI: true,
-		mode: "tui",
+		get hasUI() {
+			return hasUI();
+		},
+		mode: gate.hasUI === false ? "print" : "tui",
 		ui: {
 			async confirm(title: string) {
+				assert.ok(hasUI(), `confirm(${title}) requested without dialog UI`);
 				confirmations.push(title);
 				return true;
+			},
+			async select(title: string, options: string[]) {
+				assert.ok(hasUI(), `select(${title}) requested without dialog UI`);
+				assert.deepEqual(options, [...PLAN_GATE_OPTIONS]);
+				selectTitles.push(title);
+				const firstLine = title.split("\n")[0] ?? title;
+				gate.selections?.push(firstLine);
+				if (firstLine.startsWith("Plan approval")) {
+					assert.equal(
+						gate.executed?.includes("implement") ?? false,
+						false,
+						"implement must not run before the plan is approved",
+					);
+				}
+				return gate.answers === undefined || gate.answers.length === 0 ? "Approve plan" : gate.answers.shift();
+			},
+			async editor(title: string) {
+				assert.ok(hasUI(), `editor(${title}) requested without dialog UI`);
+				return gate.feedbacks?.shift();
 			},
 			notify(message: string) {
 				notifications.push(message);
@@ -286,7 +340,27 @@ function commandHarness(
 			setWidget() {},
 		},
 	} as unknown as ExtensionCommandContext;
-	return { commands, context, notifications };
+	return { commands, context, notifications, selectTitles };
+}
+
+async function readEvents(directory: string, jobId: string): Promise<Record<string, unknown>[]> {
+	return (await readFile(join(directory, ".kpi", "runs", jobId, "events.jsonl"), "utf8"))
+		.split("\n")
+		.filter((line) => line.length > 0)
+		.map((line) => JSON.parse(line) as Record<string, unknown>);
+}
+
+async function approvalEvents(directory: string, jobId: string): Promise<Record<string, unknown>[]> {
+	return (await readEvents(directory, jobId)).filter((record) => record.type === "approval.result");
+}
+
+async function terminalEvents(directory: string, jobId: string): Promise<Record<string, unknown>[]> {
+	return (await readEvents(directory, jobId)).filter((record) => record.type === "loop.terminal");
+}
+
+async function checkpointPlan(directory: string, jobId: string): Promise<Record<string, unknown>> {
+	const values = (await latestCheckpoint(directory, jobId)).values as Record<string, unknown>;
+	return values.plan as Record<string, unknown>;
 }
 
 async function latestCheckpoint(directory: string, jobId: string): Promise<Record<string, unknown>> {
@@ -300,6 +374,7 @@ test("loop on healthcheck fixture reaches human confirm with green gates", async
 	const jobId = "20260831-healthcheck-gated";
 	const executed: string[] = [];
 	const confirmations: string[] = [];
+	const selections: string[] = [];
 	try {
 		assert.ok((await readFile(join(directory, "test", "health", "health.test.js"), "utf8")).includes("GET /health"));
 		const task = await readFile(join(directory, "task.txt"), "utf8");
@@ -316,6 +391,9 @@ test("loop on healthcheck fixture reaches human confirm with green gates", async
 			loopSessions(directory, executed, { validateCommands: true, jobId }),
 			jobId,
 			confirmations,
+			reviewerBusDependencies(),
+			{},
+			{ selections, executed },
 		);
 
 		await harness.commands.get("loop")!(task, harness.context);
@@ -327,6 +405,33 @@ test("loop on healthcheck fixture reaches human confirm with green gates", async
 
 		assert.deepEqual(confirmations, ["Approve gated release"]);
 		assert.ok(executed.includes("specify"));
+		// The operator approved the plan before the first write, from a dialog that
+		// showed the plan itself, and the approval is on the record.
+		assert.deepEqual(selections, ["Plan approval"]);
+		const gateTitle = harness.selectTitles[0] ?? "";
+		for (const expected of [
+			PLAN_APPROVAL_QUESTION,
+			"Current slice: health",
+			"1. health —",
+			`Full plan: .kpi/runs/${jobId}/stack.json`,
+			"Revision 1",
+		]) {
+			assert.ok(gateTitle.includes(expected), `plan gate title lacks ${expected}:\n${gateTitle}`);
+		}
+		assert.ok(harness.notifications.includes(`K-π job ${jobId} is waiting on you: Plan approval`));
+		const approvals = await approvalEvents(directory, jobId);
+		assert.deepEqual(
+			approvals.map((record) => [record.node, record.approved]),
+			[
+				["plan-approval", true],
+				["human", true],
+			],
+		);
+		assert.equal(approvals[0]?.question, PLAN_APPROVAL_QUESTION);
+		assert.equal("feedback" in (approvals[0] ?? {}), false);
+		const plan = await checkpointPlan(directory, jobId);
+		assert.equal(plan.approved, true);
+		assert.equal(plan.feedback, undefined);
 		const state = JSON.parse(await readFile(join(directory, ".kpi", "runs", jobId, "state.json"), "utf8")) as Record<
 			string,
 			unknown
@@ -1265,5 +1370,296 @@ test("kpi --no-network freezes the operator's offline decision onto the contract
 		assert.deepEqual(researchCellFromDocument(research), { cell: "RESEARCH local · no-network operator" });
 	} finally {
 		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("the gated loop asks the operator to approve the plan before implement and records the approval", async () => {
+	const directory = await fixture();
+	const jobId = "20260903-plan-approval";
+	const executed: string[] = [];
+	const confirmations: string[] = [];
+	const selections: string[] = [];
+	try {
+		const harness = commandHarness(
+			directory,
+			loopSessions(directory, executed, { jobId }),
+			jobId,
+			confirmations,
+			reviewerBusDependencies(),
+			{},
+			{ selections, executed },
+		);
+		await harness.commands.get("loop")!(await readFile(join(directory, "task.txt"), "utf8"), harness.context);
+
+		const state = await runDocument(directory, jobId, "state.json");
+		assert.equal(state.status, "DONE", `${state.reason}\n${harness.notifications.join("\n")}`);
+		// One plan gate, asked with the plan in front of the operator (the select
+		// itself asserted implement had not run), and the release gate unchanged.
+		assert.deepEqual(selections, ["Plan approval"]);
+		assert.deepEqual(confirmations, ["Approve gated release"]);
+		const title = harness.selectTitles[0] ?? "";
+		assert.ok(title.startsWith(`Plan approval\n${PLAN_APPROVAL_QUESTION}\n`), title);
+		for (const expected of [
+			"Delivery: vertical",
+			"Current slice: health",
+			"1. health — healthcheck endpoint and its tests",
+			"folder src/health · interface src/health/api.ts · 2 allowed path(s) · depends on nothing",
+			`Full plan: .kpi/runs/${jobId}/stack.json`,
+			"Revision 1",
+		]) {
+			assert.ok(title.includes(expected), `plan gate title lacks ${expected}:\n${title}`);
+		}
+		assert.doesNotMatch(title, /EXHAUSTED| of \d/u, "revisions are unbounded; the operator is the bound");
+		assert.ok(harness.notifications.includes(`K-π job ${jobId} is waiting on you: Plan approval`));
+
+		// The approval is on the record, before the release approval.
+		const approvals = await approvalEvents(directory, jobId);
+		assert.deepEqual(
+			approvals.map((record) => [record.node, record.approved, record.question]),
+			[
+				["plan-approval", true, PLAN_APPROVAL_QUESTION],
+				["human", true, approvals[1]?.question],
+			],
+		);
+		assert.equal("feedback" in (approvals[0] ?? {}), false);
+		const plan = await checkpointPlan(directory, jobId);
+		assert.equal(plan.approved, true);
+		assert.equal(plan.feedback, undefined);
+		const terminals = await terminalEvents(directory, jobId);
+		assert.equal(terminals.length, 1, JSON.stringify(terminals));
+		assert.equal(terminals[0]?.status, "DONE");
+		assert.equal(await verifyChain(join(directory, ".kpi", "runs", jobId, "events.jsonl")), true);
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("request changes re-plans with the operator's feedback and refuses empty feedback", async () => {
+	const directory = await fixture();
+	const jobId = "20260903-plan-changes";
+	const executed: string[] = [];
+	const prompts: string[] = [];
+	const selections: string[] = [];
+	const feedback = "split health into api and server";
+	try {
+		const harness = commandHarness(
+			directory,
+			loopSessions(directory, executed, { jobId, stacks: [healthStack, healthStackRevised], prompts }),
+			jobId,
+			[],
+			reviewerBusDependencies(),
+			{},
+			{
+				selections,
+				executed,
+				answers: ["Request changes", "Request changes", "Approve plan"],
+				// The first change request carries nothing and is refused; the second is real.
+				feedbacks: ["", feedback],
+			},
+		);
+		await harness.commands.get("loop")!(await readFile(join(directory, "task.txt"), "utf8"), harness.context);
+
+		const state = await runDocument(directory, jobId, "state.json");
+		assert.equal(state.status, "DONE", `${state.reason}\n${harness.notifications.join("\n")}`);
+		assert.ok(
+			harness.notifications.some((message) => message.includes("feedback is required to request plan changes")),
+			harness.notifications.join("\n"),
+		);
+		// Refused, asked again, denied with feedback, re-planned, asked again, approved.
+		assert.deepEqual(selections, ["Plan approval", "Plan approval", "Plan approval"]);
+		assert.ok((harness.selectTitles[0] ?? "").includes("Revision 1"), harness.selectTitles[0]);
+		assert.ok((harness.selectTitles[2] ?? "").includes("Revision 2"), harness.selectTitles[2]);
+		assert.ok(
+			(harness.selectTitles[2] ?? "").includes(`1. health — ${REVISED_HEALTH_PURPOSE}`),
+			harness.selectTitles[2],
+		);
+		assert.equal(executed.filter((node) => node === "plan").length, 2);
+		assert.equal(executed.filter((node) => node === "implement").length, 1);
+		assert.equal(executed.includes("plan-approval"), false, "a human node never prompts a session");
+
+		// The re-run planner, in a fresh isolated session, was told what to change.
+		const planPrompts = prompts.filter((prompt) => prompt.startsWith("plan\n"));
+		assert.equal(planPrompts.length, 2);
+		assert.doesNotMatch(planPrompts[0] ?? "", /Operator feedback/u);
+		assert.ok(
+			(planPrompts[1] ?? "").includes(`Operator feedback on your previous response (node run 2):\n${feedback}`),
+			planPrompts[1],
+		);
+
+		const approvals = (await approvalEvents(directory, jobId)).filter((record) => record.node === "plan-approval");
+		assert.deepEqual(
+			approvals.map((record) => [record.approved, record.feedback]),
+			[
+				[false, feedback],
+				[true, undefined],
+			],
+		);
+		assert.deepEqual(await checkpointPlan(directory, jobId), { provided: false, approved: true, feedback });
+		// The second plan's map is the one on disk, frozen before implement.
+		const stack = (await runDocument(directory, jobId, "stack.json")) as { modules: { purpose: string }[] };
+		assert.equal(stack.modules[0]?.purpose, REVISED_HEALTH_PURPOSE);
+		assert.equal(await verifyChain(join(directory, ".kpi", "runs", jobId, "events.jsonl")), true);
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("a plan gate without dialog UI stops NEEDS_HUMAN with the resume command and never answers itself", async () => {
+	const directory = await fixture();
+	const jobId = "20260903-plan-no-ui";
+	const executed: string[] = [];
+	try {
+		const harness = commandHarness(
+			directory,
+			loopSessions(directory, executed, { jobId }),
+			jobId,
+			[],
+			reviewerBusDependencies(),
+			{},
+			{ executed, hasUI: false },
+		);
+		await harness.commands.get("loop")!(await readFile(join(directory, "task.txt"), "utf8"), harness.context);
+
+		const state = await runDocument(directory, jobId, "state.json");
+		assert.equal(state.status, "NEEDS_HUMAN", `${state.reason}\n${harness.notifications.join("\n")}`);
+		assert.equal(state.recovery, "approval");
+		assert.ok(String(state.reason).includes("Plan approval needs an interactive session"), String(state.reason));
+		assert.ok(String(state.reason).includes(`resume with /kpi ${jobId}`), String(state.reason));
+		assert.equal(state.graph_status, "interrupted");
+		assert.equal(state.pending_question, PLAN_APPROVAL_QUESTION);
+		assert.equal(state.stage, "plan");
+		assert.equal(state.node, "plan-approval");
+		const terminals = await terminalEvents(directory, jobId);
+		assert.equal(terminals.length, 1, JSON.stringify(terminals));
+		assert.equal(terminals[0]?.status, "NEEDS_HUMAN");
+		assert.deepEqual(await approvalEvents(directory, jobId), [], "the harness never answered for the operator");
+		assert.equal(executed.includes("implement"), false);
+		assert.ok(harness.notifications.includes(`K-π job ${jobId} is waiting on you: Plan approval`));
+		const outcome = harness.notifications.find((message) =>
+			message.startsWith(`K-π job ${jobId} NEEDS_HUMAN: Plan approval needs an interactive session`),
+		);
+		assert.ok(outcome, harness.notifications.join("\n"));
+		assert.ok(outcome.includes(`/kpi ${jobId}`));
+		assert.equal(
+			harness.notifications.some((message) => message.includes("loop failed")),
+			false,
+			harness.notifications.join("\n"),
+		);
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("a plan gate dismissed with Escape stops NEEDS_HUMAN, re-asks on resume, and an approved gate is never asked twice", async () => {
+	const task = await readFile(join(fixtureSource, "task.txt"), "utf8");
+	const directory = await fixture();
+	const jobId = "20260903-plan-dismissed";
+	const executed: string[] = [];
+	const selections: string[] = [];
+	const confirmations: string[] = [];
+	try {
+		const first = commandHarness(
+			directory,
+			loopSessions(directory, executed, { jobId }),
+			jobId,
+			confirmations,
+			reviewerBusDependencies(),
+			{},
+			{ selections, executed, answers: [undefined] },
+		);
+		await first.commands.get("loop")!(task, first.context);
+		const stopped = await runDocument(directory, jobId, "state.json");
+		assert.equal(stopped.status, "NEEDS_HUMAN", `${stopped.reason}\n${first.notifications.join("\n")}`);
+		assert.match(String(stopped.reason), /Plan approval was dismissed/u);
+		assert.equal(stopped.recovery, "approval");
+		assert.deepEqual(await approvalEvents(directory, jobId), []);
+		assert.deepEqual(selections, ["Plan approval"]);
+		assert.equal(executed.includes("implement"), false);
+
+		// Resumed in an interactive session: the same gate is asked once and answered.
+		const resumeExecuted: string[] = [];
+		const second = commandHarness(
+			directory,
+			loopSessions(directory, resumeExecuted, { jobId }),
+			jobId,
+			confirmations,
+			reviewerBusDependencies(),
+			{},
+			{ selections, executed: resumeExecuted },
+		);
+		await second.commands.get("kpi")!(jobId, second.context);
+		const done = await runDocument(directory, jobId, "state.json");
+		assert.equal(done.status, "DONE", `${done.reason}\n${second.notifications.join("\n")}`);
+		assert.deepEqual(selections, ["Plan approval", "Plan approval"]);
+		assert.ok(resumeExecuted.includes("implement"));
+		assert.deepEqual(confirmations, ["Approve gated release"]);
+		const approvals = await approvalEvents(directory, jobId);
+		assert.deepEqual(
+			approvals.map((record) => [record.node, record.approved]),
+			[
+				["plan-approval", true],
+				["human", true],
+			],
+		);
+
+		// A finished job resumed again asks nothing.
+		await second.commands.get("kpi")!(jobId, second.context);
+		assert.deepEqual(selections, ["Plan approval", "Plan approval"]);
+		assert.equal((await checkpointPlan(directory, jobId)).approved, true);
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+
+	// An answered gate is completed in the checkpoint: a job that loses its
+	// dialog UI after plan approval stops at the release gate and, resumed with
+	// a UI, is never asked about the plan again.
+	const partialDirectory = await fixture();
+	const partialJobId = "20260903-plan-partial-ui";
+	const partialExecuted: string[] = [];
+	const partialSelections: string[] = [];
+	try {
+		const partial = commandHarness(
+			partialDirectory,
+			loopSessions(partialDirectory, partialExecuted, { jobId: partialJobId }),
+			partialJobId,
+			[],
+			reviewerBusDependencies(),
+			{},
+			{
+				selections: partialSelections,
+				executed: partialExecuted,
+				hasUI: () => partialSelections.length === 0,
+			},
+		);
+		await partial.commands.get("loop")!(task, partial.context);
+		const stopped = await runDocument(partialDirectory, partialJobId, "state.json");
+		assert.equal(stopped.status, "NEEDS_HUMAN", `${stopped.reason}\n${partial.notifications.join("\n")}`);
+		assert.match(String(stopped.reason), /Approve gated release needs an interactive session/u);
+		assert.equal(stopped.recovery, "approval");
+		assert.deepEqual(partialSelections, ["Plan approval"]);
+		assert.ok(partialExecuted.includes("implement"));
+
+		const finishConfirmations: string[] = [];
+		const finish = commandHarness(
+			partialDirectory,
+			loopSessions(partialDirectory, [], { jobId: partialJobId }),
+			partialJobId,
+			finishConfirmations,
+			reviewerBusDependencies(),
+			{},
+			{ selections: partialSelections },
+		);
+		await finish.commands.get("kpi")!(partialJobId, finish.context);
+		const done = await runDocument(partialDirectory, partialJobId, "state.json");
+		assert.equal(done.status, "DONE", `${done.reason}\n${finish.notifications.join("\n")}`);
+		assert.deepEqual(partialSelections, ["Plan approval"], "an answered plan gate is not asked again");
+		assert.deepEqual(finishConfirmations, ["Approve gated release"]);
+		assert.equal(
+			(await approvalEvents(partialDirectory, partialJobId)).filter((record) => record.node === "plan-approval")
+				.length,
+			1,
+		);
+	} finally {
+		await rm(partialDirectory, { recursive: true, force: true });
 	}
 });

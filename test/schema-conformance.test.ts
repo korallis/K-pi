@@ -96,7 +96,7 @@ function eventPayload(type: (typeof EVENT_TYPES)[number]): Record<string, unknow
 		case "handoff.created":
 			return { ...base, mode: "gated" };
 		case "approval.result":
-			return { ...base, approved: true, question: "Commit?" };
+			return { ...base, approved: false, question: "Commit?", feedback: "split the module" };
 		case "checkpoint":
 			return { ...base, detail: "fresh receipt" };
 		case "accounts.failover":
@@ -160,6 +160,10 @@ function eventPayload(type: (typeof EVENT_TYPES)[number]): Record<string, unknow
 				expect: "result",
 				status: "accepted",
 			};
+		case "node.started":
+			return { ...base, run: 1, model: "openai-codex/gpt-test" };
+		case "node.finished":
+			return { ...base, run: 1, status: "completed", elapsed_ms: 1200, cost_usd: 0.01 };
 		default:
 			return base;
 	}
@@ -180,6 +184,7 @@ test("event schema rejects cross-type and research vocabulary drift", async () =
 	const schema = await loadSchema("event");
 
 	assertInvalid({ ...eventPayload("checkpoint"), approved: true }, schema);
+	assertInvalid({ ...eventPayload("node.finished"), approved: true }, schema);
 	assertInvalid({ ...eventPayload("research.started"), network_state: "degraded" }, schema);
 	assertInvalid({ ...eventPayload("research.started"), mode: "native" }, schema);
 	assertInvalid({ ...eventPayload("agent.message"), headers: { authorization: "secret" } }, schema);

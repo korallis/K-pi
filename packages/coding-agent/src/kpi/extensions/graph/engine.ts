@@ -40,6 +40,7 @@ import {
 	type GraphRoutedTerminal,
 	type GraphRunState,
 	type GraphTerminalState,
+	type HumanAnswer,
 	isJsonObject,
 	type JsonObject,
 	type JsonValue,
@@ -104,10 +105,6 @@ export interface GraphEngineOptions {
 	/** Parent-session routing inherited by every graph and worker node. */
 	model?: Model<any>;
 	thinkingLevel?: ThinkingLevel;
-}
-
-export interface GraphHumanUI {
-	confirm(title: string, message: string): Promise<boolean>;
 }
 
 function defaultSleep(milliseconds: number): Promise<void> {
@@ -220,6 +217,13 @@ function validateNode(value: unknown, index: number): asserts value is GraphNode
 		assertString(value.question, `human node ${value.id}.question`);
 		assertString(value.statePath, `human node ${value.id}.statePath`);
 		assertStatePath(value.statePath, `human node ${value.id}`);
+		if (value.detail !== undefined && value.detail !== "stack.json") {
+			throw new Error(`human node ${value.id}.detail must be stack.json, the only run file with a summary renderer`);
+		}
+		if (value.feedbackPath !== undefined) {
+			assertString(value.feedbackPath, `human node ${value.id}.feedbackPath`);
+			assertStatePath(value.feedbackPath, `human node ${value.id}`);
+		}
 		return;
 	}
 
@@ -240,6 +244,10 @@ function validateNode(value: unknown, index: number): asserts value is GraphNode
 		(typeof value.context.threadKey !== "string" || value.context.threadKey.length === 0)
 	) {
 		throw new Error(`agent node ${value.id}.context.threadKey must be non-empty`);
+	}
+	if (value.feedbackPath !== undefined) {
+		assertString(value.feedbackPath, `agent node ${value.id}.feedbackPath`);
+		assertStatePath(value.feedbackPath, `agent node ${value.id}`);
 	}
 	if (value.readOnly) {
 		const mutatingTool = value.tools.find((tool) => !READ_ONLY_TOOLS.has(tool));
@@ -707,6 +715,19 @@ export class GraphEngine {
 		if (node.response !== undefined) {
 			lines.push(
 				`Return only JSON matching ${node.response.schema}; the graph engine writes ${node.response.path}.`,
+			);
+		}
+		// An isolated re-run has no memory of the answer the operator sent back,
+		// so the change request travels in the prompt. `runs` already counts this
+		// run, so the first re-run reads "node run 2".
+		const feedback =
+			node.feedbackPath === undefined ? undefined : getStatePath(this.runState.values, node.feedbackPath);
+		if (typeof feedback === "string" && feedback.length > 0) {
+			lines.push(
+				"",
+				`Operator feedback on your previous response (node run ${this.runState.nodes[node.id].runs}):`,
+				feedback,
+				"Address every point, then return the corrected JSON only.",
 			);
 		}
 		return lines.join("\n");
@@ -1456,7 +1477,7 @@ export class GraphEngine {
 		return this.runState;
 	}
 
-	async submitHuman(approved: boolean): Promise<Readonly<GraphRunState>> {
+	async submitHuman(answer: HumanAnswer): Promise<Readonly<GraphRunState>> {
 		const pending = this.runState.pendingHuman;
 		if (this.runState.status !== "interrupted" || pending === undefined) {
 			throw new Error("graph has no pending human node");
@@ -1465,9 +1486,21 @@ export class GraphEngine {
 		if (node?.type !== "human") {
 			throw new Error(`pending human node does not exist: ${pending.nodeId}`);
 		}
+		// Every refusal happens before any state moves, so a refused answer leaves
+		// the gate pending and the caller asks again.
+		if (answer.feedback !== undefined && node.feedbackPath === undefined) {
+			throw new Error(`human node ${node.id} accepts no feedback`);
+		}
+		const feedback = answer.feedback?.trim() ?? "";
+		if (node.feedbackPath !== undefined && !answer.approved && feedback.length === 0) {
+			throw new Error(`human node ${node.id} was denied without feedback`);
+		}
 
 		const values = structuredClone(this.runState.values);
-		setStatePath(values, node.statePath, approved);
+		setStatePath(values, node.statePath, answer.approved);
+		if (node.feedbackPath !== undefined && !answer.approved) {
+			setStatePath(values, node.feedbackPath, feedback);
+		}
 		this.runState.values = values;
 		this.runState.nodes[node.id].status = "completed";
 		await this.refreshFacts();
@@ -1486,17 +1519,9 @@ export class GraphEngine {
 		return this.runState;
 	}
 
-	async resume(approved: boolean): Promise<Readonly<GraphRunState>> {
-		await this.submitHuman(approved);
+	async resume(answer: HumanAnswer): Promise<Readonly<GraphRunState>> {
+		await this.submitHuman(answer);
 		return this.runUntilPause();
-	}
-
-	async resumeWithUI(ui: GraphHumanUI): Promise<Readonly<GraphRunState>> {
-		const pending = this.runState.pendingHuman;
-		if (pending === undefined) {
-			throw new Error("graph has no pending human node");
-		}
-		return this.resume(await ui.confirm(pending.title, pending.question));
 	}
 
 	dispose(): void {

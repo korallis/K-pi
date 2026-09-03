@@ -12,7 +12,15 @@ import { appendEvent } from "./append-log.ts";
 import type { BusDependencies } from "./bus/spawn.ts";
 import { compileAcceptanceCriteria } from "./graph/ac-compiler.ts";
 import { type GraphAgentSessionFactory, GraphEngine, GraphNodeProviderError, loadNamedGraph } from "./graph/engine.ts";
-import { type GraphRunState, isJsonObject, type JsonObject } from "./graph/schema.ts";
+import {
+	type GraphDefinition,
+	type GraphRunState,
+	type HumanAnswer,
+	type HumanGraphNode,
+	isJsonObject,
+	type JsonObject,
+	type PendingHumanInput,
+} from "./graph/schema.ts";
 import {
 	canonicalFingerprint,
 	createStopState,
@@ -31,12 +39,24 @@ import { assertResearchFresh, conductResearch } from "./research/gate.ts";
 import { ResearchShortfallError, resolveResearchKeys } from "./research/session.ts";
 import { atomicWrite, createJob, readTaskForJob, type Task, writeAllowForTask } from "./run-store.ts";
 import { readKpiSettings } from "./settings.ts";
-import { assertScaffoldedBeforeBehavior, freezeCurrentSlice, scaffoldModule, stackRequiredFor } from "./stack.ts";
+import {
+	assertScaffoldedBeforeBehavior,
+	freezeCurrentSlice,
+	readDuneStack,
+	renderPlanSummary,
+	scaffoldModule,
+	stackRequiredFor,
+} from "./stack.ts";
 
 const execFile = promisify(execFileCallback);
 const PLAN_FILES = ["requirements.md", "design.md", "tasks.md"] as const;
 
 export const CONVENTIONAL_COMMIT_PATTERN = /^(feat|fix|docs|refactor|test|chore)(\(.+\))?: /u;
+
+/** What a plan gate offers; the operator's select answers with one of these. */
+export const PLAN_GATE_OPTIONS = ["Approve plan", "Request changes"] as const;
+/** The longest change request a gate accepts; longer text is refused and asked again. */
+export const MAX_HUMAN_FEEDBACK_CHARS = 4000;
 
 export interface LoopDependencies {
 	createAgentSession?: GraphAgentSessionFactory;
@@ -80,11 +100,13 @@ export interface LoopInvocation {
 
 /**
  * What a `NEEDS_HUMAN` outcome is waiting on, as data rather than as a phrase
- * in `reason`: a provider account the operator must repair or route around,
- * or a ship delivery (push, pull request) the operator must complete. The
- * control plane keys its recovery prompt off this, never off the wording.
+ * in `reason`: a provider account the operator must repair or route around, a
+ * ship delivery (push, pull request) the operator must complete, or a human
+ * gate that needs an interactive session to answer. The control plane keys
+ * its recovery prompt off this, never off the wording; `approval` gets no
+ * extra prompt because the reason already carries the resume command.
  */
-export type LoopRecovery = "provider" | "delivery";
+export type LoopRecovery = "provider" | "delivery" | "approval";
 
 export interface LoopOutcome {
 	jobId: string;
@@ -419,7 +441,7 @@ function stageFor(node: string): string {
 	if (node === "quality-green") {
 		return "test";
 	}
-	if (node === "plan-check") {
+	if (node === "plan-check" || node === "plan-approval") {
 		return "plan";
 	}
 	return node;
@@ -665,7 +687,9 @@ function recoveryReason(kind: LoopRecovery, message: string, jobId: string): str
 	const advice =
 		kind === "provider"
 			? "Select a healthy model or resolve that provider account"
-			: "Push the branch or open the pull request as named";
+			: kind === "delivery"
+				? "Push the branch or open the pull request as named"
+				: "Answer it in an interactive K-π session";
 	return `${message}. ${advice}, then resume with /kpi ${jobId}`;
 }
 
@@ -1545,6 +1569,149 @@ async function writeTerminalState(
 	await writeState(jobDirectory, task, result.state, result.stopState, status, result.reason, result.recovery);
 }
 
+/** A `NEEDS_HUMAN` that leaves the gate pending, so a later interactive resume asks it again. */
+type OperatorStop = DriveResult & { terminalStatus: "NEEDS_HUMAN"; recovery: "approval" };
+
+/**
+ * Asks the operator a gate that takes feedback: a select over
+ * `PLAN_GATE_OPTIONS` whose title carries the summary of the run file the
+ * node names, and an editor for the change request. Returns nothing when the
+ * operator dismissed the select; every other exit is an answer.
+ */
+async function askGateWithFeedback(
+	ctx: ExtensionCommandContext,
+	node: HumanGraphNode,
+	pending: PendingHumanInput,
+	engine: GraphEngine,
+	jobDirectory: string,
+	jobId: string,
+): Promise<HumanAnswer | undefined> {
+	// A summary that cannot be rendered is still a gate: the operator sees why
+	// and can request changes, which is the answer a broken map needs.
+	const summary =
+		node.detail === undefined
+			? ""
+			: await readDuneStack(jobDirectory)
+					.then(renderPlanSummary)
+					.catch((error: unknown) => {
+						const failure = `${node.detail} could not be summarised: ${describeError(error)}`;
+						ctx.ui.notify(`K-π job ${jobId}: ${failure}`, "warning");
+						return failure;
+					});
+	// The gate's own run count: the operator sees which revision this is. There
+	// is no cap to show because there is none; the operator is the bound.
+	const revision = engine.state.nodes[pending.nodeId]?.runs ?? 1;
+	const title = [
+		pending.title,
+		pending.question,
+		...(summary.length === 0 ? [] : ["", summary]),
+		"",
+		...(node.detail === undefined ? [] : [`Full plan: ${CONFIG_DIR_NAME}/runs/${jobId}/${node.detail}`]),
+		`Revision ${revision}`,
+	].join("\n");
+	let previous = "";
+	for (;;) {
+		const choice = await ctx.ui.select(title, [...PLAN_GATE_OPTIONS]);
+		if (choice === undefined) {
+			return undefined;
+		}
+		if (choice === PLAN_GATE_OPTIONS[0]) {
+			return { approved: true };
+		}
+		if (choice !== PLAN_GATE_OPTIONS[1]) {
+			throw new Error(`${pending.title} was answered with an option it did not offer: ${choice}`);
+		}
+		const text = await ctx.ui.editor(`Request changes to ${node.detail ?? "the plan"}`, previous);
+		if (text === undefined) {
+			// A dismissed editor is not a decision: back to the select.
+			continue;
+		}
+		const feedback = text.trim();
+		if (feedback.length === 0) {
+			ctx.ui.notify("K-π feedback is required to request plan changes", "warning");
+			continue;
+		}
+		if (feedback.length > MAX_HUMAN_FEEDBACK_CHARS) {
+			ctx.ui.notify(
+				`K-π feedback must be at most ${MAX_HUMAN_FEEDBACK_CHARS} characters (got ${feedback.length})`,
+				"warning",
+			);
+			previous = text;
+			continue;
+		}
+		return { approved: false, feedback };
+	}
+}
+
+/**
+ * Answers the gate an interrupted graph is waiting on, or says why it cannot.
+ *
+ * Without dialog UI the gate is never answered on the operator's behalf: the
+ * run stops `NEEDS_HUMAN` with the resume command, the engine stays
+ * interrupted with the gate pending, and an interactive resume asks it. An
+ * answer is recorded as `approval.result`, submitted, and made durable before
+ * the graph moves on.
+ */
+async function answerPendingHuman(
+	engine: GraphEngine,
+	graph: GraphDefinition,
+	ctx: ExtensionCommandContext,
+	jobDirectory: string,
+	eventsPath: string,
+	task: Task,
+	stopState: StopState,
+	onStateChange?: () => Promise<void>,
+): Promise<OperatorStop | undefined> {
+	const pending = engine.state.pendingHuman;
+	if (pending === undefined) {
+		throw new Error("Interrupted graph has no pending human approval");
+	}
+	const node = graph.nodes.find((candidate) => candidate.id === pending.nodeId);
+	if (node?.type !== "human") {
+		throw new Error(`pending human node does not exist: ${pending.nodeId}`);
+	}
+	const jobId = task.job_id;
+	// The one notification a gate always gets; the TUI has no bell to ring.
+	ctx.ui.notify(`K-π job ${jobId} is waiting on you: ${pending.title}`, "warning");
+	const stopForOperator = (message: string): OperatorStop => ({
+		state: engine.state,
+		stopState,
+		terminalStatus: "NEEDS_HUMAN",
+		recovery: "approval",
+		reason: recoveryReason("approval", message, jobId),
+	});
+	if (!ctx.hasUI) {
+		return stopForOperator(`${pending.title} needs an interactive session`);
+	}
+	let answer: HumanAnswer;
+	if (node.feedbackPath === undefined) {
+		answer = { approved: await ctx.ui.confirm(pending.title, pending.question) };
+	} else {
+		const asked = await askGateWithFeedback(ctx, node, pending, engine, jobDirectory, jobId);
+		if (asked === undefined) {
+			return stopForOperator(`${pending.title} was dismissed`);
+		}
+		answer = asked;
+	}
+	await appendEvent(eventsPath, {
+		ts: new Date().toISOString(),
+		type: "approval.result",
+		job_id: jobId,
+		round: stopState.round,
+		node: pending.nodeId,
+		approved: answer.approved,
+		question: pending.question,
+		...(answer.feedback === undefined ? {} : { feedback: answer.feedback }),
+	});
+	await engine.submitHuman(answer);
+	// The answer is durable before the next node runs: policy reads
+	// `release.approved` from state.json, and a push or a pull request is
+	// allowed on that flag alone.
+	await writeState(jobDirectory, task, engine.state, stopState);
+	await onStateChange?.();
+	return undefined;
+}
+
 /**
  * Verifies the commit a ship node just made: exactly one commit, conventional
  * subject, and this job's trailer so the commit is attributable to the decision
@@ -1688,22 +1855,27 @@ export async function resumeLoop(
 			};
 		}
 		while (result.state.status === "interrupted") {
-			const pending = result.state.pendingHuman;
-			if (pending === undefined) throw new Error("Interrupted graph has no pending human approval");
-			const approved = await ctx.ui.confirm(pending.title, pending.question);
-			await appendEvent(eventsPath, {
-				ts: new Date().toISOString(),
-				type: "approval.result",
-				job_id: jobId,
-				round: result.stopState.round,
-				node: pending.nodeId,
-				approved,
-			});
-			await engine.submitHuman(approved);
-			// The approval is durable before the ship node runs: policy reads
-			// `release.approved` from state.json, and a push or a pull request is
-			// allowed on that flag alone.
-			await writeState(jobDirectory, task, engine.state, result.stopState);
+			const stopped = await answerPendingHuman(
+				engine,
+				graph,
+				ctx,
+				jobDirectory,
+				eventsPath,
+				task,
+				result.stopState,
+				dependencies.onStateChange,
+			);
+			if (stopped !== undefined) {
+				await writeTerminalState(jobDirectory, eventsPath, task, stopped);
+				await dependencies.onStateChange?.();
+				return {
+					jobId,
+					status: stopped.terminalStatus,
+					reason: stopped.reason,
+					recovery: stopped.recovery,
+					graphState: stopped.state,
+				};
+			}
 			result = await driveUntilPause(
 				engine,
 				ctx.cwd,
@@ -1930,25 +2102,28 @@ export async function runLoop(
 		}
 
 		while (result.state.status === "interrupted") {
-			const pending = result.state.pendingHuman;
-			if (pending === undefined) {
-				throw new Error("Interrupted graph has no pending human approval");
-			}
-			const approved = await ctx.ui.confirm(pending.title, pending.question);
-			await appendEvent(job.eventsPath, {
-				ts: new Date().toISOString(),
-				type: "approval.result",
-				job_id: job.jobId,
-				round: result.stopState.round,
-				node: pending.nodeId,
-				approved,
-			});
-			const resumed = await engine.submitHuman(approved);
 			stopState = result.stopState;
-			// Same durable approval as on resume: the ship node's push and pull
-			// request are judged on state.json, so the flag is written first.
-			await writeState(job.directory, task, engine.state, stopState);
-			await dependencies.onStateChange?.();
+			const stopped = await answerPendingHuman(
+				engine,
+				graph,
+				ctx,
+				job.directory,
+				job.eventsPath,
+				task,
+				stopState,
+				dependencies.onStateChange,
+			);
+			if (stopped !== undefined) {
+				await writeTerminalState(job.directory, job.eventsPath, task, stopped);
+				await dependencies.onStateChange?.();
+				return {
+					jobId: job.jobId,
+					status: stopped.terminalStatus,
+					reason: stopped.reason,
+					recovery: stopped.recovery,
+					graphState: stopped.state,
+				};
+			}
 			result = await driveUntilPause(
 				engine,
 				ctx.cwd,
@@ -1968,9 +2143,6 @@ export async function runLoop(
 					recovery: result.recovery,
 					graphState: result.state,
 				};
-			}
-			if (resumed.status === "completed") {
-				break;
 			}
 		}
 

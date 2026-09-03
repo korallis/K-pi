@@ -98,6 +98,30 @@ const gatedCases: RoutingCase[] = [
 		expect: ["plan-check"],
 	},
 	{
+		name: "a written plan waits for the operator before anything is implemented",
+		from: "plan",
+		facts: {},
+		expect: ["plan-approval"],
+	},
+	{
+		name: "an approved plan implements",
+		from: "plan-approval",
+		facts: { "plan.approved": true },
+		expect: ["implement"],
+	},
+	{
+		name: "a change request re-plans",
+		from: "plan-approval",
+		facts: { "plan.approved": false },
+		expect: ["plan"],
+	},
+	{
+		name: "an operator-authored plan that checks out implements without a second approval",
+		from: "plan-check",
+		facts: {},
+		expect: ["implement"],
+	},
+	{
 		name: "red tests go back to implement",
 		from: "test",
 		facts: { "bounds.held": true, "test.passed": false },
@@ -351,6 +375,7 @@ test("every fact a shipped graph routes on is one the loop supplies", async () =
 		"fingerprints.fresh",
 		"ship.shipped",
 		"policy.onHumanDeny",
+		"plan.approved",
 		"release.approved",
 		"review.approved",
 		"review.status",
@@ -478,4 +503,34 @@ test("a node whose branches all miss fails instead of reporting success", async 
 	} finally {
 		await rm(directory, { recursive: true, force: true });
 	}
+});
+
+test("the gated graph gates implement on plan approval and routes a change request back to plan", async () => {
+	const gated = await graph("coding-loop.gated");
+	const approval = gated.nodes.find((node) => node.id === "plan-approval");
+	assert.equal(approval?.type, "human");
+	if (approval?.type !== "human") throw new Error("unreachable");
+	assert.equal(approval.statePath, "plan.approved");
+	assert.equal(approval.detail, "stack.json", "the gate shows the plan it asks about");
+	assert.equal(approval.feedbackPath, "plan.feedback");
+	const plan = gated.nodes.find((node) => node.id === "plan");
+	assert.equal(plan?.type, "agent");
+	if (plan?.type !== "agent") throw new Error("unreachable");
+	assert.equal(plan.feedbackPath, "plan.feedback", "a change request reaches the re-run planner");
+
+	assert.deepEqual(fired(gated, "plan", state({})), ["plan-approval"]);
+	assert.deepEqual(fired(gated, "plan-approval", state({ "plan.approved": true })), ["implement"]);
+	assert.deepEqual(fired(gated, "plan-approval", state({ "plan.approved": false })), ["plan"]);
+	assert.deepEqual(fired(gated, "plan-check", state({})), ["implement"]);
+
+	// Autopilot has no operator, so it has no plan gate to add.
+	const auto = await graph("coding-loop.auto");
+	assert.equal(
+		auto.nodes.some((node) => node.type === "human"),
+		false,
+	);
+	assert.equal(
+		auto.nodes.some((node) => node.id === "plan-approval"),
+		false,
+	);
 });
