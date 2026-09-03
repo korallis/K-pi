@@ -296,9 +296,12 @@ function baseEnv({ home, agentDir, egressLog }) {
 /**
  * Drives the built CLI in RPC mode.
  *
- * Confirm dialogs are answered from `confirm`, and every request is captured so a
- * metric can assert on what the operator was actually asked - or assert that
- * nothing was asked at all, which is what M-02 needs.
+ * Operator gates are answered from `confirm`: a `confirm` dialog gets that
+ * boolean, and a `select` gate (the plan gate's Approve plan / Request changes /
+ * Stop, the release gate's Approve / Request changes / Stop) gets its first
+ * option when `confirm` is true and its last (Stop) otherwise. Every request is
+ * captured so a metric can assert on what the operator was actually asked - or
+ * assert that nothing was asked at all, which is what M-02 needs.
  */
 function runRpc(env, cwd, lines, options = {}) {
 	const {
@@ -344,11 +347,22 @@ function runRpc(env, cwd, lines, options = {}) {
 				} catch {
 					continue;
 				}
-				if (message.type !== "extension_ui_request" || message.method !== "confirm") continue;
+				if (message.type !== "extension_ui_request") continue;
+				if (message.method !== "confirm" && message.method !== "select") continue;
 				if (!message.id || answered.has(message.id)) continue;
 				answered.add(message.id);
-				confirms.push({ id: message.id, title: message.title ?? "", message: message.message ?? "", confirmed: confirm });
-				child.stdin.write(`${JSON.stringify({ type: "extension_ui_response", id: message.id, confirmed: confirm })}\n`);
+				if (message.method === "confirm") {
+					confirms.push({ id: message.id, title: message.title ?? "", message: message.message ?? "", confirmed: confirm });
+					child.stdin.write(`${JSON.stringify({ type: "extension_ui_response", id: message.id, confirmed: confirm })}\n`);
+					continue;
+				}
+				const options = Array.isArray(message.options) ? message.options : [];
+				const value = confirm ? options[0] : options.at(-1);
+				const title = String(message.title ?? "").split("\n")[0];
+				confirms.push({ id: message.id, title, message: "", confirmed: confirm, value });
+				child.stdin.write(
+					`${JSON.stringify(value === undefined ? { type: "extension_ui_response", id: message.id, cancelled: true } : { type: "extension_ui_response", id: message.id, value })}\n`,
+				);
 			}
 		};
 		child.stdout.on("data", (chunk) => {
