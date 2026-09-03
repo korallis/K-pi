@@ -296,9 +296,12 @@ function baseEnv({ home, agentDir, egressLog }) {
 /**
  * Drives the built CLI in RPC mode.
  *
- * Confirm dialogs are answered from `confirm`, and every request is captured so a
- * metric can assert on what the operator was actually asked - or assert that
- * nothing was asked at all, which is what M-02 needs.
+ * Operator gates are answered from `confirm`: a `confirm` dialog gets that
+ * boolean, and a `select` gate (the plan gate's Approve plan / Request changes /
+ * Stop, the release gate's Approve / Request changes / Stop) gets its first
+ * option when `confirm` is true and its last (Stop) otherwise. Every request is
+ * captured so a metric can assert on what the operator was actually asked - or
+ * assert that nothing was asked at all, which is what M-02 needs.
  */
 function runRpc(env, cwd, lines, options = {}) {
 	const {
@@ -344,11 +347,22 @@ function runRpc(env, cwd, lines, options = {}) {
 				} catch {
 					continue;
 				}
-				if (message.type !== "extension_ui_request" || message.method !== "confirm") continue;
+				if (message.type !== "extension_ui_request") continue;
+				if (message.method !== "confirm" && message.method !== "select") continue;
 				if (!message.id || answered.has(message.id)) continue;
 				answered.add(message.id);
-				confirms.push({ id: message.id, title: message.title ?? "", message: message.message ?? "", confirmed: confirm });
-				child.stdin.write(`${JSON.stringify({ type: "extension_ui_response", id: message.id, confirmed: confirm })}\n`);
+				if (message.method === "confirm") {
+					confirms.push({ id: message.id, title: message.title ?? "", message: message.message ?? "", confirmed: confirm });
+					child.stdin.write(`${JSON.stringify({ type: "extension_ui_response", id: message.id, confirmed: confirm })}\n`);
+					continue;
+				}
+				const options = Array.isArray(message.options) ? message.options : [];
+				const value = confirm ? options[0] : options.at(-1);
+				const title = String(message.title ?? "").split("\n")[0];
+				confirms.push({ id: message.id, title, message: "", confirmed: confirm, value });
+				child.stdin.write(
+					`${JSON.stringify(value === undefined ? { type: "extension_ui_response", id: message.id, cancelled: true } : { type: "extension_ui_response", id: message.id, value })}\n`,
+				);
 			}
 		};
 		child.stdout.on("data", (chunk) => {
@@ -376,7 +390,7 @@ function runRpc(env, cwd, lines, options = {}) {
 				}
 			}
 			const terminal =
-				/K-π job .+ (DONE|UNSAFE|BLOCKED|EXHAUSTED|NEEDS_HUMAN|NO_PROGRESS)\b/.test(stdout) ||
+				/K-π job .+ (DONE|NEEDS_HUMAN|STOPPED)\b/.test(stdout) ||
 				/K-π loop failed/.test(stdout);
 			if (stopWhen === "terminal" && terminal) {
 				clearInterval(timer);
@@ -794,7 +808,7 @@ async function collectM03(proofRoot) {
 }
 
 // ---------------------------------------------------------------------------
-// M-04  bounds violation reaches UNSAFE and creates no commit
+// M-04  bounds violation pauses the run NEEDS_HUMAN (bounds) and creates no commit
 // ---------------------------------------------------------------------------
 
 async function collectM04(proofRoot) {
@@ -824,12 +838,17 @@ async function collectM04(proofRoot) {
 		const denied = events.filter((event) => event.type === "tool.request" && event.decision === "deny");
 
 		const checks = [
-			check("terminal-unsafe", "artifacts/state.json", state.status === "UNSAFE", `status=${state.status ?? "absent"}`),
 			check(
-				"one-loop-terminal-unsafe",
+				"terminal-needs-human-bounds",
+				"artifacts/state.json",
+				state.status === "NEEDS_HUMAN" && state.recovery === "bounds",
+				`status=${state.status ?? "absent"} recovery=${state.recovery ?? "absent"}`,
+			),
+			check(
+				"one-loop-terminal-needs-human",
 				"artifacts/events.jsonl",
-				terminal.length === 1 && terminal[0].status === "UNSAFE",
-				`${terminal.length} loop.terminal (${terminal.map((event) => event.status).join(",")})`,
+				terminal.length === 1 && terminal[0].status === "NEEDS_HUMAN" && terminal[0].recovery === "bounds",
+				`${terminal.length} loop.terminal (${terminal.map((event) => `${event.status}${event.recovery ? ` ${event.recovery}` : ""}`).join(",")})`,
 			),
 			check(
 				"reason-recorded",
@@ -849,7 +868,7 @@ async function collectM04(proofRoot) {
 		out.write("result.json", { id: "M-04", checks });
 		return verdict("M-04", "RP-05", checks, out.dir, {
 			fixture: "fixtures/bounds-violation",
-			okDetail: "a write outside the declared bounds stopped the run UNSAFE with no commit",
+			okDetail: "a write outside the declared bounds paused the run NEEDS_HUMAN (bounds) with no commit",
 		});
 	} finally {
 		teardown(box);

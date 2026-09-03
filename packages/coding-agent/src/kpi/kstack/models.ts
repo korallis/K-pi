@@ -3,7 +3,7 @@ import { chmod, mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { Model } from "@earendil-works/pi-ai";
 import { getAgentDir } from "../../config.ts";
-import type { ExtensionAPI, ExtensionCommandContext } from "../../core/extensions/types.ts";
+import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "../../core/extensions/types.ts";
 import { AccountsStore, POOL_IDS } from "../extensions/accounts/store.ts";
 import { promptResearchSetup } from "../extensions/research/setup.ts";
 import {
@@ -302,43 +302,49 @@ export async function editFallbackPlan(
 	}
 }
 
+/**
+ * Maps K-stack roles onto the live model registry using the committed model
+ * ladder. The role map only: `/setup-kstack` runs this then
+ * `promptResearchSetup`; onboarding runs this alone so it never writes the
+ * project research mode.
+ */
+export async function runKStackSetup(context: Pick<ExtensionContext, "ui" | "modelRegistry">): Promise<void> {
+	const accounts = await new AccountsStore().read();
+	const configuredPools = new Set(
+		Object.entries(accounts.pools)
+			.filter(([, pool]) => (pool?.slots.length ?? 0) > 0)
+			.map(([poolId]) => poolId),
+	);
+	const candidates = liveCandidates(context.modelRegistry.getAvailable(), configuredPools);
+	if (candidates.length === 0) {
+		context.ui.notify("No live model in a K-π pool; K-stack roles will inherit the parent session model.", "warning");
+		return;
+	}
+	const ladder = await readModelLadder();
+	const plan = planModels(ladder, candidates);
+	const fallbackPlan = suggestFallbackModels(ladder, candidates);
+	context.ui.notify(
+		[...renderPlan(plan), `fallback_models → ${fallbackPlan.length === 0 ? "none" : fallbackPlan.join(", ")}`].join(
+			"\n",
+		),
+		"info",
+	);
+	const edited = await editPlan(plan, candidates, context.ui);
+	const editedFallbacks =
+		edited === undefined ? undefined : await editFallbackPlan(fallbackPlan, candidates, context.ui);
+	if (edited === undefined || editedFallbacks === undefined) {
+		context.ui.notify("K-stack model map unchanged", "info");
+	} else {
+		await writeKStackModels(planToDocument(edited, editedFallbacks), candidates);
+		context.ui.notify(`K-stack model map saved to ${modelsPath()}`, "info");
+	}
+}
+
 export function registerKStackSetup(pi: ExtensionAPI): void {
 	pi.registerCommand("setup-kstack", {
 		description: "Map K-stack roles onto live K-π models using the committed model ladder",
 		handler: async (_args, context) => {
-			const accounts = await new AccountsStore().read();
-			const configuredPools = new Set(
-				Object.entries(accounts.pools)
-					.filter(([, pool]) => (pool?.slots.length ?? 0) > 0)
-					.map(([poolId]) => poolId),
-			);
-			const candidates = liveCandidates(context.modelRegistry.getAvailable(), configuredPools);
-			if (candidates.length === 0) {
-				context.ui.notify(
-					"No live model in a K-π pool; K-stack roles will inherit the parent session model.",
-					"warning",
-				);
-			} else {
-				const ladder = await readModelLadder();
-				const plan = planModels(ladder, candidates);
-				const fallbackPlan = suggestFallbackModels(ladder, candidates);
-				context.ui.notify(
-					[
-						...renderPlan(plan),
-						`fallback_models → ${fallbackPlan.length === 0 ? "none" : fallbackPlan.join(", ")}`,
-					].join("\n"),
-					"info",
-				);
-				const edited = await editPlan(plan, candidates, context.ui);
-				const editedFallbacks =
-					edited === undefined ? undefined : await editFallbackPlan(fallbackPlan, candidates, context.ui);
-				if (edited === undefined || editedFallbacks === undefined) {
-					context.ui.notify("K-stack model map unchanged", "info");
-				} else {
-					await writeKStackModels(planToDocument(edited, editedFallbacks), candidates);
-					context.ui.notify(`K-stack model map saved to ${modelsPath()}`, "info");
-				}
-			}
+			await runKStackSetup(context);
 			await promptResearchSetup(context);
 		},
 	});

@@ -1,0 +1,94 @@
+{
+  "graphId": "coding-loop.gated",
+  "jobId": "20260903-fix-claude-model-requests-failin-42986cfa",
+  "status": "running",
+  "superstep": 3,
+  "active": [
+    "implement"
+  ],
+  "values": {
+    "policy": {
+      "onHumanDeny": "revise"
+    },
+    "plan": {
+      "provided": false
+    },
+    "test": {
+      "passed": false
+    },
+    "bounds": {
+      "held": true
+    },
+    "fingerprints": {
+      "fresh": false
+    },
+    "ship": {
+      "shipped": false
+    }
+  },
+  "nodes": {
+    "ac-compiler": {
+      "status": "completed",
+      "runs": 1,
+      "sessionId": "6f1c2d4e-9b7a-4c33-8a1e-2d5f7b9c0a11"
+    },
+    "specify": {
+      "status": "completed",
+      "runs": 1,
+      "sessionId": "a3e8b1c7-52d4-4f6a-9c0b-7e1d3f5a8b22"
+    },
+    "plan": {
+      "status": "completed",
+      "runs": 1,
+      "sessionId": "c9d2e4f6-1a3b-4c5d-8e7f-9a0b1c2d3e33"
+    },
+    "plan-check": {
+      "status": "pending",
+      "runs": 0
+    },
+    "implement": {
+      "status": "pending",
+      "runs": 0
+    },
+    "test": {
+      "status": "pending",
+      "runs": 0
+    },
+    "review": {
+      "status": "pending",
+      "runs": 0
+    },
+    "human": {
+      "status": "pending",
+      "runs": 0
+    },
+    "ship": {
+      "status": "pending",
+      "runs": 0
+    },
+    "unsafe": {
+      "status": "pending",
+      "runs": 0
+    },
+    "needs-human": {
+      "status": "pending",
+      "runs": 0
+    }
+  },
+  "budget": {
+    "limits": {
+      "maxSteps": 24,
+      "maxNodeRuns": 16,
+      "maxConcurrency": 2,
+      "maxCostUsd": 5,
+      "timeoutMs": 1800000,
+      "maxRounds": 3,
+      "maxTransientRetries": 2
+    },
+    "startedAtMs": 1788426724318,
+    "elapsedMs": 876188,
+    "costUsd": 7.691661999999999,
+    "round": 1,
+    "batches": 3
+  }
+}

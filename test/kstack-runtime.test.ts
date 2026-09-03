@@ -1247,7 +1247,7 @@ test("K-mode freezes the playbook into the job contract and renders its steps", 
 				nodeRuns: {},
 			},
 		};
-		await writeState(runDirectory, reloaded, graphState as never, createStopState(8));
+		await writeState(runDirectory, reloaded, graphState as never, createStopState());
 		const state = JSON.parse(await readFile(join(runDirectory, "state.json"), "utf8")) as {
 			playbook?: string;
 			todos?: string[];
@@ -1292,7 +1292,7 @@ test("K-mode freezes the playbook into the job contract and renders its steps", 
 		// After rewriting task.json as a fresh process would read it, state still matches.
 		const again = await readTaskForJob(root, task.job_id);
 		assert.deepEqual(again.playbook_steps, frozenSteps);
-		await writeState(runDirectory, again, graphState as never, createStopState(8));
+		await writeState(runDirectory, again, graphState as never, createStopState());
 		const resumed = JSON.parse(await readFile(join(runDirectory, "state.json"), "utf8")) as {
 			todos?: string[];
 		};

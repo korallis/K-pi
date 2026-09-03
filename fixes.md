@@ -1,6 +1,6 @@
 # fixes.md — K-π operator-experience fixes
 
-> **Status: ACTIVE work queue for these four packages.** Same rules as `docs/remediation-plan.md`: one writer per file, scoped verification while in flight, full gates once before a PR. Package IDs here are `FX-##`. Every package edits the normative docs it changes behaviour for, in the same change.
+> **Status: ACTIVE work queue for these six packages.** Same rules as `docs/remediation-plan.md`: one writer per file, scoped verification while in flight, full gates once before a PR. Package IDs here are `FX-##`. Every package edits the normative docs it changes behaviour for, in the same change. FX-01–FX-04 are the 2026-09-02 operator-experience fixes; FX-05 and FX-06 are the board-live and agents-visibility packages of the 0.3.0 batch (`docs/remediation-plan.md` RP-20/RP-21 are its onboarding and self-healing packages).
 
 ## 0. Context
 
@@ -292,6 +292,91 @@ npm run kstack:sync:check && npm run upstream:check -- --offline
 **Landed 2026-09-02 on branch `fx/03-smart-routing`.** Not exercised live: the Anthropic SDK 0.122 path (the account's Anthropic slot has no extra usage) and Google/Bedrock (no slots configured); their suites pass with recorded fixtures.
 
 ---
+## FX-05 — Board live: the widget ticks, every cell carries elapsed and cost, the chat narrates nodes
+
+**Depends on:** FX-01 (region model, painter, component), FX-03 (`readLiveJob`)  
+**Stories:** US-06 (new AC-06.7), US-14 (new AC-14.5), US-16 (new AC-16.7; AC-16.8/16.9 are the Command Centre's, `board-overlay.ts` + `command-centre.ts`)  
+**Owns files:** `packages/coding-agent/src/kpi/extensions/board.ts` (activity model, stage detail forms, NOW row, RETRY row), `board-frame.ts` (`fitDetail`, `fitNow`), new `board-activity.ts` (incremental `events.jsonl` reader, per-stage activity, narration), `control-plane.ts` (widget ticker, `showStatus`, one `ActivityReader` per live job), `graph/engine.ts` (`node.started` / `node.finished` events), `renderers.ts` (node event lines), `test/board-activity.test.ts`, `test/operator-ui.test.ts`, `test/control-plane.test.ts`, `docs/spec.md` §5/§8/§11, `docs/visual-targets.md` Board A region 3, `docs/PRD.md` US-06/14/16, `docs/uat.md` UAT-06/16, README §9.
+
+### Facts that shape the change
+
+- The always-on widget is a component with a 1 s ticker (`BOARD_TICK_MS = 1000`, `control-plane.ts`) that re-reads `state.json` and `events.jsonl` incrementally through one `ActivityReader` per live job; readers and cursors are dropped when the job ends.
+- Before this package `/kpi status` replaced the ticking widget with a static component and froze the board, and a `/kpi status` typed while `/kpi <goal>` ran was queued behind the handler (`interactive-mode.ts` runs extension commands to completion before the next one). `/kpi status` now reinstalls the ticking widget (re-entrant) rather than replacing it, and the 0.3.0 driver package detaches the loop from the handler so the command answers mid-run.
+- The narration cursor is module state, so a widget reinstall or `/kpi status` never re-narrates a record; the chat gets one `K-π ` line per node start (`▶`), finish (`■`/`✕`), retry (`↻`), gate answer (`⚑`) and route change (`⇄`), and none per tool call.
+- Every agent node batch attempt is bracketed by `node.started {run, model?}` / `node.finished {run, status, elapsed_ms, cost_usd?, result?, session?, error?}` written by the engine; cost sums every attempt and is omitted, never zeroed, when the session has no billing. Transient retries do not repeat them.
+- The pty graders read contiguous tokens; `NOW <node>`, `AGENTS <n>`, `ROUND <n>`, `STOP <status>`, `LOOP <job>`, `NODE <id>` and `WAITING ON OPERATOR` must each stay inside one colour span.
+
+### Change
+
+1. **Activity** (`board-activity.ts`, new). `createActivityReader()` reads `events.jsonl` from its last offset, folds `node.started`/`node.finished`/`tool.request`/`node.retry` into `StageActivity { status, runs, elapsedMs, costUsd, toolCalls, toolsByName, lastTool, model, node, result?, error? }` per stage, counts unparsable lines, and `narrateRecord(record)` gives the one chat line a record deserves or `undefined`.
+2. **Board** (`board.ts`). `BoardModel` gains `activity`, `eventsUnreadable`, `eventsError`, `sessions`, `retry`, `recovery`. Stage cells carry a detail line in both layouts, longest form first (`stageDetailForms`): DONE `<elapsed> · <n> calls · $<cost> est.` → `<elapsed> · $<cost> est.` → `<elapsed> · $<cost>`; CURRENT `<tool> <target>  <elapsed>` → `<tool>  <elapsed>` → `<elapsed>`; PENDING `—`; cells are sized from the label lines so the rail never wraps. The NOW row `NOW <node>  run <n>  <k> tools  ▸ <tool> <target>  <elapsed>  <cost>  MODEL <m>` drops `MODEL`, then `▸ tool`, then `run n` (`NOW_OPTIONAL_PREFIXES`, shared by `nowRegion` and `fitNow`) before anything is cut; `no node.started yet` before the first record; `EVENTS ✕ <n> unreadable` / `EVENTS ✕ <code>` on log problems. `formatElapsed` gains the days form (`4d04h`, saturating at `99d23h`, ≤ 6 chars); `formatCost(undefined)` is `$—`.
+3. **Painter** (`board-frame.ts`). `fitDetail` keeps the longest detail form that fits a cell and only cuts the shortest; `fitNow` splits the flat NOW line on the span separator and drops optional spans by prefix.
+4. **Control plane.** `installWidget` installs the component with the injected ticker (`dependencies.tick`, `BOARD_TICK_MS`), busy/disposed guards, and narrates new records through `ctx.ui.notify`; `showStatus` reinstalls the widget and, in the TUI only, opens the overlay surface (`surface: "overlay"`); the printed board carries no key-hint row.
+5. **Engine.** `node.started` before each agent node attempt and `node.finished` after it (before any failure handling), on the run's `events.jsonl`; a resumed running node re-emits `node.started` with the same `run`.
+6. **Tests.** FX-01's map-bound titles preserved verbatim. New: `test/board-activity.test.ts` "narration is one line per node start and finish and none per tool call"; `test/control-plane.test.ts` "the session widget refreshes on the injected tick, narrates lifecycle once and drops itself when the job ends", "the session widget counts an in-process node session without starting one"; `test/operator-ui.test.ts` "the NOW row names the running node and tool and the full board carries elapsed and cost per stage", "the NOW row shrinks its optional spans instead of forcing the STOP box below", "elapsed and cost formatters are short and never fabricate a figure"; `test/graph-engine.test.ts` "agent nodes append node.started and node.finished with run, elapsed and cost".
+7. **Docs (same change).** `docs/PRD.md` AC-06.7, AC-14.5, AC-16.7; `docs/spec.md` §5 `node.started`/`node.finished` payloads, §8 engine bullet, §11 widget block with the NOW row and the 1 s refresh; `docs/visual-targets.md` region 3 three-line cells and the height table (compact ≤ 11 at 120 / ≤ 14 at 100 with activity); README §9 (this file's facts, the DONE/CURRENT cell forms, the narration lines).
+
+### Verification
+
+```bash
+node --test --experimental-strip-types test/board-activity.test.ts test/operator-ui.test.ts test/control-plane.test.ts test/graph-engine.test.ts test/schema-conformance.test.ts
+npx biome check --error-on-warnings packages/coding-agent/src/kpi/extensions/board.ts packages/coding-agent/src/kpi/extensions/board-frame.ts packages/coding-agent/src/kpi/extensions/board-activity.ts packages/coding-agent/src/kpi/extensions/control-plane.ts
+# scratch script: paintBoard(model, {width, layout}) with a live activity model at 200/120/80/60 — no '…' in the NOW row while an optional span remains
+node scripts/pty-rows/uat-06.mjs && node scripts/pty-rows/uat-16.mjs
+```
+
+### DoD
+
+- [x] The widget changes without a keypress while a node runs: NOW row, DONE/CURRENT cell detail, one narration line per node start/finish and none per tool call — the six titles above green
+- [x] Compact widget ≤ 11 lines at 120 columns and ≤ 14 at 100 with activity (9/11 without); the full board at 200 stays one rail row; the NOW row never reads `…` while an optional span remains at 200/120/80/60 — `test/operator-ui.test.ts` line-count matrix
+- [x] `node.started`/`node.finished` validate against `event.schema.json` and chain — `test/schema-conformance.test.ts` "event schema has one valid normalized branch per event type"
+- [x] `/kpi status` never freezes the board; the overlay surface exists only in the TUI; the printed board has no key hint — `test/control-plane.test.ts`
+
+**Landed 2026-09-03 on branch `fix/operator-issues-0.3.0`** (wave 2 of the 0.3.0 batch, verified in wave 3b with the Command Centre replacing the snapshot overlay: `board-overlay.ts` exports `createCommandCentre`; AC-16.8/16.9 are bound to `test/command-centre.test.ts`).
+
+---
+## FX-06 — Agents visibility: `/agents` lists every live session and names the mechanism
+
+**Depends on:** FX-01 (board cells), FX-03 (`readLiveJob`)  
+**Stories:** US-23 (new AC-23.10, AC-23.11; AC-23.6 "Board can show AGENTS n" unchanged)  
+**Owns files:** new `packages/coding-agent/src/kpi/extensions/bus/sessions-snapshot.ts`, new `bus/sessions-command.ts`, `bus/spawn.ts` (`liveWorkers()`, `countLiveProcesses` derived from it, `node?` on spawn options / `WorkerRecord` / `WorkerStatus`), `bus/communicate.ts` (registers each active bus; `live-snapshot.ts` kept as the bridge `setLiveWorkerCountProvider(() => liveWorkerCount())`), `test/bus.test.ts`, `docs/agents-bus.md` §Board/§Visibility, `docs/PRD.md` US-23, `docs/spec.md` §4/§11, `docs/uat.md` UAT-23, README §9/§12/§14.
+
+### Root cause (verified in code)
+
+1. The board's `AGENTS <n>` came from `countLiveProcesses` over the bus's worker table only: an in-process graph node session was invisible, so a job whose reviewer had not been spawned read `AGENTS 0` while a node was busy.
+2. The count moved only per superstep (the loop's `onStateChange`), not when a worker or node session started or ended.
+3. Nothing told the operator what a session *is*: whether the reviewer is a thread, a sub-agent, or a process, and where its transcript lives.
+
+### Change
+
+1. **Registry** (`sessions-snapshot.ts`, new; no disk, no spawning). `registerLiveNodeSession` (called by the graph engine for the life of a node session) and `registerLiveBus` (by whoever constructs a bus) return idempotent removers; `liveNodeSessions`, `liveWorkerSessions`, `liveWorkerCount`, `sessionsSnapshot({ jobId?, main? })` → `{ rows, counts { nodes, workers, liveTotal }, mechanism }`; `resetSessionsRegistry` is the test seam. Worker liveness is each bus's own `liveWorkers()` with its injected pid predicate — never reaping; a dead worker is a row with `alive: false` and is not counted. `MECHANISM_SENTENCE` verbatim: "K-π runs graph nodes as in-process sessions in this kpi process; a node with workerRole (the reviewer) and the spawn_background tool start separate kpi --mode rpc processes that talk over .kpi/runs/<job>/bus.jsonl. No sub-agent API is used."
+2. **Command** (`sessions-command.ts`, new). `/agents` prints `K-π SESSIONS <n> live · <k> node(s) in-process · <w> worker process(es)`, a fixed-column `KIND ID ROLE MODEL PID ALIVE ELAPSED TOOLS LAST NODE JOB` table, `caps (this process): workers <w>/2 · writers <x>/1`, the mechanism sentence, then `job <id> <status>` — or `no active job`, which is not an error — and, for a RUNNING job with no node session here, `no in-process node session for job <id>: its loop is not running in this kpi process`. Arguments → `K-π usage: /agents`; an unreadable run store → `K-π /agents could not read the run store: <message>`.
+3. **Board.** The CONTEXT row's cell is `AGENTS n · k nodes · w workers` for the live job in this process (`BoardModel.sessions`); `AGENTS n` alone when no breakdown is known; the widget repaints on node-session start/end (`GraphEngineOptions.onSessionsChange` → the loop's `onStateChange`), not only per superstep. `BUS ●` still tracks `bus.jsonl` history.
+4. **Tests.** `test/bus.test.ts` "a registered bus lists its workers for the sessions snapshot and leaves it when released", "/agents prints every kind of session and names the mechanism" (real bus + fake pi; the unreadable-store path is exercised by placing a file at `.kpi/runs` so `readdir` throws `ENOTDIR`), "countLiveProcesses excludes dead PIDs without reaping the table" (migrated, title unchanged); `test/control-plane.test.ts` "the session widget counts an in-process node session without starting one"; `test/operator-ui.test.ts` "the AGENTS cell breaks live sessions into nodes and workers".
+5. **Docs (same change).** `docs/agents-bus.md` §Board rewritten and §Visibility added (the two session kinds, the columns, the honest limit that node sessions are visible only from the kpi process running the loop); `docs/PRD.md` AC-23.10/23.11; `docs/spec.md` §4 `/agents` row and §11 widget mock; `docs/uat.md` UAT-23; README §9 AGENTS bullet, §12 `/agents` row, §14 mechanism paragraph.
+
+### Verification
+
+```bash
+node --test --experimental-strip-types test/bus.test.ts test/control-plane.test.ts test/operator-ui.test.ts
+npx biome check --error-on-warnings packages/coding-agent/src/kpi/extensions/bus/sessions-snapshot.ts packages/coding-agent/src/kpi/extensions/bus/sessions-command.ts packages/coding-agent/src/kpi/extensions/bus/spawn.ts packages/coding-agent/src/kpi/extensions/bus/communicate.ts test/bus.test.ts
+npx tsc --noEmit
+# real artifact: build, start a gated job, run /agents while the review node is live and again after the run
+node scripts/pty-rows/uat-16.mjs
+```
+
+### DoD
+
+- [x] AC-23.10 and AC-23.11 rows are bound in `docs/traceability-map.json` to the titles above and green — `test/bus.test.ts` 96/96
+- [x] `AGENTS n · k nodes · w workers` repaints when a node session or worker starts or ends; a dead-but-unreaped worker is listed `ALIVE no` and not counted
+- [x] `uat-16.mjs` still passes (the `AGENTS <n>` prefix is the graded token; the breakdown follows it in the same span)
+- [x] `/agents` shown against the built `cli.js`: the main row prints with `no active job`, and the mechanism sentence is on screen
+
+**Landed 2026-09-03 on branch `fix/operator-issues-0.3.0`** as `640fbaa81` (wave 1 of the 0.3.0 batch). Accepted deviation: `formatSessionsTable` appends `no active job` when no job is passed, which the design's line list did not name.
+
+---
+
+---
 
 ## 4. Execution waves and gates
 
@@ -300,6 +385,7 @@ npm run kstack:sync:check && npm run upstream:check -- --offline
 | 1 | FX-03 | `run-store.ts` (adds `readLiveJob`, `isPausedHuman` move), `control-plane.ts` (command/probe parts) |
 | 2 | FX-01 ∥ FX-02 | `control-plane.ts` (FX-01 owns board/widget/overlay; FX-03 already landed the command parts), `extensions/index.ts` (FX-02 edits `resolveActiveWriteAllow`; FX-03 edited the registration line in wave 1) |
 | 3 | FX-04 | everything; run after waves 1–2 are merged |
+| 4 | FX-06 then FX-05 (0.3.0 batch, branch `fix/operator-issues-0.3.0`) | `control-plane.ts` (FX-05 owns the widget ticker, `showStatus`, the activity reader; the 0.3.0 driver package owns the `/kpi` handler and `stopJob`), `board.ts` (FX-05 owns cells/NOW/detail; FX-06's `sessions` breakdown and the driver's `retry`/`recovery` fields land in the same file), `graph/engine.ts` (FX-05 emits `node.started`/`node.finished`; FX-06 registers node sessions; both hunks were applied by the engine owner), `bus/communicate.ts` (FX-06 registers buses; the `live-snapshot.ts` bridge is kept) |
 
 Before the pull request of each wave, once:
 
@@ -308,7 +394,7 @@ npm run check && npm test && npm run test:kpi
 node scripts/generate-traceability-map.mjs && git diff --exit-code docs/traceability-map.json || echo "map regenerated: commit it"
 ```
 
-Feature acceptance afterwards: rerun `docs/uat.md` rows UAT-06, UAT-13, UAT-16, UAT-24, UAT-25 against the built bundle in a scratch repo.
+Feature acceptance afterwards: rerun `docs/uat.md` rows UAT-06, UAT-13, UAT-16, UAT-23, UAT-24, UAT-25 against the built bundle in a scratch repo.
 
 ## 5. Out of scope (recorded so nobody reopens them by accident)
 

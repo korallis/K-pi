@@ -35,6 +35,40 @@ export interface DuneStack {
 	current_module_id?: string;
 }
 
+/** Modules the plan summary names in full before it points at stack.json. */
+export const PLAN_SUMMARY_MAX_MODULES = 12;
+
+/**
+ * The plan as the operator reads it at the approval gate: delivery, the slice
+ * implement will take, and every module's bounds. Pure - the driver reads and
+ * validates stack.json, this only words it, so a stack that fails validation
+ * never gets a summary that hides the failure.
+ */
+export function renderPlanSummary(stack: DuneStack): string {
+	const reason = stack.delivery_reason?.trim();
+	const lines = [
+		`Delivery: ${stack.delivery}${reason === undefined || reason.length === 0 ? "" : ` — ${reason}`}`,
+		`Root: ${stack.root}`,
+		stack.current_module_id === undefined
+			? "Current slice: (none named — implement will refuse this map)"
+			: `Current slice: ${stack.current_module_id}`,
+		`Modules (${stack.modules.length}):`,
+	];
+	for (const [index, module] of stack.modules.slice(0, PLAN_SUMMARY_MAX_MODULES).entries()) {
+		lines.push(`  ${index + 1}. ${module.id} — ${module.purpose}`);
+		lines.push(
+			`     folder ${module.folder} · interface ${module.interface} · ${module.allowed_paths.length} allowed path(s) · depends on ${
+				module.depends_on.length === 0 ? "nothing" : module.depends_on.join(", ")
+			}`,
+		);
+	}
+	const hidden = stack.modules.length - PLAN_SUMMARY_MAX_MODULES;
+	if (hidden > 0) {
+		lines.push(`  … and ${hidden} more modules (see stack.json)`);
+	}
+	return lines.join("\n");
+}
+
 /** Folders that are a layer, not a capability. Legal inside a feature, never as the map. */
 const LAYER_FOLDERS = new Set([
 	"components",

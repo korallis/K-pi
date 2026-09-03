@@ -446,3 +446,16 @@ test("logout forgets a slot's cached usage", () => {
 	assert.equal(usage.remainingPercent("anthropic", "A"), undefined);
 	assert.deepEqual(usage.entries(), []);
 });
+
+test("the widget marks a slot that needs a login", () => {
+	const document = accounts({ anthropic: pool("quota-first", "default", "work") });
+	const work = document.pools.anthropic?.slots.find((slot) => slot.id === "work");
+	assert.ok(work);
+	work.needsLogin = "Anthropic rejected its refresh token (invalid_grant)";
+
+	const widget = renderAccountsWidget(document, { now: NOW });
+
+	assert.match(widget, /work \?% needs login/u);
+	const defaultLine = widget.split("   ").find((cell) => cell.includes("default ")) ?? "";
+	assert.doesNotMatch(defaultLine, /needs login/u);
+});

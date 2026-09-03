@@ -120,7 +120,7 @@ test("event verdict rendering remains concise", () => {
 		job_id: "job",
 		round: 1,
 		node: "review",
-		status: "BLOCKED",
+		status: "STOPPED",
 		prev_hash: "0".repeat(64),
 		record_hash: "1".repeat(64),
 	});

@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet data-dc-atomics><link rel="preconnect" href="https://fonts.googleapis.com"><link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet"><style>body{margin:0;background:#06090c;font-family:"IBM Plex Sans",system-ui,sans-serif;color:#d8e1e8}a{color:#3da9fc}a:hover{color:#84c9ff}.term{font:13px/19px "JetBrains Mono","DejaVu Sans Mono",Menlo,monospace;padding:14px 10px;font-variant-ligatures:none;width:1248px;box-sizing:content-box;outline:none;cursor:default}.row{height:19px;white-space:pre}.row span{white-space:pre}.clk{cursor:pointer}</style></helmet>
+<div style="min-height:100vh;display:flex;flex-direction:column;align-items:center;gap:14px;padding:28px 24px 40px;box-sizing:border-box">
+<div style="width:1268px;display:flex;justify-content:space-between;align-items:baseline;font:12px/1.4 'IBM Plex Sans',sans-serif;color:rgba(216,225,232,.55)">
+<div><span style="color:#3da9fc;font-weight:600">K-π command centre</span> · 160×50 · protocol-blue · click the terminal, then just type — the prompt is the Pi editor at the bottom · <span style="font-family:'JetBrains Mono',monospace;color:#d8e1e8">enter</span> sends · <span style="font-family:'JetBrains Mono',monospace;color:#d8e1e8">tab / ↑↓</span> select a stage · <span style="font-family:'JetBrains Mono',monospace;color:#d8e1e8">enter</span> on an empty line streams its session · <span style="font-family:'JetBrains Mono',monospace;color:#d8e1e8">esc</span> back</div>
+<div>{{ viewLabel }}</div>
+</div>
+<div class="term" style="background:{{ bgColor }};border:1px solid rgba(61,169,252,.18);border-radius:4px" tabindex="0" onClick="{{ focusTerm }}" ref="{{ termRef }}"><sc-for list="{{ rows }}" as="row" hint-placeholder-count="50"><div class="row {{ row.cls }}" onClick="{{ row.click }}"><sc-for list="{{ row.spans }}" as="sp" hint-placeholder-count="1"><span style="color:{{ sp.color }};background:{{ sp.bg }};font-weight:{{ sp.w }}">{{ sp.t }}</span></sc-for></div></sc-for></div>
+<div style="width:1268px;font:12px/1.5 'IBM Plex Sans',sans-serif;color:rgba(216,225,232,.5);max-width:1268px">
+Every value on screen is something the run already writes: state.json, task.json limits, the six run files, events.jsonl, agents/&lt;node&gt;/*.jsonl, research.json, accounts.json. The LIVE panel is the tail of whichever node is selected, so the answer to "what is it doing?" is on the home screen before you drill in. Session view replays a finished node's transcript and follows a running one.
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;theme&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;protocol-blue&quot;,&quot;options&quot;:[&quot;protocol-blue&quot;,&quot;loop-amber&quot;],&quot;tsType&quot;:&quot;'protocol-blue' | 'loop-amber'&quot;,&quot;section&quot;:&quot;Board&quot;}}">
+class Component extends DCLogic {
+  state = { tick: 0, view: 'home', focus: 3, openedAt: 0, input: '', sent: [] };
+  componentDidMount() {
+    this.timer = setInterval(() => this.setState(s => ({ tick: s.tick + 1 })), 100);
+    this.onKey = e => {
+      const k = e.key; const n = 8;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (k === 'Tab' || k === 'ArrowDown') { e.preventDefault(); this.setState(s => ({ focus: (s.focus + (e.shiftKey ? n - 1 : 1)) % n, openedAt: s.tick })); }
+      else if (k === 'ArrowUp') { e.preventDefault(); this.setState(s => ({ focus: (s.focus + n - 1) % n, openedAt: s.tick })); }
+      else if (k === 'ArrowRight' && this.state.input === '') { e.preventDefault(); this.setState(s => ({ focus: (s.focus + 1) % n, openedAt: s.tick })); }
+      else if (k === 'ArrowLeft' && this.state.input === '') { e.preventDefault(); this.setState(s => ({ focus: (s.focus + n - 1) % n, openedAt: s.tick })); }
+      else if (k === 'Enter') {
+        e.preventDefault();
+        this.setState(s => {
+          const text = s.input.trim();
+          if (!text) return { view: 'session', openedAt: s.tick };
+          const sec = Math.floor(s.tick / 10);
+          const when = `11:${String(48 + Math.floor(sec / 60)).padStart(2, '0')}:${String((12 + sec) % 60).padStart(2, '0')}`;
+          const kind = text.startsWith('/') ? 'command' : text.startsWith('!') ? 'bash' : 'chat';
+          const reply = text.startsWith('/kpi stop') ? `K-π job ${'20260903-add-get-health-…-ae4a7049'} BLOCKED (operator stop)` : text.startsWith('/kpi verify') ? 'events.jsonl verified: 14 records chained' : text.startsWith('/kpi') ? 'K-π queued after the current turn' : kind === 'bash' ? 'running in project shell' : 'answered directly · routing auto · no job change';
+          return { input: '', sent: [{ when, text, kind, reply }, ...s.sent].slice(0, 6) };
+        });
+      }
+      else if (k === 'Escape') { e.preventDefault(); this.setState(s => s.input ? { input: '' } : { view: 'home' }); }
+      else if (k === 'Backspace') { e.preventDefault(); this.setState(s => ({ input: [...s.input].slice(0, -1).join('') })); }
+      else if (k.length === 1) { e.preventDefault(); this.setState(s => ({ input: s.input + k })); }
+    };
+    window.addEventListener('keydown', this.onKey);
+  }
+  componentWillUnmount() { clearInterval(this.timer); window.removeEventListener('keydown', this.onKey); }
+
+  lib() {
+    if (this._lib) return this._lib;
+    const W = 160, H = 50;
+    const THEMES = {
+      'protocol-blue': { accent: '#3da9fc', hi: '#84c9ff', code: '#71c1ff', success: '#3dff6a', error: '#ff3b3b', warning: '#ffb020', text: '#d8e1e8', muted: '#8493a0', dim: '#56636e', border: '#245f8c', borderMuted: '#293641', bg: '#0a0e12', selBg: '#17334a', userBg: '#172632', toolBg: '#172b3a' },
+      'loop-amber': { accent: '#ff6a1a', hi: '#ffb020', code: '#ff9154', success: '#3dff6a', error: '#ff3b3b', warning: '#ffb020', text: '#ddd7ce', muted: '#948b80', dim: '#625c54', border: '#78401f', borderMuted: '#3d3832', bg: '#0d0e0e', selBg: '#3a2519', userBg: '#2b211b', toolBg: '#2d211a' },
+    };
+    const SP = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+    const BR = ' ⣀⣠⣤⣴⣶⣾⣿';
+    const JOB = '20260903-add-get-health-returning-status-ae4a7049';
+    const JOBS = '20260903-add-get-health-…-ae4a7049';
+    const len = s => [...s].length;
+    const rep = (ch, n) => ch.repeat(Math.max(0, n));
+    const fmt = s => { s = Math.max(0, Math.floor(s)); const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), r = s % 60; if (h > 0) return `${h}h ${m}m ${r}s`; if (m > 0) return `${m}m ${r}s`; return `${r}s`; };
+    const spark = vals => vals.map(v => BR[Math.max(0, Math.min(8, Math.round(v * 8)))]).join('');
+    const meter = (p, n) => { const k = Math.round(Math.min(1, p) * n); return rep('━', k) + rep('╌', n - k); };
+    const trunc = (s, w) => len(s) <= w ? s : [...s].slice(0, w - 1).join('') + '…';
+
+    class Canvas {
+      constructor(th) { this.th = th; this.g = Array.from({ length: H }, () => Array.from({ length: W }, () => ({ ch: ' ', c: 'text', bg: null, w: 400 }))); this.click = {}; this.cls = {}; }
+      put(x, y, s, c = 'text', bg = null, w = 400) { let i = 0; for (const ch of s) { const xx = x + i; if (y >= 0 && y < H && xx >= 0 && xx < W) this.g[y][xx] = { ch, c, bg, w }; i++; if (ch === '📁' && xx + 1 < W && y >= 0 && y < H) { this.g[y][xx + 1] = { ch: '', c, bg, w }; i++; } } return x + i; }
+      putR(xr, y, s, c, bg, w) { return this.put(xr - len(s), y, s, c, bg, w); }
+      box(x, y, w, h, c, title, tc = 'accent') { this.put(x, y, '┌' + rep('─', w - 2) + '┐', c); for (let i = 1; i < h - 1; i++) { this.put(x, y + i, '│', c); this.put(x + w - 1, y + i, '│', c); } this.put(x, y + h - 1, '└' + rep('─', w - 2) + '┘', c); if (title) this.put(x + 2, y, ` ${title} `, tc, null, 700); }
+      fill(y, bg, x0, x1) { for (let x = x0; x < x1; x++) if (y >= 0 && y < H) this.g[y][x].bg = bg; }
+      rows() {
+        return this.g.map((row, y) => {
+          const spans = [];
+          for (const cell of row) { const l = spans[spans.length - 1]; if (l && l.c === cell.c && l.bg === cell.bg && l.w === cell.w) l.t += cell.ch; else spans.push({ t: cell.ch, c: cell.c, bg: cell.bg, w: cell.w }); }
+          return { spans: spans.map(s => ({ t: s.t, color: this.th[s.c] || s.c, bg: s.bg ? (this.th[s.bg] || s.bg) : 'transparent', w: s.w })), click: this.click[y], cls: this.click[y] ? 'clk' : '' };
+        });
+      }
+    }
+
+    const STAGES = [
+      { id: '01', key: 'ac-compile', node: 'ac-compiler', s: 'done', t: 4, doing: 'contract valid · 3 AC executable · bounds src/health/** test/health/**', ctx: 'isolated', tools: 'read grep find ls', ro: true, cost: 0.02, tok: '1.8k' },
+      { id: '02', key: 'specify', node: 'specify', s: 'done', t: 41, doing: 'spec-first · research local 3 src · 4 requirements · 2 non-goals', ctx: 'isolated', tools: 'read grep find ls', ro: true, cost: 0.11, tok: '9.2k' },
+      { id: '03', key: 'plan', node: 'plan', s: 'done', t: 22, doing: 'stack.json · 1 module health · 2 tasks · schema valid', ctx: 'isolated', tools: 'read grep find ls', ro: true, cost: 0.07, tok: '5.1k' },
+      { id: '04', key: 'implement', node: 'implement', s: 'current', t: 72, doing: 'bash npm test -- --filter health · step 7/24 · 3 writes in bounds', ctx: 'thread coder', tools: 'read grep find ls bash edit write', ro: false, cost: 0.31, tok: '12.4k' },
+      { id: '05', key: 'test', node: 'test', s: 'pending', doing: 'waits for 04 · runs quality_gates npm test · HEAD-bound evidence.json', ctx: 'isolated', tools: 'read bash', ro: false },
+      { id: '06', key: 'bounds', node: 'bounds', s: 'pending', doing: 'waits for 05 · every write inside src/health/** test/health/**', ctx: 'engine', tools: '—', ro: true },
+      { id: '07', key: 'review', node: 'review', s: 'pending', doing: 'waits for 06 · isolated reviewer worker · verdict.json', ctx: 'isolated · reviewer', tools: 'read grep find ls', ro: true },
+      { id: '08', key: 'ship', node: 'ship', s: 'pending', doing: 'waits for human gate · one commit on kpi/<job> · push · PR', ctx: 'thread ship', tools: 'bash', ro: false },
+    ];
+    const T = {
+      'ac-compile': [
+        ['sys', 'ac-compiler · context isolated · tools read grep find ls · readOnly'],
+        ['user', 'Check the frozen task contract and acceptance quality before execution. Do not change repository files.'],
+        ['tool', 'read  .kpi/runs/' + JOBS + '/task.json'],
+        ['out', 'goal "Add GET /health returning status 200 and JSON {"status":"ok"}" · acceptance 3 · quality_gates [npm test]'],
+        ['tool', 'ls  src/ test/'],
+        ['out', 'src/index.ts  src/health/  test/health/'],
+        ['tool', 'grep -rn "health" src test'],
+        ['out', '0 matches'],
+        ['asst', 'AC-01  cmd npm test exits 0                → check ✓'],
+        ['asst', 'AC-02  writes only src/health/** test/health/**  → bounds ✓'],
+        ['asst', 'AC-03  GET /health → 200 {"status":"ok"}  → covered by AC-01 fixture ✓'],
+        ['asst', 'Quality: executable. Bounds declared on every required criterion. No frozen plan supplied → route to specify.'],
+        ['ok', 'handoff.created · ac.quality=executable · 4s · $0.02 · 1.8k tokens'],
+      ],
+      'specify': [
+        ['sys', 'specify · context isolated · tools read grep find ls · readOnly · skill spec-first'],
+        ['user', 'Apply the spec-first skill. Research the repository and specify requirements, design, tasks, constraints, and non-goals.'],
+        ['tool', 'research  mode=local  q="express healthcheck endpoint pattern"'],
+        ['out', 'research.json · network no-network (operator) · 3 local sources: src/index.ts, package.json, test/setup.ts'],
+        ['tool', 'read  src/index.ts'],
+        ['out', 'createServer(handleRequest) · no router · listens 3000'],
+        ['asst', 'Requirements: R1 GET /health 200 · R2 body {"status":"ok"} · R3 content-type application/json · R4 no new deps'],
+        ['asst', 'Non-goals: liveness vs readiness split · metrics endpoint'],
+        ['asst', 'Design: handleHealth(req,res) in src/health/index.ts, mounted before the default 404 branch.'],
+        ['ok', 'context.md frozen · 41s · $0.11 · 9.2k tokens → plan'],
+      ],
+      'plan': [
+        ['sys', 'plan · context isolated · response stack.json (stack.schema.json, retries 2)'],
+        ['user', 'Produce an implementation plan and a Dune stack.json of module boundaries. Return only JSON.'],
+        ['asst', '{ "modules": [ { "id": "health", "path": "src/health", "consumers": ["src/index.ts"], "reason": "single vertical slice" } ],'],
+        ['asst', '  "tasks": [ "red test for GET /health", "minimal handler + mount" ] }'],
+        ['ok', 'stack.json schema valid on attempt 1 · 22s · $0.07 · 5.1k tokens → implement'],
+      ],
+      'implement': [
+        ['sys', 'implement · context thread coder · tools read grep find ls bash edit write · skills tdd-cycle minimalist'],
+        ['user', 'Before production changes, write candidate.json.ladder, declare runtime dependencies, and capture failing test output. Implement only the current stack.json module.'],
+        ['tool', 'write  .kpi/runs/' + JOBS + '/candidate.json'],
+        ['out', 'ladder minimum-code · used node:http createServer handleRequest · skipped frameworks routers extra modules · deps none'],
+        ['tool', 'write  test/health/health.test.ts  (+14)'],
+        ['tool', 'bash  npm test -- --filter health'],
+        ['err', 'FAIL test/health/health.test.ts › GET /health → 404 expected 200   (red captured → evidence)'],
+        ['tool', 'write  src/health/index.ts  (+9)'],
+        ['tool', 'edit   src/index.ts  (+2/-1)   mount handleHealth before default branch'],
+        ['policy', 'policy: edit src/index.ts is outside writes-only bounds? → no: consumer edit declared in stack.json · allowed'],
+        ['tool', 'bash  npm test -- --filter health'],
+      ],
+      'test': [['dim', 'not started · waits for 04 implement · will run the exact task.json quality_gates and bind evidence to HEAD']],
+      'bounds': [['dim', 'not started · waits for 05 test · engine compares baseline.json to the worktree']],
+      'review': [['dim', 'not started · waits for 06 bounds · spawns an isolated reviewer worker (max 2 live, 1 writer)']],
+      'ship': [['dim', 'not started · waits for the human gate · git commit with trailer KPI-Job: ' + JOBS]],
+    };
+    const LOOP = [['out', '> health@0.1.0 test'], ['out', '  ✓ GET /health returns 200 (18ms)'], ['out', '  ✓ body {"status":"ok"} (4ms)'], ['out', 'Tests: 2 passed, 2 total · Time 1.42s'], ['asst', 'green captured. writing evidence excerpt · next node test'], ['tool', 'bash  git status --porcelain']];
+    const EVENTS = [
+      ['11:45:58', 'handoff.created', 'r0 node=ac-compiler', 'text'], ['11:46:02', 'research.started', 'r0 mode=local net=no-network', 'text'],
+      ['11:46:09', 'research.completed', 'r0 mode=local net=no-network n=3', 'text'], ['11:46:31', 'tool.request', 'plan read src/index.ts', 'text'],
+      ['11:46:44', 'checkpoint', 'graph/checkpoint-000004.json', 'muted'], ['11:46:51', 'tool.request', 'implement write candidate.json', 'text'],
+      ['11:47:02', 'tool.request', 'implement write test/health/health.test.ts', 'text'], ['11:47:05', 'tool.request', 'implement bash npm test -- --filter health exit=1', 'warning'],
+      ['11:47:19', 'tool.request', 'implement write src/health/index.ts', 'text'], ['11:47:20', 'policy.decision', 'implement edit src/index.ts allow (stack consumer)', 'success'],
+      ['11:47:33', 'checkpoint', 'graph/checkpoint-000007.json', 'muted'], ['11:47:41', 'tool.request', 'implement bash npm test -- --filter health', 'text'],
+      ['11:47:52', 'accounts.usage', 'anthropic/home 71% 5h window', 'muted'], ['11:48:03', 'tool.request', 'implement bash git status --porcelain', 'text'],
+    ];
+    const ROLE = { sys: ['system', 'dim'], user: ['prompt', 'hi'], asst: ['assistant', 'text'], tool: ['tool', 'accent'], out: ['output', 'muted'], ok: ['handoff', 'success'], err: ['red', 'error'], policy: ['policy', 'warning'], dim: ['', 'dim'] };
+    this._lib = { W, H, THEMES, SP, JOB, JOBS, len, rep, fmt, spark, meter, trunc, Canvas, STAGES, T, LOOP, EVENTS, ROLE };
+    return this._lib;
+  }
+
+  transcript(key, since) {
+    const L = this.lib(); const st = L.STAGES.find(s => s.key === key); const base = L.T[key];
+    if (st.s === 'done') return base.slice(0, Math.min(base.length, Math.floor(since / 2) + 1));
+    if (st.s === 'pending') return base;
+    // running: reveal then keep appending output that loops
+    const shown = Math.min(base.length, Math.floor(since / 2) + 1);
+    const rows = base.slice(0, shown);
+    if (shown === base.length) { const extra = Math.floor((since - base.length * 2) / 15); for (let i = 0; i < Math.min(extra, L.LOOP.length); i++) rows.push(L.LOOP[i]); }
+    return rows;
+  }
+
+  header(cv, t, crumb, right) {
+    const L = this.lib();
+    let x = cv.put(0, 0, ' K-π ', 'bg', 'accent', 700);
+    x = cv.put(x, 0, ' COMMAND ', 'accent', null, 700);
+    crumb.forEach(c => { x = cv.put(x, 0, ' › ', 'dim'); x = cv.put(x, 0, c, 'text'); });
+    cv.putR(L.W, 0, right, 'muted');
+    cv.put(0, 1, L.rep('═', L.W), 'border');
+  }
+  bottom(cv, t, hints, ctxPct) {
+    const L = this.lib(); const input = this.state.input; const last = this.state.sent[0];
+    // Pi editor: rule · prompt · rule
+    cv.put(0, 43, L.rep('─', L.W), 'border');
+    let x = cv.put(0, 44, '> ', 'accent', null, 700);
+    if (input) { x = cv.put(x, 44, L.trunc(input, L.W - 4), 'text'); if (Math.floor(t / 5) % 2 === 0) cv.put(x, 44, ' ', 'bg', 'text'); }
+    else { if (Math.floor(t / 5) % 2 === 0) cv.put(x, 44, ' ', 'bg', 'text'); cv.put(x + 2, 44, this.state.view === 'session' ? 'ask about this node, or /kpi stop · esc back to command' : 'type a message, /kpi <goal>, /kpi stop, ! bash  ·  enter on an empty line opens the selected stage', 'dim'); }
+    cv.put(0, 45, L.rep('─', L.W), 'border');
+    if (last) { x = cv.put(0, 46, `${last.when} `, 'dim'); x = cv.put(x, 46, `${last.kind} `, 'hi'); x = cv.put(x, 46, L.trunc(last.text, 60), 'text'); cv.put(x, 46, `  →  ${last.reply}`, 'muted'); }
+    else cv.put(0, 46, hints, 'dim');
+    const sep = '  >  ';
+    const segs = [[`K-π ${L.SP[t % 10]} ${L.fmt(Math.floor(t / 10) + 3701)}`, 'accent'], ['⬡ claude-opus-4', 'accent'], ['● high', 'text'], ['📁 K-pi', 'text'], ['⎇ kpi/' + L.JOBS, 'success'], [`▦ ${ctxPct}%/200k`, ctxPct < 50 ? 'success' : 'warning'], ['(sub)', 'warning']];
+    x = 0; segs.forEach((s, i) => { if (i) x = cv.put(x, 48, sep, 'dim'); x = cv.put(x, 48, s[0], s[1]); });
+    cv.putR(L.W, 48, last ? L.trunc(last.text, 40) : 'add healthcheck', 'muted');
+    cv.put(0, 49, `K-π LOOP gated r1/3 STAGE implement GATE machine ROUTE anthropic/home`, 'muted');
+    cv.putR(L.W, 49, hints, 'dim');
+  }
+  telemetry(cv, x, y, w, t) {
+    const L = this.lib(); const sec = Math.floor(t / 10); const ph = Math.floor(t / 10);
+    const cost = 0.84 + sec * 0.0011; const ctx = 0.42 + sec * 0.0003; const mw = w - 62;
+    const cs = Array.from({ length: 10 }, (_, i) => Math.min(1, (i + ph % 3) / 12));
+    const tk = Array.from({ length: 10 }, (_, i) => 0.2 + 0.8 * Math.abs(Math.sin((i + ph) * 1.1)));
+    const row = (yy, k, v, vt, m, tail, tt) => { let xx = cv.put(x, yy, k.padEnd(9), 'muted'); xx = cv.put(xx, yy, v.padEnd(17), vt); if (m !== null) xx = cv.put(xx, yy, L.meter(m, mw), vt); if (tail) cv.put(xx + 2, yy, tail, tt || 'muted'); };
+    row(y, 'COST', `$${cost.toFixed(2)} ╱ $5.00`, 'warning', cost / 5, `${Math.round(cost / 5 * 100)}%  ${L.spark(cs)}  +$0.06/min`);
+    row(y + 1, 'CONTEXT', `${Math.round(ctx * 100)}% ╱ 200k`, ctx < 0.5 ? 'success' : 'warning', ctx, 'auto-compact at 85%');
+    row(y + 2, 'TOKENS', `in ${(31.4 + sec * 0.02).toFixed(1)}k out 6.8k`, 'text', null, L.spark(tk) + '  38 req', 'text');
+    row(y + 3, 'TIME', `${L.fmt(401 + sec)} ╱ 30m`, 'text', (401 + sec) / 1800, 'timeoutMs 1800000');
+    let xx = cv.put(x, y + 4, 'ROUNDS'.padEnd(9), 'muted'); xx = cv.put(xx, y + 4, '1 ╱ 3', 'text'); xx = cv.put(xx, y + 4, '   r0 ━━━━━━ 2m03s', 'success'); xx = cv.put(xx, y + 4, `   r1 ━━━━${L.SP[t % 10]} ${L.fmt(101 + sec)}`, 'accent');
+    xx = cv.put(x, y + 5, 'STEPS'.padEnd(9), 'muted'); xx = cv.put(xx, y + 5, '7 ╱ 24', 'text'); xx = cv.put(xx, y + 5, '   NODE RUNS 4 ╱ 16   WORKERS 1 ╱ 2   FINGERPRINT —', 'muted');
+  }
+  stageList(cv, x, y, w, t, focus, compact) {
+    const L = this.lib(); const sec = Math.floor(t / 10);
+    L.STAGES.forEach((st, i) => {
+      const yy = compact ? y + i : y + i * 2; const foc = i === focus;
+      const g = st.s === 'done' ? '✓' : st.s === 'current' ? L.SP[t % 10] : '○';
+      const tone = st.s === 'done' ? 'success' : st.s === 'current' ? 'accent' : 'dim';
+      if (foc) { cv.fill(yy, 'selBg', x, x + w); if (!compact) cv.fill(yy + 1, 'selBg', x, x + w); }
+      const bg = foc ? 'selBg' : null;
+      let xx = cv.put(x + 1, yy, foc ? '▸ ' : '  ', 'accent', bg, 700);
+      xx = cv.put(xx, yy, `${st.id} ${st.key}`.padEnd(compact ? 14 : 16), foc ? 'hi' : 'text', bg, foc ? 700 : 400);
+      if (compact) { cv.putR(x + w - 1, yy, g, tone, bg); }
+      else {
+        xx = cv.put(xx, yy, `${g} ${st.s === 'done' ? 'DONE' : st.s === 'current' ? 'RUNNING' : 'PENDING'}`.padEnd(11), tone, bg);
+        const el = st.s === 'done' ? L.fmt(st.t) : st.s === 'current' ? L.fmt(st.t + sec) : '—';
+        cv.putR(x + w - 2, yy, el, st.s === 'current' ? 'accent' : 'muted', bg);
+        cv.put(x + 5, yy + 1, L.trunc(st.doing, w - 7), st.s === 'pending' ? 'dim' : 'muted', bg);
+      }
+      const idx = i; const open = (ev) => { const now = this.state.tick; this.setState(s => ({ focus: idx, view: s.focus === idx && s.view === 'home' ? 'session' : s.view, openedAt: now })); };
+      cv.click[yy] = open; if (!compact) cv.click[yy + 1] = open;
+    });
+  }
+  session(cv, x, y, w, h, key, since, t, follow) {
+    const L = this.lib(); const lines = this.transcript(key, since); const st = L.STAGES.find(s => s.key === key);
+    const vis = lines.slice(-h);
+    vis.forEach((ln, i) => {
+      const yy = y + i; const [tag, tone] = L.ROLE[ln[0]]; const last = i === vis.length - 1 && lines.length === vis.length + (lines.length - vis.length);
+      let xx = cv.put(x, yy, tag.padEnd(10), ln[0] === 'tool' ? 'accent' : 'dim');
+      xx = cv.put(xx, yy, L.trunc(ln[1], w - 12), tone);
+      if (i === vis.length - 1 && st.s === 'current' && Math.floor(t / 4) % 2 === 0) cv.put(Math.min(xx, x + w - 2), yy, '▌', 'accent');
+    });
+    if (st.s === 'current' && lines.length >= L.T[key].length) { const yy = y + Math.min(vis.length, h - 1); if (vis.length < h) cv.put(x, yy, `${L.SP[t % 10]} live · following agents/implement/coder.jsonl`, 'accent'); }
+    return lines.length;
+  }
+
+  home(cv, t, focus, openedAt) {
+    const L = this.lib(); const sec = Math.floor(t / 10); const st = L.STAGES[focus];
+    this.header(cv, t, [L.JOBS], `MODE gated  ·  ROUND 1/3  ·  GATE machine  ·  STOP RUNNING ${L.SP[t % 10]} ${L.fmt(401 + sec)}  ·  11:${String(47 + Math.floor(sec / 60)).padStart(2, '0')}:${String((33 + sec) % 60).padStart(2, '0')}`);
+    // stages
+    cv.box(0, 2, 76, 20, 'border', 'STAGES 01–08'); cv.putR(73, 2, ' node · status · elapsed ', 'dim');
+    this.stageList(cv, 1, 3, 74, t, focus, false);
+    cv.put(2, 20, 'tab/↑↓ select  ·  enter stream session  ·  1-8 jump', 'dim');
+    // live tail of focused node
+    cv.box(77, 2, 83, 12, st.s === 'current' ? 'borderAccent' : 'border', `LIVE › ${st.id} ${st.key}`);
+    cv.putR(157, 2, ` agents/${st.node}/*.jsonl · ${st.ctx} `, 'dim');
+    this.session(cv, 79, 3, 79, 10, st.key, st.s === 'done' ? 999 : t - openedAt, t, true);
+    cv.click[2] = () => this.setState(s => ({ view: 'session', openedAt: s.tick }));
+    // telemetry
+    cv.box(77, 14, 83, 8, 'border', 'TELEMETRY'); cv.putR(157, 14, ' task.json limits ', 'dim');
+    this.telemetry(cv, 79, 15, 79, t);
+    // run state
+    cv.box(0, 22, 76, 10, 'border', 'SHARED RUN STATE'); cv.putR(73, 22, ' .kpi/runs/' + L.JOBS + ' ', 'dim');
+    const files = [['task.json', true, '1.2k', '11:45:58', 'frozen contract · limits maxRounds 3 maxCostUsd 5'], ['context.md', true, '6.8k', '11:46:39', 'frozen repository context · research local'], ['candidate.json', true, '0.3k', '11:46:51', 'ladder minimum-code · deps none'], ['evidence.json', false, '—', '—', 'written by 05 test · HEAD-bound'], ['verdict.json', false, '—', '—', 'written by 07 review · never by the implementer'], ['events.jsonl', true, '14 rec', '11:48:03', 'hash-chained · append only · /kpi verify']];
+    files.forEach((f, i) => { const y = 23 + i; let x = cv.put(2, y, f[1] ? '●' : '○', f[1] ? 'accent' : 'dim'); x = cv.put(x + 1, y, f[0].padEnd(16), f[1] ? 'text' : 'dim'); x = cv.put(x, y, f[2].padStart(6), 'muted'); x = cv.put(x + 2, y, f[3].padEnd(9), 'dim'); cv.put(x + 1, y, L.trunc(f[4], 38), f[1] ? 'muted' : 'dim'); });
+    cv.put(2, 30, 'BOUNDS held  ·  BASELINE 214 files  ·  PREVIOUS HEAD 2d4473d', 'muted');
+    // context layer
+    cv.box(77, 22, 83, 10, 'border', 'CONTEXT LAYER'); cv.putR(157, 22, ' research.json · accounts.json ', 'dim');
+    const kv = (y, k, v, tone) => { let x = cv.put(79, y, k.padEnd(10), 'muted'); cv.put(x, y, L.trunc(v, 69), tone || 'text'); };
+    kv(23, 'PACK', 'product ●  structure ●  tech ●');
+    kv(24, 'RESEARCH', 'local 3 src · no-network operator (--no-network)');
+    kv(25, 'K-STACK', 'playbook-feature · step 3/5 · implement the smallest change');
+    kv(26, 'AGENTS', '1 live (coder) · BUS ●  · workers 1/2 · writer lease held by coder');
+    let x = cv.put(79, 27, 'ROUTE'.padEnd(10), 'muted'); x = cv.put(x, 27, 'anthropic/home', 'text'); x = cv.put(x, 27, '  71% 5h', 'success'); cv.put(x, 27, '  ·  fallback openai-codex → xai → zai', 'muted');
+    kv(28, 'POLICY', 'gated · reads never prompt · writes ask once · hard denies publish/deploy');
+    kv(29, 'GATE', 'next human gate after 07 review  ·  onHumanDeny revise', 'hi');
+    kv(30, 'GRAPH', 'coding-loop.gated · superstep 7 · next edge implement → test');
+    // events (operator input is echoed here too)
+    cv.box(0, 32, 160, 10, 'border', 'EVENTS · events.jsonl'); cv.putR(157, 32, ` ${14 + Math.floor(t / 40) % 4} records chained ✓ · following `, 'dim');
+    const sentRows = this.state.sent.slice(0, 3).map(s => [s.when, s.kind === 'command' ? 'operator.command' : s.kind === 'bash' ? 'operator.bash' : 'operator.message', s.text, 'hi']).reverse();
+    const off = Math.floor(t / 40) % 4; const ev = [...L.EVENTS.slice(off, off + 7 - sentRows.length), ...sentRows];
+    ev.forEach((e, i) => { const y = 33 + i; let x = cv.put(2, y, e[0], 'dim'); x = cv.put(x + 2, y, e[1].padEnd(19), e[3] === 'text' ? 'text' : e[3]); cv.put(x + 1, y, L.trunc(e[2], 130), e[3] === 'muted' ? 'muted' : e[3] === 'hi' ? 'text' : 'text'); });
+    x = cv.put(2, 40, '▸ ', 'accent'); x = cv.put(x, 40, 'live'.padEnd(10), 'accent'); x = cv.put(x, 40, 'tool.request'.padEnd(19), 'text'); x = cv.put(x + 1, 40, 'implement bash npm test -- --filter health  ', 'text'); cv.put(x, 40, `${L.SP[t % 10]} ${L.fmt(12 + sec)}`, 'accent');
+    // graph strip
+    x = cv.put(0, 42, 'PATH  ', 'muted');
+    const path = [['ac-compiler', 'done'], ['specify', 'done'], ['plan', 'done'], ['implement', 'current'], ['test', 'pending'], ['review', 'pending'], ['human', 'pending'], ['ship', 'pending'], ['end', 'pending']];
+    path.forEach(([n, s], i) => { if (i) { const p = path[i - 1][1]; x = cv.put(x, 42, p === 'done' ? ' ━━▶ ' : ' ╌╌▶ ', p === 'done' ? 'success' : 'dim'); } if (s === 'current') x = cv.put(x, 42, ` ${n} ${L.SP[t % 10]} `, 'bg', 'accent', 700); else x = cv.put(x, 42, n, s === 'done' ? 'success' : 'dim'); });
+    cv.put(x + 4, 42, L.trunc('loops: test ✕ → implement · review REVISE → implement · human deny → implement', L.W - x - 4), 'dim');
+    this.bottom(cv, t, 'tab/↑↓ select stage · enter open · esc · ctrl+o more', 42 + Math.floor(sec / 200));
+  }
+
+  sessionView(cv, t, focus, openedAt) {
+    const L = this.lib(); const sec = Math.floor(t / 10); const st = L.STAGES[focus]; const since = t - openedAt;
+    const n = this.transcript(st.key, since).length;
+    this.header(cv, t, [L.JOBS, `${st.id} ${st.key}`, 'session'], `agents/${st.node}/${st.s === 'current' ? 'coder' : st.node}.jsonl  ·  ${n} entries  ·  ${st.s === 'current' ? L.SP[t % 10] + ' live' : st.s === 'done' ? 'replay ✓' : 'not started'}`);
+    // rail
+    cv.box(0, 2, 24, 41, 'border', 'STAGES');
+    this.stageList(cv, 1, 3, 22, t, focus, true);
+    cv.put(2, 12, '← → switch node', 'dim'); cv.put(2, 13, 'esc  back', 'dim');
+    cv.put(2, 15, 'ROUND 1/3', 'text'); cv.put(2, 16, 'GATE machine', 'text'); cv.put(2, 17, `STOP RUNNING`, 'warning'); cv.put(2, 18, `${L.fmt(401 + sec)} elapsed`, 'muted');
+    cv.put(2, 20, 'FILES', 'muted'); ['● task.json', '● context.md', '● candidate.json', '○ evidence.json', '○ verdict.json', '● events.jsonl'].forEach((f, i) => cv.put(2, 21 + i, f, f.startsWith('●') ? 'accent' : 'dim'));
+    // main transcript
+    const running = st.s === 'current';
+    cv.box(25, 2, 103, 41, running ? 'borderAccent' : 'border', `SESSION › ${st.id} ${st.key}`); cv.putR(125, 2, running ? ` following · ${L.fmt(st.t + sec)} ` : st.s === 'done' ? ` finished in ${L.fmt(st.t)} · replaying ` : ' pending ', running ? 'accent' : 'dim');
+    this.session(cv, 27, 3, 99, 39, st.key, since, t, true);
+    // node facts
+    cv.box(129, 2, 31, 41, 'border', 'NODE');
+    const f = [['type', 'agent'], ['context', st.ctx], ['tools', st.tools], ['readOnly', String(st.ro)], ['retries', st.key === 'plan' ? '2 (schema)' : '0'], ['status', st.s === 'done' ? 'DONE' : st.s === 'current' ? 'RUNNING' : 'PENDING'], ['elapsed', st.s === 'done' ? L.fmt(st.t) : st.s === 'current' ? L.fmt(st.t + sec) : '—'], ['cost', st.cost ? `$${st.cost.toFixed(2)}` : '—'], ['tokens', st.tok || '—'], ['model', 'claude-opus-4'], ['route', 'anthropic/home'], ['thinking', 'high']];
+    f.forEach(([k, v], i) => { let x = cv.put(131, 3 + i, k.padEnd(9), 'muted'); cv.put(x, 3 + i, L.trunc(v, 18), k === 'status' ? (st.s === 'done' ? 'success' : st.s === 'current' ? 'accent' : 'dim') : 'text'); });
+    if (running) {
+      cv.put(131, 16, 'WRITES', 'accent'); ['test/health/health.test.ts', 'src/health/index.ts', 'src/index.ts'].forEach((w, i) => { cv.put(131, 17 + i, L.trunc(w, 27), 'text'); }); cv.put(131, 20, 'all inside bounds ✓', 'success');
+      cv.put(131, 22, 'STEP', 'accent'); cv.put(131, 23, '7 / 24  ' + L.meter(7 / 24, 19), 'text');
+      cv.put(131, 25, 'NEXT', 'accent'); cv.put(131, 26, 'test → bounds → review', 'muted'); cv.put(131, 27, 'then human gate', 'muted');
+    }
+    cv.put(131, 30, 'TELEMETRY', 'accent');
+    const cost = 0.84 + sec * 0.0011; const ph = Math.floor(t / 10);
+    const cs = Array.from({ length: 12 }, (_, i) => Math.min(1, (i + ph % 3) / 14)); const tk = Array.from({ length: 12 }, (_, i) => 0.2 + 0.8 * Math.abs(Math.sin((i + ph) * 1.1)));
+    const mini = (y, k, v, tone, m) => { let x = cv.put(131, y, k.padEnd(8), 'muted'); cv.put(x, y, v, tone); if (m !== undefined) cv.put(131, y + 1, '        ' + L.meter(m, 19), tone); };
+    mini(31, 'cost', `$${cost.toFixed(2)} ╱ $5.00`, 'warning', cost / 5); cv.put(139, 33, L.spark(cs), 'warning');
+    mini(34, 'context', '42% ╱ 200k', 'success', 0.42);
+    mini(36, 'tokens', `${(38.2 + sec * 0.05).toFixed(1)}k`, 'text'); cv.put(139, 37, L.spark(tk), 'text');
+    mini(38, 'time', `${L.fmt(401 + sec)} ╱ 30m`, 'text', (401 + sec) / 1800);
+    mini(40, 'route', 'home 71% 5h · BUS ●', 'success');
+    this.bottom(cv, t, 'esc back · ← → node · enter open', 42);
+  }
+
+  renderVals() {
+    const L = this.lib(); const t = this.state.tick; const theme = L.THEMES[this.props.theme] || L.THEMES['protocol-blue'];
+    const cv = new L.Canvas(theme);
+    if (this.state.view === 'session') this.sessionView(cv, t, this.state.focus, this.state.openedAt); else this.home(cv, t, this.state.focus, this.state.openedAt);
+    const st = L.STAGES[this.state.focus];
+    return {
+      rows: cv.rows(), bgColor: theme.bg,
+      viewLabel: this.state.view === 'session' ? `session · ${st.id} ${st.key}` : `command · selected ${st.id} ${st.key}`,
+      termRef: el => { this.term = el; }, focusTerm: () => { if (this.term) this.term.focus(); },
+    };
+  }
+}
+</script>
+</body>
+</html>

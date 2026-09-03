@@ -7,6 +7,7 @@ import { readKpiSettings } from "../settings.ts";
 
 import { type ResearchEndpoints, resolveResearchEndpoints } from "./endpoints.ts";
 import { exaContents, exaSearch } from "./exa.ts";
+import { firecrawlSearch } from "./firecrawl.ts";
 import { perplexitySearch } from "./perplexity.ts";
 import {
 	clampField,
@@ -158,6 +159,30 @@ export function registerResearchTools(pi: ExtensionAPI): void {
 					throw new Error(`Perplexity research call failed: ${outcome.class}`);
 				}
 				await session.addExternalResults("perplexity", outcome.value);
+				return { content: [{ type: "text", text: summarize(outcome.value) }], details: { results: outcome.value } };
+			},
+		}),
+	);
+	pi.registerTool(
+		defineTool({
+			name: "firecrawl_search",
+			label: "Firecrawl Search",
+			description: "Search current web sources through the first-party Firecrawl REST client",
+			parameters: Type.Object({ query: Type.String(), limit: Type.Optional(Type.Number()) }),
+			async execute(_id, params, signal, _update, context) {
+				const { session, endpoints, timeoutMs } = await sessionFor(context.cwd, "firecrawl");
+				const outcome = await session.call("firecrawl", params.query, async (key) =>
+					firecrawlSearch(params.query, key, {
+						limit: Math.min(params.limit ?? 5, MAX_RESULTS_PER_REQUEST),
+						baseUrl: endpoints.firecrawl,
+						timeoutMs,
+						signal,
+					}),
+				);
+				if (!outcome.ok) {
+					throw new Error(`Firecrawl research call failed: ${outcome.class}`);
+				}
+				await session.addExternalResults("firecrawl", outcome.value);
 				return { content: [{ type: "text", text: summarize(outcome.value) }], details: { results: outcome.value } };
 			},
 		}),

@@ -69,6 +69,18 @@ export interface AccountSlot {
 	baseUrl?: string;
 	/** Optional token name for a local server that wants one. Never a dummy. */
 	secretRef?: string;
+	/**
+	 * This slot's grant is the one `auth.json` holds: the base runtime refreshes
+	 * it on every request, K-π never does, and it has no `accounts.secrets.json`
+	 * entry. At most one per pool, never on a `local` slot.
+	 */
+	official?: true;
+	/**
+	 * Why this slot can no longer authenticate (a revoked refresh token, an
+	 * `auth.json` entry that vanished). Persisted so it stays unselectable across
+	 * sessions until `/accounts login <pool> <slot>` rewrites its credential.
+	 */
+	needsLogin?: string;
 }
 
 export interface AccountPool {
@@ -133,6 +145,7 @@ function assertAccounts(value: unknown, path: string): asserts value is Accounts
 			throw new Error(`${path} pool ${poolName} must define slots`);
 		}
 		const slotIds = new Set<string>();
+		let officialSlots = 0;
 		for (const slot of pool.slots) {
 			if (!isRecord(slot) || typeof slot.id !== "string" || !SLOT_ID_PATTERN.test(slot.id)) {
 				throw new Error(`${path} pool ${poolName} has an invalid slot id`);
@@ -164,6 +177,21 @@ function assertAccounts(value: unknown, path: string): asserts value is Accounts
 				(typeof slot.warningAcceptedAt !== "string" || Number.isNaN(Date.parse(slot.warningAcceptedAt)))
 			) {
 				throw new Error(`${path} pool ${poolName} slot ${slot.id} has an invalid warningAcceptedAt`);
+			}
+			if (slot.official !== undefined) {
+				if (slot.official !== true) {
+					throw new Error(`${path} pool ${poolName} slot ${slot.id} has an invalid official flag`);
+				}
+				if (slot.kind === "local") {
+					throw new Error(`${path} pool ${poolName} slot ${slot.id} is local and cannot be official`);
+				}
+				officialSlots += 1;
+				if (officialSlots > 1) {
+					throw new Error(`${path} pool ${poolName} flags more than one official slot`);
+				}
+			}
+			if (slot.needsLogin !== undefined && (typeof slot.needsLogin !== "string" || slot.needsLogin.length === 0)) {
+				throw new Error(`${path} pool ${poolName} slot ${slot.id} has an invalid needsLogin`);
 			}
 		}
 	}
@@ -198,6 +226,37 @@ function asRoutableCredential(value: unknown): Credential | undefined {
 		return typeof value.key === "string" && value.key.length > 0 ? (value as unknown as Credential) : undefined;
 	}
 	return undefined;
+}
+
+/**
+ * Whether two credentials are one grant. OAuth grants rotate their refresh
+ * token and their access token independently, so either match is the same
+ * lineage; keys are the same grant only when they are the same key.
+ */
+function sameGrant(a: Credential | undefined, b: Credential | undefined): boolean {
+	if (a === undefined || b === undefined) {
+		return false;
+	}
+	if (a.type === "oauth" && b.type === "oauth") {
+		return a.refresh === b.refresh || a.access === b.access;
+	}
+	if (a.type === "api_key" && b.type === "api_key") {
+		return a.key === b.key;
+	}
+	return false;
+}
+
+/** `default` first, then `slot-2`, `slot-3`, … — the first id the pool does not hold. */
+function nextSlotIdIn(slots: readonly AccountSlot[]): string {
+	if (!slots.some((slot) => slot.id === "default")) {
+		return "default";
+	}
+	for (let index = 2; ; index += 1) {
+		const candidate = `slot-${index}`;
+		if (!slots.some((slot) => slot.id === candidate)) {
+			return candidate;
+		}
+	}
 }
 
 function assertSecrets(value: unknown, path: string): asserts value is AccountSecrets {
@@ -303,18 +362,23 @@ export class AccountsStore {
 	}
 
 	async nextSlotId(poolId: PoolId): Promise<string> {
-		const slots = (await this.read()).pools[poolId]?.slots ?? [];
-		if (!slots.some((slot) => slot.id === "default")) {
-			return "default";
-		}
-		for (let index = 2; ; index += 1) {
-			const candidate = `slot-${index}`;
-			if (!slots.some((slot) => slot.id === candidate)) {
-				return candidate;
-			}
-		}
+		return nextSlotIdIn((await this.read()).pools[poolId]?.slots ?? []);
 	}
 
+	/**
+	 * The routable credential `auth.json` holds for a pool, read as plain JSON on
+	 * purpose: the runtime's own reader would execute `!command` key values.
+	 */
+	async readOfficialCredential(poolId: PoolId): Promise<Credential | undefined> {
+		const value = await readJson(this.authPath);
+		return isRecord(value) ? asRoutableCredential(value[poolId]) : undefined;
+	}
+
+	/**
+	 * Writes a slot's credential. A re-login heals a slot that needed one, so the
+	 * merged slot drops `needsLogin`; `official` stays as stored, because whether
+	 * this login is the grant `auth.json` now holds is settled by `claimOfficial`.
+	 */
 	async putSlot(poolId: PoolId, slot: AccountSlot, credential: Credential): Promise<void> {
 		assertSlotId(slot.id);
 		await this.mutate(async () => {
@@ -324,10 +388,12 @@ export class AccountsStore {
 				slots: [],
 			};
 			const existingIndex = pool.slots.findIndex((existing) => existing.id === slot.id);
+			const merged = existingIndex < 0 ? { ...slot } : { ...pool.slots[existingIndex], ...slot };
+			delete merged.needsLogin;
 			if (existingIndex < 0) {
-				pool.slots.push(slot);
+				pool.slots.push(merged);
 			} else {
-				pool.slots[existingIndex] = { ...pool.slots[existingIndex], ...slot };
+				pool.slots[existingIndex] = merged;
 			}
 			document.pools[poolId] = pool;
 			secrets[secretKey(poolId, slot.id)] = credential;
@@ -385,20 +451,52 @@ export class AccountsStore {
 	}
 
 	/**
-	 * Imports the official `auth.json` primary credential for each provider that
-	 * is a K-π pool and has no `default` slot yet. The secret moves from one
-	 * private agent-directory file to another and is never returned, logged, or
-	 * written anywhere near the repository.
+	 * Binds each pool's official slot to the grant `auth.json` holds, once per
+	 * session start. One grant has one refresher: the official slot keeps no
+	 * secrets copy, so the base runtime's rotation can never leave a dead
+	 * duplicate behind. Binding is by content match first, then the legacy rule
+	 * for a `default` copied by an older K-π (bound only when its copy is absent
+	 * or an expired OAuth copy), else a fresh official slot. A flagged slot whose
+	 * pool has vanished from `auth.json` is marked as needing a login. Secrets
+	 * are moved or dropped, never returned, logged, or written near the repository.
 	 */
-	async importOfficialCredentials(): Promise<string[]> {
-		const value = await readJson(this.authPath);
-		if (!isRecord(value)) {
-			return [];
-		}
+	async reconcileOfficialCredentials(
+		now: number,
+	): Promise<{ imported: string[]; adopted: string[]; orphaned: string[] }> {
 		return this.mutate(async () => {
-			const [document, secrets] = await Promise.all([this.readAccountsUnlocked(), this.readSecretsUnlocked()]);
+			const [document, secrets, auth] = await Promise.all([
+				this.readAccountsUnlocked(),
+				this.readSecretsUnlocked(),
+				readJson(this.authPath),
+			]);
+			const official = isRecord(auth) ? auth : {};
 			const imported: string[] = [];
-			for (const [providerId, entry] of Object.entries(value)) {
+			const adopted: string[] = [];
+			const orphaned: string[] = [];
+			let accountsChanged = false;
+			let secretsChanged = false;
+			const dropSecret = (poolId: PoolId, slotId: string): void => {
+				if (secrets[secretKey(poolId, slotId)] !== undefined) {
+					delete secrets[secretKey(poolId, slotId)];
+					secretsChanged = true;
+				}
+			};
+			const flagOfficial = (poolId: PoolId, pool: AccountPool, slot: AccountSlot): void => {
+				slot.official = true;
+				dropSecret(poolId, slot.id);
+				for (const sibling of pool.slots) {
+					if (sibling === slot || sibling.official !== true) continue;
+					delete sibling.official;
+					// A sibling that was flagged held no secret: without the flag it
+					// has no credential at all, which is a fact the operator must see.
+					if (secrets[secretKey(poolId, sibling.id)] === undefined && sibling.needsLogin === undefined) {
+						sibling.needsLogin = `its auth.json credential now belongs to ${slot.id}`;
+					}
+				}
+				accountsChanged = true;
+			};
+
+			for (const [providerId, entry] of Object.entries(official)) {
 				if (!isPoolId(providerId)) {
 					continue;
 				}
@@ -409,24 +507,130 @@ export class AccountsStore {
 					continue;
 				}
 				const pool = document.pools[providerId] ?? { strategy: "quota-first" as const, slots: [] };
-				if (pool.slots.some((slot) => slot.id === "default")) {
+				const matched = pool.slots.find(
+					(slot) => slot.kind !== "local" && sameGrant(credential, secrets[secretKey(providerId, slot.id)]),
+				);
+				if (matched !== undefined) {
+					flagOfficial(providerId, pool, matched);
+					document.pools[providerId] = pool;
+					adopted.push(`${providerId}/${matched.id}`);
 					continue;
 				}
+				const flagged = pool.slots.find((slot) => slot.official === true);
+				if (flagged !== undefined) {
+					if (secrets[secretKey(providerId, flagged.id)] === undefined) {
+						// Already bound: the runtime's grant is this slot's, by construction.
+						continue;
+					}
+					// Its secret is a different grant, so it is K-π-owned from now on.
+					delete flagged.official;
+					accountsChanged = true;
+				}
+				const legacyDefault = pool.slots.find((slot) => slot.id === "default");
+				const legacySecret = legacyDefault === undefined ? undefined : secrets[secretKey(providerId, "default")];
+				if (
+					legacyDefault !== undefined &&
+					legacyDefault.kind !== "local" &&
+					(legacySecret === undefined ||
+						(legacySecret.type === "oauth" && legacySecret.expires !== undefined && legacySecret.expires <= now))
+				) {
+					legacyDefault.kind = credential.type === "oauth" ? "oauth" : "api_key";
+					flagOfficial(providerId, pool, legacyDefault);
+					document.pools[providerId] = pool;
+					adopted.push(`${providerId}/default`);
+					continue;
+				}
+				const slotId = legacyDefault === undefined ? "default" : nextSlotIdIn(pool.slots);
 				pool.slots.push({
-					id: "default",
+					id: slotId,
 					kind: credential.type === "oauth" ? "oauth" : "api_key",
-					label: "default",
+					label: slotId,
+					official: true,
 				});
 				document.pools[providerId] = pool;
-				secrets[secretKey(providerId, "default")] = credential;
-				imported.push(`${providerId}/default`);
+				accountsChanged = true;
+				imported.push(`${providerId}/${slotId}`);
 			}
-			if (imported.length === 0) {
-				return imported;
+
+			for (const [poolName, pool] of Object.entries(document.pools)) {
+				if (pool === undefined || !isPoolId(poolName)) continue;
+				const flagged = pool.slots.find((slot) => slot.official === true);
+				if (flagged === undefined || flagged.needsLogin !== undefined) continue;
+				if (asRoutableCredential(official[poolName]) !== undefined) continue;
+				flagged.needsLogin = `auth.json no longer holds a ${poolName} credential`;
+				accountsChanged = true;
+				orphaned.push(`${poolName}/${flagged.id}`);
+			}
+
+			if (secretsChanged) {
+				await writePrivateJson(this.secretsPath, secrets);
+			}
+			if (accountsChanged) {
+				await writePrivateJson(this.accountsPath, document);
+			}
+			return { imported, adopted, orphaned };
+		});
+	}
+
+	/** Records why a slot can no longer authenticate; it stays unselectable until a login. */
+	async markNeedsLogin(poolId: PoolId, slotId: string, reason: string): Promise<void> {
+		assertSlotId(slotId);
+		if (reason.length === 0) {
+			throw new Error(`A needs-login reason for ${poolId}/${slotId} cannot be empty`);
+		}
+		await this.mutate(async () => {
+			const document = await this.readAccountsUnlocked();
+			const slot = document.pools[poolId]?.slots.find((candidate) => candidate.id === slotId);
+			if (slot === undefined) {
+				throw new Error(`Unknown account slot: ${poolId}/${slotId}`);
+			}
+			slot.needsLogin = reason;
+			await writePrivateJson(this.accountsPath, document);
+		});
+	}
+
+	/**
+	 * After a pooled login: when the runtime persisted this slot's grant into
+	 * `auth.json`, the slot becomes the pool's official slot and its secrets copy
+	 * is dropped. The previously official sibling keeps `before` — the grant
+	 * `auth.json` held until this login, read live just before it — as a
+	 * K-π-refreshed secret; without one it is marked as needing a login.
+	 */
+	async claimOfficial(
+		poolId: PoolId,
+		slotId: string,
+		before: Credential | undefined,
+	): Promise<{ official: boolean; demoted?: string }> {
+		assertSlotId(slotId);
+		return this.mutate(async () => {
+			const [document, secrets, auth] = await Promise.all([
+				this.readAccountsUnlocked(),
+				this.readSecretsUnlocked(),
+				readJson(this.authPath),
+			]);
+			const current = isRecord(auth) ? asRoutableCredential(auth[poolId]) : undefined;
+			if (!sameGrant(current, secrets[secretKey(poolId, slotId)])) {
+				return { official: false };
+			}
+			const pool = document.pools[poolId];
+			const slot = pool?.slots.find((candidate) => candidate.id === slotId);
+			if (pool === undefined || slot === undefined) {
+				throw new Error(`Unknown account slot: ${poolId}/${slotId}`);
+			}
+			delete secrets[secretKey(poolId, slotId)];
+			slot.official = true;
+			const previous = pool.slots.find((candidate) => candidate.id !== slotId && candidate.official === true);
+			if (previous !== undefined) {
+				delete previous.official;
+				if (before !== undefined) {
+					secrets[secretKey(poolId, previous.id)] = before;
+				} else {
+					previous.needsLogin = `its auth.json credential was replaced by the login of ${slotId}`;
+				}
 			}
 			await writePrivateJson(this.secretsPath, secrets);
 			await writePrivateJson(this.accountsPath, document);
-			return imported;
+			return previous === undefined ? { official: true } : { official: true, demoted: previous.id };
 		});
 	}
 

@@ -4,6 +4,8 @@
  */
 
 import { visibleWidth } from "@earendil-works/pi-tui";
+import type { TransientReason } from "./graph/stop.ts";
+import { type LoopRecovery, type RunStatus, runStatus } from "./run-store.ts";
 
 export const BOARD_STAGES = [
 	{ id: "01", key: "ac-compile", label: "ac-compile" },
@@ -25,25 +27,19 @@ export const RUN_FILE_NAMES = [
 	"events.jsonl",
 ] as const;
 
-export type StopDisplay = "RUNNING" | "DONE" | "BLOCKED" | "EXHAUSTED" | "NO_PROGRESS" | "UNSAFE" | "NEEDS_HUMAN";
+/** The STOP box vocabulary is the run-state vocabulary; APPROVAL stays a lamp. */
+export type StopDisplay = RunStatus;
 
-const STOP_VOCABULARY = new Set<string>([
-	"RUNNING",
-	"DONE",
-	"BLOCKED",
-	"EXHAUSTED",
-	"NO_PROGRESS",
-	"UNSAFE",
-	"NEEDS_HUMAN",
-]);
-
+/**
+ * The run state a status token on disk denotes, tolerant of what earlier
+ * releases wrote: engine statuses (COMPLETED, INTERRUPTED), the derived
+ * APPROVAL lamp, and the legacy deaths `runStatus` folds into NEEDS_HUMAN.
+ */
 export function normalizeStop(raw: string | undefined): StopDisplay {
 	const upper = (raw ?? "RUNNING").toUpperCase();
-	if (upper === "APPROVAL") return "RUNNING";
-	if (STOP_VOCABULARY.has(upper)) return upper as StopDisplay;
+	if (upper === "APPROVAL" || upper === "INTERRUPTED") return "RUNNING";
 	if (upper === "COMPLETED") return "DONE";
-	if (upper === "INTERRUPTED") return "RUNNING";
-	return "RUNNING";
+	return runStatus(upper) ?? "RUNNING";
 }
 
 export interface ResearchBoardCell {
@@ -53,15 +49,51 @@ export interface ResearchBoardCell {
 	struck?: string;
 }
 
+/** One graph node's live activity, as the board reads it back from events.jsonl. */
+export interface StageActivity {
+	status: "pending" | "running" | "completed" | "failed";
+	runs: number;
+	elapsedMs?: number;
+	costUsd?: number;
+	toolCalls: number;
+	toolsByName: Readonly<Record<string, number>>;
+	lastTool?: string;
+	model?: string;
+	node: string;
+	result?: string;
+	session?: string;
+	error?: string;
+}
+
+/** What the `/kpi status` overlay's NODE panel shows for one selected stage. */
+export interface NodeDetail {
+	node: string;
+	status: string;
+	runs: number;
+	elapsedMs?: number;
+	costUsd?: number;
+	model?: string;
+	session?: string;
+	toolsByName: Readonly<Record<string, number>>;
+	result?: { name: string; lit: boolean; bytes?: number };
+	error?: string;
+	loadError?: string;
+}
+
 export interface BoardModel {
 	jobId: string;
 	mode: string;
 	round: number;
-	maxRounds: number;
+	/** The engine's superstep counter from state.json, for the command centre's STEPS row. */
+	superstep?: number;
 	/** Graph stage key (e.g. implement, plan). */
 	stage: string;
 	node: string;
 	stop: StopDisplay;
+	/** Why the run is NEEDS_HUMAN: what the operator must do before `/kpi <job>` continues. */
+	recovery?: LoopRecovery;
+	/** The node backing off inside the current round, while it waits. */
+	retry?: { node: string; attempt: number; reason: TransientReason; delayMs: number };
 	/** graph_status interrupted or pending human question. */
 	paused: boolean;
 	pendingQuestion?: string;
@@ -78,12 +110,26 @@ export interface BoardModel {
 	contextPack: { product: boolean; structure: boolean; tech: boolean };
 	research?: ResearchBoardCell;
 	agents: number;
+	/** Live sessions broken into node/worker counts, when the caller has them. */
+	sessions?: { nodes: number; workers: number };
 	busLit: boolean;
 	kstack?: { playbook: string; todos: readonly string[] };
 	route?: string;
 	usage?: string;
 	/** Terminal width; narrow paths must keep CURRENT stage + STOP. */
 	width?: number;
+	/** Per-stage live activity folded from events.jsonl; undefined draws no NOW row. */
+	activity?: Readonly<Record<string, StageActivity>>;
+	/** Unparsable events.jsonl lines seen by the activity reader. */
+	eventsUnreadable?: number;
+	/** The activity reader's own I/O failure (an errno code), distinct from unreadable lines. */
+	eventsError?: string;
+	/** Which surface is painting: the always-on widget or the `/kpi status` overlay. */
+	surface?: "widget" | "overlay";
+	/** The overlay's selected stage index, highlighted independent of DONE/CURRENT/PENDING. */
+	selectedStage?: number;
+	/** The overlay's open NODE detail panel, when toggled on. */
+	detail?: NodeDetail;
 }
 
 export function stageIndex(stage: string): number {
@@ -98,10 +144,10 @@ export function stageIndex(stage: string): number {
 	if (normalized === "ac_compile" || normalized === "accompile") return 0;
 	if (normalized === "plan-check") return 2;
 	if (normalized === "quality-green") return 4;
-	// node-shaped aliases (implementer → implement)
+	// node-shaped aliases (implementer → implement, ac-compiler → ac-compile)
 	if (normalized.endsWith("er")) {
 		const stem = normalized.slice(0, -2);
-		const byStem = BOARD_STAGES.findIndex((entry) => entry.key === stem);
+		const byStem = BOARD_STAGES.findIndex((entry) => entry.key === stem || entry.key === `${stem}e`);
 		if (byStem >= 0) return byStem;
 	}
 	if (normalized === "human-confirm" || normalized === "human_confirm" || normalized === "confirm") return 7;
@@ -128,6 +174,8 @@ export type Tone = "accent" | "success" | "warning" | "error" | "dim" | "muted" 
 export interface Span {
 	text: string;
 	tone?: Tone;
+	/** A shrinking row (paintShrinkingRow) drops optional spans right-to-left before it truncates. */
+	optional?: boolean;
 }
 
 /** One logical line of a region: spans joined without separators. */
@@ -145,6 +193,12 @@ export interface BoardCell {
 	tone: Tone;
 	borderTone: Tone;
 	lit: boolean;
+	/**
+	 * One extra line — the stage's live elapsed/cost/tool summary, when activity
+	 * is known — in its forms from longest to shortest; the painter keeps the
+	 * longest that fits the cell and only cuts the shortest.
+	 */
+	detail?: readonly string[];
 }
 
 export type RegionId =
@@ -152,13 +206,16 @@ export type RegionId =
 	| "telemetry"
 	| "contextLayer"
 	| "stages"
+	| "now"
+	| "nodeDetail"
 	| "iteration"
 	| "oversight"
 	| "lamps"
 	| "stopStates"
 	| "threeLaws"
 	| "waiting"
-	| "stop";
+	| "stop"
+	| "keys";
 
 interface RegionBase {
 	id: RegionId;
@@ -227,31 +284,135 @@ function shortFingerprint(value: string | undefined): string {
 }
 
 export function stopTone(stop: StopDisplay): Tone {
-	if (stop === "RUNNING") return "warning";
-	if (stop === "DONE") return "success";
-	if (stop === "NEEDS_HUMAN") return "accent";
-	return "error";
+	switch (stop) {
+		case "RUNNING":
+			return "warning";
+		case "DONE":
+			return "success";
+		case "NEEDS_HUMAN":
+			return "accent";
+		case "STOPPED":
+			return "error";
+	}
 }
 
 const LIT = "●";
 const DARK = "○";
 
-function stageCells(current: number): BoardCell[] {
+/**
+ * `12s` | `3m12s` | `1h02m` | `4d04h` — never more than 6 characters, never a
+ * fabricated unit. Callers own the clamp at zero.
+ */
+export function formatElapsed(ms: number): string {
+	const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+	if (totalSeconds < 60) {
+		return `${totalSeconds}s`;
+	}
+	const totalMinutes = Math.floor(totalSeconds / 60);
+	if (totalMinutes < 60) {
+		const seconds = totalSeconds % 60;
+		return `${totalMinutes}m${String(seconds).padStart(2, "0")}s`;
+	}
+	const hours = Math.floor(totalMinutes / 60);
+	if (hours < 100) {
+		const minutes = totalMinutes % 60;
+		return `${hours}h${String(minutes).padStart(2, "0")}m`;
+	}
+	// A run past four days keeps its width: 100h00m would be seven characters,
+	// and so would 100d00h — the figure saturates rather than widens.
+	const days = Math.min(99, Math.floor(hours / 24));
+	return `${days}d${String(days === 99 ? 23 : hours % 24).padStart(2, "0")}h`;
+}
+
+/**
+ * `$0.42` | `$12` (rounded once it reaches double digits) | `$—` when no
+ * finite cost is known. Cost is notional (subscriptions), never a bill.
+ */
+export function formatCost(usd: number | undefined): string {
+	if (usd === undefined || !Number.isFinite(usd)) {
+		return "$—";
+	}
+	if (usd >= 10) {
+		return `$${Math.round(usd)}`;
+	}
+	return `$${usd.toFixed(2)}`;
+}
+
+/** `edit board.ts` | `bash` — the tool name plus its target's basename, when it has a path. */
+export function shortTool(name: string, path?: string): string {
+	if (path === undefined || path.length === 0) {
+		return name;
+	}
+	const parts = path.split("/");
+	const base = parts.at(-1);
+	return base === undefined || base.length === 0 ? name : `${name} ${base}`;
+}
+
+/**
+ * A stage cell's live content, longest form first: a running or finished node
+ * has something to say, a pending one does not. Product decision 2026-09-03:
+ * the always-on widget's cells carry this, not only the full `/kpi status`
+ * board. DONE reads `<elapsed> · <n> calls · $<cost> est.` — cost is
+ * notional, never a bill — and gives up the calls, then ` est.`, before the
+ * cost; CURRENT reads `<tool> <target>  <elapsed>` and gives up the target,
+ * then the tool, before the elapsed. The painter keeps the longest that fits.
+ */
+export function stageDetailForms(status: "DONE" | "CURRENT" | "PENDING", record: StageActivity | undefined): string[] {
+	if (status === "PENDING" || record === undefined || record.elapsedMs === undefined) {
+		return ["—"];
+	}
+	const elapsed = formatElapsed(record.elapsedMs);
+	if (status === "DONE") {
+		const cost = formatCost(record.costUsd);
+		return [
+			`${elapsed} · ${record.toolCalls} calls · ${cost} est.`,
+			`${elapsed} · ${cost} est.`,
+			`${elapsed} · ${cost}`,
+		];
+	}
+	// CURRENT
+	if (record.lastTool === undefined) {
+		return [elapsed];
+	}
+	const tool = record.lastTool.split(" ", 1)[0] ?? record.lastTool;
+	return [`${record.lastTool}  ${elapsed}`, ...(tool === record.lastTool ? [] : [`${tool}  ${elapsed}`]), elapsed];
+}
+
+function stageCells(
+	current: number,
+	activity?: Readonly<Record<string, StageActivity>>,
+	selected?: number,
+): BoardCell[] {
 	return BOARD_STAGES.map((entry, index) => {
 		const status = index === current ? "CURRENT" : current >= 0 && index < current ? "DONE" : "PENDING";
-		const tone: Tone = status === "CURRENT" ? "accent" : status === "DONE" ? "success" : "dim";
+		const isSelected = selected !== undefined && index === selected;
+		const tone: Tone = isSelected
+			? "warning"
+			: status === "CURRENT"
+				? "accent"
+				: status === "DONE"
+					? "success"
+					: "dim";
+		const borderTone: Tone = isSelected ? "borderAccent" : status === "CURRENT" ? "borderAccent" : "border";
+		const detail = activity === undefined ? undefined : stageDetailForms(status, activity[entry.key]);
 		return {
 			lines: [entry.id, entry.label, status],
 			compact: `${entry.id} ${entry.label} ${status}`,
 			tone,
-			borderTone: status === "CURRENT" ? "borderAccent" : "border",
-			lit: status === "CURRENT",
+			borderTone,
+			lit: isSelected ? true : status === "CURRENT",
+			...(detail === undefined ? {} : { detail }),
 		};
 	});
 }
 
-function stagesRegion(current: number, title: string): CellsRegion {
-	const cells = stageCells(current);
+function stagesRegion(
+	current: number,
+	title: string,
+	activity?: Readonly<Record<string, StageActivity>>,
+	selected?: number,
+): CellsRegion {
+	const cells = stageCells(current, activity, selected);
 	const labels = cells.map((cell) => cell.compact);
 	return {
 		kind: "cells",
@@ -307,6 +468,15 @@ function lampsRegion(model: BoardModel, paused: boolean): CellsRegion {
 	};
 }
 
+/** `AGENTS n` alone, or `AGENTS n · k node|nodes · w worker|workers` once the caller has the split. */
+function agentsCellText(model: BoardModel): string {
+	if (model.sessions === undefined) {
+		return `AGENTS ${model.agents}`;
+	}
+	const { nodes, workers } = model.sessions;
+	return `AGENTS ${model.agents} · ${nodes} node${nodes === 1 ? "" : "s"} · ${workers} worker${workers === 1 ? "" : "s"}`;
+}
+
 function contextRows(model: BoardModel): Row[] {
 	const pack = model.contextPack;
 	const rows: Row[] = [
@@ -332,7 +502,7 @@ function contextRows(model: BoardModel): Row[] {
 		}
 	}
 	const cells: Span[] = [
-		{ text: `AGENTS ${model.agents}`, tone: "text" },
+		{ text: agentsCellText(model), tone: "text" },
 		{ text: "  " },
 		{ text: model.busLit ? `BUS ${LIT}` : `BUS ${DARK}`, tone: model.busLit ? "text" : "dim" },
 	];
@@ -355,11 +525,18 @@ function contextRegion(model: BoardModel): RowsRegion {
 	};
 }
 
+/** `RETRY <attempt> · <reason> · next <s>s` — the wait the operator is looking at, never less than it. */
+function retryText(retry: NonNullable<BoardModel["retry"]>): string {
+	return `RETRY ${retry.attempt} · ${retry.reason} · next ${Math.ceil(retry.delayMs / 1000)}s`;
+}
+
 function iterationRegion(model: BoardModel): RowsRegion {
 	const verifier = verifierFor(model);
 	const fingerprint = shortFingerprint(model.fingerprint);
-	const round = `ROUND ${model.round}/${model.maxRounds}`;
+	const round = `ROUND ${model.round}`;
 	const rows: Row[] = [[{ text: round, tone: "text" }]];
+	const retry = model.retry === undefined ? undefined : retryText(model.retry);
+	if (retry !== undefined) rows.push([{ text: retry, tone: "warning" }]);
 	if (verifier === "pending") {
 		rows.push([{ text: "PASS/FAIL PENDING", tone: "dim" }]);
 	} else {
@@ -385,7 +562,10 @@ function iterationRegion(model: BoardModel): RowsRegion {
 		title: "ITERATION LOOP",
 		rows,
 		frame: "panel",
-		flat: [`${round}  FINGERPRINT ${fingerprint}  ${verifierLabel(verifier)}`],
+		flat: [
+			`${round}  FINGERPRINT ${fingerprint}  ${verifierLabel(verifier)}`,
+			...(retry === undefined ? [] : [retry]),
+		],
 	};
 }
 
@@ -420,7 +600,7 @@ function waitingRegion(question: string | undefined): RowsRegion {
 function stopStatesRegion(stop: StopDisplay): CellsRegion {
 	const entries: Array<[string, boolean]> = [
 		["DONE", stop === "DONE"],
-		["BLOCKED", stop === "BLOCKED"],
+		["STOPPED", stop === "STOPPED"],
 		["APPROVAL", true],
 	];
 	const cells = entries.map(([label, lit]) => ({
@@ -475,12 +655,136 @@ function telemetryRegion(model: BoardModel, current: number, gate: "human" | "ma
 	return { kind: "rows", id: "telemetry", rows: [row], frame: "none", flat: [rowText(row)] };
 }
 
+/** The NOW row's span separator; also where `fitNow` splits the flat line back into spans. */
+const NOW_SEPARATOR = "  ";
+
+/**
+ * NOW spans a narrow board gives up, right-most first (MODEL, then ▸ tool,
+ * then run n). The painter drops them by `Span.optional`; the flat board drops
+ * them by prefix — both read this list.
+ */
+const NOW_OPTIONAL_PREFIXES = ["run ", "▸ ", "MODEL "] as const;
+
+/**
+ * The NOW row: what the current stage's node is doing right now, refreshed
+ * from events.jsonl by the ticker. Undefined activity means no reader ran
+ * (a paused overlay build that never asked for one) and draws nothing.
+ */
+function nowRegion(model: BoardModel, current: number): RowsRegion | undefined {
+	if (model.activity === undefined) {
+		return undefined;
+	}
+	const stage = BOARD_STAGES[current] ?? BOARD_STAGES[0];
+	const record = model.activity[stage.key];
+	const row: Row = [{ text: `NOW ${model.node}`, tone: "text" }];
+	const span = (text: string, tone: Tone = "text"): Span => ({
+		text: `${NOW_SEPARATOR}${text}`,
+		tone,
+		...(NOW_OPTIONAL_PREFIXES.some((prefix) => text.startsWith(prefix)) ? { optional: true } : {}),
+	});
+	if (record === undefined || record.elapsedMs === undefined) {
+		row.push(span("no node.started yet", "dim"));
+	} else {
+		row.push(span(`run ${record.runs}`), span(`${record.toolCalls} tools`));
+		if (record.lastTool !== undefined) {
+			row.push(span(`▸ ${record.lastTool}`));
+		}
+		row.push(span(formatElapsed(record.elapsedMs)), span(formatCost(record.costUsd)));
+		if (record.model !== undefined) {
+			row.push(span(`MODEL ${record.model}`));
+		}
+	}
+	if (model.eventsUnreadable !== undefined && model.eventsUnreadable > 0) {
+		row.push(span(`EVENTS ✕ ${model.eventsUnreadable} unreadable`, "error"));
+	}
+	if (model.eventsError !== undefined) {
+		row.push(span(`EVENTS ✕ ${model.eventsError}`, "error"));
+	}
+	return { kind: "rows", id: "now", rows: [row], frame: "none", flat: [rowText(row)] };
+}
+
+/** Most-called first; ties keep the tool's first-seen (insertion) order — Array.sort is stable. */
+function topTools(toolsByName: Readonly<Record<string, number>>, limit: number): Array<[string, number]> {
+	return Object.entries(toolsByName)
+		.sort(([, leftCount], [, rightCount]) => rightCount - leftCount)
+		.slice(0, limit);
+}
+
+/** The overlay's NODE detail panel: only present when a stage is selected and expanded. */
+function nodeDetailRegion(model: BoardModel): RowsRegion | undefined {
+	if (model.surface !== "overlay" || model.detail === undefined) {
+		return undefined;
+	}
+	const detail = model.detail;
+	const title = `NODE ${detail.node} · ${detail.status.toLowerCase()}`;
+	if (detail.loadError !== undefined) {
+		const rows: Row[] = [[{ text: `load error ${detail.loadError}`, tone: "error" }]];
+		return {
+			kind: "rows",
+			id: "nodeDetail",
+			title,
+			rows,
+			frame: "panel",
+			flat: [title, `  load error ${detail.loadError}`],
+		};
+	}
+	if (detail.status === "pending" && detail.runs === 0 && detail.elapsedMs === undefined) {
+		const rows: Row[] = [[{ text: "no run yet", tone: "dim" }]];
+		return { kind: "rows", id: "nodeDetail", title, rows, frame: "panel", flat: [title, "  no run yet"] };
+	}
+	const summaryParts = [`runs ${detail.runs}`];
+	if (detail.elapsedMs !== undefined) summaryParts.push(`elapsed ${formatElapsed(detail.elapsedMs)}`);
+	if (detail.costUsd !== undefined) summaryParts.push(`cost ${formatCost(detail.costUsd)}`);
+	if (detail.model !== undefined) summaryParts.push(`model ${detail.model}`);
+	const total = Object.values(detail.toolsByName).reduce((sum, count) => sum + count, 0);
+	const toolsText =
+		total === 0
+			? "tools 0"
+			: `tools ${total}: ${topTools(detail.toolsByName, 6)
+					.map(([name, count]) => `${name} ${count}`)
+					.join(" · ")}`;
+	const resultRow: Row =
+		detail.result === undefined
+			? [{ text: "result — none declared", tone: "dim" }]
+			: detail.result.lit
+				? [{ text: `result ${detail.result.name} ${LIT} ${detail.result.bytes ?? 0} B`, tone: "text" }]
+				: [{ text: `result ${detail.result.name} ${DARK} not written`, tone: "dim" }];
+	const rows: Row[] = [
+		[{ text: summaryParts.join(" · "), tone: "text" }],
+		[{ text: toolsText, tone: "text" }],
+		resultRow,
+	];
+	if (detail.session !== undefined) rows.push([{ text: `session ${detail.session}`, tone: "text" }]);
+	if (detail.error !== undefined) rows.push([{ text: `error ${detail.error}`, tone: "error" }]);
+	return {
+		kind: "rows",
+		id: "nodeDetail",
+		title,
+		rows,
+		frame: "panel",
+		flat: [title, ...rows.map((row) => `  ${rowText(row)}`)],
+	};
+}
+
+const KEYS_HINT = "←/→ select · ↵ detail · q close";
+
+/** The overlay's key hint bar; present whenever the overlay is the surface. */
+function keysRegion(): RowsRegion {
+	return {
+		kind: "rows",
+		id: "keys",
+		rows: [[{ text: KEYS_HINT, tone: "dim" }]],
+		frame: "none",
+		flat: [KEYS_HINT],
+	};
+}
+
 function headerRegion(model: BoardModel, paused: boolean): StripRegion {
 	const segments: Span[] = [
 		{ text: paused ? "K-π PROTOCOL" : "K-π GRAPH CONTROL", tone: "accent" },
 		{ text: `MODE ${model.mode}`, tone: "text" },
 		{ text: `JOB ${model.jobId}`, tone: "text" },
-		{ text: `ROUND ${model.round}/${model.maxRounds}`, tone: "text" },
+		{ text: `ROUND ${model.round}`, tone: "text" },
 	];
 	if (paused) segments.push({ text: "GATE approval", tone: "accent" });
 	if (model.kstack !== undefined) segments.push({ text: "K-STACK on", tone: "success" });
@@ -502,9 +806,13 @@ export function buildBoardRegions(model: BoardModel): BoardRegions {
 		headerRegion(model, paused),
 		telemetryRegion(model, current, gate),
 		contextRegion(model),
-		stagesRegion(current, paused ? "STAGE RAIL" : "STAGES 01–08"),
-		iterationRegion(model),
+		stagesRegion(current, paused ? "STAGE RAIL" : "STAGES 01–08", model.activity, model.selectedStage),
 	];
+	const now = nowRegion(model, current);
+	if (now !== undefined) regions.push(now);
+	const nodeDetail = nodeDetailRegion(model);
+	if (nodeDetail !== undefined) regions.push(nodeDetail);
+	regions.push(iterationRegion(model));
 	if (paused) {
 		regions.push(oversightRegion(pending), waitingRegion(pending));
 	}
@@ -512,13 +820,17 @@ export function buildBoardRegions(model: BoardModel): BoardRegions {
 	if (paused) {
 		regions.push(stopStatesRegion(model.stop), threeLawsRegion());
 	}
+	const stopText = `STOP ${model.stop}${model.stop === "NEEDS_HUMAN" && model.recovery !== undefined ? ` ${model.recovery}` : ""}`;
 	regions.push({
 		kind: "stop",
 		id: "stop",
-		text: `STOP ${model.stop}`,
+		text: stopText,
 		tone: stopTone(model.stop),
-		flat: [`STOP ${model.stop}`],
+		flat: [stopText],
 	});
+	if (model.surface === "overlay") {
+		regions.push(keysRegion());
+	}
 	const byId: Partial<Record<RegionId, Region>> = {};
 	for (const region of regions) byId[region.id] = region;
 	return { variant: paused ? "blue" : "amber", regions, byId };
@@ -646,6 +958,21 @@ function fitHeader(line: string, width: number): string {
 	return clamp(segments.join("  "), width);
 }
 
+/**
+ * The NOW row gives up its optional spans (MODEL, ▸ tool, run n — right-most
+ * first) before it is ever cut, the flat twin of the painter's
+ * `paintShrinkingRow`; only a row with nothing optional left is truncated.
+ */
+function fitNow(line: string, width: number): string {
+	const spans = line.split(NOW_SEPARATOR);
+	while (visibleWidth(spans.join(NOW_SEPARATOR)) > width) {
+		const optional = spans.findLastIndex((span) => NOW_OPTIONAL_PREFIXES.some((prefix) => span.startsWith(prefix)));
+		if (optional === -1) break;
+		spans.splice(optional, 1);
+	}
+	return clamp(spans.join(NOW_SEPARATOR), width);
+}
+
 /** Rows a narrow board keeps first: the brand, the current stage, STOP, and the operator's question. */
 function isEssentialRow(line: string): boolean {
 	return (
@@ -692,10 +1019,25 @@ export function fitBoard(lines: readonly string[], width?: number): string[] {
 			rest.push(...foldStages(line, width));
 			continue;
 		}
+		if (line.startsWith("NOW ")) {
+			rest.push(fitNow(line, width));
+			continue;
+		}
 		rest.push(clamp(line, width));
 	}
 	return [...essential, ...rest];
 }
+
+/**
+ * The research service marks the board strikes when the engine reports
+ * no-network with named failures. `researchCellFromDocument`'s unnamed
+ * fallback lists every mark here, so a new service only needs one entry.
+ */
+const RESEARCH_MARKS: ReadonlyArray<readonly [service: string, aliases: readonly string[], mark: string]> = [
+	["exa", [], "EXA ✕"],
+	["perplexity", ["pplx"], "PPLX ✕"],
+	["firecrawl", ["fc"], "FC ✕"],
+];
 
 /** Research.json → board cell. Never invents external URLs. */
 export function researchCellFromDocument(document: {
@@ -729,13 +1071,14 @@ export function researchCellFromDocument(document: {
 				.map((failure) => failure.service?.toLowerCase())
 				.filter((service): service is string => typeof service === "string"),
 		);
-		const struck = ["exa", "perplexity"]
-			.filter((service) => failed.has(service) || failed.has(service === "perplexity" ? "pplx" : service))
-			.map((service) => (service === "perplexity" ? "PPLX ✕" : "EXA ✕"))
+		const struck = RESEARCH_MARKS.filter(
+			([service, aliases]) => failed.has(service) || aliases.some((alias) => failed.has(alias)),
+		)
+			.map(([, , mark]) => mark)
 			.join("  ");
-		// Always show both struck marks when engine no-network recorded any failure list.
-		const marks =
-			struck.length > 0 ? struck : (network.failures ?? []).length > 0 ? "EXA ✕  PPLX ✕" : "EXA ✕  PPLX ✕";
+		// An unnamed failure still strikes every known mark, so the operator never
+		// reads "online" while the engine actually fell back to local.
+		const marks = struck.length > 0 ? struck : RESEARCH_MARKS.map(([, , mark]) => mark).join("  ");
 		return {
 			cell: `RESEARCH local · no-network engine · ${reason}`,
 			struck: marks,

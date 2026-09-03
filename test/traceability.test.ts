@@ -35,6 +35,10 @@ const EVENT_TYPES = [
 	"research.completed",
 	"agent.spawned",
 	"agent.message",
+	"agent.denied",
+	"node.started",
+	"node.finished",
+	"node.retry",
 ] as const;
 
 const GAP_ID = /^(?:DOC|STORE|ARCH|PKG|POL|GRAPH|ACCT|LOCAL|RESEARCH|DUNE|KG|BUS|MIN|KSTACK|UI|REL)-\d+$/;
@@ -367,9 +371,9 @@ test("shared test titles are declared and only bind related requirements", async
 	assert.deepEqual(undeclared, [], `undeclared shared titles:\n${undeclared.join("\n")}`);
 });
 
-test("UAT rows cover US-01..US-30 and metrics M-01..M-07", async () => {
+test("UAT rows cover US-01..US-31 and metrics M-01..M-07", async () => {
 	const uat = await readFile(uatPath, "utf8");
-	for (let i = 1; i <= 30; i += 1) {
+	for (let i = 1; i <= 31; i += 1) {
 		const id = `UAT-${String(i).padStart(2, "0")}`;
 		assert.match(uat, new RegExp(`^### ${id}\\b`, "m"), `missing ${id}`);
 	}

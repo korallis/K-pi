@@ -6,8 +6,48 @@ import { basename, dirname, join } from "node:path";
 import { CONFIG_DIR_NAME } from "../../config.ts";
 
 import type { JsonValue } from "./append-log.ts";
-import { validateBudgetOverrides } from "./graph/budget.ts";
-import type { GraphBudgetOverrides } from "./graph/schema.ts";
+
+/** The four run states. Only RUNNING is live; NEEDS_HUMAN and STOPPED resume with `/kpi <job>`. */
+export const RUN_STATUSES = ["RUNNING", "NEEDS_HUMAN", "DONE", "STOPPED"] as const;
+export type RunStatus = (typeof RUN_STATUSES)[number];
+
+/** Why a run paused NEEDS_HUMAN: what the operator must do before `/kpi <job>` continues. */
+export const LOOP_RECOVERIES = [
+	"approval",
+	"provider",
+	"delivery",
+	"ship",
+	"bounds",
+	"review",
+	"no_progress",
+	"research",
+	"stack",
+	"contract",
+	"ac_quality",
+] as const;
+export type LoopRecovery = (typeof LOOP_RECOVERIES)[number];
+
+/**
+ * Status tokens written by earlier releases. Each was a death the loop chose on
+ * its own; every one reads as a pause the operator can resume.
+ */
+const LEGACY_NEEDS_HUMAN_STATUSES: Record<string, true> = {
+	BLOCKED: true,
+	EXHAUSTED: true,
+	NO_PROGRESS: true,
+	UNSAFE: true,
+};
+
+/** The run state a raw status token denotes, or undefined for anything outside the vocabulary. */
+export function runStatus(raw: unknown): RunStatus | undefined {
+	if (typeof raw !== "string") {
+		return undefined;
+	}
+	if ((RUN_STATUSES as readonly string[]).includes(raw)) {
+		return raw as RunStatus;
+	}
+	return LEGACY_NEEDS_HUMAN_STATUSES[raw] === true ? "NEEDS_HUMAN" : undefined;
+}
 
 export type CheckKind =
 	| "command"
@@ -61,11 +101,6 @@ export interface Task {
 	playbook_steps?: FrozenPlaybookStep[];
 	runtime_dependencies?: string[];
 	dependency_baseline?: string[];
-	/**
-	 * Caps this job runs under. Anything absent falls back to the graph file,
-	 * then to the spec default. Validated before the engine reads it.
-	 */
-	limits?: GraphBudgetOverrides;
 	/** The one slice an implement round ships. Never inferred from modules[0]. */
 	current_module_id?: string;
 	/**
@@ -219,7 +254,6 @@ export function atomicWriteSync(path: string, data: string | Uint8Array): void {
 
 export async function createJob(projectRoot: string, task: Task, context = ""): Promise<Job> {
 	assertJobId(task.job_id);
-	validateBudgetOverrides(task.limits, `task ${task.job_id} limits`);
 	assertPlaybookFreeze(task);
 	const runsDirectory = join(projectRoot, CONFIG_DIR_NAME, "runs");
 	const directory = join(runsDirectory, task.job_id);
@@ -252,8 +286,8 @@ export async function createJob(projectRoot: string, task: Task, context = ""): 
  * Only `current_module_id` is excluded: the plan may re-freeze which slice this
  * round owns while the job is open. The selected playbook name and its ordered
  * step snapshot are part of the contract — changing either means a different
- * job. Goal, non-goals, acceptance, constraints, gates, caps, playbook and steps
- * are all covered.
+ * job. Goal, non-goals, acceptance, constraints, gates, playbook and steps are
+ * all covered.
  */
 export function contractHash(task: Task): string {
 	const { current_module_id: _slice, ...contract } = task;
@@ -315,7 +349,6 @@ export async function readJob(projectRoot: string, jobId: string): Promise<Job> 
 	if (task.job_id !== jobId) {
 		throw new Error(`Job id mismatch: expected ${jobId}, found ${task.job_id}`);
 	}
-	validateBudgetOverrides(task.limits, `task ${jobId} limits`);
 
 	return {
 		jobId,
@@ -384,14 +417,14 @@ async function readStateCandidate(directory: string): Promise<(ActiveJob & { mod
  * started and is skipped.
  */
 /**
- * The product terminals a run can end at. A job whose state document carries one
- * of these is finished: it is still the newest run on disk, but it is no longer
- * the run a follow-up belongs to.
+ * Whether a run has finished: every state but RUNNING (legacy tokens included,
+ * through runStatus()). Such a job is still the newest run on disk, but it is
+ * no longer the run a follow-up belongs to. NEEDS_HUMAN and STOPPED are
+ * finished-but-resumable.
  */
-const TERMINAL_RUN_STATUSES = new Set(["DONE", "BLOCKED", "EXHAUSTED", "NO_PROGRESS", "UNSAFE", "NEEDS_HUMAN"]);
-
 export function isFinishedRunStatus(status: unknown): boolean {
-	return typeof status === "string" && TERMINAL_RUN_STATUSES.has(status);
+	const resolved = runStatus(status);
+	return resolved !== undefined && resolved !== "RUNNING";
 }
 
 /** Whether this job is still the one a bare follow-up should steer. */

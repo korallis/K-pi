@@ -133,15 +133,16 @@ specs/
 | *(bare text)* | Plain harness input. Under `kpi.routing = auto` (default) the agent may call the `kpi_start_job` tool, which queues `/kpi --mode <mode> <goal>` for after the current turn and sets sticky K-mode; `always` wraps bare text into a gated `/kpi` directly; `off` never starts a job automatically. A live job owns bare follow-ups. |
 | `/kpi auto\|always\|off` | Session routing override. `kpi.routing` in project `.kpi/settings.json` or user `~/.kpi/agent/settings.json` (`{"kpi":{"routing":…}}`) sets the default; project wins. |
 | `kpi_start_job` | Tool. Parent session only — never a graph node, never a bus worker. Refuses greetings, questions, goals under 12 characters, and any goal while a job is live. |
-| `/kpi [goal]` | Gated coding loop from a task. `/loop` is an alias. |
+| `/kpi [goal]` | Gated coding loop from a task. `/loop` is an alias. The loop runs detached from the handler: the command returns once the job is started, and a second `/kpi <goal>` is refused while it runs (`K-π job <id> is still running: /kpi status shows it, /kpi stop stops it`). A flag naming a retired cap is refused: `K-π runs have no caps; cost and elapsed time are reported on the board`. |
+| `/kpi <job>` | Resume a run. Anything but `DONE` resumes — `NEEDS_HUMAN` at its recovery, `STOPPED` at the node it stopped in, a paused run at its pause node's resume targets; a `DONE` job is a no-op. |
 | `/kpi --plan <path>` | Skip specify; freeze plan files |
 | `/kpi --mode gated\|autopilot` | Force mode |
 | `/kpi --until-green` | Alias of autopilot |
-| `/kpi --max-cost-usd <n>` | Freeze maxCostUsd onto task.limits |
-| `/kpi --timeout-ms <n>` | Freeze timeoutMs onto task.limits |
-| `/kpi --max-rounds <n>` | Freeze maxRounds onto task.limits |
-| `/kpi status` | Overlay from files, no model. Must look like the Avid boards. |
-| `/kpi stop` | Write `BLOCKED`, halt |
+| `/kpi --no-network` | Operator-flagged offline research (`network.origin: "operator"`) |
+| `/kpi status` | Opens the K-π Command Centre: a live, full-width overlay from run files, no model (§11). In print/rpc mode it prints the board as text. |
+| `/kpi stop` | Immediate. Writes `<run>/stop.json` `{ reason: "operator stop", at, recorded }` and `STOPPED`: a loop live in this process is aborted at once and records its own terminal; a loop in another process stops at its next checkpoint or wait, and the control plane records `loop.terminal STOPPED reason: operator stop` itself. Notice `K-π job <id> STOPPED (resume with /kpi <id>)`. A stop before the run directory exists creates nothing. |
+| `/agents` | Live sessions of this kpi process: main, in-process graph nodes, worker processes, per-process caps, and the mechanism line. Files and memory only, no model. |
+| `/onboarding` | Guided first-run setup: welcome → model accounts → research keys (Exa, Perplexity, Firecrawl) → K-stack roles; every step skippable, re-runnable any time. Opens by itself on a TUI startup with no configured slot and no harness-available model, never in print/rpc/json; "Not now" closes it for that launch and nothing records the choice. Writes nothing on its own: accounts and keys go through the same writers as `/accounts login` and `/setup-kstack`, and no project file is created. |
 | `/statusbar` | Toggle the K-π footer |
 | `/specify [goal]` | Spec files only |
 | `/plan [goal]` | Isolated plan |
@@ -151,14 +152,14 @@ specs/
 | `/ship` | Gated confirm or no-op if already `DONE` |
 | `/accounts` | Slot overlay |
 | `/accounts login <pool>` | Add a model slot. Pools: anthropic, openai, openai-codex, xai, zai, zai-coding-cn, kimi-coding, cursor, llama, ollama, lmstudio, local-openai. |
-| `/accounts login exa\|perplexity` | Store a research credential. Research targets are not pools: no slot, no routing, no fallback-chain entry. See `research.md`. |
-| `/accounts logout <slot>` | Drop slot. `/accounts logout exa\|perplexity` clears that research credential. |
+| `/accounts login exa\|perplexity\|firecrawl` | Store a research credential. Research targets are not pools: no slot, no routing, no fallback-chain entry. See `research.md`. |
+| `/accounts logout <slot>` | Drop slot. `/accounts logout exa\|perplexity\|firecrawl` clears that research credential. |
 | `/accounts next` | Force sibling |
 | `/accounts pin <slot>` | Stick session |
 | `/pool strategy <provider> <name>` | |
 | `/pool chain a,b,c` | Fallback order |
 | `/kg query` `/kg propose` | Claim store |
-| `/setup-kstack` | Role map from `model-ladder.md`, then Exa and Perplexity key save/skip. See `kstack.md`. |
+| `/setup-kstack` | Role map from `model-ladder.md`, then Exa, Perplexity, and Firecrawl key save/skip and the project research mode. See `kstack.md`. |
 | `/k-mode [task]` | Sticky rigor playbook. `/k-mode off` clears it. |
 | `spawn_background` | Tool. Headless K-π worker. See `agents-bus.md`. |
 | `communicate` | Tool. Deliver via `sendUserMessage` / RPC `prompt`. |
@@ -178,11 +179,13 @@ Prompt templates expand via the harness slash-template mechanism (`prompts/*.md`
 | `candidate.json` | implementer via contract | Semantic payload only |
 | `evidence.json` | tester, via `write_contract` | HEAD-bound receipts |
 | `verdict.json` | reviewer only, via `write_contract` | PASS/REVISE/BLOCKED |
-| `state.json` | graph engine | Progress |
+| `state.json` | driver (gated loop) | Progress. See the field list under SCH-event. |
 | `events.jsonl` | append-log | Hash chain |
 | `research.md` / `research.json` | specify/plan research node | Mode, network state, sources + notes. Required before implement. |
 | `stack.json` | plan | Dune modules. Frozen before implement. |
 | `fingerprints.json` | control plane | SHA-256 of canonical JSON |
+| `stop.json` | control plane / `/kpi stop` | `{ reason: "operator stop", at, recorded }`. The operator's stop marker, honoured at every checkpoint and after every backoff. `recorded` says who appended the `STOPPED` terminal: the control plane (no loop live) or the driver whose loop was aborted. |
+| `repair.json` | driver, on a repeated witness | The planner's brief after no progress: `round`, `reason`, `failing_ac[]`, `evidence_ref` (`verdict.json` \| `evidence.json`), `witness`, optional `guidance` from the operator. Kept in `state.json` as `plan_repair`. |
 
 **REQ-RS-02** Atomic write: `foo.tmp` → fsync → rename to `foo` in the same directory.
 
@@ -220,7 +223,8 @@ Prompt templates expand via the harness slash-template mechanism (`prompts/*.md`
 
 `check.kind` enum: `command | file_exists | file_absent | grep_empty | grep_matches | json_path | http_probe`.  
 `http_probe` is local-only (localhost / 127.0.0.1).  
-`ac.quality` enum: `executable | partial | narrative`.
+`ac.quality` enum: `executable | partial | narrative`.  
+`task.schema.json` carries no `limits`: a task that names one is rejected. A legacy `task.json` carrying `limits` is read leniently by resume and never validated; its caps are ignored.
 
 ### SCH-verdict
 
@@ -274,7 +278,7 @@ Stale if `head` ≠ current `git rev-parse HEAD`.
 }
 ```
 
-`mode` enum: `exa | perplexity | auto | local`.  
+`mode` enum: `exa | perplexity | firecrawl | auto | local`.  
 `network.state` enum: `online | no-network`.  
 `network.origin` enum: `operator | engine`, present only when `state` is `no-network`.  
 `failures[].class` enum: `http_402 | http_429 | http_5xx | timeout | abort | unavailable`.  
@@ -294,7 +298,17 @@ Stale if `head` ≠ current `git rev-parse HEAD`.
 }
 ```
 
-**EVT types:** `handoff.created`, `tool.request`, `approval.result`, `tool.result`, `checkpoint`, `handoff.completed`, `recovery.started`, `recovery.completed`, `kg.patch.proposed`, `kg.patch.accepted`, `accounts.failover`, `ac.refused`, `loop.terminal`.
+**EVT types (26):** `handoff.created`, `tool.request`, `approval.result`, `tool.result`, `checkpoint`, `handoff.completed`, `recovery.started`, `recovery.completed`, `kg.patch.proposed`, `kg.patch.accepted`, `accounts.failover`, `ac.refused`, `loop.terminal`, `review.verdict`, `research.started`, `research.query`, `research.call`, `research.result`, `research.fallback`, `research.completed`, `agent.spawned`, `agent.message`, `agent.denied`, `node.started`, `node.finished`, `node.retry`.
+
+Payloads beyond the common fields:
+
+- `approval.result` — `approved` (boolean), optional `question`, optional `feedback` (the change request when a gate with a `feedbackPath` was denied). A gated run writes two: `node: plan-approval` before `node: human`.
+- `loop.terminal` — `status` ∈ `DONE | NEEDS_HUMAN | STOPPED`, optional `reason`, and on `NEEDS_HUMAN` a `recovery` ∈ `approval | provider | delivery | ship | bounds | review | no_progress | research | stack | contract | ac_quality`. One per pause or stop; a run that resumes and pauses again writes another.
+- `node.started` — `run` (integer ≥ 1), optional `model`. Written by the engine when an agent node's batch attempt starts; a resumed running node re-emits it with the same `run`.
+- `node.finished` — `run`, `status` ∈ `completed | failed`, `elapsed_ms`, optional `cost_usd` (summed across every attempt of the run; omitted, never zeroed, when the session has no billing), optional `result`, `session`, `error`. Transient retries inside a run repeat neither `node.started` nor `node.finished`.
+- `node.retry` — `attempt` (integer ≥ 1), `reason` ∈ `http | timeout | transport`, `delay_ms` (integer ≥ 0), optional `status` (HTTP status integer), optional `message`. Written by the driver's `onRetry` after the engine's checkpoint and before the wait.
+
+`state.json` (written by the driver on every state change; the persisted run status the control plane and the board read): `job_id`, `mode`, `round`, `stage`, `node`, `passed`, `bounds`, `review`, `release`, `ac`, `status` ∈ `RUNNING | NEEDS_HUMAN | DONE | STOPPED`, optional `reason`, `recovery` (on `NEEDS_HUMAN`), `graph_status`, `superstep`, `pending_question`, `limits: { maxConcurrency }`, `started_at_ms`, the report-only counters `elapsed_ms`, `cost_usd`, `graph_round`, `batches`, the stop-safety fields `evidence_fingerprints[]`, `output_fingerprints[]`, `failing_ac_sets[]`, `last_test_evidence`, `repaired[]` (witnesses re-planned since the last operator touch), `plan_repair` (the `repair.json` brief), `retry { node, attempt, reason, delay_ms, until_ms }` while a node backs off, and `playbook` / `todos`. No cap field exists; a legacy document carrying one is read and its cap ignored.
 
 **REQ-RS-04** Hash: serialize record without `record_hash` as RFC 8785 canonical JSON UTF-8, SHA-256 lowercase hex. Chain `prev_hash` to previous `record_hash`. First record `prev_hash` is 64 zeros.
 
@@ -314,54 +328,94 @@ Autopilot load rule:
 - Else → `graphs/coding-loop.gated.json`
 - Forced autopilot with non-executable AC → do not start; write `ac.refused`; operator-visible reason
 
-### Stop states
+### Run states
 
-| State | Meaning |
-|---|---|
-| `DONE` | Required AC receipts green + fresh, review.approved, bounds.held |
-| `BLOCKED` | Required AC not executable after start, or forbidden action requested |
-| `EXHAUSTED` | maxRounds / maxCostUsd / timeoutMs / maxNodeRuns |
-| `NO_PROGRESS` | Repeated output_fingerprint or same failing AC ids two rounds |
-| `UNSAFE` | Write outside bounds, policy deny, secret-shaped path |
-| `NEEDS_HUMAN` | AC changed, untestable review issue, risk left repo-local, healthy research supplied too few sources, every configured account/model fallback refused, or the ship commit exists but its job branch is not on `origin` or has no pull request (`gh` missing or signed out included). Provider failures preserve the real reason and prompt with the resume command; a delivery failure names what is missing and the resume command, and resuming finalizes the same commit. |
+A run is in exactly one of four states (`RUN_STATUSES` in `run-store.ts`). Only `RUNNING` is live; the other three are finished, and two of them resume.
 
-Default caps: `maxRounds=3`, `maxCostUsd=5`, `timeoutMs=1800000`, `maxConcurrency=2`.
+| State | Meaning | Resumes |
+|---|---|---|
+| `RUNNING` | The loop is driving the graph. | — |
+| `NEEDS_HUMAN` | The loop is waiting for the operator. `recovery` names what for; `reason` carries the real message and ends with the resume command. | `/kpi <job>` |
+| `DONE` | Required AC receipts green + fresh, review.approved, bounds.held, shipped. | no-op |
+| `STOPPED` | The operator stopped it (`/kpi stop`, or Stop at a gate or the no-progress prompt). Everything is intact for the next resume. | `/kpi <job>` |
 
-Retry ≠ round. Transient transport/429/timeout: same round key, max 2 retries, exponential backoff.
+Status tokens an earlier release wrote — `BLOCKED`, `EXHAUSTED`, `NO_PROGRESS`, `UNSAFE` — read as `NEEDS_HUMAN` (finished, resumable) and stay on disk as written until the run is resumed; nothing writes them today.
+
+### Recovery
+
+`recovery` on a `NEEDS_HUMAN` run (`LOOP_RECOVERIES`) says what the operator does before `/kpi <job>` continues. The reason text is worded once: `<message>. <advice>, then resume with /kpi <job>`.
+
+| `recovery` | When | What the operator does |
+|---|---|---|
+| `approval` | A human gate (`plan-approval`, `human`) was reached without dialog UI, or the operator dismissed it | Answer it in an interactive K-π session |
+| `provider` | Every configured account/model fallback refused; the real provider reason is kept | Select a healthy model or resolve that provider account |
+| `delivery` | The ship commit exists but its job branch is not on `origin` or has no pull request (`gh` missing or signed out included) | Push the branch or open the pull request as named; resuming finalizes the same commit |
+| `ship` | The one-commit contract refused, or ship finalization failed unexpectedly | Put the job branch and its commit right in the repository |
+| `bounds` | A write left the task's declared bounds (`bounds.held == false`) | Revert the writes that left the declared bounds, or widen the task's bounds; the resume re-runs test |
+| `review` | The review reported an untestable blocking issue, or approved over failed or stale receipts | Address the reviewer's blocking issue, or make the receipts fresh again; the resume re-runs implement |
+| `no_progress` | The loop repeated the same evidence or review outcome after its automatic re-plans | Choose Give guidance, Keep going or Stop when the resume asks; the resume re-runs plan |
+| `research` | Research files are missing or stale, or a healthy service supplied too few sources | Repair the research service, or run the job offline with `--no-network` |
+| `stack` | `stack.json` is missing, invalid, stale, or names no valid current slice, or the plan could not produce a valid one | Repair `stack.json` so implement has a valid frozen map |
+| `contract` | A routing gap, two writers of one path, or a node that will not validate | Fix the contract defect the reason names |
+| `ac_quality` | Forced autopilot with non-executable AC (`ac.refused` written) | Rewrite the goal with executable acceptance criteria, or run it gated |
+
+No caps: cost and elapsed time are reported (`state.json` `cost_usd`, `elapsed_ms`; the board's `$<cost> est.`) and never enforced; `maxConcurrency` is the only graph limit. Graphs never fail on their own: the engine never ends a run from a counter or clock, transient faults retry, no progress re-plans, and the only stops are `DONE` and the operator.
+
+Retry ≠ round. Transient http 408/429/5xx, timeout, transport: same round, same node run, unbounded retries, backoff 1 s doubling to a 60 s ceiling, one `node.retry` event and one notification each time, checkpoint before the wait. A resume mid-backoff finishes the wait it was in. A hung provider becomes a timeout through the harness's per-request idle timeout (`httpIdleTimeoutMs`, default 300000); set to 0 that timeout is disabled and a hung request is then never retried.
+
+No progress: a failed round that repeats a witness — a review's output fingerprint or failing-AC set seen before, or a failed test round whose evidence is identical to the previous failed test round's — routes to plan with `repair.json` (two automatic re-plans per operator touch); the same witness repeating after them pauses `NEEDS_HUMAN` (`no_progress`). A green round is progress. The operator stop: `/kpi stop`, or Stop at a gate or the no-progress prompt; both leave `STOPPED` and resume.
 
 ## 7. Graphs
 
-Node types we implement: `agent | set | human`.
+Node types we implement: `agent | set | human | pause`.
 
 Context modes for agent nodes: `isolated | thread`. Default thread key = node id. Reviewer and planner and ac-compiler and specify are `isolated` + `readOnly`. Implementer is `thread` key `coder`. A node with no explicit model inherits the parent session's provider, model id, and thinking level; it never silently resolves a different paid provider.
 
 ### coding-loop.gated.json (normative shape)
 
 ```
-ac-compiler → specify? → plan → implement → test → bounds → review → human → ship
-                              ▲                         │
-                              └─────────────────────────┘  REVISE / red
+ac-compiler → specify? → plan → plan-approval → implement → test → bounds → review → human → ship
+                          ▲          │              ▲                         │
+                          │          └──────────────┘  request changes        │  REVISE / red
+                          └───────────────────────────────────────────────────┘  repeated witness (repair.json)
 ```
 
-Conditional:
+Conditional (every edge is data in the graph file; facts come from the driver):
 
-- skip specify when `--plan` present
-- `test.passed == false` → implement
-- `bounds.held == false` → `UNSAFE`
-- `review.approved == false` and testable → implement
-- `review.approved == false` and untestable → `NEEDS_HUMAN`
-- review pass → human
-- human true → ship
-- human false → implement or `__end__`
+- skip specify when `--plan` present (`plan.provided`)
+- `plan-approval` true → implement; `plan-approval` false → plan (feedback in `plan.feedback`, appended to the planner prompt as `Operator feedback on your previous response (node run N):`; unbounded, the operator is the bound)
+- `bounds.held == false` → pause `unsafe` (recovery `bounds`, resume `test`)
+- `test.passed == false` and not `progress.repeated` → implement
+- `test.passed == false` and `progress.repeated` and not `plan.repair_tried` and not `plan.provided` → plan
+- `test.passed == false` and `progress.repeated` and (`plan.repair_tried` or `plan.provided`) → pause `no-progress` (recovery `no_progress`, resume `plan`)
+- `test.passed == true` → review
+- review `REVISE` and not `progress.repeated` → implement
+- review `REVISE` and `progress.repeated` and not `plan.repair_tried` and not `plan.provided` → plan
+- review `REVISE` and `progress.repeated` and (`plan.repair_tried` or `plan.provided`) → pause `no-progress`
+- review `BLOCKED` (untestable), or approved over `test.passed == false` or `fingerprints.fresh == false` → pause `needs-human` (recovery `review`, resume `implement`)
+- review approved + test passed + fresh → human
+- human true → ship; human false → implement (`policy.onHumanDeny: revise`, feedback in `release.feedback`) or `__end__` (`end`)
+
+Facts: `progress.repeated` is true when the round just recorded repeated a witness (§6); `plan.repair_tried` is true once the automatic re-plans since the last operator touch reach two (`MAX_AUTOMATIC_REPLANS`).
+
+### Human node fields
+
+`title`, `question` (one line; the board shows it), `statePath` (where the answer lands), optional `detail: "stack.json"` (the driver renders that file's summary into the dialog at ask time; only `stack.json` has a renderer), optional `feedbackPath` (a gate with one requires non-empty feedback to deny, at most 4000 characters, and writes it there). The gated graph's two gates: `plan-approval` (`plan.approved`, detail `stack.json`, feedback `plan.feedback`, options Approve plan / Request changes / Stop) and `human` (`release.approved`, feedback `release.feedback`, options Approve / Request changes / Stop). An agent node may carry `feedbackPath` too: the feedback found there is appended to its prompt on the re-run.
+
+### Pause nodes
+
+`{ id, type: "pause", recovery ∈ LOOP_RECOVERIES, reason, resume: [existing non-pause ids] }`. A pause node never runs: routing to it parks the run `NEEDS_HUMAN` with that recovery and reason, one checkpoint and one `loop.terminal`, and `/kpi <job>` re-arms the run at `resume`. The shipped loops carry three: `unsafe` (`bounds` → `test`, "a write left the task's declared bounds"), `needs-human` (`review` → `implement`, "the review reported an untestable blocking issue, or the receipts are no longer fresh"), `no-progress` (`no_progress` → `plan`, "the loop repeated the same evidence or review outcome after its automatic re-plans").
+
+Graph limits are `{ maxConcurrency }` and nothing else (`coding-loop.gated` and `coding-loop.auto` 2, `spec-first` 1); any other key is refused as a retired cap.
 
 Policy on gated graph: `allowNonInteractive: false`.
 
 ### coding-loop.auto.json
 
-Same until review. Then:
+Same until review, with no `plan-approval` node. Then:
 
 - review pass + bounds + fresh receipts → `release.set` → ship
-- no human node on the happy path
+- no human node on the happy path; the same `unsafe`, `needs-human`, and `no-progress` pause nodes
 
 Policy: `allowNonInteractive: true`, `allowNonInteractiveMutations: true`.
 
@@ -381,11 +435,13 @@ only if all evidence flags are true. Engine evaluates this as data, not as model
 | ac-compiler | read, grep, find, ls | true |
 | specify | read, grep, find, ls | true |
 | plan | read, grep, find, ls | true |
+| plan-approval | none | n/a |
 | implement | read, grep, find, ls, bash, edit, write | false |
 | test | read, bash (quality_gates + AC commands + read-only inspection), `write_contract` → `evidence.json` | read-only for product files; bash command-allowlisted |
 | bounds | set | n/a |
 | review | read, grep, find, ls, `write_contract` → `verdict.json` | read-only for product files |
 | human | none | n/a |
+| unsafe / needs-human / no-progress | pause — never runs | n/a |
 | release.set | set | n/a |
 | ship | bash: `git add`, `git commit`, `git push -u origin kpi/<job_id>`, `gh pr create --head kpi/<job_id>` on the job branch the control plane checked out | false |
 
@@ -401,9 +457,12 @@ Minimum engine behavior:
 - Superstep: ready nodes run, writes commit together
 - Agent nodes call `createAgentSession` from the harness core (the `@earendil-works/pi-coding-agent` workspace in this repository)
 - Isolated = new in-memory or fresh session; thread = persisted JSONL keyed by threadKey
-- Human node: `ctx.ui.confirm` / `select` / `input`; status `interrupted` until resume
-- Checkpoint after each superstep under `.kpi/runs/<job_id>/graph/`
-- Resume unresolved nodes only
+- Human node: `ctx.ui.confirm` for a yes/no gate, `ctx.ui.select` + `ctx.ui.editor` for a gate with `feedbackPath`; the driver answers with `submitHuman(HumanAnswer)`; no dialog UI → `NEEDS_HUMAN` (`approval`), never auto-answered; an answered gate is in the checkpoint and is not asked again on resume
+- Each agent node batch attempt is bracketed by `node.started` / `node.finished` events written to the run's `events.jsonl` before any pause handling; transient retries do not repeat them. The engine exposes nothing else — the control plane reads the log.
+- Checkpoint after each superstep under `.kpi/runs/<job_id>/graph/`, and before every backoff wait
+- Resume unresolved nodes only; a node a kill left `running` continues its own run with its retry count and backoff deadline intact
+- Paused runs re-arm at their resume targets on restore (a contract pause also re-schedules the active siblings it left pending); the engine never ends a run from a counter or clock; retries are unbounded and checkpointed; a checkpoint that still carries retired cap keys is read with those keys ignored and re-armed
+- The operator's stop is an `AbortSignal` (a loop in this process) and a run-directory marker `stop.json` (any process), honoured before every prompt, at every checkpoint and after every backoff: the engine throws `OperatorStopError` with the node left `running` so a restore continues it, and issues no prompt after the signal
 - Checkpoints are at-least-once. Ship/commit must be idempotent (do not create a second commit if HEAD already has the job marker)
 
 ## 9. Context pack and voice
@@ -495,33 +554,53 @@ K-π  >  ⬡ claude-opus · ● high  >  📁 repo  >  ⎇ main  >  ▦ 12%/200k
 Job-aware extra slot via `ctx.ui.setStatus("kpi", …)`:
 
 ```
-K-π  LOOP gated r2/3  STAGE implement  GATE human  AC 4/5
+K-π LOOP gated r2 STAGE implement GATE human AC 4/5 ROUTE anthropic/home
 ```
 
 ### Overlay (Avid boards)
 
 Canonical look: https://x.com/av1dlive/status/2092622516544270781
 
-`/kpi status` and the above-editor widget must contain: header with `K-π`, stages 01–08, ROUND, PASS/FAIL, six file lamps, STOP state. Human pause adds the oversight box and the three laws. Geometry in `visual-targets.md` §2.
+`/kpi status` and the above-editor widget must contain: header with `K-π`, stages 01–08, ROUND, PASS/FAIL, six file lamps, STOP state. Human pause adds the oversight box and, on the printed board, the three laws. Geometry in `visual-targets.md` §2; the Command Centre's layout in `visual-targets.md` §Command Centre and `design/claude-design/`.
 
 ### Widgets
 
 Always-on during a live job, `setWidget` above the editor as a **component** (the string form is capped at ten lines and painted colourless). It is the compact cut of Board A / Board B, framed in the theme's colours:
 
 ```
-K-π GRAPH CONTROL │ MODE gated │ JOB <id> │ ROUND <n>/<max>
-┌──────────────┬──────────────┬ … 8 stage cells: "04 implement" / CURRENT|DONE|PENDING …┐
+K-π GRAPH CONTROL │ MODE gated │ JOB <id> │ ROUND <n>
+┌──────────────┬──────────────┬ … 8 stage cells: "04 implement" / CURRENT|DONE|PENDING + one detail line …┐
 FILES  ● task.json  ● context.md  ○ candidate.json  ● evidence.json  ○ verdict.json  ● events.jsonl
 LOOP <id>  STAGE 04 implement  NODE <node>  GATE <human|machine>            ┌──────────────┐
-ROUND <n>/<max>  PASS ● last verifier  FAIL ○ none  FINGERPRINT <short>       │ STOP RUNNING │
-CONTEXT product ● structure ● tech ○  AGENTS n  BUS ●  ROUTE …  USAGE …       └──────────────┘
+ROUND <n>  PASS ● last verifier  FAIL ○ none  FINGERPRINT <short>             │ STOP RUNNING │
+RETRY <attempt> · <reason> · next <s>s                     (while backing off)  └──────────────┘
+CONTEXT product ● structure ● tech ○  AGENTS n · k nodes · w workers  BUS ●  ROUTE …  USAGE …
+NOW implement  run 1  41 tools  ▸ edit board.ts  12m04s  $1.20  MODEL …
 WAITING ON OPERATOR  <question>          (paused only)
-STOP STATES  DONE ○  BLOCKED ○  APPROVAL ●   (paused only)
+STOP STATES  DONE ○  STOPPED ○  APPROVAL ●   (paused only)
 ```
 
-The current stage cell and lit lamps are `accent`, done stages `success`, pending `dim`; the STOP box is `warning` while running, `success` for DONE, `accent` for NEEDS_HUMAN, `error` otherwise. `PASS/FAIL PENDING` reads until a verdict exists. At 70 columns and below the rows are flat but keep every field; the lamp row folds rather than cuts. Once the newest run has reached a terminal the widget is removed; `/kpi status` then names that last job.
+Rows:
 
-`/kpi status` draws the full board (context layer, stage cells, iteration loop, oversight, lamp cells, and on Board B the shared run state, stop states, three laws and the operator question) in a `ctx.ui.custom` overlay using the live theme; any key closes it.
+- `ROUND <n>` is a count with no maximum. `STOP` is one of `RUNNING | NEEDS_HUMAN <recovery> | DONE | STOPPED`; the `STOP STATES` cells on the paused board are `DONE / STOPPED / APPROVAL`, APPROVAL a derived lamp, never a persisted status.
+- `RETRY <attempt> · <reason> · next <s>s` appears while `state.json.retry` is set and shows the wait the operator is looking at, never less than it.
+- Stage cells carry one detail line in both layouts, shrinking by form to the cell width: DONE `<elapsed> · <n> calls · $<cost> est.` → `<elapsed> · $<cost> est.` → `<elapsed> · $<cost>`; CURRENT `<tool> <target>  <elapsed>` → `<tool>  <elapsed>` → `<elapsed>`; PENDING `—`. The rail is sized from the label lines so it never wraps. Elapsed forms `12s` / `3m12s` / `1h02m` / `4d04h` (saturating at `99d23h`); cost `$0.42` / `$12` / `$—` when unknown — an estimate, never a bill.
+- `NOW <node>  run <n>  <k> tools  ▸ <tool> <target>  <elapsed>  <cost>  MODEL <m>`: what the current stage's node is doing, from `events.jsonl`. Optional spans drop in the order `MODEL` → `▸ tool` → `run n` before anything truncates, framed and flat; `no node.started yet` before the first record; `EVENTS ✕ <n> unreadable` / `EVENTS ✕ <code>` on log problems.
+- `AGENTS n · k nodes · w workers` counts the live job's in-process node sessions and worker processes in this process; `AGENTS n` alone when the split is unknown. The widget repaints when a node session or worker starts or ends (`GraphEngineOptions.onSessionsChange` → the loop's `onStateChange`), not only per superstep. `BUS ●` tracks `bus.jsonl` history independently.
+- Height with activity: compact ≤ 11 lines at 120 columns, ≤ 14 at 100 (9 / 12 without); the full board at 200 is one rail row plus `NOW`.
+
+The widget is a component with a 1 s ticker (`BOARD_TICK_MS`) that reads `events.jsonl` incrementally through one activity reader per live job and narrates each record once in the chat (`K-π ▶` start, `K-π ■` / `K-π ✕` finish, `K-π ↻` retry, `K-π ⇄` route change — never a line per tool call); a reinstall or `/kpi status` never re-narrates. A read error paints `EVENTS ✕ <code>`. The current stage cell and lit lamps are `accent`, done stages `success`, pending `dim`; the STOP box is `warning` while running, `success` for DONE, `accent` for NEEDS_HUMAN, `error` for STOPPED. `PASS/FAIL PENDING` reads until a verdict exists. At 70 columns and below the rows are flat but keep every field; the lamp row folds rather than cuts. Once the newest run has finished the widget drops itself and stops its ticker; `/kpi status` then names that last job (`no active job — last job <id> <status>`).
+
+### Command Centre (`/kpi status`)
+
+In the TUI `/kpi status` reinstalls the ticking widget and opens the K-π Command Centre over it: `ctx.ui.custom` with `overlay: true`, width 100%, built from the same board model, activity reader and tick as the widget, so it is live while the job is `RUNNING` (run files every fifth tick) and stops ticking when the run finishes, the job is gone (`K-π no active job`), or the view closes. In print/rpc mode the plain board is printed instead, with no key hint. Source design: `design/claude-design/K-pi Command Centre.dc.html` and the rendered `command-centre*.rendered.txt`.
+
+- HOME: header `K-π  COMMAND  › <job>` with `MODE <mode>  ·  ROUND <n>  ·  GATE <gate>  ·  STOP <status>[ <recovery>] ⠙ <elapsed>  ·  <clock>` on the right (shorter forms drop the clock, then the gate); STAGES (01–08 with ✓ DONE / ⠙ RUNNING / ○ PENDING / ✕ FAILED / ◉ WAITING glyphs, per-stage elapsed, a dim detail line per stage, `▸` on the selected stage); LIVE › <NN stage> (the tail of that stage's node session, `⠙ live · following agents/<stage>/*.jsonl` while running); TELEMETRY (`$<x> est.  +$<y>/min` with a sparkline, `CONTEXT`, `TOKENS`, `TIME <elapsed>`, `ROUNDS` per-round elapsed, `STEPS <supersteps>   NODE RUNS <n>   WORKERS <w>/<cap>` and the `RETRY …` text while backing off — no cap token anywhere); SHARED RUN STATE (the six run files ● / ○ with size, mtime and note; footer `FINGERPRINT <12> · ROUND <n> · VERIFIER <PASS|FAIL>`); CONTEXT LAYER (`research.json · accounts.json`: PACK lamps, RESEARCH, K-STACK, AGENTS, ROUTE, POLICY); EVENTS (`events.jsonl`, `following` while running); the input line; key hint `tab/↑↓ select stage · enter open · esc close · r refresh`.
+- SESSION (enter on a stage): STAGES rail (labels + glyphs, `← → switch node`, `esc  back`, ROUND / GATE / STOP / elapsed), the node's transcript (`following · <elapsed>` while running, `finished in <elapsed> · replaying` after), and the NODE panel (status, elapsed, `<cost> est.`, model, route, tokens `—` when unknown).
+- Keys (both views): `tab`/`↓`/`→` next stage, `shift+tab`/`↑`/`←` previous, `1`–`8` jump, `enter` opens the session view, `esc` back to home or close, `q` close, `r` refresh now, `ctrl+c` close. Any printable character types into the input line; `enter` on `/kpi stop` runs exactly what `/kpi stop` does, once, then repaints; `/kpi verify` shows the verify line on the hint row; any other `/kpi …` → `K-π /kpi <goal> is refused while a job runs; /kpi stop first`; `!…` → `K-π bash is not available inside the command centre`; other text closes the view, then goes to chat as a user message. `esc` with a non-empty input clears it.
+- Layout: two columns at ≥ 120 columns, one column below, and only STAGES, LIVE and EVENTS below 80. Row budget: the terminal's rows less three; ≥ 44 rows shows the full STAGES detail lines, 38–43 compacts STAGES to labels and glyphs so SHARED RUN STATE and CONTEXT LAYER stay on screen (the 40-row pty default keeps both), below that the second row of panels goes, and last the detail lines. A run-file read that fails on open paints `EVENTS ✕ <code>` in the header and `K-π reading run files ✕ <code> · r to retry` in the body; the ticker retries it. No framed line is ever wider than the terminal.
+
+`/agents` prints a table of this process's live sessions — columns `KIND ID ROLE MODEL PID ALIVE ELAPSED TOOLS LAST NODE JOB` — then `caps (this process): workers <w>/2 · writers <n>/1`, the mechanism line (`K-π runs graph nodes as in-process sessions in this kpi process; a node with workerRole (the reviewer) and the spawn_background tool start separate kpi --mode rpc processes that talk over .kpi/runs/<job>/bus.jsonl. No sub-agent API is used.`), and `job <id> <status>` or `no active job`. Node sessions are visible only from the kpi process running the loop; a worker whose pid has died is listed `ALIVE no` and not counted. Files and memory only, no model.
 
 Accounts widget:
 
@@ -535,7 +614,7 @@ ROUTE   <provider>/<model>  via <slot>
 
 Per-slot percentages. No unlabeled aggregate as the only number. A `local` slot has no quota: show its base URL and health instead of a percentage.
 
-`/kpi status` uses `ctx.ui.custom` overlay. Data from files.
+`/kpi status` uses `ctx.ui.custom` overlay. Data from files, refreshed on the widget's tick.
 
 Footer `setStatus("loopgraph", …)` and `setStatus("accounts", …)`.
 
@@ -621,7 +700,13 @@ In gated scope an unknown command asks once with three choices: **Allow for this
           "id": "home",
           "kind": "oauth",
           "label": "personal max",
-          "warningAcceptedAt": "2026-08-31T00:00:00.000Z"
+          "warningAcceptedAt": "2026-08-31T00:00:00.000Z",
+          "official": true
+        },
+        {
+          "id": "work",
+          "kind": "oauth",
+          "needsLogin": "Anthropic rejected its refresh token (invalid_grant)"
         }
       ]
     }
@@ -633,10 +718,12 @@ In gated scope an unknown command asks once with three choices: **Allow for this
 
 Pool ids: `anthropic | openai | openai-codex | xai | zai | zai-coding-cn | kimi-coding | cursor | llama | ollama | lmstudio | local-openai`.
 
-`exa` and `perplexity` are **not** pool ids. They are research credential targets (`research.md`): never in `pools`, never in `fallback`, never an argument to `/pool strategy` or `/pool chain`, and never a `registerProvider` call. A research key never changes which model answers a turn and never grants provider-native web search.
+`exa`, `perplexity`, and `firecrawl` are **not** pool ids. They are research credential targets (`research.md`): never in `pools`, never in `fallback`, never an argument to `/pool strategy` or `/pool chain`, and never a `registerProvider` call. A research key never changes which model answers a turn and never grants provider-native web search.
 
 Strategy: `quota-first | round-robin | sticky`.  
-Slot kind: `oauth | api_key | local`.
+Slot kind: `oauth | api_key | local`.  
+`official?: true` — at most one per pool, never on a `local` slot: this slot's grant is the one `auth.json` holds.  
+`needsLogin?: string` — the persisted reason this slot can no longer authenticate; `balancer.selectInFamily` never selects it, the widget shows `needs login`, and `putSlot` on re-login clears it. Reasons written today: `<provider> rejected its refresh token (invalid_grant)`, `<provider> rejected the refresh token held in auth.json (invalid_grant)`, `auth.json no longer holds a <pool> credential`, `its auth.json credential now belongs to <slot>`, `its auth.json credential was replaced by the login of <slot>` (when the demoted official slot had no grant to keep).
 
 **REQ-SL-01** A `local` slot is credential-free. It persists the `baseUrl` it was configured with, and every request routed to that slot stays on that origin — no silent cloud proxy. It MAY carry an optional `secretRef` when the local server wants a token. An absent `secretRef` is valid; never write a placeholder or dummy secret to satisfy the schema.
 
@@ -646,13 +733,13 @@ Local pools use official llama.cpp (`LLAMA_BASE_URL`) or first-party `refreshMod
 
 Secrets in `~/.kpi/agent/accounts.secrets.json` keyed by `pool/slot`. Never log them. A `local` slot with no `secretRef` has no entry here.
 
-Official `~/.kpi/agent/auth.json` primary credential is imported as slot `default` if present. Subscription OAuth selected through `/login` delegates to the pooled login path, allocates a new slot when no name is supplied, and activates that slot without deleting siblings. Each OAuth slot refreshes independently before expiry; the provider's single primary `auth.json` entry is not a substitute for slot refresh.
+One grant, one refresher. Per pool at most one **official** slot: `auth.json[pool]` is that slot's grant, it has no `accounts.secrets.json` entry, and K-π never calls `oauth.refresh` on it — the base runtime refreshes it on every request. Every other slot exists only in `accounts.secrets.json` and is refreshed by K-π at session start and turn start, five minutes before expiry. Subscription OAuth selected through `/login` delegates to the pooled login path, allocates a new slot when no name is supplied, and activates that slot without deleting siblings; because the runtime persists that grant into `auth.json`, the new slot becomes the official slot and the previous official slot keeps the grant `auth.json` held until then as a K-π-refreshed secret (`loginAccount` reads it live immediately before login; the notice reads `Added account <pool>/<slot> (<pool>/<previous> keeps its previous grant)`). Reconciliation runs once per `session_start`: by content match (refresh or access token equal, or api key equal), then the legacy rule (bind `default` only when its secret is absent or an expired OAuth copy), else a fresh official slot (`default`, else the next `slot-N`); a flagged slot whose `auth.json` entry vanished is marked `needsLogin` `auth.json no longer holds a <pool> credential` and reported once. An `invalid_grant` on either refresher marks the slot `needsLogin` — one notification `K-π accounts: <pool>/<slot> needs a new login: <reason>. Run /accounts login <pool> <slot>`, no cooldown, no stack trace — while a transient refresh failure cools the slot 5h with `K-π accounts: could not refresh <pool>/<slot>: <summary>; cooling 300m`.
 
 ### Official catalogs
 
 **REQ-PR-01** Do not pass `models` when overlaying `anthropic`, `openai`, `openai-codex`, `xai`, `zai`, `zai-coding-cn`, `kimi-coding`.
 
-Credential injection: `before_provider_headers` sets `Authorization` from the selected slot for that provider family.
+Credential injection: `before_provider_headers` sets `Authorization` from the selected slot for that provider family. For the official slot the runtime's own auth header is left in place and only request attribution is recorded. Anthropic OAuth requests identify as Claude Code (`user-agent: claude-cli/<v>`, an upstream constant pinned by cherry-pick, 2.1.251 today); a `claude_code_version_too_old` refusal is a client-identity failure, not a quota event — notified once per session at level error (`K-π <version> identifies to Anthropic as Claude Code <sent>; Anthropic requires <required> or newer for <model>. Update K-π: npm install -g @korallis/k-pi@latest`), no cooldown, no failover, assistant diagnostic `kpi_client_version_rejected` with details `{ sent?, required?, slot? }`, which never triggers the agent-session retry (only `kpi_account_failover` does).
 
 Detection: the global `after_provider_response` hook carries status and headers only, never a response body. Classifier in `accounts/errors.ts` treats 429, 402, and quota-shaped 403, together with `retry-after` and reset headers, as cooldown events at that layer. A custom fetch client may classify a body it owns. After a provider stream has already been consumed, the finalized assistant error may classify quota-shaped 400 text such as `out of extra usage`; no hook consumes the response body. OpenAI API count headers and Codex subscription `x-codex-{primary,secondary}-used-percent` windows populate the slot cache.
 
@@ -751,5 +838,5 @@ Repo `fixtures/` MUST include:
 1. `healthcheck-gated` — small app, `/loop` reaches human confirm
 2. `healthcheck-auto` — five executable AC, reaches `DONE` + commit
 3. `narrative-ac` — “make it nicer”, autopilot refused
-4. `bounds-violation` — implementer tries to edit outside allow → `UNSAFE`
+4. `bounds-violation` — implementer tries to edit outside allow → `NEEDS_HUMAN` (`bounds`), no commit
 5. `accounts-failover` — slot A classified exhausted, slot B healthy, A never selected

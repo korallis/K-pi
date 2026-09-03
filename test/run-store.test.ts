@@ -8,10 +8,14 @@ import { type JsonSchema, validateJsonSchema } from "../packages/coding-agent/sr
 import {
 	atomicWrite,
 	createJob,
+	isFinishedRunStatus,
+	isLiveJob,
+	RUN_STATUSES,
 	readActiveJob,
 	readJob,
 	readLiveJob,
 	resetUnreadableStateReportsForTests,
+	runStatus,
 	type Task,
 } from "../packages/coding-agent/src/kpi/extensions/run-store.ts";
 
@@ -241,16 +245,18 @@ test("the live job skips finished runs and is absent when every run has ended", 
 		// The newest run has ended: it is still the active (last) job, but nothing
 		// live remains - the widget, footer and policy must all see "no job".
 		const newerPath = join(runs, "job-newer", "state.json");
-		await atomicWrite(newerPath, JSON.stringify({ job_id: "job-newer", status: "UNSAFE" }));
+		await atomicWrite(newerPath, JSON.stringify({ job_id: "job-newer", status: "STOPPED" }));
 		const future = new Date(Date.now() + 60_000);
 		await utimes(newerPath, future, future);
 		assert.equal((await readActiveJob(directory))?.jobId, "job-newer", "the last job is still reported");
 		assert.equal(await readLiveJob(directory), undefined, "a finished newest run is not live");
 
-		for (const status of ["DONE", "BLOCKED", "EXHAUSTED", "NO_PROGRESS", "NEEDS_HUMAN"]) {
+		// DONE, STOPPED and NEEDS_HUMAN are finished; a legacy token written by an
+		// earlier release reads as NEEDS_HUMAN and is finished too.
+		for (const status of ["DONE", "STOPPED", "NEEDS_HUMAN", "BLOCKED", "EXHAUSTED", "NO_PROGRESS", "UNSAFE"]) {
 			await atomicWrite(newerPath, JSON.stringify({ job_id: "job-newer", status }));
 			await utimes(newerPath, future, future);
-			assert.equal(await readLiveJob(directory), undefined, `${status} is a product terminal`);
+			assert.equal(await readLiveJob(directory), undefined, `${status} is finished`);
 		}
 
 		await atomicWrite(
@@ -260,4 +266,37 @@ test("the live job skips finished runs and is absent when every run has ended", 
 		await utimes(newerPath, future, future);
 		assert.equal((await readLiveJob(directory))?.jobId, "job-newer", "a paused human node is live");
 	});
+});
+
+test("the run vocabulary is exactly RUNNING, NEEDS_HUMAN, DONE, and STOPPED", () => {
+	assert.deepEqual([...RUN_STATUSES], ["RUNNING", "NEEDS_HUMAN", "DONE", "STOPPED"]);
+
+	for (const status of RUN_STATUSES) {
+		assert.equal(runStatus(status), status, `${status} maps to itself`);
+	}
+	for (const legacy of ["BLOCKED", "EXHAUSTED", "NO_PROGRESS", "UNSAFE"]) {
+		assert.equal(runStatus(legacy), "NEEDS_HUMAN", `legacy ${legacy} reads as NEEDS_HUMAN`);
+		assert.equal(isFinishedRunStatus(legacy), true, `legacy ${legacy} is finished`);
+	}
+	for (const outside of ["FAILED", "running", "", undefined, null, 3, { status: "DONE" }]) {
+		assert.equal(runStatus(outside), undefined, `${JSON.stringify(outside)} is outside the vocabulary`);
+		assert.equal(isFinishedRunStatus(outside), false, `${JSON.stringify(outside)} is not finished`);
+	}
+
+	assert.equal(isFinishedRunStatus("RUNNING"), false, "RUNNING is the one live state");
+	for (const status of ["NEEDS_HUMAN", "DONE", "STOPPED"]) {
+		assert.equal(isFinishedRunStatus(status), true, `${status} is finished`);
+	}
+
+	const job = (status: string) => ({
+		jobId: "job",
+		directory: "runs/job",
+		eventsPath: "runs/job/events.jsonl",
+		statePath: "runs/job/state.json",
+		state: { status },
+	});
+	assert.equal(isLiveJob(job("RUNNING")), true, "a RUNNING job is live");
+	assert.equal(isLiveJob(job("NEEDS_HUMAN")), false, "a NEEDS_HUMAN job is finished-but-resumable, not live");
+	assert.equal(isLiveJob(job("STOPPED")), false, "a STOPPED job is finished-but-resumable, not live");
+	assert.equal(isLiveJob(undefined), false, "no job is not live");
 });

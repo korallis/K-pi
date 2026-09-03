@@ -16,7 +16,7 @@ A user types a task or points at a frozen plan. K-π runs a graph-engineered loo
 research → specify → plan (stack.json, vertical slices) → implement → test → bounds → isolated review → ship
 ```
 
-Default mode is **gated** (human before commit). **Autopilot** only when every required acceptance criterion is a command the machine can run.
+Default mode is **gated** (human at plan approval and before commit). **Autopilot** only when every required acceptance criterion is a command the machine can run. A run never ends on its own: it is `RUNNING`, waits `NEEDS_HUMAN`, finishes `DONE`, or is `STOPPED` by the operator, and `/kpi <job>` resumes anything but `DONE`.
 
 The operator always sees an Oh My Pi-style footer branded `K-π` and the Avid industrial boards (amber running, blue protocol pause). LLM chat stays short; the board carries state.
 

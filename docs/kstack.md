@@ -136,7 +136,7 @@ Do not use a git submodule of `cursor/plugins` inside this repository. Fetch is 
 
 | Command | Behavior |
 |---|---|
-| `/setup-kstack` | Detect models. Print the role map and cross-provider fallback order from `model-ladder.md`. Apply or edit both. Then offer Exa and Perplexity keys (save either, both, or skip). Offer a project `verify-*` skill. |
+| `/setup-kstack` | Detect models. Print the role map and cross-provider fallback order from `model-ladder.md`. Apply or edit both. Then offer Exa, Perplexity, and Firecrawl keys (save any subset or skip) and write the project research mode. Offer a project `verify-*` skill. `/onboarding` invokes the same role map and the same key prompts but never writes the project research mode. |
 | `/k-mode [task]` | Sticky rigor mode. Match a playbook, copy steps into the job todo, fire skills, stay on until `/k-mode off`. |
 | `/k-mode off` | Clear sticky flag. |
 | `/how` `/why` `/teach` `/recall` | Understanding skills. Read-only. |
@@ -214,7 +214,7 @@ Keep and rewrite for local Pi + graph gates:
 | investigation | isolated read-only graph, no ship |
 | bug-fix | plan-check → implement → test → review |
 | perf | same + bounds on allowed files + measured baseline in evidence.json |
-| hillclimb | loop with maxRounds; each accepted win is one commit in gated/auto per mode |
+| hillclimb | loop without a round cap; each accepted win is one commit in gated/auto per mode |
 | runtime-forensics | read-only then gated fix |
 | feature | specify → plan → implement → test → review → ship |
 | refactoring | plan → implement → test (behavior preserved) → review |

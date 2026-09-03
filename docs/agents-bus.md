@@ -44,7 +44,7 @@ Two workers share the project checkout. They must not edit the same files.
 - At most **one** live worker may have `write` / `edit`. That is the writer. Reviewer and tester never get either tool; they publish through `write_contract`, which does not make them the writer.
 - Before a writer edits path `P`, it calls `claim_path(P)`. Exclusive. Held in `.kpi/runs/<job>/leases.json`.
 - Another claim on `P` is denied until release or the holder exits.
-- Bounds still apply. A claim outside `task.json.allowed_paths` is `UNSAFE`.
+- Bounds still apply. A claim outside `task.json.allowed_paths` is refused as an `UNSAFE` claim and denied; the same boundary is the implementer's `write_allow`, so a write that leaves it pauses the run `NEEDS_HUMAN` (`bounds`).
 - Parent implementer in the operator session counts as the writer if no worker writer is live.
 
 `claim_path` / `release_path` are tools. Crash/reap of a pid releases its claims.
@@ -111,7 +111,17 @@ Handoffs stay the run contract files. Chat between agents is steering, not sourc
 
 ## Board
 
-File lamp row may include `BUS` when `bus.jsonl` exists. Header can show `AGENTS 2`. Worker names stay off the main transcript.
+File lamp row may include `BUS` when `bus.jsonl` exists; `BUS ●` tracks `bus.jsonl` history. The CONTEXT row's AGENTS cell is the live total with its breakdown — `AGENTS 2 · 1 node · 1 worker` — counted for the live job in this process, and it repaints when a node session or worker starts or ends. Worker names stay off the main transcript.
+
+## Visibility
+
+K-π runs graph nodes as in-process sessions in this kpi process; a node with workerRole (the reviewer) and the spawn_background tool start separate kpi --mode rpc processes that talk over .kpi/runs/<job>/bus.jsonl. No sub-agent API is used.
+
+Two session kinds feed one in-process registry (`bus/sessions-snapshot.ts`): node sessions, registered by the graph engine when an agent node's session starts and released when it ends; and buses, registered by the engine (a `workerRole` node) or the parent's tools (`spawn_background`), each listing its workers. Liveness comes from each bus's own pid check — a dead worker is listed `ALIVE no` and not counted, and the registry never reaps.
+
+`/agents` prints that registry — columns `KIND ID ROLE MODEL PID ALIVE ELAPSED TOOLS LAST NODE JOB` — then `caps (this process): workers <w>/2 · writers <n>/1`, the mechanism sentence above, and `job <id> <status>` or `no active job` (not an error; the main row still prints). Files and memory only, no model.
+
+The honest limit: node sessions are visible only from the kpi process running the loop, and `/agents` says so; caps and the count are per process, so another K-π process's workers are not listed, while `bus.jsonl` is per run directory.
 
 ## Forbidden
 

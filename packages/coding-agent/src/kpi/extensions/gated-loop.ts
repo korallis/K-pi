@@ -1,6 +1,6 @@
 import { execFile as execFileCallback } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { readdir, readFile, realpath, stat } from "node:fs/promises";
+import { readdir, readFile, realpath, rm, stat } from "node:fs/promises";
 import { basename, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 
@@ -11,32 +11,76 @@ import { kModeState, renderTodos } from "../kstack/mode.ts";
 import { appendEvent } from "./append-log.ts";
 import type { BusDependencies } from "./bus/spawn.ts";
 import { compileAcceptanceCriteria } from "./graph/ac-compiler.ts";
-import { type GraphAgentSessionFactory, GraphEngine, GraphNodeProviderError, loadNamedGraph } from "./graph/engine.ts";
-import { type GraphRunState, isJsonObject, type JsonObject } from "./graph/schema.ts";
+import {
+	type GraphAgentSessionFactory,
+	GraphEngine,
+	type GraphEngineOptions,
+	GraphNodeProviderError,
+	loadNamedGraph,
+	type NodeRetry,
+	OperatorStopError,
+} from "./graph/engine.ts";
+import {
+	type GraphDefinition,
+	type GraphRunState,
+	type HumanAnswer,
+	type HumanGraphNode,
+	isJsonObject,
+	type JsonObject,
+	type PendingHumanInput,
+} from "./graph/schema.ts";
 import {
 	canonicalFingerprint,
 	createStopState,
-	DEFAULT_MAX_ROUNDS,
-	MAX_TRANSIENT_RETRIES,
+	MAX_AUTOMATIC_REPLANS,
+	type PlanRepair,
+	recordVerifier,
+	repeatedWitness,
 	type Sleeper,
 	type StopState,
 	stopFingerprint,
-	type TerminalStatus,
-	transitionStopState,
+	type TransientReason,
+	type VerifierEvent,
 } from "./graph/stop.ts";
 import { assertMinimalistBounds, observedChangesFromSnapshots } from "./minimalist.ts";
 import { isWriteAllowed } from "./policy.ts";
 import { resolveResearchEndpoints } from "./research/endpoints.ts";
 import { assertResearchFresh, conductResearch } from "./research/gate.ts";
 import { ResearchShortfallError, resolveResearchKeys } from "./research/session.ts";
-import { atomicWrite, createJob, readTaskForJob, type Task, writeAllowForTask } from "./run-store.ts";
+import {
+	atomicWrite,
+	createJob,
+	type LoopRecovery,
+	type RunStatus,
+	readTaskForJob,
+	type Task,
+	writeAllowForTask,
+} from "./run-store.ts";
 import { readKpiSettings } from "./settings.ts";
-import { assertScaffoldedBeforeBehavior, freezeCurrentSlice, scaffoldModule, stackRequiredFor } from "./stack.ts";
+import {
+	assertScaffoldedBeforeBehavior,
+	freezeCurrentSlice,
+	readDuneStack,
+	renderPlanSummary,
+	scaffoldModule,
+	stackRequiredFor,
+} from "./stack.ts";
 
 const execFile = promisify(execFileCallback);
 const PLAN_FILES = ["requirements.md", "design.md", "tasks.md"] as const;
 
 export const CONVENTIONAL_COMMIT_PATTERN = /^(feat|fix|docs|refactor|test|chore)(\(.+\))?: /u;
+
+/** What a plan gate offers; the operator's select answers with one of these. */
+export const PLAN_GATE_OPTIONS = ["Approve plan", "Request changes", "Stop"] as const;
+/** What the release gate offers: the change ships, goes back to implement with feedback, or the job stops. */
+export const RELEASE_GATE_OPTIONS = ["Approve", "Request changes", "Stop"] as const;
+/** The longest change request a gate accepts; longer text is refused and asked again. */
+export const MAX_HUMAN_FEEDBACK_CHARS = 4000;
+/** The operator's stop marker inside the run directory. */
+const STOP_MARKER_NAME = "stop.json";
+/** The planner's brief after a no-progress finding. */
+const REPAIR_FILE_NAME = "repair.json";
 
 export interface LoopDependencies {
 	createAgentSession?: GraphAgentSessionFactory;
@@ -62,6 +106,11 @@ export interface LoopDependencies {
 	 * flag and not a way to skip the check.
 	 */
 	readPullRequest?: (projectRoot: string, branch: string) => Promise<PullRequestRecord | undefined>;
+	/**
+	 * The operator's stop: `/kpi stop` aborts it. Every in-flight session,
+	 * backoff wait and open gate unwinds at once as an operator stop.
+	 */
+	signal?: AbortSignal;
 }
 
 export interface LoopInvocation {
@@ -70,26 +119,13 @@ export interface LoopInvocation {
 	planPath?: string;
 	/** The operator declared this job offline for research. */
 	noNetwork?: boolean;
-	/** Optional run-wide budget caps frozen onto the job contract. */
-	limits?: {
-		maxRounds?: number;
-		maxCostUsd?: number;
-		timeoutMs?: number;
-	};
 }
-
-/**
- * What a `NEEDS_HUMAN` outcome is waiting on, as data rather than as a phrase
- * in `reason`: a provider account the operator must repair or route around,
- * or a ship delivery (push, pull request) the operator must complete. The
- * control plane keys its recovery prompt off this, never off the wording.
- */
-export type LoopRecovery = "provider" | "delivery";
 
 export interface LoopOutcome {
 	jobId: string;
-	status: TerminalStatus;
+	status: RunStatus;
 	reason?: string;
+	/** What a `NEEDS_HUMAN` is waiting on, as data; the control plane keys its recovery prompt off this. */
 	recovery?: LoopRecovery;
 	graphState?: Readonly<GraphRunState>;
 }
@@ -114,62 +150,26 @@ function unwrapPath(value: string): string {
 		: trimmed;
 }
 
+/** The caps a retired release accepted. K-π runs have no caps; naming one is refused, wherever it appears. */
+const RETIRED_CAP_FLAG = /(?:^|\s)--(max-cost-usd|timeout-ms|max-rounds)(?=\s|$)/u;
+const NO_NETWORK_FLAG = /(?:^|\s)--no-network(?=\s|$)/u;
+
 export function parseLoopInvocation(args: string): LoopInvocation {
 	let input = args.trim();
-	// Leading flags compose: offline, budget caps, then mode/plan/goal.
-	// Caps freeze onto task.limits so the graph budget can end the run with
-	// exhausted_limit naming the cap the operator set.
+	const retired = RETIRED_CAP_FLAG.exec(input);
+	if (retired !== null) {
+		throw new Error(
+			`/kpi --${retired[1]} was removed: K-π runs have no caps; cost and elapsed time are reported on the board`,
+		);
+	}
+	// The offline flag composes with every mode and may sit anywhere; it is the
+	// operator's decision, never part of the goal.
 	let noNetwork = false;
-	const limits: NonNullable<LoopInvocation["limits"]> = {};
-	const takeFlag = (pattern: RegExp): string | undefined => {
-		const match = pattern.exec(input);
-		if (match === null) {
-			return undefined;
-		}
-		input = `${input.slice(0, match.index)} ${input.slice(match.index + match[0].length)}`
-			.trim()
-			.replace(/\s+/gu, " ");
-		return match[1];
-	};
-	for (;;) {
-		const before = input;
-		if (/^--no-network(?=\s|$)/u.test(input) || /\s--no-network(?=\s|$)/u.test(input)) {
-			const m = /(?:^|\s)--no-network(?=\s|$)/u.exec(input);
-			if (m) {
-				noNetwork = true;
-				input = `${input.slice(0, m.index)} ${input.slice(m.index + m[0].length)}`.trim().replace(/\s+/gu, " ");
-			}
-		}
-		const cost = takeFlag(/(?:^|\s)--max-cost-usd\s+(\S+)/u);
-		if (cost !== undefined) {
-			const n = Number(cost);
-			if (!Number.isFinite(n) || n <= 0) {
-				throw new Error("/kpi --max-cost-usd requires a positive number");
-			}
-			limits.maxCostUsd = n;
-		}
-		const timeout = takeFlag(/(?:^|\s)--timeout-ms\s+(\S+)/u);
-		if (timeout !== undefined) {
-			const n = Number(timeout);
-			if (!Number.isFinite(n) || n <= 0) {
-				throw new Error("/kpi --timeout-ms requires a positive number");
-			}
-			limits.timeoutMs = n;
-		}
-		const rounds = takeFlag(/(?:^|\s)--max-rounds\s+(\S+)/u);
-		if (rounds !== undefined) {
-			const n = Number(rounds);
-			if (!Number.isInteger(n) || n <= 0) {
-				throw new Error("/kpi --max-rounds requires a positive integer");
-			}
-			limits.maxRounds = n;
-		}
-		if (input === before) {
-			break;
-		}
+	for (let flag = NO_NETWORK_FLAG.exec(input); flag !== null; flag = NO_NETWORK_FLAG.exec(input)) {
+		noNetwork = true;
+		input = `${input.slice(0, flag.index)} ${input.slice(flag.index + flag[0].length)}`.trim().replace(/\s+/gu, " ");
 	}
 	const offline = noNetwork ? { noNetwork: true as const } : {};
-	const limitFields = Object.keys(limits).length > 0 ? { limits } : {};
 	if (input.startsWith("--mode")) {
 		const match = /^--mode\s+(\S+)(?:\s+([\s\S]+))?$/u.exec(input);
 		if (match === null) {
@@ -183,7 +183,7 @@ export function parseLoopInvocation(args: string): LoopInvocation {
 		if (goal.length === 0) {
 			throw new Error(`/kpi --mode ${mode} requires a goal`);
 		}
-		return { goal, mode, ...offline, ...limitFields };
+		return { goal, mode, ...offline };
 	}
 	if (input.startsWith("--until-green")) {
 		const separator = input[13];
@@ -194,7 +194,7 @@ export function parseLoopInvocation(args: string): LoopInvocation {
 		if (goal.length === 0) {
 			throw new Error("/kpi --until-green requires a goal");
 		}
-		return { goal, mode: "autopilot", ...offline, ...limitFields };
+		return { goal, mode: "autopilot", ...offline };
 	}
 	if (input.startsWith("--plan")) {
 		const separator = input[6];
@@ -210,29 +210,16 @@ export function parseLoopInvocation(args: string): LoopInvocation {
 			mode: "gated",
 			planPath,
 			...offline,
-			...limitFields,
 		};
 	}
 	if (input.startsWith("--")) {
 		throw new Error(`Unknown /kpi option: ${input.split(/\s/u, 1)[0]}`);
 	}
 	if (input.length === 0) {
-		// Name the flag the operator used so bare caps/offline without a goal are legible.
-		if (noNetwork) {
-			throw new Error("/kpi --no-network requires a goal");
-		}
-		if (limits.maxCostUsd !== undefined) {
-			throw new Error("/kpi --max-cost-usd requires a goal");
-		}
-		if (limits.timeoutMs !== undefined) {
-			throw new Error("/kpi --timeout-ms requires a goal");
-		}
-		if (limits.maxRounds !== undefined) {
-			throw new Error("/kpi --max-rounds requires a goal");
-		}
-		throw new Error("/kpi requires a goal");
+		// Name the flag the operator used so a bare offline flag without a goal is legible.
+		throw new Error(noNetwork ? "/kpi --no-network requires a goal" : "/kpi requires a goal");
 	}
-	return { goal: input, mode: "gated", ...offline, ...limitFields };
+	return { goal: input, mode: "gated", ...offline };
 }
 
 export function makeJobId(goal: string): string {
@@ -419,26 +406,56 @@ function stageFor(node: string): string {
 	if (node === "quality-green") {
 		return "test";
 	}
-	if (node === "plan-check") {
+	if (node === "plan-check" || node === "plan-approval") {
 		return "plan";
 	}
 	return node;
+}
+
+/** The backoff a node is waiting out, as state.json reports it while it lasts. */
+interface RetryRow {
+	node: string;
+	attempt: number;
+	reason: TransientReason;
+	delay_ms: number;
+	until_ms: number;
+}
+
+/** The first active node mid-backoff; the board's RETRY row and nothing else. */
+function retryRow(state: Readonly<GraphRunState>): RetryRow | undefined {
+	for (const nodeId of state.active) {
+		const nodeState = state.nodes[nodeId];
+		if (nodeState?.retryAtMs === undefined || nodeState.retryReason === undefined) {
+			continue;
+		}
+		return {
+			node: nodeId,
+			attempt: nodeState.transientRetries ?? 0,
+			reason: nodeState.retryReason,
+			delay_ms: nodeState.retryDelaysMs?.at(-1) ?? 0,
+			until_ms: nodeState.retryAtMs,
+		};
+	}
+	return undefined;
 }
 
 function stateDocument(
 	task: Task,
 	state: Readonly<GraphRunState>,
 	stop: StopState,
-	terminalStatus?: TerminalStatus,
+	terminalStatus?: RunStatus,
 	reason?: string,
 	recovery?: LoopRecovery,
 ): Record<string, unknown> {
 	const node = activeNode(state);
+	// A paused graph is waiting on the operator; a completed one is done; the
+	// rest (running, interrupted at a gate) is a live run.
+	const status =
+		terminalStatus ?? (state.status === "paused" ? "NEEDS_HUMAN" : state.status === "completed" ? "DONE" : "RUNNING");
 	return {
 		job_id: task.job_id,
 		mode: task.mode,
 		round: stop.round,
-		maxRounds: stop.maxRounds,
 		stage: stageFor(node),
 		node,
 		passed: isJsonObject(state.values.test) ? state.values.test.passed : undefined,
@@ -446,36 +463,30 @@ function stateDocument(
 		review: state.values.review,
 		release: state.values.release,
 		ac: task.ac,
-		status:
-			terminalStatus ??
-			(state.status === "interrupted"
-				? "RUNNING"
-				: state.status === "completed"
-					? "DONE"
-					: state.status === "running"
-						? "RUNNING"
-						: state.status.toUpperCase()),
+		status,
 		reason,
 		// What a NEEDS_HUMAN is waiting on, persisted with it: a later process
 		// reading this file keys off the field, never off the wording of `reason`.
-		recovery,
+		recovery: recovery ?? (status === "NEEDS_HUMAN" ? state.pause?.recovery : undefined),
 		graph_status: state.status,
 		superstep: state.superstep,
 		pending_question: state.pendingHuman?.question,
 		limits: state.budget.limits,
 		started_at_ms: state.budget.startedAtMs,
+		// Report-only counters: nothing ends a run because of them.
 		elapsed_ms: state.budget.elapsedMs,
 		cost_usd: state.budget.costUsd,
 		graph_round: state.budget.round,
 		batches: state.budget.batches,
-		exhausted_limit: state.terminal?.limit,
 		// Stop-safety state. A resume that lost any of these would re-approve work
-		// it already rejected, or retry past its budget.
+		// it already rejected, or forget the re-plans it already spent.
 		evidence_fingerprints: [...stop.evidenceFingerprints],
 		output_fingerprints: [...stop.outputFingerprints],
 		failing_ac_sets: [...stop.failingAcSets],
-		retries: stop.retries,
-		retry_delays_ms: [...stop.retryDelaysMs],
+		last_test_evidence: stop.lastTestEvidence,
+		repaired: [...stop.repaired],
+		plan_repair: stop.repair,
+		retry: retryRow(state),
 		// The playbook the job froze, and every step it declared. Todos come only
 		// from task.playbook_steps so a fresh process resume cannot lose them when
 		// kModeState is empty, and cannot invent them from a later match.
@@ -506,7 +517,7 @@ export async function writeState(
 	task: Task,
 	state: Readonly<GraphRunState>,
 	stop: StopState,
-	terminalStatus?: TerminalStatus,
+	terminalStatus?: RunStatus,
 	reason?: string,
 	recovery?: LoopRecovery,
 ): Promise<void> {
@@ -520,25 +531,51 @@ function stringArray(value: unknown): string[] {
 	return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }
 
+const EVIDENCE_REFS: Record<PlanRepair["evidence_ref"], true> = { "verdict.json": true, "evidence.json": true };
+
+/** A persisted plan repair, or nothing when the document does not hold one. */
+function parsePlanRepair(value: unknown): PlanRepair | undefined {
+	if (
+		!isJsonObject(value) ||
+		typeof value.round !== "number" ||
+		typeof value.reason !== "string" ||
+		!Array.isArray(value.failing_ac) ||
+		typeof value.evidence_ref !== "string" ||
+		!(value.evidence_ref in EVIDENCE_REFS) ||
+		typeof value.witness !== "string"
+	) {
+		return undefined;
+	}
+	return {
+		round: value.round,
+		reason: value.reason,
+		failing_ac: stringArray(value.failing_ac),
+		evidence_ref: value.evidence_ref as PlanRepair["evidence_ref"],
+		witness: value.witness,
+		...(typeof value.guidance === "string" ? { guidance: value.guidance } : {}),
+	};
+}
+
 /**
  * Rebuilds the stop state a resumed job left behind. Every field matters: a run
- * that lost its fingerprints would re-accept output it already called stuck, and
- * one that lost its retry counter would retry past its budget.
+ * that lost its fingerprints would re-accept output it already called stuck,
+ * and one that lost its re-plans would spend them again instead of pausing.
  */
-export function restoreStopState(document: Record<string, unknown>, maxRounds: number): StopState {
-	const retries = typeof document.retries === "number" && Number.isInteger(document.retries) ? document.retries : 0;
+export function restoreStopState(document: Record<string, unknown>): StopState {
+	const repair = parsePlanRepair(document.plan_repair);
 	return {
-		...createStopState(maxRounds),
+		...createStopState(),
 		round: typeof document.round === "number" ? document.round : 0,
 		// Normalized on the way back in, so a comparison after a resume is made on
 		// the same terms the reducer used before the kill.
 		evidenceFingerprints: stringArray(document.evidence_fingerprints).map(stopFingerprint),
 		outputFingerprints: stringArray(document.output_fingerprints).map(stopFingerprint),
 		failingAcSets: stringArray(document.failing_ac_sets),
-		retries: Math.max(0, Math.min(MAX_TRANSIENT_RETRIES, retries)),
-		retryDelaysMs: Array.isArray(document.retry_delays_ms)
-			? document.retry_delays_ms.filter((item): item is number => typeof item === "number" && Number.isFinite(item))
-			: [],
+		...(typeof document.last_test_evidence === "string"
+			? { lastTestEvidence: stopFingerprint(document.last_test_evidence) }
+			: {}),
+		repaired: stringArray(document.repaired),
+		...(repair === undefined ? {} : { repair }),
 	};
 }
 
@@ -656,24 +693,73 @@ function describeError(error: unknown): string {
 	}
 }
 
+const STACK_REFUSAL_PATTERN =
+	/stack\.json|stack\.schema|assertDuneStack|Dune|Layer folder|Module folder|Horizontal delivery|layer sweep|shared module|failed response validation/iu;
+const PLAN_VALIDATION_PATTERN = /^agent node plan failed response validation after (\d+) attempts?: (.+)$/su;
+
+/**
+ * The stack refusal behind a plan node's contract failure, worded as the
+ * contract implement reads: the stable prefix, then the real cause, because
+ * "missing" alone hid that the model never returned a JSON document at all.
+ * Nothing when the failure is not about the map.
+ */
+function planStackRefusal(message: string): string | undefined {
+	if (!STACK_REFUSAL_PATTERN.test(message)) {
+		return undefined;
+	}
+	const validation = PLAN_VALIDATION_PATTERN.exec(message);
+	return validation !== null &&
+		/not valid JSON|assistant response text is unavailable|response must be a JSON object/iu.test(validation[2])
+		? `stack.json is missing: plan response was not valid stack.json JSON after ${validation[1]} attempts (${validation[2]})`
+		: message.replace(/^agent node plan failed response validation after \d+ attempts: /u, "");
+}
+
+/** What the operator does about each NEEDS_HUMAN before the resume command continues the job. */
+const RECOVERY_ADVICE: Record<LoopRecovery, string> = {
+	approval: "Answer it in an interactive K-π session",
+	provider: "Select a healthy model or resolve that provider account",
+	delivery: "Push the branch or open the pull request as named",
+	ship: "Put the job branch and its commit right in the repository",
+	bounds: "Revert the writes that left the declared bounds, or widen the task's bounds",
+	review: "Address the reviewer's blocking issue, or make the receipts fresh again",
+	no_progress: "Choose Give guidance, Keep going or Stop when the resume asks",
+	research: "Repair the research service, or run the job offline with --no-network",
+	stack: "Repair stack.json so implement has a valid frozen map",
+	contract: "Fix the contract defect the reason names",
+	ac_quality: "Rewrite the goal with executable acceptance criteria, or run it gated",
+};
+
 /**
  * The one place a NEEDS_HUMAN recovery is worded: the real reason, what the
  * operator does about it, and the exact resume command. `recovery` is the
  * signal the control plane keys off; this text is for the person reading it.
  */
 function recoveryReason(kind: LoopRecovery, message: string, jobId: string): string {
-	const advice =
-		kind === "provider"
-			? "Select a healthy model or resolve that provider account"
-			: "Push the branch or open the pull request as named";
-	return `${message}. ${advice}, then resume with /kpi ${jobId}`;
+	return `${message}. ${RECOVERY_ADVICE[kind]}, then resume with /kpi ${jobId}`;
+}
+
+/** A NEEDS_HUMAN drive result: the recovery and the reason worded for the operator, once. */
+function needsHuman(
+	base: Pick<DriveResult, "state" | "stopState" | "shippedThisRun">,
+	recovery: LoopRecovery,
+	message: string,
+	jobId: string,
+	terminalEmitted?: boolean,
+): DriveResult {
+	return {
+		...base,
+		terminalStatus: "NEEDS_HUMAN",
+		recovery,
+		reason: recoveryReason(recovery, message, jobId),
+		...(terminalEmitted === undefined ? {} : { terminalEmitted }),
+	};
 }
 
 /** The terminal a failed ship finalization writes, and how the operator gets past it. */
 function shipFailure(
 	error: unknown,
 	jobId: string,
-): { terminalStatus: TerminalStatus; reason: string; recovery?: LoopRecovery } {
+): { terminalStatus: RunStatus; reason: string; recovery: LoopRecovery } {
 	const message = describeError(error);
 	if (error instanceof ShipDeliveryError) {
 		return {
@@ -684,14 +770,15 @@ function shipFailure(
 	}
 	if (error instanceof ShipIntegrityError) {
 		// The one-commit contract refusing: a fact about the repository.
-		return { terminalStatus: "BLOCKED", reason: message };
+		return { terminalStatus: "NEEDS_HUMAN", reason: recoveryReason("ship", message, jobId), recovery: "ship" };
 	}
 	// A git or filesystem call that failed, or a value nothing here throws:
 	// the loop's own trouble, labelled so the operator does not go looking for
 	// a step they missed or a commit that is fine.
 	return {
-		terminalStatus: "BLOCKED",
-		reason: `ship finalization failed unexpectedly (not an operator step): ${message}`,
+		terminalStatus: "NEEDS_HUMAN",
+		reason: recoveryReason("ship", `ship finalization failed unexpectedly (not an operator step): ${message}`, jobId),
+		recovery: "ship",
 	};
 }
 
@@ -831,56 +918,89 @@ function changedPaths(before: ReadonlyMap<string, string>, after: ReadonlyMap<st
 	return [...paths].filter((path) => before.get(path) !== after.get(path));
 }
 
+/** What the evidence on disk witnesses: its canonical fingerprint and the criteria it reports failing. */
+interface EvidenceWitness {
+	fingerprint: string;
+	failingAcIds: string[];
+}
+
 /**
  * The verifier's evidence, fingerprinted canonically so reformatting the same
- * receipts cannot look like progress. Unparseable evidence falls back to its
- * bytes, which is still a stable witness of the same file.
+ * receipts cannot look like progress, with the acceptance criteria it reports
+ * as failing (order does not matter: the reducer canonicalizes the set).
+ * Unparseable evidence falls back to its bytes, which is still a stable
+ * witness of the same file. No evidence.json at all is nothing to witness.
  */
-async function evidenceFingerprint(runDirectory: string): Promise<string> {
-	const content = await readFile(join(runDirectory, "evidence.json"));
+async function readEvidenceWitness(runDirectory: string): Promise<EvidenceWitness | undefined> {
+	let content: Buffer;
 	try {
-		return canonicalFingerprint(JSON.parse(content.toString("utf8")));
-	} catch {
-		return `sha256:${createHash("sha256").update(content).digest("hex")}`;
+		content = await readFile(join(runDirectory, "evidence.json"));
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+			return undefined;
+		}
+		throw error;
 	}
+	let evidence: unknown;
+	try {
+		evidence = JSON.parse(content.toString("utf8"));
+	} catch {
+		return { fingerprint: `sha256:${createHash("sha256").update(content).digest("hex")}`, failingAcIds: [] };
+	}
+	return {
+		fingerprint: canonicalFingerprint(evidence),
+		failingAcIds:
+			isJsonObject(evidence) && Array.isArray(evidence.ac_results)
+				? evidence.ac_results.flatMap((result) =>
+						isJsonObject(result) && typeof result.id === "string" && result.passed !== true ? [result.id] : [],
+					)
+				: [],
+	};
 }
 
 /**
- * The acceptance criteria the latest evidence reports as failing. Order does not
- * matter: the stop reducer canonicalizes the set, so the same failures found in
- * a different order are the same set.
+ * The verifier round the run files describe, as the stop reducer sees it: a
+ * review verdict with its output fingerprint against the evidence beside it,
+ * or a failed test round's evidence alone. Nothing when the files that make
+ * the round are not there, or the verdict carries no fingerprint.
  */
-async function failingAcIds(runDirectory: string): Promise<string[]> {
-	let evidence: unknown;
-	try {
-		evidence = JSON.parse(await readFile(join(runDirectory, "evidence.json"), "utf8"));
-	} catch {
-		return [];
-	}
-	if (!isJsonObject(evidence) || !Array.isArray(evidence.ac_results)) {
-		return [];
-	}
-	return evidence.ac_results.flatMap((result) =>
-		isJsonObject(result) && typeof result.id === "string" && result.passed !== true ? [result.id] : [],
-	);
-}
-
-function reviewFingerprint(state: Readonly<GraphRunState>): string | undefined {
-	const review = state.values.review;
-	if (!isJsonObject(review)) {
+async function verifierEventOnDisk(
+	runDirectory: string,
+	source: "review" | "test",
+): Promise<VerifierEvent | undefined> {
+	const evidence = await readEvidenceWitness(runDirectory);
+	if (evidence === undefined) {
 		return undefined;
 	}
-	return typeof review.output_fingerprint === "string" ? review.output_fingerprint : undefined;
-}
-
-function reviewApproved(state: Readonly<GraphRunState>): boolean {
-	const review = state.values.review;
-	return isJsonObject(review) && review.approved === true;
-}
-
-function _reviewStatus(state: Readonly<GraphRunState>): string | undefined {
-	const review = state.values.review;
-	return isJsonObject(review) && typeof review.status === "string" ? review.status : undefined;
+	if (source === "test") {
+		return {
+			type: "verifier",
+			source,
+			passed: false,
+			evidenceFingerprint: evidence.fingerprint,
+			failingAcIds: evidence.failingAcIds,
+		};
+	}
+	let verdict: unknown;
+	try {
+		verdict = JSON.parse(await readFile(join(runDirectory, "verdict.json"), "utf8"));
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+			return undefined;
+		}
+		throw error;
+	}
+	if (!isJsonObject(verdict) || typeof verdict.output_fingerprint !== "string") {
+		return undefined;
+	}
+	return {
+		type: "verifier",
+		source,
+		passed: verdict.approved === true,
+		evidenceFingerprint: evidence.fingerprint,
+		outputFingerprint: verdict.output_fingerprint,
+		failingAcIds: evidence.failingAcIds,
+	};
 }
 
 function evidencePasses(task: Task, evidence: unknown): boolean {
@@ -1218,6 +1338,12 @@ interface LoopFacts {
 	resolve: () => Promise<JsonObject>;
 	/** Why bounds were last judged broken, for the terminal record. */
 	boundsReason: () => string | undefined;
+	/**
+	 * The stop state and active set the next superstep's routing is judged
+	 * against. Called before every superstep, so `progress.repeated` compares
+	 * the round just produced with the rounds already on record.
+	 */
+	observe: (stop: StopState, active: readonly string[]) => void;
 }
 
 function loopFacts(
@@ -1228,8 +1354,12 @@ function loopFacts(
 	planProvided: boolean,
 ): LoopFacts {
 	let boundsReason: string | undefined;
+	let observed: { stop: StopState; active: readonly string[] } = { stop: createStopState(), active: [] };
 	return {
 		boundsReason: () => boundsReason,
+		observe: (stop, active) => {
+			observed = { stop, active };
+		},
 		resolve: async (): Promise<JsonObject> => {
 			let evidence: unknown;
 			try {
@@ -1268,12 +1398,27 @@ function loopFacts(
 				}
 			}
 
+			// Progress is judged against the rounds already recorded: a review
+			// verdict that repeats an output or a failing set, or a failed test
+			// round whose evidence is identical to the previous failed one, is
+			// none. The topology decides what to do about it (re-plan or pause).
+			let witness: string | undefined;
+			if (observed.active.includes("review")) {
+				const event = await verifierEventOnDisk(jobDirectory, "review");
+				witness = event === undefined ? undefined : repeatedWitness(observed.stop, event);
+			} else if (observed.active.includes("test") && !testPassed) {
+				const event = await verifierEventOnDisk(jobDirectory, "test");
+				witness = event === undefined ? undefined : repeatedWitness(observed.stop, event);
+			}
+
 			return {
 				"plan.provided": planProvided,
 				"test.passed": testPassed,
 				"bounds.held": boundsReason === undefined,
 				"fingerprints.fresh": fresh,
 				"ship.shipped": await alreadyShipped(projectRoot, jobDirectory, task.job_id),
+				"progress.repeated": witness !== undefined,
+				"plan.repair_tried": observed.stop.repaired.length >= MAX_AUTOMATIC_REPLANS,
 			};
 		},
 	};
@@ -1282,7 +1427,7 @@ function loopFacts(
 interface DriveResult {
 	state: Readonly<GraphRunState>;
 	stopState: StopState;
-	terminalStatus?: TerminalStatus;
+	terminalStatus?: RunStatus;
 	reason?: string;
 	/**
 	 * Whether the ship node ran during this pass. A run that shipped is held to
@@ -1295,19 +1440,134 @@ interface DriveResult {
 	recovery?: LoopRecovery;
 }
 
+/**
+ * The operator's stop marker (C9). `recorded` says who appends the STOPPED
+ * terminal: the control plane when no loop was live (true), or the driver
+ * whose loop the control plane aborted (false).
+ */
+export interface StopMarker {
+	reason: "operator stop";
+	at: string;
+	recorded: boolean;
+}
+
+export async function writeStopMarker(runDirectory: string, recorded: boolean): Promise<StopMarker> {
+	const marker: StopMarker = { reason: "operator stop", at: new Date().toISOString(), recorded };
+	await atomicWrite(join(runDirectory, STOP_MARKER_NAME), `${JSON.stringify(marker, null, 2)}\n`);
+	return marker;
+}
+
+/**
+ * The marker, or nothing. A marker that is there but not readable as one is
+ * still the operator's stop; the driver records the terminal itself then.
+ */
+async function readStopMarker(runDirectory: string): Promise<Pick<StopMarker, "recorded"> | undefined> {
+	let content: string;
+	try {
+		content = await readFile(join(runDirectory, STOP_MARKER_NAME), "utf8");
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+			return undefined;
+		}
+		throw error;
+	}
+	try {
+		const marker: unknown = JSON.parse(content);
+		return { recorded: isJsonObject(marker) && marker.recorded === true };
+	} catch {
+		return { recorded: false };
+	}
+}
+
+/**
+ * Lets the next plan choose its slice: `current_module_id` is the freeze of
+ * the plan that did not deliver, and implement re-freezes from the new map.
+ */
+async function unfreezeSlice(jobDirectory: string): Promise<void> {
+	const path = join(jobDirectory, "task.json");
+	const { current_module_id: _slice, ...contract } = JSON.parse(await readFile(path, "utf8")) as Task;
+	await atomicWrite(path, `${JSON.stringify(contract, null, 2)}\n`);
+}
+
+/**
+ * A repeated witness is no progress. The finding is written for the planner
+ * (repair.json, kept with the stop state as `repair`) and the slice is
+ * unfrozen so the next plan may choose another. When the topology routed
+ * straight to plan, that re-plan is automatic: it is counted against the
+ * allowance an operator touch resets, put on the record, and announced.
+ */
+async function recordNoProgress(
+	ctx: ExtensionCommandContext,
+	jobDirectory: string,
+	task: Task,
+	stop: StopState,
+	event: VerifierEvent,
+	witness: string,
+	replanNow: boolean,
+): Promise<StopState> {
+	const cause =
+		event.source === "test"
+			? "test evidence repeated"
+			: witness === stopFingerprint(event.outputFingerprint)
+				? "review repeated the same output"
+				: "review repeated the same failing criteria";
+	const repair: PlanRepair = {
+		round: stop.round,
+		reason: `no progress: ${cause}`,
+		failing_ac: [...(event.failingAcIds ?? [])],
+		evidence_ref: event.source === "test" ? "evidence.json" : "verdict.json",
+		witness,
+		// The operator's words outlive one plan: they stand until the next touch.
+		...(stop.repair?.guidance === undefined ? {} : { guidance: stop.repair.guidance }),
+	};
+	await atomicWrite(join(jobDirectory, REPAIR_FILE_NAME), `${JSON.stringify(repair, null, 2)}\n`);
+	await unfreezeSlice(jobDirectory);
+	if (!replanNow) {
+		return { ...stop, repair };
+	}
+	await appendEvent(join(jobDirectory, "events.jsonl"), {
+		ts: new Date().toISOString(),
+		type: "checkpoint",
+		job_id: task.job_id,
+		round: stop.round,
+		node: "plan",
+		detail: `re-plan for witness ${witness}`,
+	});
+	ctx.ui.notify(`K-π ${task.job_id} re-planning: ${repair.reason}`, "warning");
+	return { ...stop, repair, repaired: [...stop.repaired, witness] };
+}
+
 async function driveUntilPause(
 	engine: GraphEngine,
+	ctx: ExtensionCommandContext,
 	projectRoot: string,
 	jobDirectory: string,
 	task: Task,
 	facts: LoopFacts,
 	stopState: StopState,
+	signal: AbortSignal | undefined,
 	onStateChange?: () => Promise<void>,
 ): Promise<DriveResult> {
 	let state = engine.state;
 	let currentStopState = stopState;
 	let shippedThisRun = false;
+	const jobId = task.job_id;
+	// The operator stopped the run: the engine's checkpoint keeps the
+	// interrupted node resumable, and whoever wrote the marker says whether
+	// the terminal is already on the record.
+	const operatorStop = async (): Promise<DriveResult> => ({
+		state: engine.state,
+		stopState: currentStopState,
+		shippedThisRun,
+		terminalStatus: "STOPPED",
+		reason: "operator stop",
+		terminalEmitted: (await readStopMarker(jobDirectory))?.recorded === true,
+	});
 	while (state.status === "running") {
+		// A marker written by another session lands here, before any work starts.
+		if ((await readStopMarker(jobDirectory)) !== undefined) {
+			return operatorStop();
+		}
 		if (state.active.some((node) => node === "specify" || node === "plan" || node === "plan-check")) {
 			try {
 				await assertResearchFresh(jobDirectory, task);
@@ -1327,6 +1587,7 @@ async function driveUntilPause(
 						eventsPath: join(jobDirectory, "events.jsonl"),
 						round: currentStopState.round,
 						node: state.active[0],
+						signal,
 					});
 				} catch (error) {
 					if (!(error instanceof ResearchShortfallError)) {
@@ -1334,13 +1595,12 @@ async function driveUntilPause(
 					}
 					// A healthy service that answered thinly is a human decision, per
 					// AC-29.6: never a downgrade to local research.
-					return {
-						state,
-						stopState: currentStopState,
-						shippedThisRun,
-						terminalStatus: "NEEDS_HUMAN",
-						reason: error.message,
-					};
+					return needsHuman(
+						{ state, stopState: currentStopState, shippedThisRun },
+						"research",
+						error.message,
+						jobId,
+					);
 				}
 			}
 		}
@@ -1351,21 +1611,20 @@ async function driveUntilPause(
 				// playbook, is an edit that happens while the job is open. The map is a
 				// precondition, not a convenience: it is read, validated and bound to
 				// this contract before the node's first write, and a missing or stale
-				// stack stops the round rather than being regenerated.
-				const contract = await readTaskForJob(projectRoot, task.job_id).catch(() => task);
+				// stack pauses the round rather than being regenerated.
+				const contract = await readTaskForJob(projectRoot, jobId).catch(() => task);
 				if (stackRequiredFor(contract)) {
 					const { module } = await freezeCurrentSlice(projectRoot, jobDirectory, contract);
 					await scaffoldModule(projectRoot, module);
 					await assertScaffoldedBeforeBehavior(projectRoot, module);
 				}
 			} catch (error) {
-				return {
-					state,
-					stopState: currentStopState,
-					shippedThisRun,
-					terminalStatus: "UNSAFE",
-					reason: error instanceof Error ? error.message : String(error),
-				};
+				return needsHuman(
+					{ state, stopState: currentStopState, shippedThisRun },
+					"stack",
+					describeError(error),
+					jobId,
+				);
 			}
 		}
 
@@ -1378,142 +1637,90 @@ async function driveUntilPause(
 			// ship node commits, pushes, and opens its pull request from wherever
 			// the worktree is, so the worktree is put on kpi/<job id> first.
 			try {
-				await ensureJobBranch(projectRoot, task.job_id);
+				await ensureJobBranch(projectRoot, jobId);
 			} catch (error) {
-				return {
-					state,
-					stopState: currentStopState,
-					shippedThisRun,
-					terminalStatus: "BLOCKED",
-					reason: `could not switch to the job branch ${jobBranchName(task.job_id)}: ${
-						error instanceof Error ? error.message : String(error)
-					}`,
-				};
+				return needsHuman(
+					{ state, stopState: currentStopState, shippedThisRun },
+					"ship",
+					`could not switch to the job branch ${jobBranchName(jobId)}: ${describeError(error)}`,
+					jobId,
+				);
 			}
 		}
-		const prePlan = state.active.includes("plan");
+		const prePlan = completedNodes.includes("plan");
+		facts.observe(currentStopState, completedNodes);
 		try {
 			state = await engine.runSuperstep();
 		} catch (error) {
-			if (error instanceof GraphNodeProviderError) {
-				return {
-					state,
-					stopState: currentStopState,
-					shippedThisRun,
-					terminalStatus: "NEEDS_HUMAN",
-					reason: recoveryReason("provider", error.message, task.job_id),
-					recovery: "provider",
-				};
+			if (error instanceof OperatorStopError) {
+				return operatorStop();
 			}
-			// Plan owns stack.json via its response contract. A map the plan cannot
-			// freeze is the same Dune refusal implement would raise — UNSAFE with the
-			// semantic reason, never a generic BLOCKED graph crash.
-			const message = error instanceof Error ? error.message : String(error);
-			if (
-				prePlan &&
-				(/stack\.json|stack\.schema|assertDuneStack|Dune|Layer folder|Module folder|Horizontal delivery|layer sweep|shared module/iu.test(
-					message,
-				) ||
-					/failed response validation/iu.test(message))
-			) {
-				// The prefix is the contract implement reads; the rest is the real
-				// cause, because "missing" alone hid that the model never returned a
-				// JSON document at all.
-				const validation = /^agent node plan failed response validation after (\d+) attempts?: (.+)$/su.exec(
-					message,
-				);
-				const reason =
-					validation !== null &&
-					/not valid JSON|assistant response text is unavailable|response must be a JSON object/iu.test(
-						validation[2],
-					)
-						? `stack.json is missing: plan response was not valid stack.json JSON after ${validation[1]} attempts (${validation[2]})`
-						: message.replace(/^agent node plan failed response validation after \d+ attempts: /u, "");
-				return {
-					state,
-					stopState: currentStopState,
-					shippedThisRun,
-					terminalStatus: "UNSAFE",
-					reason,
-				};
+			if (error instanceof GraphNodeProviderError) {
+				return needsHuman({ state, stopState: currentStopState, shippedThisRun }, "provider", error.message, jobId);
 			}
 			throw error;
 		}
-		if (state.status === "exhausted") {
-			// The engine owns cap exhaustion end to end: it has already written the
-			// durable EXHAUSTED checkpoint and the single terminal event.
-			return {
-				state,
-				stopState: currentStopState,
-				shippedThisRun,
-				terminalStatus: "EXHAUSTED",
-				reason: state.terminal?.reason ?? "graph exhausted a configured cap",
-				terminalEmitted: true,
-			};
-		}
-		if (state.status === "terminated") {
-			// The topology routed to a terminal. The engine has written the durable
-			// checkpoint and the single terminal event; the driver only supplies the
-			// detail behind the fact that sent it there.
-			const terminal = state.terminal;
-			return {
-				state,
-				stopState: currentStopState,
-				shippedThisRun,
-				terminalStatus: terminal?.status ?? "BLOCKED",
-				reason:
-					terminal?.status === "UNSAFE"
-						? (facts.boundsReason() ?? terminal.reason)
-						: (terminal?.reason ?? "the graph routed to a terminal"),
-				terminalEmitted: true,
-			};
-		}
+
+		// Every verifier round is a round: a review verdict, or a failed test
+		// round (a passing one is judged by the review that follows it). The
+		// witness is judged before the round is recorded, on the same terms the
+		// facts merged before routing were.
+		let event: VerifierEvent | undefined;
 		if (completedNodes.includes("review")) {
-			const outputFingerprint = reviewFingerprint(state);
-			if (outputFingerprint === undefined) {
-				return {
-					state,
-					stopState: currentStopState,
-					shippedThisRun,
-					terminalStatus: "BLOCKED",
-					reason: "review did not produce an output fingerprint",
-				};
+			event = await verifierEventOnDisk(jobDirectory, "review");
+			if (event === undefined) {
+				return needsHuman(
+					{ state, stopState: currentStopState, shippedThisRun },
+					"contract",
+					"review did not produce a verdict with an output fingerprint against evidence.json",
+					jobId,
+				);
 			}
-			currentStopState = transitionStopState(currentStopState, {
-				type: "verifier",
-				passed: reviewApproved(state),
-				evidenceFingerprint: await evidenceFingerprint(jobDirectory),
-				outputFingerprint,
-				failingAcIds: await failingAcIds(jobDirectory),
-			});
-			if (currentStopState.status === "NO_PROGRESS" || currentStopState.status === "EXHAUSTED") {
-				// maxRounds exhaustion is a stop-reducer outcome, not a graph budget
-				// cap — still name the limit so state.json.exhausted_limit is legible.
-				const withLimit =
-					currentStopState.status === "EXHAUSTED"
-						? {
-								...state,
-								terminal: {
-									status: "EXHAUSTED" as const,
-									limit: "maxRounds" as const,
-									reason: "maximum verifier rounds exhausted",
-									round: currentStopState.round,
-									superstep: state.superstep,
-									nodes: [...state.active],
-								},
-							}
-						: state;
-				return {
-					state: withLimit,
-					stopState: currentStopState,
-					shippedThisRun,
-					terminalStatus: currentStopState.status,
-					reason:
-						currentStopState.status === "NO_PROGRESS"
-							? "the same acceptance criteria failed in two rounds"
-							: "maximum verifier rounds exhausted",
-				};
+		} else if (
+			completedNodes.includes("test") &&
+			isJsonObject(state.values.test) &&
+			state.values.test.passed === false &&
+			isJsonObject(state.values.bounds) &&
+			state.values.bounds.held === true
+		) {
+			event = await verifierEventOnDisk(jobDirectory, "test");
+		}
+		if (event !== undefined) {
+			// A green round repeats nothing: only a failed round can be no progress.
+			const witness = event.passed ? undefined : repeatedWitness(currentStopState, event);
+			currentStopState = recordVerifier(currentStopState, event);
+			if (witness !== undefined) {
+				currentStopState = await recordNoProgress(
+					ctx,
+					jobDirectory,
+					task,
+					currentStopState,
+					event,
+					witness,
+					state.status === "running" && state.active.includes("plan"),
+				);
 			}
+		}
+		if (state.status === "paused") {
+			// The topology parked the run for the operator, or the engine refused a
+			// contract defect. The engine has written the checkpoint; the driver
+			// supplies the detail behind the fact and writes the one terminal.
+			const pause = state.pause;
+			if (pause === undefined) {
+				throw new Error("paused graph carries no pause record");
+			}
+			const base = { state, stopState: currentStopState, shippedThisRun };
+			if (pause.recovery === "bounds") {
+				return needsHuman(base, "bounds", facts.boundsReason() ?? pause.reason, jobId);
+			}
+			// Plan owns stack.json via its response contract. A map the plan cannot
+			// freeze is the same Dune refusal implement would raise: a stack pause
+			// with the semantic reason, never a generic contract defect.
+			const stackRefusal = pause.recovery === "contract" && prePlan ? planStackRefusal(pause.reason) : undefined;
+			if (stackRefusal !== undefined) {
+				return needsHuman(base, "stack", stackRefusal, jobId);
+			}
+			return needsHuman(base, pause.recovery, pause.reason, jobId);
 		}
 		await writeState(jobDirectory, task, state, currentStopState);
 		await onStateChange?.();
@@ -1531,7 +1738,7 @@ async function writeTerminalState(
 	if (status === undefined) {
 		return;
 	}
-	if (result.terminalEmitted !== true) {
+	if (result.terminalEmitted !== true && status !== "RUNNING") {
 		await appendEvent(eventsPath, {
 			ts: new Date().toISOString(),
 			type: "loop.terminal",
@@ -1540,9 +1747,211 @@ async function writeTerminalState(
 			node: activeNode(result.state),
 			status,
 			reason: result.reason,
+			...(result.recovery === undefined ? {} : { recovery: result.recovery }),
 		});
 	}
 	await writeState(jobDirectory, task, result.state, result.stopState, status, result.reason, result.recovery);
+}
+
+/** A terminal that leaves the gate pending, so a later interactive resume asks it again. */
+type GateStop = DriveResult & { terminalStatus: "NEEDS_HUMAN" | "STOPPED" };
+
+/** Waits on an operator dialog, unless the operator's stop lands first. */
+function untilStop<T>(dialog: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+	if (signal === undefined) {
+		return dialog;
+	}
+	if (signal.aborted) {
+		return Promise.reject(new OperatorStopError());
+	}
+	const settled = Promise.withResolvers<T>();
+	const onAbort = (): void => {
+		settled.reject(new OperatorStopError());
+	};
+	signal.addEventListener("abort", onAbort, { once: true });
+	dialog.then(settled.resolve, settled.reject).finally(() => {
+		signal.removeEventListener("abort", onAbort);
+	});
+	return settled.promise;
+}
+
+/** What a gate that takes feedback offers, and what its change request is about. */
+interface FeedbackGate {
+	options: typeof PLAN_GATE_OPTIONS | typeof RELEASE_GATE_OPTIONS;
+	subject: "plan" | "release";
+}
+
+/** The operator's exit from a gate: an answer, a stop, or nothing (dismissed). */
+type GateChoice = { answer: HumanAnswer } | { stopped: true } | undefined;
+
+/**
+ * Asks the operator a gate that takes feedback: a select over the gate's
+ * options whose title carries the summary of the run file the node names, and
+ * an editor for the change request. Nothing when the operator dismissed the
+ * select; a stop when they chose it; every other exit is an answer.
+ */
+async function askGateWithFeedback(
+	ctx: ExtensionCommandContext,
+	node: HumanGraphNode,
+	pending: PendingHumanInput,
+	engine: GraphEngine,
+	jobDirectory: string,
+	jobId: string,
+	gate: FeedbackGate,
+	signal: AbortSignal | undefined,
+): Promise<GateChoice> {
+	// A summary that cannot be rendered is still a gate: the operator sees why
+	// and can request changes, which is the answer a broken map needs.
+	const summary =
+		node.detail === undefined
+			? ""
+			: await readDuneStack(jobDirectory)
+					.then(renderPlanSummary)
+					.catch((error: unknown) => {
+						const failure = `${node.detail} could not be summarised: ${describeError(error)}`;
+						ctx.ui.notify(`K-π job ${jobId}: ${failure}`, "warning");
+						return failure;
+					});
+	// The gate's own run count: the operator sees which revision this is. There
+	// is no cap to show because there is none; the operator is the bound.
+	const revision = engine.state.nodes[pending.nodeId]?.runs ?? 1;
+	const title = [
+		pending.title,
+		pending.question,
+		...(summary.length === 0 ? [] : ["", summary]),
+		"",
+		...(node.detail === undefined ? [] : [`Full plan: ${CONFIG_DIR_NAME}/runs/${jobId}/${node.detail}`]),
+		`Revision ${revision}`,
+	].join("\n");
+	const [approve, requestChanges, stop] = gate.options;
+	let previous = "";
+	for (;;) {
+		const choice = await untilStop(ctx.ui.select(title, [...gate.options]), signal);
+		if (choice === undefined) {
+			return undefined;
+		}
+		if (choice === approve) {
+			return { answer: { approved: true } };
+		}
+		if (choice === stop) {
+			return { stopped: true };
+		}
+		if (choice !== requestChanges) {
+			throw new Error(`${pending.title} was answered with an option it did not offer: ${choice}`);
+		}
+		const text = await untilStop(
+			ctx.ui.editor(`Request changes to ${node.detail ?? `the ${gate.subject}`}`, previous),
+			signal,
+		);
+		if (text === undefined) {
+			// A dismissed editor is not a decision: back to the select.
+			continue;
+		}
+		const feedback = text.trim();
+		if (feedback.length === 0) {
+			ctx.ui.notify(`K-π feedback is required to request ${gate.subject} changes`, "warning");
+			continue;
+		}
+		if (feedback.length > MAX_HUMAN_FEEDBACK_CHARS) {
+			ctx.ui.notify(
+				`K-π feedback must be at most ${MAX_HUMAN_FEEDBACK_CHARS} characters (got ${feedback.length})`,
+				"warning",
+			);
+			previous = text;
+			continue;
+		}
+		return { answer: { approved: false, feedback } };
+	}
+}
+
+/**
+ * Answers the gate an interrupted graph is waiting on, or says why it cannot.
+ *
+ * Without dialog UI the gate is never answered on the operator's behalf: the
+ * run stops `NEEDS_HUMAN` with the resume command, the engine stays
+ * interrupted with the gate pending, and an interactive resume asks it. An
+ * answer is recorded as `approval.result`, submitted, and made durable before
+ * the graph moves on. A Stop, or the operator's stop landing while the gate
+ * is open, leaves it pending the same way and the job STOPPED.
+ */
+async function answerPendingHuman(
+	engine: GraphEngine,
+	graph: GraphDefinition,
+	ctx: ExtensionCommandContext,
+	jobDirectory: string,
+	eventsPath: string,
+	task: Task,
+	stopState: StopState,
+	signal: AbortSignal | undefined,
+	onStateChange?: () => Promise<void>,
+): Promise<GateStop | undefined> {
+	const pending = engine.state.pendingHuman;
+	if (pending === undefined) {
+		throw new Error("Interrupted graph has no pending human approval");
+	}
+	const node = graph.nodes.find((candidate) => candidate.id === pending.nodeId);
+	if (node?.type !== "human") {
+		throw new Error(`pending human node does not exist: ${pending.nodeId}`);
+	}
+	const jobId = task.job_id;
+	// The one notification a gate always gets; the TUI has no bell to ring.
+	ctx.ui.notify(`K-π job ${jobId} is waiting on you: ${pending.title}`, "warning");
+	const base = { state: engine.state, stopState };
+	if (!ctx.hasUI) {
+		return needsHuman(base, "approval", `${pending.title} needs an interactive session`, jobId) as GateStop;
+	}
+	let answer: HumanAnswer;
+	try {
+		if (node.feedbackPath === undefined) {
+			answer = { approved: await untilStop(ctx.ui.confirm(pending.title, pending.question), signal) };
+		} else {
+			// The release gate is the one whose feedback goes back to implement;
+			// every other feedback gate is a plan gate.
+			const gate: FeedbackGate =
+				node.statePath === "release.approved"
+					? { options: RELEASE_GATE_OPTIONS, subject: "release" }
+					: { options: PLAN_GATE_OPTIONS, subject: "plan" };
+			const asked = await askGateWithFeedback(ctx, node, pending, engine, jobDirectory, jobId, gate, signal);
+			if (asked === undefined) {
+				return needsHuman(base, "approval", `${pending.title} was dismissed`, jobId) as GateStop;
+			}
+			if ("stopped" in asked) {
+				return {
+					...base,
+					terminalStatus: "STOPPED",
+					reason: `stopped by the operator at ${pending.title} (resume with /kpi ${jobId})`,
+				};
+			}
+			answer = asked.answer;
+		}
+	} catch (error) {
+		if (error instanceof OperatorStopError) {
+			return {
+				...base,
+				terminalStatus: "STOPPED",
+				reason: "operator stop",
+				terminalEmitted: (await readStopMarker(jobDirectory))?.recorded === true,
+			};
+		}
+		throw error;
+	}
+	await appendEvent(eventsPath, {
+		ts: new Date().toISOString(),
+		type: "approval.result",
+		job_id: jobId,
+		round: stopState.round,
+		node: pending.nodeId,
+		approved: answer.approved,
+		question: pending.question,
+		...(answer.feedback === undefined ? {} : { feedback: answer.feedback }),
+	});
+	await engine.submitHuman(answer);
+	// The answer is durable before the next node runs: policy reads
+	// `release.approved` from state.json, and a push or a pull request is
+	// allowed on that flag alone.
+	await writeState(jobDirectory, task, engine.state, stopState);
+	await onStateChange?.();
+	return undefined;
 }
 
 /**
@@ -1624,6 +2033,282 @@ async function finalizeShip(
 	const delivery = await verifyShipDelivery(projectRoot, jobId, recovered.head, readPullRequest);
 	await writeShipMarker(projectRoot, jobDirectory, jobId, recovered.subject, recovered.head, delivery);
 }
+
+/** What the no-progress prompt offers once the automatic re-plans are spent. */
+export const NO_PROGRESS_OPTIONS = ["Give guidance", "Keep going", "Stop"] as const;
+
+/** Everything a job's drive needs once its engine exists. */
+interface JobRun {
+	ctx: ExtensionCommandContext;
+	dependencies: LoopDependencies;
+	graph: GraphDefinition;
+	engine: GraphEngine;
+	jobId: string;
+	jobDirectory: string;
+	eventsPath: string;
+	task: Task;
+	facts: LoopFacts;
+	/** The latest stop state; every drive and every touch replaces it. */
+	stopState: StopState;
+	previousHead: string | undefined;
+	/** A resume into a no-progress pause asks the operator before it drives. */
+	askNoProgressFirst: boolean;
+}
+
+/**
+ * The engine options both entry points share. `onRetry` puts every backoff on
+ * the record and on the board before the wait; `stopRequested` honours a
+ * marker written by another session after every wait; `signal` is this
+ * session's immediate stop.
+ */
+function engineOptions(
+	ctx: ExtensionCommandContext,
+	dependencies: LoopDependencies,
+	jobId: string,
+	jobDirectory: string,
+	task: Task,
+	facts: LoopFacts,
+	current: () => { stop: StopState; state: Readonly<GraphRunState> },
+): GraphEngineOptions {
+	return {
+		projectRoot: ctx.cwd,
+		jobId,
+		createAgentSession: dependencies.createAgentSession,
+		busDependencies: dependencies.busDependencies,
+		now: dependencies.now,
+		accumulatedCostUsd: dependencies.accumulatedCostUsd,
+		sleep: dependencies.sleep,
+		retryBaseDelayMs: dependencies.retryBaseDelayMs,
+		resolveFacts: facts.resolve,
+		uiContext: ctx.ui,
+		model: ctx.model,
+		thinkingLevel: ctx.thinkingLevel,
+		onSessionsChange: dependencies.onStateChange,
+		signal: dependencies.signal,
+		stopRequested: async () => (await readStopMarker(jobDirectory)) !== undefined,
+		// The driver writes the one terminal of a pause itself, once it has
+		// settled the recovery and worded the reason (writeTerminalState).
+		emitTerminal: async () => {},
+		onRetry: async (retry: NodeRetry) => {
+			const { stop, state } = current();
+			await appendEvent(join(jobDirectory, "events.jsonl"), {
+				ts: new Date().toISOString(),
+				type: "node.retry",
+				job_id: jobId,
+				round: stop.round,
+				node: retry.nodeId,
+				attempt: retry.attempt,
+				reason: retry.reason,
+				delay_ms: retry.delayMs,
+				...(retry.status === undefined ? {} : { status: retry.status }),
+				...(retry.message.length === 0 ? {} : { message: retry.message }),
+			});
+			await writeState(jobDirectory, task, state, stop);
+			ctx.ui.notify(
+				`K-π ${jobId} retry ${retry.attempt} on ${retry.nodeId}: ${retry.reason}; next in ${Math.ceil(retry.delayMs / 1000)}s (/kpi stop stops it)`,
+				"warning",
+			);
+			await dependencies.onStateChange?.();
+		},
+	};
+}
+
+/**
+ * The operator's answer to a run that repeated itself after its automatic
+ * re-plans. Guidance goes to the planner through repair.json; guidance and
+ * "Keep going" both start a fresh re-plan allowance and re-arm the run at
+ * plan; "Stop" (or a dismissed prompt, or the operator's stop) ends it
+ * STOPPED with everything intact for the next resume.
+ */
+async function settleNoProgress(run: JobRun): Promise<DriveResult | undefined> {
+	const { ctx, engine, jobDirectory, task, dependencies } = run;
+	const jobId = task.job_id;
+	const stopped = (reason: string): DriveResult => ({
+		state: engine.state,
+		stopState: run.stopState,
+		terminalStatus: "STOPPED",
+		reason,
+	});
+	for (;;) {
+		try {
+			const choice = await untilStop(
+				ctx.ui.select(`K-π no progress after ${MAX_AUTOMATIC_REPLANS} re-plans`, [...NO_PROGRESS_OPTIONS]),
+				dependencies.signal,
+			);
+			if (choice === undefined || choice === NO_PROGRESS_OPTIONS[2]) {
+				return stopped(`stopped by the operator after no progress (resume with /kpi ${jobId})`);
+			}
+			if (choice === NO_PROGRESS_OPTIONS[0]) {
+				const repair = run.stopState.repair;
+				if (repair === undefined) {
+					// Nothing to guide: the state that paused carries no repair record.
+					ctx.ui.notify(
+						`K-π job ${jobId} has no ${REPAIR_FILE_NAME} to guide; choose Keep going or Stop`,
+						"warning",
+					);
+					continue;
+				}
+				const text = await untilStop(
+					ctx.ui.editor("Guidance for the planner", repair.guidance ?? ""),
+					dependencies.signal,
+				);
+				if (text === undefined) {
+					// A dismissed editor is not a decision: back to the select.
+					continue;
+				}
+				const guidance = text.trim();
+				if (guidance.length === 0) {
+					ctx.ui.notify(
+						"K-π guidance is required to give guidance; choose Keep going to continue without it",
+						"warning",
+					);
+					continue;
+				}
+				const guided: PlanRepair = { ...repair, guidance };
+				await atomicWrite(join(jobDirectory, REPAIR_FILE_NAME), `${JSON.stringify(guided, null, 2)}\n`);
+				run.stopState = { ...run.stopState, repair: guided, repaired: [] };
+			} else if (choice === NO_PROGRESS_OPTIONS[1]) {
+				run.stopState = { ...run.stopState, repaired: [] };
+			} else {
+				throw new Error(`the no-progress prompt was answered with an option it did not offer: ${choice}`);
+			}
+		} catch (error) {
+			// The operator's stop lands while the select or the editor is open.
+			if (error instanceof OperatorStopError) {
+				return {
+					...stopped("operator stop"),
+					terminalEmitted: (await readStopMarker(jobDirectory))?.recorded === true,
+				};
+			}
+			throw error;
+		}
+		engine.rearm();
+		await writeState(jobDirectory, task, engine.state, run.stopState);
+		await dependencies.onStateChange?.();
+		return undefined;
+	}
+}
+
+/**
+ * Drives until the graph pauses, and settles a no-progress pause with the
+ * operator when there is one to ask: an interactive session is offered
+ * guidance, keep going, or stop and the run continues on the first two.
+ * Without a UI the NEEDS_HUMAN stands, with the resume command.
+ */
+async function driveWithOperator(run: JobRun): Promise<DriveResult> {
+	for (;;) {
+		if (run.askNoProgressFirst) {
+			run.askNoProgressFirst = false;
+			const settled = await settleNoProgress(run);
+			if (settled !== undefined) {
+				return settled;
+			}
+		}
+		const result = await driveUntilPause(
+			run.engine,
+			run.ctx,
+			run.ctx.cwd,
+			run.jobDirectory,
+			run.task,
+			run.facts,
+			run.stopState,
+			run.dependencies.signal,
+			run.dependencies.onStateChange,
+		);
+		run.stopState = result.stopState;
+		if (result.terminalStatus !== "NEEDS_HUMAN" || result.recovery !== "no_progress" || !run.ctx.hasUI) {
+			return result;
+		}
+		// On the record before the operator is asked: a session lost mid-dialog
+		// resumes into the same question.
+		await writeTerminalState(run.jobDirectory, run.eventsPath, run.task, result);
+		await run.dependencies.onStateChange?.();
+		const settled = await settleNoProgress(run);
+		if (settled !== undefined) {
+			return settled;
+		}
+	}
+}
+
+/**
+ * Drives a job from its current graph state to an outcome: every pause the
+ * operator settles, every gate they answer, the release check, and the one
+ * commit decision. Every terminal goes through the one writer, so a finished
+ * run is legible from `events.jsonl` on its own.
+ */
+async function driveJob(run: JobRun): Promise<LoopOutcome> {
+	const { ctx, engine, jobId, jobDirectory, eventsPath, task, dependencies } = run;
+	const finish = async (result: DriveResult): Promise<LoopOutcome> => {
+		await writeTerminalState(jobDirectory, eventsPath, task, result);
+		await dependencies.onStateChange?.();
+		return {
+			jobId,
+			status: result.terminalStatus ?? "RUNNING",
+			reason: result.reason,
+			recovery: result.recovery,
+			graphState: result.state,
+		};
+	};
+	let result = await driveWithOperator(run);
+	while (result.terminalStatus === undefined && result.state.status === "interrupted") {
+		const stopped = await answerPendingHuman(
+			engine,
+			run.graph,
+			ctx,
+			jobDirectory,
+			eventsPath,
+			task,
+			run.stopState,
+			dependencies.signal,
+			dependencies.onStateChange,
+		);
+		if (stopped !== undefined) {
+			return finish(stopped);
+		}
+		result = await driveWithOperator(run);
+	}
+	if (result.terminalStatus !== undefined) {
+		return finish(result);
+	}
+	if (result.state.status !== "completed") {
+		throw new Error(`Cannot continue graph in ${result.state.status} state`);
+	}
+	// The release gate the graph ends on: a graph that completed without an
+	// approved release is not silently DONE. An operator who denied it under
+	// a policy that ends the graph stopped the job for good; anything else is
+	// a contract the graph did not keep.
+	const release = result.state.values.release;
+	if (!isJsonObject(release) || release.approved !== true) {
+		return finish(
+			isJsonObject(release) && release.approved === false
+				? {
+						...result,
+						terminalStatus: "STOPPED",
+						reason: "release denied by the operator (final: the graph completed)",
+					}
+				: needsHuman(result, "contract", "graph completed without release approval", jobId),
+		);
+	}
+	try {
+		// One job, one commit decision, identified by this job's own trailer:
+		// this run's commit, or the marked one a replay recovers, never a second.
+		await finalizeShip(
+			ctx.cwd,
+			jobDirectory,
+			jobId,
+			run.previousHead,
+			result.shippedThisRun === true,
+			dependencies.readPullRequest,
+		);
+	} catch (error) {
+		// A failed finalization is a terminal the operator reads like any
+		// other - the reason and the resume command - rather than a thrown
+		// "loop failed" that hides which job stopped and why.
+		return finish({ ...result, ...shipFailure(error, jobId) });
+	}
+	return finish({ ...result, terminalStatus: "DONE" });
+}
+
 export async function resumeLoop(
 	jobId: string,
 	ctx: ExtensionCommandContext,
@@ -1633,7 +2318,16 @@ export async function resumeLoop(
 		throw new Error(`Invalid job id: ${jobId}`);
 	}
 	const jobDirectory = join(ctx.cwd, CONFIG_DIR_NAME, "runs", jobId);
-	const task = JSON.parse(await readFile(join(jobDirectory, "task.json"), "utf8")) as Task;
+	// The marker that stopped this job would stop it again at its first
+	// superstep; resuming is the operator lifting it.
+	await rm(join(jobDirectory, STOP_MARKER_NAME), { force: true });
+	// Read leniently: a contract from the release that enforced caps still
+	// carries `limits`. It is reported as ignored, never validated, and left on
+	// the contract so the hashes research.json and stack.json bound to still hold.
+	const task = JSON.parse(await readFile(join(jobDirectory, "task.json"), "utf8")) as Task & {
+		limits?: Record<string, unknown>;
+	};
+	const legacyLimits = Object.keys(task.limits ?? {});
 	const stateDocument = JSON.parse(await readFile(join(jobDirectory, "state.json"), "utf8")) as Record<
 		string,
 		unknown
@@ -1649,132 +2343,53 @@ export async function resumeLoop(
 	const baseline = new Map(Object.entries(baselineSource));
 	// A resumed run re-derives its facts from the worktree it wakes up in: the
 	// plan it was started with is recorded in the checkpoint it restores.
-	const restoredPlanProvided = await planWasProvided(jobDirectory);
-	const facts = loopFacts(ctx.cwd, jobDirectory, task, baseline, restoredPlanProvided);
-	const engine = await GraphEngine.restore(graph, {
-		projectRoot: ctx.cwd,
-		jobId,
-		createAgentSession: dependencies.createAgentSession,
-		busDependencies: dependencies.busDependencies,
-		now: dependencies.now,
-		accumulatedCostUsd: dependencies.accumulatedCostUsd,
-		limits: task.limits,
-		sleep: dependencies.sleep,
-		retryBaseDelayMs: dependencies.retryBaseDelayMs,
-		resolveFacts: facts.resolve,
-		model: ctx.model,
-		thinkingLevel: ctx.thinkingLevel,
-	});
+	const facts = loopFacts(ctx.cwd, jobDirectory, task, baseline, await planWasProvided(jobDirectory));
 	const eventsPath = join(jobDirectory, "events.jsonl");
-	const stopState = restoreStopState(stateDocument, engine.limits.maxRounds);
+	let run: JobRun;
+	const engine = await GraphEngine.restore(
+		graph,
+		engineOptions(ctx, dependencies, jobId, jobDirectory, task, facts, () => ({
+			stop: run.stopState,
+			state: run.engine.state,
+		})),
+	);
+	run = {
+		ctx,
+		dependencies,
+		graph,
+		engine,
+		jobId,
+		jobDirectory,
+		eventsPath,
+		task,
+		facts,
+		stopState: restoreStopState(stateDocument),
+		previousHead: await startingHeadFor(jobDirectory),
+		askNoProgressFirst: stateDocument.recovery === "no_progress" && ctx.hasUI,
+	};
 	try {
-		let result = await driveUntilPause(
-			engine,
-			ctx.cwd,
-			jobDirectory,
-			task,
-			facts,
-			stopState,
-			dependencies.onStateChange,
-		);
-		if (result.terminalStatus !== undefined) {
-			await writeTerminalState(jobDirectory, eventsPath, task, result);
-			return {
-				jobId,
-				status: result.terminalStatus,
-				reason: result.reason,
-				recovery: result.recovery,
-				graphState: result.state,
-			};
-		}
-		while (result.state.status === "interrupted") {
-			const pending = result.state.pendingHuman;
-			if (pending === undefined) throw new Error("Interrupted graph has no pending human approval");
-			const approved = await ctx.ui.confirm(pending.title, pending.question);
+		// Caps a retired release froze onto the contract or the checkpoint are
+		// read, reported once, and never enforced: the run they ended continues.
+		const retired = [...engine.retiredLimits, ...legacyLimits.filter((key) => !engine.retiredLimits.includes(key))];
+		if (retired.length > 0) {
+			const detail = `retired caps ignored: ${retired.join(", ")}`;
 			await appendEvent(eventsPath, {
 				ts: new Date().toISOString(),
-				type: "approval.result",
+				type: "checkpoint",
 				job_id: jobId,
-				round: result.stopState.round,
-				node: pending.nodeId,
-				approved,
+				round: run.stopState.round,
+				node: activeNode(engine.state),
+				detail,
 			});
-			await engine.submitHuman(approved);
-			// The approval is durable before the ship node runs: policy reads
-			// `release.approved` from state.json, and a push or a pull request is
-			// allowed on that flag alone.
-			await writeState(jobDirectory, task, engine.state, result.stopState);
-			result = await driveUntilPause(
-				engine,
-				ctx.cwd,
-				jobDirectory,
-				task,
-				facts,
-				result.stopState,
-				dependencies.onStateChange,
-			);
-			if (result.terminalStatus !== undefined) {
-				await writeTerminalState(jobDirectory, eventsPath, task, result);
-				return {
-					jobId,
-					status: result.terminalStatus,
-					reason: result.reason,
-					recovery: result.recovery,
-					graphState: result.state,
-				};
-			}
+			ctx.ui.notify(`K-π job ${jobId}: ${detail}`, "info");
 		}
-		if (result.state.status !== "completed") {
-			throw new Error(`Cannot resume graph in ${result.state.status} state`);
-		}
-		// The same release gate the first run applies: a graph that ended without an
-		// approved release is BLOCKED, not silently DONE.
-		const release = result.state.values.release;
-		if (!isJsonObject(release) || release.approved !== true) {
-			const blocked: DriveResult = {
-				state: result.state,
-				stopState: result.stopState,
-				terminalStatus: "BLOCKED",
-				reason: "graph completed without release approval",
-			};
-			await writeTerminalState(jobDirectory, eventsPath, task, blocked);
+		// The run is live again from here: a resumed pause or stop is RUNNING on
+		// disk before its first superstep, not after.
+		if (!run.askNoProgressFirst && engine.state.status === "running") {
+			await writeState(jobDirectory, task, engine.state, run.stopState);
 			await dependencies.onStateChange?.();
-			return { jobId, status: "BLOCKED", graphState: result.state };
 		}
-		// Same one-decision rule on resume: this job's own marked commit, or the
-		// validated marker recording it, and never a second commit.
-		try {
-			await finalizeShip(
-				ctx.cwd,
-				jobDirectory,
-				jobId,
-				await startingHeadFor(jobDirectory),
-				result.shippedThisRun === true,
-				dependencies.readPullRequest,
-			);
-		} catch (error) {
-			const { terminalStatus, reason, recovery } = shipFailure(error, jobId);
-			const stopped: DriveResult = {
-				state: result.state,
-				stopState: result.stopState,
-				terminalStatus,
-				reason,
-				recovery,
-			};
-			await writeTerminalState(jobDirectory, eventsPath, task, stopped);
-			await dependencies.onStateChange?.();
-			return { jobId, status: terminalStatus, reason, recovery, graphState: result.state };
-		}
-		// DONE is a terminal like any other: it goes through the one writer, so
-		// `events.jsonl` alone shows the run ended rather than only `state.json`.
-		await writeTerminalState(jobDirectory, eventsPath, task, {
-			state: result.state,
-			stopState: result.stopState,
-			terminalStatus: "DONE",
-			terminalEmitted: result.terminalEmitted,
-		});
-		await dependencies.onStateChange?.();
-		return { jobId, status: "DONE", graphState: result.state };
+		return await driveJob(run);
 	} finally {
 		engine.dispose();
 	}
@@ -1812,7 +2427,6 @@ export async function runLoop(
 		ac: { quality: compilation.quality },
 		dependency_baseline: await runtimeDependencies(ctx.cwd),
 		...(invocation.noNetwork === true ? { research_network: "offline" as const } : {}),
-		...(invocation.limits !== undefined ? { limits: invocation.limits } : {}),
 		// K-mode's match is frozen here and nowhere else: name plus every ordered
 		// step (including skip reasons). Re-matching mid-run would change what the
 		// run was for; contractHash includes this freeze for the same reason.
@@ -1827,13 +2441,19 @@ export async function runLoop(
 					),
 				}),
 	};
+	// A stop that landed while the contract was being prepared: nothing has
+	// been written yet, so nothing is created and there is nothing to resume.
+	if (dependencies.signal?.aborted === true) {
+		return { jobId, status: "STOPPED", reason: "operator stop before the run was created" };
+	}
 	const job = await createJob(ctx.cwd, task, contextFor(invocation, gates, plan));
 	if (plan !== undefined) {
 		await writePlanSnapshot(job.directory, plan);
 	}
 
 	if (invocation.mode === "autopilot" && compilation.quality !== "executable") {
-		const reason = `autopilot requires executable acceptance criteria; received ${compilation.quality}`;
+		const refusal = `autopilot requires executable acceptance criteria; received ${compilation.quality}`;
+		const reason = recoveryReason("ac_quality", refusal, job.jobId);
 		await appendEvent(job.eventsPath, {
 			ts: new Date().toISOString(),
 			type: "ac.refused",
@@ -1841,7 +2461,7 @@ export async function runLoop(
 			round: 0,
 			node: "ac-compiler",
 			quality: compilation.quality,
-			reason,
+			reason: refusal,
 		});
 		await atomicWrite(
 			join(job.directory, "state.json"),
@@ -1850,12 +2470,12 @@ export async function runLoop(
 					job_id: task.job_id,
 					mode: task.mode,
 					round: 0,
-					maxRounds: task.limits?.maxRounds ?? DEFAULT_MAX_ROUNDS,
 					stage: "ac-compile",
 					node: "ac-compiler",
 					ac: task.ac,
 					status: "NEEDS_HUMAN",
 					reason,
+					recovery: "ac_quality",
 					graph_status: "not_started",
 				},
 				null,
@@ -1863,7 +2483,7 @@ export async function runLoop(
 			)}\n`,
 		);
 		await dependencies.onStateChange?.();
-		return { jobId: job.jobId, status: "NEEDS_HUMAN", reason };
+		return { jobId: job.jobId, status: "NEEDS_HUMAN", reason, recovery: "ac_quality" };
 	}
 
 	await appendEvent(job.eventsPath, {
@@ -1888,135 +2508,32 @@ export async function runLoop(
 	);
 	await atomicWrite(join(job.directory, "previous-head.txt"), `${previousHead ?? ""}\n`);
 	const facts = loopFacts(ctx.cwd, job.directory, task, baseline, plan !== undefined);
-	const engine = new GraphEngine(graph, {
-		projectRoot: ctx.cwd,
+	let run: JobRun;
+	const engine = new GraphEngine(
+		graph,
+		engineOptions(ctx, dependencies, job.jobId, job.directory, task, facts, () => ({
+			stop: run.stopState,
+			state: run.engine.state,
+		})),
+	);
+	run = {
+		ctx,
+		dependencies,
+		graph,
+		engine,
 		jobId: job.jobId,
-		createAgentSession: dependencies.createAgentSession,
-		busDependencies: dependencies.busDependencies,
-		now: dependencies.now,
-		accumulatedCostUsd: dependencies.accumulatedCostUsd,
-		limits: task.limits,
-		sleep: dependencies.sleep,
-		retryBaseDelayMs: dependencies.retryBaseDelayMs,
-		resolveFacts: facts.resolve,
-		uiContext: ctx.ui,
-		model: ctx.model,
-		thinkingLevel: ctx.thinkingLevel,
-	});
-
+		jobDirectory: job.directory,
+		eventsPath: job.eventsPath,
+		task,
+		facts,
+		stopState: createStopState(),
+		previousHead,
+		askNoProgressFirst: false,
+	};
 	try {
-		let stopState = createStopState(engine.limits.maxRounds);
-		await writeState(job.directory, task, engine.state, stopState);
+		await writeState(job.directory, task, engine.state, run.stopState);
 		await dependencies.onStateChange?.();
-		let result = await driveUntilPause(
-			engine,
-			ctx.cwd,
-			job.directory,
-			task,
-			facts,
-			stopState,
-			dependencies.onStateChange,
-		);
-		if (result.terminalStatus !== undefined) {
-			await writeTerminalState(job.directory, job.eventsPath, task, result);
-			await dependencies.onStateChange?.();
-			return {
-				jobId: job.jobId,
-				status: result.terminalStatus,
-				reason: result.reason,
-				recovery: result.recovery,
-				graphState: result.state,
-			};
-		}
-
-		while (result.state.status === "interrupted") {
-			const pending = result.state.pendingHuman;
-			if (pending === undefined) {
-				throw new Error("Interrupted graph has no pending human approval");
-			}
-			const approved = await ctx.ui.confirm(pending.title, pending.question);
-			await appendEvent(job.eventsPath, {
-				ts: new Date().toISOString(),
-				type: "approval.result",
-				job_id: job.jobId,
-				round: result.stopState.round,
-				node: pending.nodeId,
-				approved,
-			});
-			const resumed = await engine.submitHuman(approved);
-			stopState = result.stopState;
-			// Same durable approval as on resume: the ship node's push and pull
-			// request are judged on state.json, so the flag is written first.
-			await writeState(job.directory, task, engine.state, stopState);
-			await dependencies.onStateChange?.();
-			result = await driveUntilPause(
-				engine,
-				ctx.cwd,
-				job.directory,
-				task,
-				facts,
-				stopState,
-				dependencies.onStateChange,
-			);
-			if (result.terminalStatus !== undefined) {
-				await writeTerminalState(job.directory, job.eventsPath, task, result);
-				await dependencies.onStateChange?.();
-				return {
-					jobId: job.jobId,
-					status: result.terminalStatus,
-					reason: result.reason,
-					recovery: result.recovery,
-					graphState: result.state,
-				};
-			}
-			if (resumed.status === "completed") {
-				break;
-			}
-		}
-
-		const state = result.state;
-		const release = state.values.release;
-		if (state.status !== "completed" || !isJsonObject(release) || release.approved !== true) {
-			const blocked: DriveResult = {
-				state,
-				stopState: result.stopState,
-				terminalStatus: "BLOCKED",
-				reason: "graph completed without release approval",
-			};
-			await writeTerminalState(job.directory, job.eventsPath, task, blocked);
-			return { jobId: job.jobId, status: "BLOCKED", graphState: state };
-		}
-
-		try {
-			// One job, one commit decision, identified by this job's own trailer.
-			await finalizeShip(
-				ctx.cwd,
-				job.directory,
-				job.jobId,
-				previousHead,
-				result.shippedThisRun === true,
-				dependencies.readPullRequest,
-			);
-		} catch (error) {
-			// A failed finalization is a terminal the operator reads like any
-			// other - the reason and, for a delivery, the resume command - rather
-			// than a thrown "loop failed" that hides which job stopped and why.
-			const { terminalStatus, reason, recovery } = shipFailure(error, job.jobId);
-			const stopped: DriveResult = { state, stopState: result.stopState, terminalStatus, reason, recovery };
-			await writeTerminalState(job.directory, job.eventsPath, task, stopped);
-			await dependencies.onStateChange?.();
-			return { jobId: job.jobId, status: terminalStatus, reason, recovery, graphState: state };
-		}
-		// Same one writer as every other terminal, so a finished run is legible
-		// from `events.jsonl` on its own.
-		await writeTerminalState(job.directory, job.eventsPath, task, {
-			state,
-			stopState: result.stopState,
-			terminalStatus: "DONE",
-			terminalEmitted: result.terminalEmitted,
-		});
-		await dependencies.onStateChange?.();
-		return { jobId: job.jobId, status: "DONE", graphState: state };
+		return await driveJob(run);
 	} finally {
 		engine.dispose();
 	}

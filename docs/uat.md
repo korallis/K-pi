@@ -4,7 +4,7 @@
 >
 > **WHEN.** UAT runs **after** every `RP-##` is complete and `npm run check`, `npm test`, `npm run test:kpi`, `npm run kstack:sync:check`, and `npm run upstream:check` all exit 0. Running a row earlier tells you nothing you can trust.
 >
-> **STOP CONDITION.** The product is finished when all thirty rows below and the seven PRD metrics pass, and a human can decide each row from its evidence **without reading source code**. A row whose evidence requires reading source is a FAIL — the feature is not observable to a real user.
+> **STOP CONDITION.** The product is finished when all thirty-one rows below and the seven PRD metrics pass, and a human can decide each row from its evidence **without reading source code**. A row whose evidence requires reading source is a FAIL — the feature is not observable to a real user.
 
 ## How to run a row
 
@@ -38,14 +38,14 @@ Grader discipline: prefer a deterministic check — exit code, exact string, fil
 ### UAT-01 — US-01 Build and run the harness
 - **Real-user question:** Can I clone this, build it, and run it with no install step?
 - **Action:** Clean clone → `npm install && npm run build:offline` → `node packages/coding-agent/dist/bundle/cli.js --version` → start it in an untrusted scratch repo and type `/` to list commands → open `/settings`.
-- **Pass evidence:** Version reads K-π's own `0.2.1`, not a Pi version. `/kpi`, `/loop`, `/accounts`, `/specify`, `/plan`, `/review`, `/verify`, `/ship`, `/statusbar` all appear with no `/trust` and no install command. Theme `loop-amber` is selectable. No manifest declares `keywords:["pi-package"]`, a `pi` key, or `@earendil-works/pi-*` peer dependencies.
+- **Pass evidence:** Version reads K-π's own `0.3.0`, not a Pi version. `/kpi`, `/loop`, `/accounts`, `/specify`, `/plan`, `/review`, `/verify`, `/ship`, `/statusbar` all appear with no `/trust` and no install command. Theme `loop-amber` is selectable. No manifest declares `keywords:["pi-package"]`, a `pi` key, or `@earendil-works/pi-*` peer dependencies.
 - **ACs:** AC-01.1–01.6 · **Owner:** RP-01A, re-proved by RP-19
 
 ### UAT-02 — US-02 Start from a task (gated)
-- **Real-user question:** If I type a goal, does it plan, implement, test, review, and then ask me before committing?
-- **Action:** In `fixtures/healthcheck-gated/`, run `/kpi add a healthcheck endpoint and verify it` and answer the confirm dialog.
-- **Pass evidence:** `.kpi/runs/<job>/` holds `task.json` (with `goal`, `acceptance[]`, `nongoals`, `constraints`, `quality_gates`), `context.md`, `events.jsonl`. A human confirm dialog carrying a real diff stat appears before any commit. The board shows `MODE gated`, the current stage, `ROUND n/max`, and which run files exist. After approval the commit lands on `kpi/<job>`, only that branch is pushed to `origin`, and a pull request is opened; `main` is never pushed.
-- **ACs:** AC-02.1–02.7 · **Owner:** RP-02, RP-05
+- **Real-user question:** If I type a goal, does it show me the plan, then plan, implement, test, review, and ask me before committing?
+- **Action:** In `fixtures/healthcheck-gated/`, run `/kpi add a healthcheck endpoint and verify it`, read the plan summary, choose Approve plan, then answer the release confirm. Run it once more choosing Request changes with a one-line note, and once more under `--print` with no dialog UI.
+- **Pass evidence:** `.kpi/runs/<job>/` holds `task.json` (with `goal`, `acceptance[]`, `nongoals`, `constraints`, `quality_gates`), `context.md`, `events.jsonl`. A `Plan approval` dialog carrying the `stack.json` summary, the `Full plan: .kpi/runs/<job>/stack.json` path and `Revision 1` — no cap — appears before any write, offering Approve plan / Request changes / Stop; Request changes with feedback re-runs plan and the second `stack.json` differs; `events.jsonl` holds an `approval.result` for `plan-approval` before the one for `human`. A release dialog offering Approve / Request changes / Stop carrying a real diff stat appears before any commit. The board shows `MODE gated`, the current stage, `ROUND n` with no maximum, and which run files exist. After approval the commit lands on `kpi/<job>`, only that branch is pushed to `origin`, and a pull request is opened; `main` is never pushed. The same job without a dialog UI stops `NEEDS_HUMAN` with `recovery: approval` and prints the resume command.
+- **ACs:** AC-02.1–02.11 · **Owner:** RP-02, RP-05
 
 ### UAT-03 — US-03 Start from a frozen plan
 - **Real-user question:** Can I hand it a plan I already wrote and have it skip the spec step?
@@ -56,20 +56,20 @@ Grader discipline: prefer a deterministic check — exit code, exact string, fil
 ### UAT-04 — US-04 Autopilot when AC are executable
 - **Real-user question:** With fully executable criteria, can I walk away and come back to a finished commit?
 - **Action:** In `fixtures/healthcheck-auto/`, run `/kpi --mode autopilot <goal>`, leave, then inspect `git log -1` and `git status`.
-- **Pass evidence:** No human node on the happy path. Terminal state `DONE`. Exactly one Conventional Commits commit on the job branch. `evidence.json` is bound to the `git rev-parse HEAD` it was produced against. The implementer wrote neither `verdict.json` nor `release.approved`. The job branch `kpi/<job>` is pushed to `origin` and a pull request is open for it; a push of any other branch, a force-push, a deploy, a delete, or a new-dependency attempt shows `NEEDS_HUMAN` or `UNSAFE` and did not execute.
+- **Pass evidence:** No human node on the happy path. Terminal state `DONE`. Exactly one Conventional Commits commit on the job branch. `evidence.json` is bound to the `git rev-parse HEAD` it was produced against. The implementer wrote neither `verdict.json` nor `release.approved`. The job branch `kpi/<job>` is pushed to `origin` and a pull request is open for it; a push of any other branch, a force-push, a deploy, a delete, or a new-dependency attempt is denied, did not execute, and the job shows `NEEDS_HUMAN` with its recovery.
 - **ACs:** AC-04.1–04.6 · **Owner:** RP-02, RP-05, RP-14
 
-### UAT-05 — US-05 Autopilot stop states
-- **Real-user question:** When it cannot succeed, does it stop and tell me why instead of looping?
-- **Action:** Run four cases: identical output twice; `maxRounds` exhaustion; `fixtures/bounds-violation/`; a reviewer issue with no test. Then retry a transient 429.
-- **Pass evidence:** Stop states are exactly `NO_PROGRESS`, `EXHAUSTED`, `UNSAFE`, `NEEDS_HUMAN` respectively, with no other vocabulary. The retried 429 did not increment the round counter.
-- **ACs:** AC-05.1–05.6 · **Owner:** RP-04, RP-05
+### UAT-05 — US-05 Self-healing loop and the operator stop
+- **Real-user question:** When it cannot succeed yet, does it keep trying and re-plan, and wait for me instead of dying?
+- **Action:** Run six cases: a reviewer returning identical `REVISE` output twice; the same witness again after the automatic re-plans; `fixtures/bounds-violation/`; a reviewer issue with no test; a stub provider answering 429, then 503, then hanging past the idle timeout; and `/kpi stop` from a second session while a node is mid-backoff, then `/kpi <job>` from either session. Then resume a run whose `state.json` still reads `EXHAUSTED` from an earlier release.
+- **Pass evidence:** The repeated review writes `repair.json` (`round`, `reason`, `failing_ac`, `witness`) and the chat shows `K-π <job> re-planning: …` followed by a second plan run; after two automatic re-plans the third repeat stops `NEEDS_HUMAN` with `recovery: no_progress`, a select offering Give guidance / Keep going / Stop in the TUI, and a reason ending `resume with /kpi <job>`. The bounds fixture stops `NEEDS_HUMAN` with `recovery: bounds` and zero commits; the untestable issue stops `NEEDS_HUMAN` with `recovery: review`; both reasons end with the resume command and `/kpi <job>` continues at test and implement respectively. The stub provider produces `node.retry` events with `delay_ms` 1000, 2000, … capped at 60000, one `K-π <job> retry <attempt> on <node>: …; next in <s>s` notification each, a `RETRY <attempt> · <reason> · next <s>s` row on the board, no `loop.terminal`, and the round did not increment. `/kpi stop` writes `stop.json`, `loop.terminal` `STOPPED` with `reason: operator stop`, the notice `K-π job <job> STOPPED (resume with /kpi <job>)`, and the resumed run continues the same node without repeating finished work. The legacy run resumes with its recorded `cost_usd` intact. `state.json.status` is only ever `RUNNING`, `NEEDS_HUMAN`, `DONE`, or `STOPPED`; no other vocabulary appears in any file written by this release.
+- **ACs:** AC-05.1–05.9 · **Owner:** RP-21
 
 ### UAT-06 — US-06 Control-board TUI
 - **Real-user question:** Do I know what is happening without reading model prose?
-- **Action:** Start a job and capture the widget; let it pause on a human node and capture again; run `/kpi status` with the model provider unreachable.
-- **Pass evidence:** Amber `#ff6a1a` while running, `protocol-blue #3da9fc` while paused. Widget shows LOOP, MODE, ROUND, STAGE, NODE, GATE, STOP, FILES. The accounts widget shows remaining % per slot, and no percentage for a `local` slot. Protocol events render as custom entries, not assistant markdown. `/kpi status` still draws with the provider unreachable, which proves no model call.
-- **ACs:** AC-06.1–06.6 · **Owner:** RP-18
+- **Action:** Start a job and capture the widget; watch the widget and the chat while a node runs; let it pause on a human node and capture again; run `/kpi status` with the model provider unreachable.
+- **Pass evidence:** Amber `#ff6a1a` while running, `protocol-blue #3da9fc` while paused. Widget shows LOOP, MODE, ROUND, STAGE, NODE, GATE, STOP, FILES. The `NOW` row changes without a keypress while the node runs; the chat shows one `K-π ▶` line when the node starts and one `K-π ■` or `K-π ✕` line when it finishes, and nothing per tool call. The accounts widget shows remaining % per slot, and no percentage for a `local` slot. Protocol events render as custom entries, not assistant markdown. `/kpi status` still draws with the provider unreachable, which proves no model call.
+- **ACs:** AC-06.1–06.7 · **Owner:** RP-18
 
 ### UAT-07 — US-07 Concise model output
 - **Real-user question:** Does it answer in a few lines instead of a diary?
@@ -91,9 +91,9 @@ Grader discipline: prefer a deterministic check — exit code, exact string, fil
 
 ### UAT-10 — US-10 Stacked subscriptions and failover
 - **Real-user question:** When one subscription hits its limit, does work continue on another without me noticing?
-- **Action:** `/accounts login anthropic` twice; drive the first slot to a classified 429 using `fixtures/accounts-failover/`; run 100 selections.
-- **Pass evidence:** Both slots persist in `~/.kpi/agent/accounts.json` and the second login deleted nothing. Model ids stay `anthropic/<official-id>`. The cooling slot is selected 0 times out of 100 while a healthy sibling exists, with the same model and thinking level carried over. Cross-family fallback happens only once the whole family cools, in order anthropic → openai-codex → xai → zai → kimi-coding → cursor. The widget lists remaining % per slot. Stickiness holds until exhaustion, then releases.
-- **ACs:** AC-10.1–10.8 · **Owner:** RP-06, RP-07
+- **Action:** `/accounts login anthropic` twice; drive the first slot to a classified 429 using `fixtures/accounts-failover/`; run 100 selections. Then rotate the `auth.json` grant out from under the official slot and start a session; break a non-official slot's refresh token and start a turn; send a request with a below-floor Claude Code identity.
+- **Pass evidence:** Both slots persist in `~/.kpi/agent/accounts.json` and the second login deleted nothing; the second login's notice reads `Added account anthropic/<slot> (anthropic/<previous> keeps its previous grant)`. Model ids stay `anthropic/<official-id>`. The cooling slot is selected 0 times out of 100 while a healthy sibling exists, with the same model and thinking level carried over. Cross-family fallback happens only once the whole family cools, in order anthropic → openai-codex → xai → zai → kimi-coding → cursor. The widget lists remaining % per slot. Stickiness holds until exhaustion, then releases. After the rotation no `could not refresh` warning appears, `accounts.json` shows `official: true` on that slot, and `accounts.secrets.json` has no entry for it. The broken slot produces exactly one `K-π accounts: anthropic/<slot> needs a new login: Anthropic rejected its refresh token (invalid_grant). Run /accounts login anthropic <slot>` notification, the widget shows `<slot> … needs login`, and no stack trace is printed. The below-floor identity produces one `K-π <version> identifies to Anthropic as Claude Code …` notification and the slot is not cooled.
+- **ACs:** AC-10.1–10.10 · **Owner:** RP-06, RP-07
 
 ### UAT-11 — US-11 Official catalogs stay live
 - **Real-user question:** Will a brand-new model show up without me updating this app?
@@ -127,9 +127,9 @@ Grader discipline: prefer a deterministic check — exit code, exact string, fil
 
 ### UAT-16 — US-16 Graph-engineering TUI (Avid boards)
 - **Real-user question:** Does the running board tell me everything the Avid photo promises?
-- **Action:** Capture the amber board mid-run and the protocol-blue board while a human node is paused; delete one run file and capture again.
-- **Pass evidence:** The amber board shows the header (`K-π`, MODE, JOB, ROUND), context-layer lamps, stages 01–08 with exactly one lit, iteration PASS/FAIL, six file lamps, and STOP. `/kpi status` expands it with no model call. The paused board shows SHARED RUN STATE, STOP STATES with APPROVAL lit, THREE LAWS, and WAITING ON OPERATOR with the pending question. The lamp for the deleted or empty file goes dark. The assistant never reprints the board as a markdown table.
-- **ACs:** AC-16.1–16.6 · **Owner:** RP-18
+- **Action:** Capture the amber board mid-run and the protocol-blue board while a human node is paused; delete one run file and capture again. While a node runs, run `/kpi status` at 140×50, press `↓` twice, `↵`, `esc`, then type `/kpi verify` and `↵`, then `q`; run `/kpi status` again at 140×40.
+- **Pass evidence:** The amber board shows the header (`K-π`, MODE, JOB, ROUND), context-layer lamps, stages 01–08 with exactly one lit, iteration PASS/FAIL, six file lamps, and STOP. The paused board shows SHARED RUN STATE, STOP STATES with APPROVAL lit, THREE LAWS on the printed board, and WAITING ON OPERATOR with the pending question. The lamp for the deleted or empty file goes dark. The assistant never reprints the board as a markdown table. `/kpi status` opens the Command Centre over the widget with no model call: STAGES 01–08, `LIVE › <NN stage>`, TELEMETRY, SHARED RUN STATE, CONTEXT LAYER and EVENTS are all on screen at 140×50, a paused human stage reads `◉ WAITING`, and no cap token appears anywhere in TELEMETRY; the `▸` marker moves with `↓`; `↵` opens the SESSION view with the NODE panel (status, elapsed, `$… est.`, model) and the stage's transcript following; `esc` returns home; the verify line appears on the hint row; `q` closes. The stage detail lines and the EVENTS panel advance without a keypress while the job runs. At 140×40 STAGES compacts and SHARED RUN STATE and CONTEXT LAYER are still on screen.
+- **ACs:** AC-16.1–16.9 · **Owner:** RP-18
 
 ### UAT-17 — US-17 K-stack ships as built-in first-party skills
 - **Real-user question:** Do I get the vendored engineering rigor without installing anything?
@@ -169,9 +169,9 @@ Grader discipline: prefer a deterministic check — exit code, exact string, fil
 
 ### UAT-23 — US-23 Background agents communicate asynchronously
 - **Real-user question:** Do background agents work in parallel without corrupting my files?
-- **Action:** Spawn two workers, then a third; spawn a second write-capable worker; claim the same path twice; kill a claim holder; check where the parent's decision came from.
-- **Pass evidence:** Each worker is a `kpi --mode rpc` session with its own session file under `.kpi/runs/<job>/agents/`. The third spawn is denied. The second writer is denied. A second `claim_path` on the same path is denied until release or holder-pid death. The parent decides from `verdict.json` and `evidence.json`, never a worker transcript. The board can show `AGENTS n`. No `pi-intercom`, `pi-mesh`, `pi-agents-talk-to-each-other`, `pi-bus`, or `pi-side-agents` in any manifest. A reviewer holding only `write_contract` does not consume the single-writer slot.
-- **ACs:** AC-23.1–23.9 · **Owner:** RP-13, RP-14
+- **Action:** Spawn two workers, then a third; spawn a second write-capable worker; claim the same path twice; kill a claim holder; check where the parent's decision came from. Run `/agents` while the review node is live and again after the run.
+- **Pass evidence:** Each worker is a `kpi --mode rpc` session with its own session file under `.kpi/runs/<job>/agents/`. The third spawn is denied. The second writer is denied. A second `claim_path` on the same path is denied until release or holder-pid death. The parent decides from `verdict.json` and `evidence.json`, never a worker transcript. The board can show `AGENTS n`. No `pi-intercom`, `pi-mesh`, `pi-agents-talk-to-each-other`, `pi-bus`, or `pi-side-agents` in any manifest. A reviewer holding only `write_contract` does not consume the single-writer slot. `/agents` lists the main session, the in-process node sessions with context mode and model, and the reviewer worker with its pid and node under `KIND ID ROLE MODEL PID ALIVE ELAPSED TOOLS LAST NODE JOB`, then `caps (this process): …` and the mechanism line stating that nodes are in-process sessions and workers are separate `kpi --mode rpc` processes; the board reads `AGENTS 1 · 0 nodes · 1 worker` while the reviewer runs and repaints when it ends; after the run `/agents` still prints the main row and `no active job`.
+- **ACs:** AC-23.1–23.11 · **Owner:** RP-13, RP-14
 
 ### UAT-24 — US-24 Bare message is plain chat; the agent starts a K-π job for substantial work
 - **Real-user question:** Can I just type what I want, with no slash command, and get a job only when it is really a job?
@@ -197,23 +197,29 @@ Grader discipline: prefer a deterministic check — exit code, exact string, fil
 - **Pass evidence:** `LLAMA_BASE_URL` defaults to `http://127.0.0.1:8080` under pool `llama`, and only loaded models appear in `/model`. The three first-party providers discover via `/v1/models`, with Ollama falling back to `/api/tags`, and no frozen models array. Each login writes a credential-free `kind: "local"` slot persisting its base URL. The stopped server's slot cools and failover stays inside the local family. Local slots are absent from the default cloud chain until `/pool chain` or a pin. The footer shows exactly one `(local) $0` cell with no quota percentage. Zero requests reach any cloud host. No `pi-ollama` family dependency.
 - **ACs:** AC-27.1–27.8 · **Owner:** RP-08
 
-### UAT-28 — US-28 Optional Exa and Perplexity research
+### UAT-28 — US-28 Optional Exa, Perplexity, and Firecrawl research
 - **Real-user question:** Can I add a research key, or none, and have it behave sensibly either way?
-- **Action:** Run `/setup-kstack` four times — Exa only, Perplexity only, both, neither. Then force a 429, a timeout, and a 402 on one service. Then grep manifests and `accounts.json`.
-- **Pass evidence:** All four combinations are valid. Keys live in `accounts.secrets.json` at `exa/default` and `perplexity/default` with mode `0600`, and env vars are fallbacks only. Exa search and contents plus Perplexity Search work as first-party REST with no SDK dependency. Each failure cools that service, tries the other, records bounded attempts, and the graph does not hang. The footer or board can show `EXA`, `PPLX`, or both. Neither id appears in `accounts.json.pools`, `/pool strategy`, `/pool chain`, or the fallback chain, and neither registers a provider.
-- **ACs:** AC-28.1–28.7 · **Owner:** RP-09, RP-10
+- **Action:** Run `/setup-kstack` five times — Exa only, Perplexity only, Firecrawl only, all three, none. Then force a 429, a timeout, and a 402 on one service. Then run a plan with only a Firecrawl key and read `research.json`. Then grep manifests and `accounts.json`.
+- **Pass evidence:** All five combinations are valid. Keys live in `accounts.secrets.json` at `exa/default`, `perplexity/default`, and `firecrawl/default` with mode `0600`, and env vars are fallbacks only. Exa search and contents, Perplexity Search, and Firecrawl Search work as first-party REST with no SDK dependency. Each failure cools that service, tries the next configured service, records bounded attempts, and the graph does not hang. The Firecrawl-only plan records `firecrawl_search` calls to `POST /v2/search` with a Bearer header, `limit` ≤ 10, `sources: [{type: "web"}]` and no scrape options, and `research.json` reads `mode: "firecrawl"`, `network.state: "online"`. The footer or board can show `EXA`, `PPLX`, `FC`, or any of them. None of the three ids appears in `accounts.json.pools`, `/pool strategy`, `/pool chain`, or the fallback chain, and none registers a provider.
+- **ACs:** AC-28.1–28.8 · **Owner:** RP-09, RP-10, RP-20
 
 ### UAT-29 — US-29 Research before implement
 - **Real-user question:** Does it actually research before writing my code, and does it ever fake a citation?
 - **Action:** Six runs: online with a key; no key; operator-set `no-network`; every configured service failing its bounded attempts; a healthy service returning one source; and `research.md` deleted before implement.
-- **Pass evidence:** Specify and plan cannot exit without `research.md` and `research.json`. Online with a key records at least two sources with distinct canonical origins after dedup. With no key or under `no-network`, mode is `local`, sources are repository-relative paths, the RESEARCH lamp still lights, and no external URL appears that this job did not fetch. Missing or stale research makes implement `UNSAFE`. A healthy service returning one source ends `NEEDS_HUMAN` and is never downgraded to local. Engine-set `no-network` writes `network.origin: "engine"`, a non-empty `network.reason` naming the services, and one recorded failure per attempt, and `no-network` never appears in a persisted stop-state field. Assistant prose contains no raw crawl dump.
+- **Pass evidence:** Specify and plan cannot exit without `research.md` and `research.json`. Online with a key records at least two sources with distinct canonical origins after dedup. With no key or under `no-network`, mode is `local`, sources are repository-relative paths, the RESEARCH lamp still lights, and no external URL appears that this job did not fetch. Missing or stale research pauses implement `NEEDS_HUMAN` with `recovery: research` and the resume command. A healthy service returning one source ends `NEEDS_HUMAN` and is never downgraded to local. Engine-set `no-network` writes `network.origin: "engine"`, a non-empty `network.reason` naming the services, and one recorded failure per attempt, and `no-network` never appears in a persisted stop-state field. Assistant prose contains no raw crawl dump.
 - **ACs:** AC-29.1–29.7 · **Owner:** RP-09, RP-10
 
 ### UAT-30 — US-30 Dune modular stack
 - **Real-user question:** In six months, will I still find auth in `auth/` and a feature in its own folder?
 - **Action:** Run the plan node, then every invalid-stack fixture RP-11 names: missing stack, stale stack, second selected module, prefix escape (`src/auth-admin` against `src/auth`), auth under `lib/`, top-level layer folder, top-level generic folder, one-consumer `shared/`, horizontal delivery with no reason, no-stack exemption, second-slice extraction, and scaffold order.
-- **Pass evidence:** `stack.json` carries `folder`, `interface`, `allowed_paths`, `scaffold_first` per module. A valid stack reaches implement. Every invalid fixture reaches `UNSAFE` before the first write, proven by write-attempt timestamps. `claim_path` outside the current module folder and its test twin is `UNSAFE`, and `modules[0]` is never an implicit current module. Folder name equals module id; auth's home is not `services/` or `lib/`; layer folders live only inside a feature folder; a single-consumer file cannot live in `shared/`; default delivery is `vertical`; an all-APIs-then-all-UI plan without `delivery: "horizontal"` and a reason fails the plan gate; scaffold creates folder, interface, and test twin before behaviour.
+- **Pass evidence:** `stack.json` carries `folder`, `interface`, `allowed_paths`, `scaffold_first` per module. A valid stack reaches implement. Every invalid fixture reaches `NEEDS_HUMAN` with `recovery: stack` before the first write, proven by write-attempt timestamps. `claim_path` outside the current module folder and its test twin is refused as an `UNSAFE` claim and denied, a write that leaves that boundary pauses the run `NEEDS_HUMAN` (`bounds`), and `modules[0]` is never an implicit current module. Folder name equals module id; auth's home is not `services/` or `lib/`; layer folders live only inside a feature folder; a single-consumer file cannot live in `shared/`; default delivery is `vertical`; an all-APIs-then-all-UI plan without `delivery: "horizontal"` and a reason fails the plan gate; scaffold creates folder, interface, and test twin before behaviour.
 - **ACs:** AC-30.1–30.11 · **Owner:** RP-11
+
+### UAT-31 — US-31 Onboarding
+- **Real-user question:** Can I get from a clean install to a working K-π without reading the manual?
+- **Action:** With a clean `HOME` (no `~/.kpi/agent/`), start the TUI in a scratch repo and walk the wizard once, choosing Not now first, then restarting and completing it with one model login, one research key, and the K-stack step skipped; restart again; run `/onboarding`; then start the harness under `--print` with the same clean `HOME`.
+- **Pass evidence:** The empty install opens `Welcome to K-π` with Start setup / Not now before any prompt; Not now closes it, writes nothing under `~/.kpi/agent/` or the project, and the wizard returns on the next launch. The completed walk shows `Research keys (Exa, Perplexity, Firecrawl)` with Enter API keys / Skip and `K-stack roles` with Map roles now / Skip, ends with the `accounts: … / research keys: … / K-stack roles: skipped` summary, leaves the slot in `accounts.json`, the key in `accounts.secrets.json` (mode `0600`), no `~/.kpi/agent/settings.json`, no project `.kpi/settings.json`, and no trust prompt on relaunch. After a slot exists the wizard does not open by itself; `/onboarding` re-runs it, and a cancelled login is reported as `<pool> login not completed: …` while the wizard continues. Under `--print` the wizard never appears.
+- **ACs:** AC-31.1–31.5 · **Owner:** RP-20
 
 ---
 
@@ -226,7 +232,7 @@ Run alongside the rows. Targets are `PRD.md` §8.
 | M-01 | Gated healthcheck fixture | Reaches human confirmation with green receipts | 1/1 |
 | M-02 | Autopilot fixture, five executable AC | `DONE`, no human node, exactly one job-marked commit | 1/1 |
 | M-03 | `fixtures/narrative-ac/` | Autopilot refused, `ac.refused` written, `coding-loop.auto.json` never loaded | 1/1 |
-| M-04 | `fixtures/bounds-violation/` | `UNSAFE`, zero commits created | 1/1 |
+| M-04 | `fixtures/bounds-violation/` | `NEEDS_HUMAN` with `recovery: bounds`, zero commits created | 1/1 |
 | M-05 | `fixtures/accounts-failover/`, 100 selections | Exhausted sibling selected 0 times while a healthy sibling exists | 1/1 |
 | M-06 | Verdict fixture | Visible assistant reply under 800 characters | 1/1 |
 | M-07 | `npm run check && npm test && npm run test:kpi && npm run kstack:sync:check && npm run upstream:check -- --offline` | All exit 0 | always |

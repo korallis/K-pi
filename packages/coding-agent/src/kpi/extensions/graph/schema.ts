@@ -1,3 +1,6 @@
+import type { LoopRecovery } from "../run-store.ts";
+import type { TransientReason } from "./stop.ts";
+
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonObject | JsonValue[];
 export interface JsonObject {
@@ -8,7 +11,7 @@ export function isJsonObject(value: unknown): value is JsonObject {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-export type GraphNodeType = "agent" | "set" | "human" | "terminal";
+export type GraphNodeType = "agent" | "set" | "human" | "pause";
 export type AgentContextMode = "isolated" | "thread";
 
 export interface AgentResponseContract {
@@ -38,6 +41,12 @@ export interface AgentGraphNode {
 	response?: AgentResponseContract;
 	/** When set, run as an RP-13 background worker of this role. */
 	workerRole?: AgentWorkerRole;
+	/**
+	 * State path a human gate writes the operator's change request to. When the
+	 * run state holds a non-empty string there, it is appended to this node's
+	 * prompt, so a re-run in an isolated session still sees what to change.
+	 */
+	feedbackPath?: string;
 }
 
 export interface SetGraphNode {
@@ -52,35 +61,43 @@ export interface HumanGraphNode {
 	title: string;
 	question: string;
 	statePath: string;
+	/**
+	 * The run file whose summary the driver shows with the question. Only
+	 * stack.json has a renderer, so only it is allowed here; a second file widens
+	 * this union together with its renderer.
+	 */
+	detail?: "stack.json";
+	/**
+	 * State path the operator's change request is written to on denial. A gate
+	 * with one requires non-empty feedback to deny; one without takes none.
+	 */
+	feedbackPath?: string;
+}
+
+/** What the operator answered at a human gate. */
+export interface HumanAnswer {
+	approved: boolean;
+	/** The change request, required to deny a gate with a feedbackPath. */
+	feedback?: string;
 }
 
 /**
- * A product terminal the topology itself routes to. `EXHAUSTED` is not one of
- * these: a cap is crossed by the engine, never chosen by an edge, and `DONE`
- * belongs to a completed release rather than a branch.
+ * A parking spot the topology routes to when the loop needs the operator. The
+ * run pauses NEEDS_HUMAN with the stated recovery, and `/kpi <job>` continues
+ * at `resume`. Having it as a node keeps the branch in graph data: why a run
+ * paused, and where it picks up, are readable in the topology instead of
+ * buried in the driver.
  */
-export type GraphRoutedTerminal = "UNSAFE" | "NEEDS_HUMAN" | "BLOCKED" | "NO_PROGRESS";
-
-export const GRAPH_ROUTED_TERMINALS: readonly GraphRoutedTerminal[] = [
-	"UNSAFE",
-	"NEEDS_HUMAN",
-	"BLOCKED",
-	"NO_PROGRESS",
-];
-
-/**
- * A sink that ends the run with a stated product terminal. Having it as a node
- * keeps the branch in graph data: the reason a run stopped is readable in the
- * topology instead of buried in the driver.
- */
-export interface TerminalGraphNode {
+export interface PauseGraphNode {
 	id: string;
-	type: "terminal";
-	status: GraphRoutedTerminal;
+	type: "pause";
+	recovery: LoopRecovery;
 	reason: string;
+	/** The nodes a resume schedules; each is an existing non-pause node. */
+	resume: string[];
 }
 
-export type GraphNode = AgentGraphNode | SetGraphNode | HumanGraphNode | TerminalGraphNode;
+export type GraphNode = AgentGraphNode | SetGraphNode | HumanGraphNode | PauseGraphNode;
 
 export interface GraphCondition {
 	path: string;
@@ -94,38 +111,14 @@ export interface GraphEdge {
 	when?: GraphCondition | GraphCondition[];
 }
 
-export interface GraphLimits {
-	maxSteps: number;
-	maxNodeRuns: number;
-	maxConcurrency: number;
-	maxCostUsd: number;
-	timeoutMs: number;
-}
-
 /**
- * Graph limits plus the caps a graph file does not carry: a round and a
- * transient-retry allowance both belong to the job contract, not the topology.
+ * The only limit a graph carries. K-π runs have no caps: cost, time, steps and
+ * node runs are reported, never enforced, so a checkpoint from a release that
+ * still enforced them is read with those keys ignored.
  */
-export interface GraphBudgetLimits extends GraphLimits {
-	maxRounds: number;
-	/** Transient transport/429/timeout retries allowed per node. */
-	maxTransientRetries: number;
+export interface GraphLimits {
+	maxConcurrency: number;
 }
-
-/** The caps a validated task/job contract may override. */
-export type GraphBudgetOverrides = Partial<GraphBudgetLimits>;
-
-/** Every cap whose exhaustion is the product terminal `EXHAUSTED`. */
-export const BUDGET_LIMIT_NAMES = [
-	"maxSteps",
-	"maxNodeRuns",
-	"maxRounds",
-	"maxCostUsd",
-	"timeoutMs",
-	"maxTransientRetries",
-] as const;
-
-export type BudgetLimitName = (typeof BUDGET_LIMIT_NAMES)[number];
 
 export interface GraphPolicy {
 	allowNonInteractive: boolean;
@@ -151,12 +144,12 @@ export interface GraphDefinition {
 }
 
 /**
- * `terminated` is a topology-chosen product terminal: the run stopped because an
- * edge said so, not because it finished, crashed, or spent a cap.
+ * `paused` is a topology-chosen park: the run stopped because an edge said the
+ * operator is needed, not because it finished or crashed. A resume re-arms it.
  */
-export type GraphRunStatus = "running" | "interrupted" | "completed" | "failed" | "exhausted" | "terminated";
+export type GraphRunStatus = "running" | "interrupted" | "completed" | "paused";
 
-export type GraphNodeRunStatus = "pending" | "running" | "completed" | "interrupted" | "failed" | "exhausted";
+export type GraphNodeRunStatus = "pending" | "running" | "completed" | "interrupted" | "failed";
 
 export interface GraphNodeRunState {
 	status: GraphNodeRunStatus;
@@ -166,18 +159,22 @@ export interface GraphNodeRunState {
 	agentId?: string;
 	error?: string;
 	/**
-	 * Transient retries already spent on this node. Durable on purpose: a kill
-	 * during a backoff must not hand the node a fresh allowance on resume.
+	 * Transient retries already spent on this run of the node. Unbounded, and
+	 * durable on purpose: a kill during a backoff resumes with the count it had.
 	 */
 	transientRetries?: number;
 	/**
 	 * The `runs` value those retries belong to. Retries are same-run, so a new
-	 * legitimate run gets a fresh allowance while a resumed run keeps what it
-	 * spent. Without this key the allowance would be lifetime-per-node.
+	 * legitimate run counts from zero while a resumed run keeps its count and
+	 * its place in the backoff sequence.
 	 */
 	retryRun?: number;
 	/** The backoff actually waited on this node, in order. */
 	retryDelaysMs?: number[];
+	/** Why the current backoff is being waited. */
+	retryReason?: TransientReason;
+	/** Epoch ms the current backoff ends; a resume sleeps the remainder. */
+	retryAtMs?: number;
 }
 
 export interface PendingHumanInput {
@@ -187,16 +184,17 @@ export interface PendingHumanInput {
 }
 
 /**
- * Durable budget counters. Every field survives a checkpoint so a resumed run
- * keeps its clock, its spend, and its round instead of restarting them.
+ * Durable counters. Every field survives a checkpoint so a resumed run keeps
+ * its clock, its spend, and its round instead of restarting them. None of
+ * them ends a run: they are what the board reports.
  */
 export interface GraphBudgetState {
-	limits: GraphBudgetLimits;
+	limits: GraphLimits;
 	/** Epoch ms the run started, read from the injected clock. */
 	startedAtMs: number;
-	/** Elapsed wall time at the last budget reading. */
+	/** Elapsed wall time at the last reading. */
 	elapsedMs: number;
-	/** Accumulated job cost in USD at the last budget reading. */
+	/** Accumulated job cost in USD at the last reading. */
 	costUsd: number;
 	/** Completed rounds: how many times the busiest node has run. */
 	round: number;
@@ -205,18 +203,19 @@ export interface GraphBudgetState {
 }
 
 /**
- * The durable product terminal a run reached: a cap the engine crossed, or a
- * terminal node the topology routed to. Written exactly once either way.
+ * The durable record of why a run paused: a pause node the topology routed to,
+ * or a contract defect the engine refused to continue past. Written exactly
+ * once per pause; a resume re-arms `resume`.
  */
-export interface GraphTerminalState {
-	status: "EXHAUSTED" | GraphRoutedTerminal;
-	/** Only a cap has one. */
-	limit?: BudgetLimitName;
+export interface GraphPauseState {
+	recovery: LoopRecovery;
 	reason: string;
 	round: number;
 	superstep: number;
-	/** The nodes the stopped superstep was holding. */
+	/** The nodes the pause names: the pause node, or the nodes that failed. */
 	nodes: string[];
+	/** The nodes a resume schedules. */
+	resume: string[];
 }
 
 export interface GraphRunState {
@@ -229,6 +228,6 @@ export interface GraphRunState {
 	nodes: Record<string, GraphNodeRunState>;
 	pendingHuman?: PendingHumanInput;
 	budget: GraphBudgetState;
-	/** Written exactly once, when a cap ends the run. */
-	terminal?: GraphTerminalState;
+	/** Present exactly while the run is paused. */
+	pause?: GraphPauseState;
 }

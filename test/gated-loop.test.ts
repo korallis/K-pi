@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { execFile as execFileCallback } from "node:child_process";
-import { cp, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { promisify } from "node:util";
+import { isDeepStrictEqual, promisify } from "node:util";
 
 import type {
 	ExtensionCommandContext,
@@ -15,20 +15,26 @@ import type {
 import { verifyChain } from "../packages/coding-agent/src/kpi/extensions/append-log.ts";
 import { researchCellFromDocument } from "../packages/coding-agent/src/kpi/extensions/board.ts";
 import type { BusDependencies } from "../packages/coding-agent/src/kpi/extensions/bus/spawn.ts";
-import { registerControlPlane } from "../packages/coding-agent/src/kpi/extensions/control-plane.ts";
+import { liveLoopSettled, registerControlPlane } from "../packages/coding-agent/src/kpi/extensions/control-plane.ts";
 import {
 	CONVENTIONAL_COMMIT_PATTERN,
 	findJobCommit,
 	type LoopDependencies,
+	NO_PROGRESS_OPTIONS,
+	PLAN_GATE_OPTIONS,
 	type PullRequestRecord,
+	RELEASE_GATE_OPTIONS,
+	runLoop,
 	verifyShippedCommit,
 } from "../packages/coding-agent/src/kpi/extensions/gated-loop.ts";
 import {
 	type GraphAgentSessionFactory,
 	GraphEngine,
 } from "../packages/coding-agent/src/kpi/extensions/graph/engine.ts";
-import type { GraphDefinition } from "../packages/coding-agent/src/kpi/extensions/graph/schema.ts";
+import type { GraphDefinition, GraphRunState } from "../packages/coding-agent/src/kpi/extensions/graph/schema.ts";
 import { registerPolicy } from "../packages/coding-agent/src/kpi/extensions/policy.ts";
+import { isFinishedRunStatus, readTaskForJob } from "../packages/coding-agent/src/kpi/extensions/run-store.ts";
+import { stackTaskHash } from "../packages/coding-agent/src/kpi/extensions/stack.ts";
 import { reviewerBusDependencies } from "./helpers/reviewer-bus.ts";
 
 const execFile = promisify(execFileCallback);
@@ -134,6 +140,12 @@ const healthStack = JSON.stringify(
 	2,
 );
 
+/** The map a re-run planner writes after a change request: the same slice, reworded. */
+const REVISED_HEALTH_PURPOSE = "serve GET /health as api and server";
+const healthStackRevised = healthStack.replace("healthcheck endpoint and its tests", REVISED_HEALTH_PURPOSE);
+
+const PLAN_APPROVAL_QUESTION = "The plan is frozen as stack.json. Approve it for implementation, or request changes?";
+
 function loopSessions(
 	directory: string,
 	executed: string[],
@@ -150,6 +162,16 @@ function loopSessions(
 		playbook?: string;
 		/** What the ship node does with its prompt, in place of the plain local commit. */
 		ship?: (prompt: string, trailer: string) => Promise<void>;
+		/** One map per plan run, in order; once spent the plan answers `stack` as usual. */
+		stacks?: string[];
+		/** Every prompt a session received, as `<node>\n<prompt>`. */
+		prompts?: string[];
+		/** Thrown by implement's prompt, one per implement run, until spent. */
+		implementFailures?: Error[];
+		/** The evidence each test run reports, in order; once spent the test passes as usual. */
+		evidence?: Array<Record<string, unknown>>;
+		/** Called with every prompt before the fake node acts on it. */
+		onPrompt?: (node: string, prompt: string) => Promise<void>;
 	} = {},
 ): GraphAgentSessionFactory {
 	let sessionNumber = 0;
@@ -165,16 +187,19 @@ function loopSessions(
 					const detected = nodeId(prompt);
 					if (detected !== "retry") currentNode = detected;
 					executed.push(currentNode || detected);
+					options.prompts?.push(`${currentNode || detected}\n${prompt}`);
+					await options.onPrompt?.(currentNode || detected, prompt);
 					// Response contracts read getLastAssistantText after prompt; never leak
 					// a prior node's JSON (plan stack) into a later schema (evidence).
 					lastAssistantText = undefined;
 
 					if (currentNode === "plan" || currentNode === "plan-check") {
 						// Plan returns stack JSON; the graph engine validates and writes stack.json.
-						if (options.stack === null) {
+						const scripted = options.stacks?.shift();
+						if (scripted !== undefined) {
+							lastAssistantText = scripted;
+						} else if (options.stack === null) {
 							lastAssistantText = undefined;
-						} else if (options.stack === "") {
-							lastAssistantText = "";
 						} else {
 							lastAssistantText = options.stack ?? healthStack;
 						}
@@ -184,7 +209,21 @@ function loopSessions(
 							contract.playbook = options.playbook;
 							await writeFile(taskPath, `${JSON.stringify(contract, null, 2)}\n`);
 						}
+						// A real plan binds its map to the contract hash, which is how a
+						// second implement round (after a retry, a change request or a
+						// re-plan) reads the map as fresh rather than judging it by mtime.
+						if (options.jobId !== undefined && lastAssistantText !== undefined) {
+							const map = JSON.parse(lastAssistantText) as Record<string, unknown>;
+							if (map.task_hash === undefined) {
+								const contract = await readTaskForJob(directory, options.jobId);
+								lastAssistantText = JSON.stringify({ ...map, task_hash: stackTaskHash(contract) });
+							}
+						}
 					} else if (currentNode === "implement") {
+						const failure = options.implementFailures?.shift();
+						if (failure !== undefined) {
+							throw failure;
+						}
 						if (options.validateCommands === true && implementationAttempt === 0) {
 							await assert.rejects(
 								execFile("npm", ["test"], {
@@ -212,14 +251,17 @@ function loopSessions(
 								env: commandEnvironment,
 							});
 						}
+						const scripted = options.evidence?.shift();
 						lastAssistantText = JSON.stringify({
 							head: await git(directory, "rev-parse", "HEAD"),
-							commands: [
-								{ cmd: "npm test", exit: 1, excerpt: "expected 200, received 404" },
-								{ cmd: "npm test", exit: 0, excerpt: "pass 1" },
-								{ cmd: "npm run lint", exit: 0 },
-							],
-							ac_results: [{ id: "AC-01", passed: true }],
+							...(scripted ?? {
+								commands: [
+									{ cmd: "npm test", exit: 1, excerpt: "expected 200, received 404" },
+									{ cmd: "npm test", exit: 0, excerpt: "pass 1" },
+									{ cmd: "npm run lint", exit: 0 },
+								],
+								ac_results: [{ id: "AC-01", passed: true }],
+							}),
 						});
 					} else if (currentNode === "review") {
 						// Review runs on the RP-13 bus (workerRole). In-process
@@ -245,24 +287,54 @@ function loopSessions(
 	};
 }
 
+/** How the fake operator answers the plan gate's select and editor dialogs. */
+interface GateScript {
+	/** First line of every select title, in order. */
+	selections?: string[];
+	/** Select answers in order; an explicit `undefined` is a dismissed dialog. Spent: Approve plan. */
+	answers?: (string | undefined)[];
+	/** Replaces `feedbacks`: what the editor does with every title it is shown. */
+	onEditor?: (title: string) => Promise<string | undefined>;
+	/** Editor answers in order; spent: a dismissed editor. */
+	feedbacks?: (string | undefined)[];
+	/** Release gate answers in order; spent: Approve. */
+	releaseAnswers?: (string | undefined)[];
+	/** No-progress prompt answers in order; spent: Keep going. */
+	noProgressAnswers?: (string | undefined)[];
+	/** The node log the select checks: implement must not have run while a plan gate is open. */
+	executed?: string[];
+	/** Whether the context has dialog UI; a function is read on every gate. */
+	hasUI?: boolean | (() => boolean);
+}
+
 function commandHarness(
 	directory: string,
 	factory: GraphAgentSessionFactory,
 	jobId: string,
 	confirmations: string[],
 	busDependencies: BusDependencies = reviewerBusDependencies(),
-	dependencies: Pick<LoopDependencies, "readPullRequest"> = {},
+	dependencies: LoopDependencies = {},
+	gate: GateScript = {},
 ): {
 	commands: Map<string, CommandHandler>;
 	context: ExtensionCommandContext;
 	notifications: string[];
+	/** Every select title in full, in order. */
+	selectTitles: string[];
 } {
 	const commands = new Map<string, CommandHandler>();
 	const notifications: string[] = [];
+	const selectTitles: string[] = [];
+	const hasUI = (): boolean => (typeof gate.hasUI === "function" ? gate.hasUI() : (gate.hasUI ?? true));
+	// The loop is detached from its handler: the harness settles it so a test
+	// reads the outcome the operator would, after the run.
 	const pi = {
 		on() {},
 		registerCommand(name: string, options: { handler: CommandHandler }) {
-			commands.set(name, options.handler);
+			commands.set(name, async (args, ctx) => {
+				await options.handler(args, ctx);
+				await liveLoopSettled();
+			});
 		},
 	};
 	registerControlPlane(pi as unknown as Parameters<typeof registerControlPlane>[0], {
@@ -273,12 +345,49 @@ function commandHarness(
 	});
 	const context = {
 		cwd: directory,
-		hasUI: true,
-		mode: "tui",
+		get hasUI() {
+			return hasUI();
+		},
+		mode: gate.hasUI === false ? "print" : "tui",
 		ui: {
 			async confirm(title: string) {
+				assert.ok(hasUI(), `confirm(${title}) requested without dialog UI`);
 				confirmations.push(title);
 				return true;
+			},
+			async select(title: string, options: string[]) {
+				assert.ok(hasUI(), `select(${title}) requested without dialog UI`);
+				selectTitles.push(title);
+				const firstLine = title.split("\n")[0] ?? title;
+				if (isDeepStrictEqual(options, [...RELEASE_GATE_OPTIONS])) {
+					confirmations.push(firstLine);
+					return gate.releaseAnswers === undefined || gate.releaseAnswers.length === 0
+						? RELEASE_GATE_OPTIONS[0]
+						: gate.releaseAnswers.shift();
+				}
+				if (isDeepStrictEqual(options, [...NO_PROGRESS_OPTIONS])) {
+					gate.selections?.push(firstLine);
+					return gate.noProgressAnswers === undefined || gate.noProgressAnswers.length === 0
+						? NO_PROGRESS_OPTIONS[1]
+						: gate.noProgressAnswers.shift();
+				}
+				assert.deepEqual(options, [...PLAN_GATE_OPTIONS]);
+				gate.selections?.push(firstLine);
+				// The first plan gate is asked before the first write; the gate of a
+				// re-plan follows an implement round by design.
+				const firstPlanGate = selectTitles.filter((entry) => entry.startsWith("Plan approval")).length === 1;
+				if (firstLine.startsWith("Plan approval") && firstPlanGate) {
+					assert.equal(
+						gate.executed?.includes("implement") ?? false,
+						false,
+						"implement must not run before the plan is approved",
+					);
+				}
+				return gate.answers === undefined || gate.answers.length === 0 ? "Approve plan" : gate.answers.shift();
+			},
+			async editor(title: string) {
+				assert.ok(hasUI(), `editor(${title}) requested without dialog UI`);
+				return gate.onEditor === undefined ? gate.feedbacks?.shift() : gate.onEditor(title);
 			},
 			notify(message: string) {
 				notifications.push(message);
@@ -286,13 +395,32 @@ function commandHarness(
 			setWidget() {},
 		},
 	} as unknown as ExtensionCommandContext;
-	return { commands, context, notifications };
+	return { commands, context, notifications, selectTitles };
 }
 
-async function latestCheckpoint(directory: string, jobId: string): Promise<Record<string, unknown>> {
+async function readEvents(directory: string, jobId: string): Promise<Record<string, unknown>[]> {
+	return (await readFile(join(directory, ".kpi", "runs", jobId, "events.jsonl"), "utf8"))
+		.split("\n")
+		.filter((line) => line.length > 0)
+		.map((line) => JSON.parse(line) as Record<string, unknown>);
+}
+
+async function approvalEvents(directory: string, jobId: string): Promise<Record<string, unknown>[]> {
+	return (await readEvents(directory, jobId)).filter((record) => record.type === "approval.result");
+}
+
+async function terminalEvents(directory: string, jobId: string): Promise<Record<string, unknown>[]> {
+	return (await readEvents(directory, jobId)).filter((record) => record.type === "loop.terminal");
+}
+
+async function checkpointPlan(directory: string, jobId: string): Promise<Record<string, unknown>> {
+	return (await latestCheckpoint(directory, jobId)).values.plan as Record<string, unknown>;
+}
+
+async function latestCheckpoint(directory: string, jobId: string): Promise<GraphRunState> {
 	const graphDirectory = join(directory, ".kpi", "runs", jobId, "graph");
 	const names = (await readdir(graphDirectory)).sort();
-	return JSON.parse(await readFile(join(graphDirectory, names.at(-1)!), "utf8")) as Record<string, unknown>;
+	return JSON.parse(await readFile(join(graphDirectory, names.at(-1)!), "utf8")) as GraphRunState;
 }
 
 test("loop on healthcheck fixture reaches human confirm with green gates", async () => {
@@ -300,6 +428,7 @@ test("loop on healthcheck fixture reaches human confirm with green gates", async
 	const jobId = "20260831-healthcheck-gated";
 	const executed: string[] = [];
 	const confirmations: string[] = [];
+	const selections: string[] = [];
 	try {
 		assert.ok((await readFile(join(directory, "test", "health", "health.test.js"), "utf8")).includes("GET /health"));
 		const task = await readFile(join(directory, "task.txt"), "utf8");
@@ -316,6 +445,9 @@ test("loop on healthcheck fixture reaches human confirm with green gates", async
 			loopSessions(directory, executed, { validateCommands: true, jobId }),
 			jobId,
 			confirmations,
+			reviewerBusDependencies(),
+			{},
+			{ selections, executed },
 		);
 
 		await harness.commands.get("loop")!(task, harness.context);
@@ -327,6 +459,33 @@ test("loop on healthcheck fixture reaches human confirm with green gates", async
 
 		assert.deepEqual(confirmations, ["Approve gated release"]);
 		assert.ok(executed.includes("specify"));
+		// The operator approved the plan before the first write, from a dialog that
+		// showed the plan itself, and the approval is on the record.
+		assert.deepEqual(selections, ["Plan approval"]);
+		const gateTitle = harness.selectTitles[0] ?? "";
+		for (const expected of [
+			PLAN_APPROVAL_QUESTION,
+			"Current slice: health",
+			"1. health —",
+			`Full plan: .kpi/runs/${jobId}/stack.json`,
+			"Revision 1",
+		]) {
+			assert.ok(gateTitle.includes(expected), `plan gate title lacks ${expected}:\n${gateTitle}`);
+		}
+		assert.ok(harness.notifications.includes(`K-π job ${jobId} is waiting on you: Plan approval`));
+		const approvals = await approvalEvents(directory, jobId);
+		assert.deepEqual(
+			approvals.map((record) => [record.node, record.approved]),
+			[
+				["plan-approval", true],
+				["human", true],
+			],
+		);
+		assert.equal(approvals[0]?.question, PLAN_APPROVAL_QUESTION);
+		assert.equal("feedback" in (approvals[0] ?? {}), false);
+		const plan = await checkpointPlan(directory, jobId);
+		assert.equal(plan.approved, true);
+		assert.equal(plan.feedback, undefined);
 		const state = JSON.parse(await readFile(join(directory, ".kpi", "runs", jobId, "state.json"), "utf8")) as Record<
 			string,
 			unknown
@@ -687,8 +846,7 @@ test("kpi --plan freezes and hashes plan files without executing specify", async
 		assert.ok(executed.includes("plan-check"));
 		assert.equal(executed.includes("specify"), false);
 		const checkpoint = await latestCheckpoint(directory, jobId);
-		const nodes = checkpoint.nodes as Record<string, { runs: number }>;
-		assert.equal(nodes.specify.runs, 0);
+		assert.equal(checkpoint.nodes.specify.runs, 0);
 		for (const name of ["requirements.md", "design.md", "tasks.md"]) {
 			assert.ok((await readFile(join(directory, ".kpi", "runs", jobId, "plan", name), "utf8")).length > 0);
 		}
@@ -748,13 +906,7 @@ test("agent response retries until it validates against response schema", async 
 			},
 		],
 		edges: [{ from: "review", to: "__end__" }],
-		limits: {
-			maxSteps: 3,
-			maxNodeRuns: 3,
-			maxConcurrency: 1,
-			maxCostUsd: 1,
-			timeoutMs: 10_000,
-		},
+		limits: { maxConcurrency: 1 },
 		policy: {
 			allowNonInteractive: false,
 			allowNonInteractiveMutations: false,
@@ -1076,7 +1228,7 @@ const invalidStacks: { name: string; document: string; reason: RegExp }[] = [
 	},
 ];
 
-test("an invalid or missing stack stops implement UNSAFE before any write", async () => {
+test("an invalid or missing stack pauses implement NEEDS_HUMAN before any write", async () => {
 	for (const scenario of invalidStacks) {
 		const directory = await fixture();
 		const jobId = "20260901-stack-invalid";
@@ -1097,8 +1249,10 @@ test("an invalid or missing stack stops implement UNSAFE before any write", asyn
 			const state = JSON.parse(
 				await readFile(join(directory, ".kpi", "runs", jobId, "state.json"), "utf8"),
 			) as Record<string, unknown>;
-			assert.equal(state.status, "UNSAFE", `${scenario.name}: must stop UNSAFE`);
+			assert.equal(state.status, "NEEDS_HUMAN", `${scenario.name}: must pause NEEDS_HUMAN`);
+			assert.equal(state.recovery, "stack", `${scenario.name}: the recovery is the stack`);
 			assert.match(String(state.reason), scenario.reason, scenario.name);
+			assert.ok(String(state.reason).includes(`resume with /kpi ${jobId}`), String(state.reason));
 
 			// The implement node never ran, so nothing was written and no commit exists.
 			assert.equal(executed.includes("implement"), false, `${scenario.name}: implement must not run`);
@@ -1161,7 +1315,8 @@ test("a stale stack stops implement, and re-freezing it lets the round proceed",
 			string,
 			unknown
 		>;
-		assert.equal(state.status, "UNSAFE");
+		assert.equal(state.status, "NEEDS_HUMAN");
+		assert.equal(state.recovery, "stack");
 		assert.match(String(state.reason), /frozen against a different task/u);
 		assert.equal(executed.includes("implement"), false);
 	} finally {
@@ -1215,7 +1370,7 @@ test("a no-stack playbook needs no map", async () => {
 			string,
 			unknown
 		>;
-		assert.notEqual(state.status, "UNSAFE", `an exempt playbook must not be blocked: ${String(state.reason)}`);
+		assert.notEqual(state.recovery, "stack", `an exempt playbook must not be blocked: ${String(state.reason)}`);
 		assert.ok(executed.includes("implement"), "an exempt playbook still implements");
 	} finally {
 		await rm(directory, { recursive: true, force: true });
@@ -1263,6 +1418,982 @@ test("kpi --no-network freezes the operator's offline decision onto the contract
 		}
 		// The board cell an operator sees for that state.
 		assert.deepEqual(researchCellFromDocument(research), { cell: "RESEARCH local · no-network operator" });
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("the gated loop asks the operator to approve the plan before implement and records the approval", async () => {
+	const directory = await fixture();
+	const jobId = "20260903-plan-approval";
+	const executed: string[] = [];
+	const confirmations: string[] = [];
+	const selections: string[] = [];
+	try {
+		const harness = commandHarness(
+			directory,
+			loopSessions(directory, executed, { jobId }),
+			jobId,
+			confirmations,
+			reviewerBusDependencies(),
+			{},
+			{ selections, executed },
+		);
+		await harness.commands.get("loop")!(await readFile(join(directory, "task.txt"), "utf8"), harness.context);
+
+		const state = await runDocument(directory, jobId, "state.json");
+		assert.equal(state.status, "DONE", `${state.reason}\n${harness.notifications.join("\n")}`);
+		// One plan gate, asked with the plan in front of the operator (the select
+		// itself asserted implement had not run), and the release gate unchanged.
+		assert.deepEqual(selections, ["Plan approval"]);
+		assert.deepEqual(confirmations, ["Approve gated release"]);
+		const title = harness.selectTitles[0] ?? "";
+		assert.ok(title.startsWith(`Plan approval\n${PLAN_APPROVAL_QUESTION}\n`), title);
+		for (const expected of [
+			"Delivery: vertical",
+			"Current slice: health",
+			"1. health — healthcheck endpoint and its tests",
+			"folder src/health · interface src/health/api.ts · 2 allowed path(s) · depends on nothing",
+			`Full plan: .kpi/runs/${jobId}/stack.json`,
+			"Revision 1",
+		]) {
+			assert.ok(title.includes(expected), `plan gate title lacks ${expected}:\n${title}`);
+		}
+		assert.doesNotMatch(title, /EXHAUSTED| of \d/u, "revisions are unbounded; the operator is the bound");
+		assert.ok(harness.notifications.includes(`K-π job ${jobId} is waiting on you: Plan approval`));
+
+		// The approval is on the record, before the release approval.
+		const approvals = await approvalEvents(directory, jobId);
+		assert.deepEqual(
+			approvals.map((record) => [record.node, record.approved, record.question]),
+			[
+				["plan-approval", true, PLAN_APPROVAL_QUESTION],
+				["human", true, approvals[1]?.question],
+			],
+		);
+		assert.equal("feedback" in (approvals[0] ?? {}), false);
+		const plan = await checkpointPlan(directory, jobId);
+		assert.equal(plan.approved, true);
+		assert.equal(plan.feedback, undefined);
+		const terminals = await terminalEvents(directory, jobId);
+		assert.equal(terminals.length, 1, JSON.stringify(terminals));
+		assert.equal(terminals[0]?.status, "DONE");
+		assert.equal(await verifyChain(join(directory, ".kpi", "runs", jobId, "events.jsonl")), true);
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("request changes re-plans with the operator's feedback and refuses empty feedback", async () => {
+	const directory = await fixture();
+	const jobId = "20260903-plan-changes";
+	const executed: string[] = [];
+	const prompts: string[] = [];
+	const selections: string[] = [];
+	const feedback = "split health into api and server";
+	try {
+		const harness = commandHarness(
+			directory,
+			loopSessions(directory, executed, { jobId, stacks: [healthStack, healthStackRevised], prompts }),
+			jobId,
+			[],
+			reviewerBusDependencies(),
+			{},
+			{
+				selections,
+				executed,
+				answers: ["Request changes", "Request changes", "Approve plan"],
+				// The first change request carries nothing and is refused; the second is real.
+				feedbacks: ["", feedback],
+			},
+		);
+		await harness.commands.get("loop")!(await readFile(join(directory, "task.txt"), "utf8"), harness.context);
+
+		const state = await runDocument(directory, jobId, "state.json");
+		assert.equal(state.status, "DONE", `${state.reason}\n${harness.notifications.join("\n")}`);
+		assert.ok(
+			harness.notifications.some((message) => message.includes("feedback is required to request plan changes")),
+			harness.notifications.join("\n"),
+		);
+		// Refused, asked again, denied with feedback, re-planned, asked again, approved.
+		assert.deepEqual(selections, ["Plan approval", "Plan approval", "Plan approval"]);
+		assert.ok((harness.selectTitles[0] ?? "").includes("Revision 1"), harness.selectTitles[0]);
+		assert.ok((harness.selectTitles[2] ?? "").includes("Revision 2"), harness.selectTitles[2]);
+		assert.ok(
+			(harness.selectTitles[2] ?? "").includes(`1. health — ${REVISED_HEALTH_PURPOSE}`),
+			harness.selectTitles[2],
+		);
+		assert.equal(executed.filter((node) => node === "plan").length, 2);
+		assert.equal(executed.filter((node) => node === "implement").length, 1);
+		assert.equal(executed.includes("plan-approval"), false, "a human node never prompts a session");
+
+		// The re-run planner, in a fresh isolated session, was told what to change.
+		const planPrompts = prompts.filter((prompt) => prompt.startsWith("plan\n"));
+		assert.equal(planPrompts.length, 2);
+		assert.doesNotMatch(planPrompts[0] ?? "", /Operator feedback/u);
+		assert.ok(
+			(planPrompts[1] ?? "").includes(`Operator feedback on your previous response (node run 2):\n${feedback}`),
+			planPrompts[1],
+		);
+
+		const approvals = (await approvalEvents(directory, jobId)).filter((record) => record.node === "plan-approval");
+		assert.deepEqual(
+			approvals.map((record) => [record.approved, record.feedback]),
+			[
+				[false, feedback],
+				[true, undefined],
+			],
+		);
+		assert.deepEqual(await checkpointPlan(directory, jobId), {
+			provided: false,
+			repair_tried: false,
+			approved: true,
+			feedback,
+		});
+		// The second plan's map is the one on disk, frozen before implement.
+		const stack = (await runDocument(directory, jobId, "stack.json")) as { modules: { purpose: string }[] };
+		assert.equal(stack.modules[0]?.purpose, REVISED_HEALTH_PURPOSE);
+		assert.equal(await verifyChain(join(directory, ".kpi", "runs", jobId, "events.jsonl")), true);
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("a plan gate without dialog UI stops NEEDS_HUMAN with the resume command and never answers itself", async () => {
+	const directory = await fixture();
+	const jobId = "20260903-plan-no-ui";
+	const executed: string[] = [];
+	try {
+		const harness = commandHarness(
+			directory,
+			loopSessions(directory, executed, { jobId }),
+			jobId,
+			[],
+			reviewerBusDependencies(),
+			{},
+			{ executed, hasUI: false },
+		);
+		await harness.commands.get("loop")!(await readFile(join(directory, "task.txt"), "utf8"), harness.context);
+
+		const state = await runDocument(directory, jobId, "state.json");
+		assert.equal(state.status, "NEEDS_HUMAN", `${state.reason}\n${harness.notifications.join("\n")}`);
+		assert.equal(state.recovery, "approval");
+		assert.ok(String(state.reason).includes("Plan approval needs an interactive session"), String(state.reason));
+		assert.ok(String(state.reason).includes(`resume with /kpi ${jobId}`), String(state.reason));
+		assert.equal(state.graph_status, "interrupted");
+		assert.equal(state.pending_question, PLAN_APPROVAL_QUESTION);
+		assert.equal(state.stage, "plan");
+		assert.equal(state.node, "plan-approval");
+		const terminals = await terminalEvents(directory, jobId);
+		assert.equal(terminals.length, 1, JSON.stringify(terminals));
+		assert.equal(terminals[0]?.status, "NEEDS_HUMAN");
+		assert.deepEqual(await approvalEvents(directory, jobId), [], "the harness never answered for the operator");
+		assert.equal(executed.includes("implement"), false);
+		assert.ok(harness.notifications.includes(`K-π job ${jobId} is waiting on you: Plan approval`));
+		const outcome = harness.notifications.find((message) =>
+			message.startsWith(`K-π job ${jobId} NEEDS_HUMAN: Plan approval needs an interactive session`),
+		);
+		assert.ok(outcome, harness.notifications.join("\n"));
+		assert.ok(outcome.includes(`/kpi ${jobId}`));
+		assert.equal(
+			harness.notifications.some((message) => message.includes("loop failed")),
+			false,
+			harness.notifications.join("\n"),
+		);
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("a plan gate dismissed with Escape stops NEEDS_HUMAN, re-asks on resume, and an approved gate is never asked twice", async () => {
+	const task = await readFile(join(fixtureSource, "task.txt"), "utf8");
+	const directory = await fixture();
+	const jobId = "20260903-plan-dismissed";
+	const executed: string[] = [];
+	const selections: string[] = [];
+	const confirmations: string[] = [];
+	try {
+		const first = commandHarness(
+			directory,
+			loopSessions(directory, executed, { jobId }),
+			jobId,
+			confirmations,
+			reviewerBusDependencies(),
+			{},
+			{ selections, executed, answers: [undefined] },
+		);
+		await first.commands.get("loop")!(task, first.context);
+		const stopped = await runDocument(directory, jobId, "state.json");
+		assert.equal(stopped.status, "NEEDS_HUMAN", `${stopped.reason}\n${first.notifications.join("\n")}`);
+		assert.match(String(stopped.reason), /Plan approval was dismissed/u);
+		assert.equal(stopped.recovery, "approval");
+		assert.deepEqual(await approvalEvents(directory, jobId), []);
+		assert.deepEqual(selections, ["Plan approval"]);
+		assert.equal(executed.includes("implement"), false);
+
+		// Resumed in an interactive session: the same gate is asked once and answered.
+		const resumeExecuted: string[] = [];
+		const second = commandHarness(
+			directory,
+			loopSessions(directory, resumeExecuted, { jobId }),
+			jobId,
+			confirmations,
+			reviewerBusDependencies(),
+			{},
+			{ selections, executed: resumeExecuted },
+		);
+		await second.commands.get("kpi")!(jobId, second.context);
+		const done = await runDocument(directory, jobId, "state.json");
+		assert.equal(done.status, "DONE", `${done.reason}\n${second.notifications.join("\n")}`);
+		assert.deepEqual(selections, ["Plan approval", "Plan approval"]);
+		assert.ok(resumeExecuted.includes("implement"));
+		assert.deepEqual(confirmations, ["Approve gated release"]);
+		const approvals = await approvalEvents(directory, jobId);
+		assert.deepEqual(
+			approvals.map((record) => [record.node, record.approved]),
+			[
+				["plan-approval", true],
+				["human", true],
+			],
+		);
+
+		// A finished job resumed again asks nothing.
+		await second.commands.get("kpi")!(jobId, second.context);
+		assert.deepEqual(selections, ["Plan approval", "Plan approval"]);
+		assert.equal((await checkpointPlan(directory, jobId)).approved, true);
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+
+	// An answered gate is completed in the checkpoint: a job that loses its
+	// dialog UI after plan approval stops at the release gate and, resumed with
+	// a UI, is never asked about the plan again.
+	const partialDirectory = await fixture();
+	const partialJobId = "20260903-plan-partial-ui";
+	const partialExecuted: string[] = [];
+	const partialSelections: string[] = [];
+	try {
+		const partial = commandHarness(
+			partialDirectory,
+			loopSessions(partialDirectory, partialExecuted, { jobId: partialJobId }),
+			partialJobId,
+			[],
+			reviewerBusDependencies(),
+			{},
+			{
+				selections: partialSelections,
+				executed: partialExecuted,
+				hasUI: () => partialSelections.length === 0,
+			},
+		);
+		await partial.commands.get("loop")!(task, partial.context);
+		const stopped = await runDocument(partialDirectory, partialJobId, "state.json");
+		assert.equal(stopped.status, "NEEDS_HUMAN", `${stopped.reason}\n${partial.notifications.join("\n")}`);
+		assert.match(String(stopped.reason), /Approve gated release needs an interactive session/u);
+		assert.equal(stopped.recovery, "approval");
+		assert.deepEqual(partialSelections, ["Plan approval"]);
+		assert.ok(partialExecuted.includes("implement"));
+
+		const finishConfirmations: string[] = [];
+		const finish = commandHarness(
+			partialDirectory,
+			loopSessions(partialDirectory, [], { jobId: partialJobId }),
+			partialJobId,
+			finishConfirmations,
+			reviewerBusDependencies(),
+			{},
+			{ selections: partialSelections },
+		);
+		await finish.commands.get("kpi")!(partialJobId, finish.context);
+		const done = await runDocument(partialDirectory, partialJobId, "state.json");
+		assert.equal(done.status, "DONE", `${done.reason}\n${finish.notifications.join("\n")}`);
+		assert.deepEqual(partialSelections, ["Plan approval"], "an answered plan gate is not asked again");
+		assert.deepEqual(finishConfirmations, ["Approve gated release"]);
+		assert.equal(
+			(await approvalEvents(partialDirectory, partialJobId)).filter((record) => record.node === "plan-approval")
+				.length,
+			1,
+		);
+	} finally {
+		await rm(partialDirectory, { recursive: true, force: true });
+	}
+});
+
+// ---------------------------------------------------------------------------
+// Self-healing: no caps, re-plans before the operator, the operator's stop
+// ---------------------------------------------------------------------------
+
+/** A review verdict that sends the round back, with a fixed output fingerprint. */
+function reviseVerdict(fingerprint: string, issue = "AC-01 is not covered by a test"): Record<string, unknown> {
+	return {
+		status: "REVISE",
+		approved: false,
+		blockingIssues: [issue],
+		nonBlockingIssues: [],
+		evidence: ["evidence.json"],
+		round: 1,
+		output_fingerprint: `sha256:${fingerprint.repeat(64)}`,
+	};
+}
+
+const passVerdict = JSON.parse(validVerdict) as Record<string, unknown>;
+
+async function checkpointDetails(directory: string, jobId: string): Promise<string[]> {
+	return (await readEvents(directory, jobId))
+		.filter((record) => record.type === "checkpoint" && typeof record.detail === "string")
+		.map((record) => String(record.detail));
+}
+
+function timeoutFailure(): Error {
+	return Object.assign(new Error("request timed out"), { code: "ETIMEDOUT" });
+}
+
+test("a review round with no progress re-plans with the failing criteria as feedback", async () => {
+	const directory = await fixture();
+	const jobId = "20260903-replan";
+	const executed: string[] = [];
+	const prompts: string[] = [];
+	const sliceAtPlan: (string | undefined)[] = [];
+	const witness = `sha256:${"b".repeat(64)}`;
+	try {
+		const harness = commandHarness(
+			directory,
+			loopSessions(directory, executed, {
+				jobId,
+				prompts,
+				onPrompt: async (node) => {
+					if (node !== "plan") return;
+					const contract = await runDocument(directory, jobId, "task.json");
+					sliceAtPlan.push(
+						typeof contract.current_module_id === "string" ? contract.current_module_id : undefined,
+					);
+				},
+			}),
+			jobId,
+			[],
+			// The same verdict twice: the reviewer keeps saying the same thing.
+			reviewerBusDependencies({ verdicts: [reviseVerdict("b"), reviseVerdict("b"), passVerdict] }),
+			{},
+			{ executed },
+		);
+		await harness.commands.get("loop")!(await readFile(join(directory, "task.txt"), "utf8"), harness.context);
+
+		const state = await runDocument(directory, jobId, "state.json");
+		assert.equal(state.status, "DONE", `${state.reason}\n${harness.notifications.join("\n")}`);
+		// implement, test, review (fresh) -> implement, test, review (repeat) -> plan, not implement.
+		// (review runs on the bus, so it is not in the session log.)
+		const secondTest = executed.indexOf("test", executed.indexOf("test") + 1);
+		assert.deepEqual(executed.slice(0, secondTest + 2), [
+			"ac-compiler",
+			"specify",
+			"plan",
+			"implement",
+			"test",
+			"implement",
+			"test",
+			"plan",
+		]);
+		assert.equal(executed.filter((node) => node === "plan").length, 2, executed.join(", "));
+
+		const repair = await runDocument(directory, jobId, "repair.json");
+		assert.deepEqual(repair, {
+			round: 2,
+			reason: "no progress: review repeated the same output",
+			failing_ac: [],
+			evidence_ref: "verdict.json",
+			witness,
+		});
+		assert.deepEqual(state.repaired, [witness]);
+		assert.deepEqual(state.plan_repair, repair);
+		// The slice was unfrozen for the second plan and re-frozen by implement.
+		assert.deepEqual(sliceAtPlan, [undefined, undefined]);
+		assert.equal((await runDocument(directory, jobId, "task.json")).current_module_id, "health");
+		const planPrompts = prompts.filter((prompt) => prompt.startsWith("plan\n"));
+		assert.equal(planPrompts.length, 2);
+		assert.match(planPrompts[1] ?? "", /repair\.json/u);
+		assert.deepEqual(await checkpointDetails(directory, jobId), [`re-plan for witness ${witness}`]);
+		assert.ok(
+			harness.notifications.includes(`K-π ${jobId} re-planning: no progress: review repeated the same output`),
+			harness.notifications.join("\n"),
+		);
+		assert.equal((await terminalEvents(directory, jobId)).length, 1);
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+	// A --plan job with the same repeat never re-plans (plan.provided routes it
+	// to the no-progress pause instead): the fixture's frozen plan declares no
+	// write bounds, so that route is proven on the shipped graph in
+	// test/graph-routing.test.ts rather than driven here.
+});
+
+test("no progress after a re-plan pauses NEEDS_HUMAN offering guidance, keep going, or stop", async () => {
+	const witness = `sha256:${"c".repeat(64)}`;
+	// Four repeats: two automatic re-plans, then the operator.
+	const verdicts = () => [reviseVerdict("c"), reviseVerdict("c"), reviseVerdict("c"), reviseVerdict("c"), passVerdict];
+	const guidance = "The endpoint must answer on /health with JSON; stop touching the router";
+
+	const guided = await fixture();
+	const guidedJobId = "20260903-no-progress-guidance";
+	const guidedExecuted: string[] = [];
+	const selections: string[] = [];
+	const prompts: string[] = [];
+	try {
+		const harness = commandHarness(
+			guided,
+			loopSessions(guided, guidedExecuted, { jobId: guidedJobId, prompts }),
+			guidedJobId,
+			[],
+			reviewerBusDependencies({ verdicts: verdicts() }),
+			{},
+			{ selections, executed: guidedExecuted, noProgressAnswers: ["Give guidance"], feedbacks: [guidance] },
+		);
+		await harness.commands.get("loop")!(await readFile(join(guided, "task.txt"), "utf8"), harness.context);
+
+		const state = await runDocument(guided, guidedJobId, "state.json");
+		assert.equal(state.status, "DONE", `${state.reason}\n${harness.notifications.join("\n")}`);
+		assert.ok(selections.includes("K-π no progress after 2 re-plans"), selections.join(" | "));
+		const prompt = harness.selectTitles.find((title) => title.startsWith("K-π no progress"));
+		assert.ok(prompt, harness.selectTitles.join(" | "));
+		// The editor's answer reached the planner's brief, and the run re-armed at plan.
+		const repair = await runDocument(guided, guidedJobId, "repair.json");
+		assert.equal(repair.guidance, guidance);
+		assert.equal(repair.witness, witness);
+		assert.equal(guidedExecuted.filter((node) => node === "plan").length, 4, guidedExecuted.join(", "));
+		assert.deepEqual(await checkpointDetails(guided, guidedJobId), [
+			`re-plan for witness ${witness}`,
+			`re-plan for witness ${witness}`,
+		]);
+		const planPrompts = prompts.filter((entry) => entry.startsWith("plan\n"));
+		assert.match(planPrompts.at(-1) ?? "", /repair\.json/u);
+		const terminals = await terminalEvents(guided, guidedJobId);
+		assert.deepEqual(
+			terminals.map((record) => [record.status, record.recovery]),
+			[
+				["NEEDS_HUMAN", "no_progress"],
+				["DONE", undefined],
+			],
+		);
+	} finally {
+		await rm(guided, { recursive: true, force: true });
+	}
+
+	const stopped = await fixture();
+	const stoppedJobId = "20260903-no-progress-stop";
+	const stoppedExecuted: string[] = [];
+	try {
+		const harness = commandHarness(
+			stopped,
+			loopSessions(stopped, stoppedExecuted, { jobId: stoppedJobId }),
+			stoppedJobId,
+			[],
+			reviewerBusDependencies({ verdicts: verdicts() }),
+			{},
+			{ executed: stoppedExecuted, noProgressAnswers: ["Stop"] },
+		);
+		await harness.commands.get("loop")!(await readFile(join(stopped, "task.txt"), "utf8"), harness.context);
+		const state = await runDocument(stopped, stoppedJobId, "state.json");
+		assert.equal(state.status, "STOPPED", `${state.reason}\n${harness.notifications.join("\n")}`);
+		assert.ok(String(state.reason).includes(`resume with /kpi ${stoppedJobId}`), String(state.reason));
+		assert.deepEqual(state.repaired, [witness, witness], "Stop resets nothing");
+		assert.equal((await terminalEvents(stopped, stoppedJobId)).at(-1)?.status, "STOPPED");
+		assert.ok(harness.notifications.some((message) => message.startsWith(`K-π job ${stoppedJobId} STOPPED`)));
+	} finally {
+		await rm(stopped, { recursive: true, force: true });
+	}
+
+	// Unattended, the pause stands with the resume command.
+	const unattended = await fixture();
+	const unattendedJobId = "20260903-no-progress-print";
+	const unattendedExecuted: string[] = [];
+	try {
+		const harness = commandHarness(
+			unattended,
+			loopSessions(unattended, unattendedExecuted, { jobId: unattendedJobId }),
+			unattendedJobId,
+			[],
+			reviewerBusDependencies({ verdicts: verdicts() }),
+			{},
+			{ hasUI: false },
+		);
+		await harness.commands.get("kpi")!(
+			`--mode autopilot ${await readFile(join(unattended, "task.txt"), "utf8")}`,
+			harness.context,
+		);
+		const state = await runDocument(unattended, unattendedJobId, "state.json");
+		assert.equal(state.status, "NEEDS_HUMAN", `${state.reason}\n${harness.notifications.join("\n")}`);
+		assert.equal(state.recovery, "no_progress");
+		assert.ok(String(state.reason).endsWith(`resume with /kpi ${unattendedJobId}`), String(state.reason));
+		assert.equal(isFinishedRunStatus(state.status), true);
+		assert.deepEqual(state.repaired, [witness, witness]);
+		const checkpoint = await latestCheckpoint(unattended, unattendedJobId);
+		assert.equal(checkpoint.status, "paused");
+		assert.deepEqual(checkpoint.pause?.resume, ["plan"]);
+		assert.ok(
+			harness.notifications.some((message) => message.startsWith(`K-π job ${unattendedJobId} NEEDS_HUMAN`)),
+			harness.notifications.join("\n"),
+		);
+	} finally {
+		await rm(unattended, { recursive: true, force: true });
+	}
+});
+
+test("a stop while the guidance editor is open records one STOPPED terminal and no failure", async () => {
+	const directory = await fixture();
+	const jobId = "20260903-no-progress-editor-stop";
+	const executed: string[] = [];
+	const witness = `sha256:${"e".repeat(64)}`;
+	try {
+		const harness = commandHarness(
+			directory,
+			loopSessions(directory, executed, { jobId }),
+			jobId,
+			[],
+			reviewerBusDependencies({
+				verdicts: [reviseVerdict("e"), reviseVerdict("e"), reviseVerdict("e"), reviseVerdict("e"), passVerdict],
+			}),
+			{},
+			{
+				executed,
+				noProgressAnswers: ["Give guidance"],
+				// The operator types `/kpi stop` with the editor open; the editor never answers.
+				onEditor: async (title) => {
+					assert.equal(title, "Guidance for the planner");
+					void harness.commands.get("kpi")!("stop", harness.context);
+					return Promise.withResolvers<string | undefined>().promise;
+				},
+			},
+		);
+		await harness.commands.get("loop")!(await readFile(join(directory, "task.txt"), "utf8"), harness.context);
+
+		const state = await runDocument(directory, jobId, "state.json");
+		assert.equal(state.status, "STOPPED", `${state.reason}\n${harness.notifications.join("\n")}`);
+		assert.equal(state.reason, "operator stop");
+		assert.deepEqual(
+			(await terminalEvents(directory, jobId)).map((record) => record.status),
+			["NEEDS_HUMAN", "STOPPED"],
+			"the pause, then exactly one STOPPED",
+		);
+		const marker = await runDocument(directory, jobId, "stop.json");
+		assert.equal(marker.recorded, false);
+		assert.equal(
+			harness.notifications.some((message) => message.includes("loop failed")),
+			false,
+			harness.notifications.join("\n"),
+		);
+		assert.ok(harness.notifications.includes(`K-π job ${jobId} STOPPED (resume with /kpi ${jobId})`));
+		assert.deepEqual(state.repaired, [witness, witness], "the stop resets nothing");
+		assert.equal(await verifyChain(join(directory, ".kpi", "runs", jobId, "events.jsonl")), true);
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("an approved review that repeats an earlier fingerprint is progress, not a re-plan", async () => {
+	const directory = await fixture();
+	const jobId = "20260903-pass-repeat";
+	const executed: string[] = [];
+	try {
+		// REVISE once, then PASS twice with the same output fingerprint: the
+		// release gate sends the first PASS back to implement; the second PASS
+		// repeats the fingerprint on a green round.
+		const repeatedPass = { ...passVerdict, output_fingerprint: `sha256:${"f".repeat(64)}` };
+		const harness = commandHarness(
+			directory,
+			loopSessions(directory, executed, { jobId }),
+			jobId,
+			[],
+			reviewerBusDependencies({ verdicts: [repeatedPass, repeatedPass] }),
+			{},
+			{ executed, releaseAnswers: ["Request changes"], feedbacks: ["tighten the response headers"] },
+		);
+		await harness.commands.get("loop")!(await readFile(join(directory, "task.txt"), "utf8"), harness.context);
+
+		const state = await runDocument(directory, jobId, "state.json");
+		assert.equal(state.status, "DONE", `${state.reason}\n${harness.notifications.join("\n")}`);
+		await assert.rejects(readFile(join(directory, ".kpi", "runs", jobId, "repair.json"), "utf8"), { code: "ENOENT" });
+		assert.equal(state.plan_repair, undefined);
+		assert.deepEqual(state.repaired, []);
+		assert.equal((await runDocument(directory, jobId, "task.json")).current_module_id, "health");
+		assert.equal(executed.filter((node) => node === "plan").length, 1, executed.join(", "));
+		assert.equal(state.round, 2, "both green rounds were rounds");
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("a stop that lands before the run is created creates nothing and says so", async () => {
+	const directory = await fixture();
+	const jobId = "20260903-stop-before-create";
+	try {
+		const controller = new AbortController();
+		const harness = commandHarness(directory, loopSessions(directory, [], { jobId }), jobId, []);
+		controller.abort();
+		const outcome = await runLoop({ goal: "add a healthcheck endpoint", mode: "gated" }, harness.context, {
+			jobId,
+			signal: controller.signal,
+		});
+		assert.equal(outcome.status, "STOPPED");
+		assert.equal(outcome.reason, "operator stop before the run was created");
+		await assert.rejects(readdir(join(directory, ".kpi", "runs", jobId)), { code: "ENOENT" });
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("two automatic re-plans then a pause, and an operator touch resets the allowance", async () => {
+	const directory = await fixture();
+	const jobId = "20260903-replan-allowance";
+	const executed: string[] = [];
+	const selections: string[] = [];
+	const witness = `sha256:${"d".repeat(64)}`;
+	try {
+		const harness = commandHarness(
+			directory,
+			loopSessions(directory, executed, { jobId }),
+			jobId,
+			[],
+			// plan, plan, pause; Keep going; plan again; then the reviewer relents.
+			reviewerBusDependencies({
+				verdicts: [
+					reviseVerdict("d"),
+					reviseVerdict("d"),
+					reviseVerdict("d"),
+					reviseVerdict("d"),
+					reviseVerdict("d"),
+					passVerdict,
+				],
+			}),
+			{},
+			{ selections, executed, noProgressAnswers: ["Keep going"] },
+		);
+		await harness.commands.get("loop")!(await readFile(join(directory, "task.txt"), "utf8"), harness.context);
+
+		const state = await runDocument(directory, jobId, "state.json");
+		assert.equal(state.status, "DONE", `${state.reason}\n${harness.notifications.join("\n")}`);
+		assert.deepEqual(
+			selections.filter((title) => title.startsWith("K-π no progress")),
+			["K-π no progress after 2 re-plans"],
+			"asked once: after the second automatic re-plan, never before",
+		);
+		// Automatic: 1 -> plan, 2 -> plan, 3 -> pause. Keep going: allowance reset, 4 -> plan.
+		assert.deepEqual(await checkpointDetails(directory, jobId), [
+			`re-plan for witness ${witness}`,
+			`re-plan for witness ${witness}`,
+			`re-plan for witness ${witness}`,
+		]);
+		assert.equal(executed.filter((node) => node === "plan").length, 5, executed.join(", "));
+		assert.deepEqual(state.repaired, [witness], "the allowance was reset by the touch and one re-plan spent since");
+		const terminals = await terminalEvents(directory, jobId);
+		assert.deepEqual(
+			terminals.map((record) => record.status),
+			["NEEDS_HUMAN", "DONE"],
+		);
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("a failed test round counts as a round and identical evidence twice re-plans", async () => {
+	const directory = await fixture();
+	const jobId = "20260903-red-twice";
+	const executed: string[] = [];
+	const roundsAtTest: unknown[] = [];
+	const failing = {
+		commands: [{ cmd: "npm test", exit: 1, excerpt: "expected 200, received 404" }],
+		ac_results: [{ id: "AC-01", passed: false }],
+	};
+	try {
+		const harness = commandHarness(
+			directory,
+			loopSessions(directory, executed, {
+				jobId,
+				// The same red evidence twice, then green.
+				evidence: [failing, failing],
+				onPrompt: async (node) => {
+					if (node === "test") roundsAtTest.push((await runDocument(directory, jobId, "state.json")).round);
+				},
+			}),
+			jobId,
+			[],
+			reviewerBusDependencies({ verdicts: [passVerdict] }),
+			{},
+			{ executed },
+		);
+		await harness.commands.get("loop")!(await readFile(join(directory, "task.txt"), "utf8"), harness.context);
+
+		const state = await runDocument(directory, jobId, "state.json");
+		assert.equal(state.status, "DONE", `${state.reason}\n${harness.notifications.join("\n")}`);
+		// Each failed test round was a round: 0 before the first, 1 before the second, 2 before the green one.
+		assert.deepEqual(roundsAtTest, [0, 1, 2]);
+		// implement, test (red), implement, test (red again) -> plan, not implement.
+		const secondTest = executed.indexOf("test", executed.indexOf("test") + 1);
+		assert.equal(executed[secondTest + 1], "plan", executed.join(", "));
+		assert.equal(executed.filter((node) => node === "plan").length, 2);
+		const repair = await runDocument(directory, jobId, "repair.json");
+		assert.equal(repair.evidence_ref, "evidence.json");
+		assert.equal(repair.reason, "no progress: test evidence repeated");
+		assert.deepEqual(repair.failing_ac, ["AC-01"]);
+		assert.equal(repair.round, 2);
+		assert.match(String(repair.witness), /^evidence:sha256:[0-9a-f]{64}$/u);
+		assert.deepEqual(state.repaired, [repair.witness]);
+		assert.equal(state.round, 3, "two red rounds and the review round");
+		assert.equal("last_test_evidence" in state, false, "the review round cleared the red chain");
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("a retry is visible on the board and in the event log before the wait starts", async () => {
+	const directory = await fixture();
+	const jobId = "20260903-retry-visible";
+	const executed: string[] = [];
+	const observed: { events: Record<string, unknown>[]; state: Record<string, unknown>; notified: boolean }[] = [];
+	const slept: number[] = [];
+	try {
+		const notifications: string[] = [];
+		let harnessNotifications: string[] = notifications;
+		const harness = commandHarness(
+			directory,
+			loopSessions(directory, executed, { jobId, implementFailures: [timeoutFailure()] }),
+			jobId,
+			[],
+			reviewerBusDependencies(),
+			{
+				retryBaseDelayMs: 1000,
+				sleep: async (milliseconds) => {
+					slept.push(milliseconds);
+					// Everything the operator sees is there before the wait begins.
+					observed.push({
+						events: (await readEvents(directory, jobId)).filter((record) => record.type === "node.retry"),
+						state: await runDocument(directory, jobId, "state.json"),
+						notified: harnessNotifications.some((message) =>
+							message.includes("retry 1 on implement: timeout; next in 1s"),
+						),
+					});
+				},
+			},
+		);
+		harnessNotifications = harness.notifications;
+		await harness.commands.get("loop")!(await readFile(join(directory, "task.txt"), "utf8"), harness.context);
+
+		const state = await runDocument(directory, jobId, "state.json");
+		assert.equal(state.status, "DONE", `${state.reason}\n${harness.notifications.join("\n")}`);
+		assert.deepEqual(slept, [1000]);
+		const [beforeWait] = observed;
+		assert.ok(beforeWait);
+		assert.equal(beforeWait.events.length, 1);
+		assert.equal(beforeWait.events[0]?.node, "implement");
+		assert.equal(beforeWait.events[0]?.attempt, 1);
+		assert.equal(beforeWait.events[0]?.reason, "timeout");
+		assert.equal(beforeWait.events[0]?.delay_ms, 1000);
+		const retry = beforeWait.state.retry as Record<string, unknown>;
+		assert.equal(retry.node, "implement");
+		assert.equal(retry.attempt, 1);
+		assert.equal(retry.reason, "timeout");
+		assert.equal(retry.delay_ms, 1000);
+		assert.equal(typeof retry.until_ms, "number");
+		assert.equal(beforeWait.state.status, "RUNNING");
+		assert.equal(beforeWait.notified, true, harness.notifications.join("\n"));
+		assert.ok(
+			harness.notifications.includes(`K-π ${jobId} retry 1 on implement: timeout; next in 1s (/kpi stop stops it)`),
+			harness.notifications.join("\n"),
+		);
+		// The round never moved for a retry, and the row is gone once the node is through.
+		assert.equal("retry" in state, false);
+		assert.equal(executed.filter((node) => node === "implement").length, 2);
+		assert.equal(await verifyChain(join(directory, ".kpi", "runs", jobId, "events.jsonl")), true);
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("kpi stop written during a backoff stops the loop at the next wait and leaves a resumable STOPPED job", async () => {
+	const directory = await fixture();
+	const jobId = "20260903-stop-in-backoff";
+	const executed: string[] = [];
+	const slept: number[] = [];
+	const confirmations: string[] = [];
+	try {
+		const runDirectory = join(directory, ".kpi", "runs", jobId);
+		const first = commandHarness(
+			directory,
+			loopSessions(directory, executed, { jobId, implementFailures: [timeoutFailure(), timeoutFailure()] }),
+			jobId,
+			confirmations,
+			reviewerBusDependencies(),
+			{
+				retryBaseDelayMs: 1000,
+				sleep: async (milliseconds) => {
+					slept.push(milliseconds);
+					if (slept.length === 2) {
+						// Another session's `/kpi stop`: the marker lands mid-wait.
+						await writeFile(
+							join(runDirectory, "stop.json"),
+							JSON.stringify({ reason: "operator stop", at: new Date().toISOString(), recorded: false }),
+						);
+					}
+				},
+			},
+		);
+		await first.commands.get("loop")!(await readFile(join(directory, "task.txt"), "utf8"), first.context);
+
+		const stopped = await runDocument(directory, jobId, "state.json");
+		assert.equal(stopped.status, "STOPPED", `${stopped.reason}\n${first.notifications.join("\n")}`);
+		assert.equal(stopped.reason, "operator stop");
+		assert.deepEqual(slept, [1000, 2000]);
+		assert.ok(
+			first.notifications.includes(`K-π job ${jobId} STOPPED: operator stop`),
+			first.notifications.join("\n"),
+		);
+		const terminals = await terminalEvents(directory, jobId);
+		assert.deepEqual(
+			terminals.map((record) => [record.status, record.reason]),
+			[["STOPPED", "operator stop"]],
+			"the driver recorded the one STOPPED terminal",
+		);
+		const checkpoint = await latestCheckpoint(directory, jobId);
+		const implement = checkpoint.nodes.implement;
+		assert.equal(implement.status, "running", "the node is left mid-run, resumable");
+		assert.equal(implement.transientRetries, 2);
+		assert.equal(executed.filter((node) => node === "implement").length, 2);
+
+		// The operator resumes: the marker is lifted, the wait finishes, the node succeeds.
+		const resumeExecuted: string[] = [];
+		const second = commandHarness(
+			directory,
+			loopSessions(directory, resumeExecuted, { jobId }),
+			jobId,
+			confirmations,
+			reviewerBusDependencies(),
+			{ retryBaseDelayMs: 1000, sleep: async () => {} },
+		);
+		await second.commands.get("kpi")!(jobId, second.context);
+		await assert.rejects(readFile(join(runDirectory, "stop.json"), "utf8"), { code: "ENOENT" });
+		const done = await runDocument(directory, jobId, "state.json");
+		assert.equal(done.status, "DONE", `${done.reason}\n${second.notifications.join("\n")}`);
+		assert.deepEqual(confirmations, ["Approve gated release"]);
+		assert.deepEqual(resumeExecuted.slice(0, 2), ["implement", "test"], resumeExecuted.join(", "));
+		assert.equal(await verifyChain(join(runDirectory, "events.jsonl")), true);
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("the release gate offers approve, request changes, and stop", async () => {
+	const directory = await fixture();
+	const jobId = "20260903-release-gate";
+	const executed: string[] = [];
+	const confirmations: string[] = [];
+	const prompts: string[] = [];
+	const feedback = "Return application/json on /health, not text";
+	try {
+		const first = commandHarness(
+			directory,
+			loopSessions(directory, executed, { jobId, prompts }),
+			jobId,
+			confirmations,
+			reviewerBusDependencies(),
+			{},
+			{ executed, releaseAnswers: ["Request changes", "Stop"], feedbacks: [feedback] },
+		);
+		await first.commands.get("loop")!(await readFile(join(directory, "task.txt"), "utf8"), first.context);
+
+		const releaseTitles = first.selectTitles.filter((title) => title.startsWith("Approve gated release"));
+		assert.equal(releaseTitles.length, 2, first.selectTitles.join(" | "));
+		assert.deepEqual([...RELEASE_GATE_OPTIONS], ["Approve", "Request changes", "Stop"]);
+		// Request changes: recorded with its feedback, and implement was told.
+		const denial = (await approvalEvents(directory, jobId)).find(
+			(record) => record.node === "human" && record.approved === false,
+		);
+		assert.ok(denial, "the change request is on the record");
+		assert.equal(denial.feedback, feedback);
+		const implementPrompts = prompts.filter((prompt) => prompt.startsWith("implement\n"));
+		assert.equal(implementPrompts.length, 2);
+		assert.doesNotMatch(implementPrompts[0] ?? "", /Operator feedback/u);
+		assert.ok((implementPrompts[1] ?? "").includes(feedback), implementPrompts[1]);
+		// Stop: the job is STOPPED with the gate still pending.
+		const stopped = await runDocument(directory, jobId, "state.json");
+		assert.equal(stopped.status, "STOPPED", `${stopped.reason}\n${first.notifications.join("\n")}`);
+		assert.match(String(stopped.reason), /stopped by the operator at Approve gated release/u);
+		assert.ok(String(stopped.reason).includes(`resume with /kpi ${jobId}`));
+		assert.equal(stopped.graph_status, "interrupted");
+		assert.equal(typeof stopped.pending_question, "string");
+		assert.equal(executed.includes("ship"), false);
+
+		// A later resume asks the gate again; Approve ships.
+		const resumeExecuted: string[] = [];
+		const second = commandHarness(
+			directory,
+			loopSessions(directory, resumeExecuted, { jobId }),
+			jobId,
+			confirmations,
+			reviewerBusDependencies(),
+			{},
+			{ executed: resumeExecuted },
+		);
+		await second.commands.get("kpi")!(jobId, second.context);
+		const done = await runDocument(directory, jobId, "state.json");
+		assert.equal(done.status, "DONE", `${done.reason}\n${second.notifications.join("\n")}`);
+		assert.deepEqual(confirmations, ["Approve gated release", "Approve gated release", "Approve gated release"]);
+		assert.deepEqual(resumeExecuted, ["ship"], "nothing but the ship node ran on resume");
+		assert.match(await git(directory, "log", "-1", "--pretty=%s"), CONVENTIONAL_COMMIT_PATTERN);
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("an operator who denies release with policy end stops the job finally", async () => {
+	const directory = await fixture();
+	const jobId = "20260903-release-denied-end";
+	const executed: string[] = [];
+	const confirmations: string[] = [];
+	try {
+		// The shipped gated graph, with the policy that ends the graph on a denial.
+		const shipped = JSON.parse(
+			await readFile(
+				new URL("../packages/coding-agent/src/kpi/graphs/coding-loop.gated.json", import.meta.url),
+				"utf8",
+			),
+		) as { policy: Record<string, unknown> };
+		shipped.policy.onHumanDeny = "end";
+		await mkdir(join(directory, ".kpi", "graphs"), { recursive: true });
+		await writeFile(join(directory, ".kpi", "graphs", "coding-loop.gated.json"), JSON.stringify(shipped, null, "\t"));
+		const seedHead = await git(directory, "rev-parse", "HEAD");
+		const first = commandHarness(
+			directory,
+			loopSessions(directory, executed, { jobId }),
+			jobId,
+			confirmations,
+			reviewerBusDependencies(),
+			{},
+			{ executed, releaseAnswers: ["Request changes"], feedbacks: ["not this release"] },
+		);
+		await first.commands.get("loop")!(await readFile(join(directory, "task.txt"), "utf8"), first.context);
+
+		const state = await runDocument(directory, jobId, "state.json");
+		assert.equal(state.status, "STOPPED", `${state.reason}\n${first.notifications.join("\n")}`);
+		assert.equal(state.reason, "release denied by the operator (final: the graph completed)");
+		assert.equal(state.graph_status, "completed");
+		assert.equal(executed.includes("ship"), false);
+		assert.equal(await git(directory, "rev-parse", "HEAD"), seedHead, "no commit");
+		assert.deepEqual(
+			(await terminalEvents(directory, jobId)).map((record) => record.status),
+			["STOPPED"],
+		);
+
+		// Final: a resume runs nothing and says so again.
+		const resumeExecuted: string[] = [];
+		const second = commandHarness(
+			directory,
+			loopSessions(directory, resumeExecuted, { jobId }),
+			jobId,
+			confirmations,
+		);
+		await second.commands.get("kpi")!(jobId, second.context);
+		const again = await runDocument(directory, jobId, "state.json");
+		assert.equal(again.status, "STOPPED");
+		assert.deepEqual(resumeExecuted, []);
+		assert.deepEqual(confirmations, ["Approve gated release"], "the gate was not asked again");
 	} finally {
 		await rm(directory, { recursive: true, force: true });
 	}

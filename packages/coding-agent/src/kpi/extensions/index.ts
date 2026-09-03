@@ -14,6 +14,7 @@ import { registerControlPlane } from "./control-plane.ts";
 import { registerCursorProvider } from "./cursor/provider.ts";
 import { registerKnowledgeGraph } from "./kg/index.ts";
 import { type LocalProviderId, registerLocalProviders } from "./local/providers.ts";
+import { registerOnboarding } from "./onboarding.ts";
 import { registerPing } from "./ping.ts";
 import { registerPolicy } from "./policy.ts";
 import { registerPrintProfile } from "./print-profile.ts";
@@ -100,4 +101,7 @@ export default function kPi(pi: ExtensionAPI): void {
 	registerPolicy(pi, { resolveWriteAllow: resolveActiveWriteAllow });
 	registerEventRenderers(pi);
 	registerStatusLine(pi);
+	// Registered last: its session_start hook must run after the accounts
+	// credential import and the footer install above.
+	registerOnboarding(pi);
 }

@@ -7,11 +7,14 @@ import test from "node:test";
 
 import type { WorkerLauncher } from "../packages/coding-agent/src/kpi/extensions/bus/launch.ts";
 import { WorkerProtocol } from "../packages/coding-agent/src/kpi/extensions/bus/protocol.ts";
+import {
+	liveWorkerSessions,
+	resetSessionsRegistry,
+} from "../packages/coding-agent/src/kpi/extensions/bus/sessions-snapshot.ts";
 import { BackgroundBus, createWorkerAdmission } from "../packages/coding-agent/src/kpi/extensions/bus/spawn.ts";
 import {
 	type GraphAgentSessionFactory,
 	GraphEngine,
-	GraphNodeContractError,
 } from "../packages/coding-agent/src/kpi/extensions/graph/engine.ts";
 import type { GraphDefinition } from "../packages/coding-agent/src/kpi/extensions/graph/schema.ts";
 import { reviewerBusDependencies } from "./helpers/reviewer-bus.ts";
@@ -64,13 +67,7 @@ function reviewGraph(): GraphDefinition {
 			{ from: "review", to: "__end__" },
 			{ from: "implement", to: "__end__" },
 		],
-		limits: {
-			maxSteps: 4,
-			maxNodeRuns: 4,
-			maxConcurrency: 1,
-			maxCostUsd: 1,
-			timeoutMs: 10_000,
-		},
+		limits: { maxConcurrency: 1 },
 		policy: {
 			allowNonInteractive: false,
 			allowNonInteractiveMutations: false,
@@ -178,16 +175,14 @@ test("transcript saying PASS without a receipt-backed verdict fails closed", asy
 			jobId,
 			busDependencies: bus,
 		});
-		await assert.rejects(
-			() => engine.runUntilPause(),
-			(error: unknown) => {
-				assert.ok(
-					error instanceof GraphNodeContractError ||
-						(error instanceof Error && /receipt-backed|did not publish/u.test(error.message)),
-				);
-				return true;
-			},
-		);
+		// Failing closed is a contract defect: the run parks for the operator with
+		// the reason on record instead of reporting the transcript as a verdict.
+		const state = await engine.runUntilPause();
+		assert.equal(state.status, "paused");
+		assert.equal(state.pause?.recovery, "contract");
+		assert.match(state.pause?.reason ?? "", /receipt-backed|did not publish/u);
+		assert.equal(state.nodes.review.status, "failed");
+		assert.equal(state.values.review, undefined, "no verdict was committed");
 	} finally {
 		await rm(directory, { recursive: true, force: true });
 	}
@@ -290,7 +285,10 @@ test("shared admission blocks a graph reviewer when parent bus already holds max
 			jobId,
 			busDependencies: bus,
 		});
-		await assert.rejects(() => engine.runUntilPause(), /Background worker limit is 2/u);
+		const state = await engine.runUntilPause();
+		assert.equal(state.status, "paused");
+		assert.equal(state.pause?.recovery, "contract");
+		assert.match(state.pause?.reason ?? "", /Background worker limit is 2/u);
 
 		await parent.stopAll();
 		assert.equal(admission.counts().workers, 0);
@@ -316,6 +314,39 @@ test("shared admission blocks a graph reviewer when parent bus already holds max
 		await second.stopAll();
 	} finally {
 		await parent.stopAll().catch(() => undefined);
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("a graph reviewer worker is a live worker session while its node runs and is gone after", async () => {
+	const jobId = "review-live";
+	const { directory } = await jobRoot(jobId);
+	resetSessionsRegistry();
+	const bus = reviewerBusDependencies();
+	const seen: ReturnType<typeof liveWorkerSessions>[] = [];
+	try {
+		const engine = new GraphEngine(reviewGraph(), {
+			projectRoot: directory,
+			jobId,
+			busDependencies: bus,
+			onSessionsChange: () => {
+				seen.push(liveWorkerSessions());
+			},
+		});
+		const state = await engine.runUntilPause();
+		assert.equal(state.status, "completed");
+
+		assert.ok(seen.length >= 2, "the engine says when the worker session registers and releases");
+		const whileRunning = seen[0] ?? [];
+		assert.equal(whileRunning.length, 1, "the worker was a live session for the duration of its node");
+		assert.equal(whileRunning[0]?.jobId, jobId);
+		assert.equal(whileRunning[0]?.role, "reviewer");
+		assert.equal(whileRunning[0]?.node, "review");
+		assert.equal(whileRunning[0]?.alive, true);
+
+		assert.equal(liveWorkerSessions().length, 0, "the bus is released once the node settles");
+	} finally {
+		resetSessionsRegistry();
 		await rm(directory, { recursive: true, force: true });
 	}
 });

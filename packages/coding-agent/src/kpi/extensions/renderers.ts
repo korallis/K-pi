@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from "../../core/extensions/types.ts";
 
 import { EVENT_TYPES, type EventRecord, type EventType } from "./append-log.ts";
+import { formatCost, formatElapsed } from "./board.ts";
 
 function field(event: EventRecord | undefined, key: string): string | undefined {
 	const value = event?.[key];
@@ -56,15 +57,59 @@ export function formatEventEntry(type: EventType, event: EventRecord | undefined
 		return `K-π agent.message${job}${round} ${agent}${deliver ? ` as=${deliver}` : ""}${status ? ` ${status}` : ""}`;
 	}
 
+	if (type === "node.started") {
+		const node = event?.node;
+		const run = field(event, "run");
+		const model = field(event, "model");
+		const parts = [`K-π node.started${job}${round}`];
+		if (typeof node === "string" && node.length > 0) parts.push(node);
+		if (run !== undefined) parts.push(`run=${run}`);
+		if (model !== undefined) parts.push(`model=${model}`);
+		return parts.join(" ");
+	}
+
+	if (type === "node.finished") {
+		const node = event?.node;
+		const status = field(event, "status") ?? "?";
+		const elapsedMs = typeof event?.elapsed_ms === "number" ? event.elapsed_ms : 0;
+		const cost = typeof event?.cost_usd === "number" ? event.cost_usd : undefined;
+		const result = field(event, "result");
+		const error = field(event, "error");
+		const parts = [`K-π node.finished${job}${round}`];
+		if (typeof node === "string" && node.length > 0) parts.push(node);
+		parts.push(status, formatElapsed(elapsedMs));
+		if (cost !== undefined) parts.push(formatCost(cost));
+		if (result !== undefined) parts.push("→", result);
+		if (error !== undefined) parts.push("—", error);
+		return parts.join(" ");
+	}
+
 	if (type === "checkpoint") {
 		const detail = field(event, "detail");
 		return `K-π checkpoint${job}${round}${detail ? ` ${detail}` : ""}`;
 	}
 
+	if (type === "node.retry") {
+		const node = event?.node;
+		const attempt = field(event, "attempt") ?? "?";
+		const reason = field(event, "reason") ?? "transient";
+		const status = field(event, "status");
+		const delayMs = typeof event?.delay_ms === "number" ? event.delay_ms : 0;
+		const parts = [`K-π node.retry${job}${round}`];
+		if (typeof node === "string" && node.length > 0) parts.push(node);
+		parts.push(
+			`attempt=${attempt}`,
+			status === undefined ? reason : `${reason} ${status}`,
+			`next ${formatElapsed(delayMs)}`,
+		);
+		return parts.join(" ");
+	}
+
 	if (type === "loop.terminal") {
 		const status = field(event, "status") ?? "DONE";
+		const recovery = field(event, "recovery");
 		const reason = field(event, "reason");
-		return `K-π loop.terminal${job}${round} ${status}${reason ? ` — ${reason}` : ""}`;
+		return `K-π loop.terminal${job}${round} ${status}${recovery ? ` ${recovery}` : ""}${reason ? ` — ${reason}` : ""}`;
 	}
 
 	if (type === "review.verdict") {

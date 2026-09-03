@@ -33,6 +33,16 @@ import {
 	readLeasesFile,
 	withLeaseLock,
 } from "../packages/coding-agent/src/kpi/extensions/bus/leases.ts";
+import { registerSessionsCommand } from "../packages/coding-agent/src/kpi/extensions/bus/sessions-command.ts";
+import {
+	liveWorkerCount,
+	liveWorkerSessions,
+	MECHANISM_SENTENCE,
+	registerLiveBus,
+	registerLiveNodeSession,
+	resetSessionsRegistry,
+	sessionsSnapshot,
+} from "../packages/coding-agent/src/kpi/extensions/bus/sessions-snapshot.ts";
 import { readActiveJob } from "../packages/coding-agent/src/kpi/extensions/run-store.ts";
 
 /** The lock owner shape, parsed the way the lock itself parses it. */
@@ -3484,13 +3494,12 @@ test("countLiveProcesses excludes dead PIDs without reaping the table", async ()
 		assert.equal(harness.bus.live, 2, "map still holds the dead record");
 		assert.equal(harness.bus.countLiveProcesses(), 1, "sync board count drops the dead PID");
 
-		// Provider path used by the board
-		const { liveWorkerCount, setLiveWorkerCountProvider, resetLiveWorkerCountProvider } = await import(
-			"../packages/coding-agent/src/kpi/extensions/bus/live-snapshot.ts"
-		);
-		setLiveWorkerCountProvider(() => harness.bus.countLiveProcesses());
+		// Registry path used by the board: the bus's own predicate decides liveness.
+		resetSessionsRegistry();
+		const release = registerLiveBus(harness.bus);
 		assert.equal(liveWorkerCount(), 1);
-		resetLiveWorkerCountProvider();
+		release();
+		assert.equal(liveWorkerCount(), 0);
 
 		// Async reap still cleans the table later
 		await harness.bus.reap();
@@ -3500,6 +3509,191 @@ test("countLiveProcesses excludes dead PIDs without reaping the table", async ()
 	} finally {
 		await harness.bus.stopAll();
 		await rm(harness.fixture.directory, { recursive: true, force: true });
+	}
+});
+
+test("a registered bus lists its workers for the sessions snapshot and leaves it when released", async () => {
+	resetSessionsRegistry();
+	const harness = await parentHarness();
+	try {
+		const release = registerLiveBus(harness.bus);
+		const worker = await harness.bus.spawn({ role: "reviewer", prompt: "review", node: "review" });
+
+		const rows = liveWorkerSessions();
+		assert.equal(rows.length, 1);
+		assert.deepEqual(
+			{
+				kind: rows[0].kind,
+				jobId: rows[0].jobId,
+				agentId: rows[0].agentId,
+				role: rows[0].role,
+				pid: rows[0].pid,
+				alive: rows[0].alive,
+				isWriter: rows[0].isWriter,
+				lastEvent: rows[0].lastEvent,
+				node: rows[0].node,
+			},
+			{
+				kind: "worker",
+				jobId: harness.fixture.jobId,
+				agentId: worker.agentId,
+				role: "reviewer",
+				pid: 7_000,
+				alive: true,
+				isWriter: false,
+				lastEvent: "agent.spawned",
+				node: "review",
+			},
+		);
+		assert.equal(rows[0].spawnedAt, worker.spawnedAt);
+		assert.equal(liveWorkerCount(), 1);
+		assert.equal(liveWorkerCount("other-job"), 0);
+		assert.deepEqual(sessionsSnapshot({ jobId: harness.fixture.jobId }).counts, {
+			nodes: 0,
+			workers: 1,
+			liveTotal: 1,
+		});
+		assert.deepEqual(sessionsSnapshot({ jobId: "other-job" }).counts, { nodes: 0, workers: 0, liveTotal: 0 });
+
+		// Dead but unreaped: still listed, alive:false, never counted, and no reap ran.
+		harness.alive.delete(worker.pid);
+		const dead = liveWorkerSessions();
+		assert.equal(dead.length, 1);
+		assert.equal(dead[0].alive, false);
+		assert.equal(liveWorkerCount(), 0);
+		assert.equal(harness.bus.live, 1, "listing never reaps the table");
+		const snapshot = sessionsSnapshot({ jobId: harness.fixture.jobId });
+		assert.deepEqual(snapshot.counts, { nodes: 0, workers: 0, liveTotal: 0 });
+		assert.equal(snapshot.rows.length, 1, "the dead worker is still a row");
+		assert.equal(snapshot.rows[0].alive, false);
+
+		release();
+		assert.deepEqual(liveWorkerSessions(), []);
+		release();
+		assert.deepEqual(liveWorkerSessions(), [], "releasing twice is a no-op");
+
+		// A closing bus lists nothing, even while still registered.
+		registerLiveBus(harness.bus);
+		await harness.bus.stopAll();
+		assert.equal(harness.bus.isClosing, true);
+		assert.deepEqual(liveWorkerSessions(), []);
+	} finally {
+		resetSessionsRegistry();
+		await harness.bus.stopAll();
+		await rm(harness.fixture.directory, { recursive: true, force: true });
+	}
+});
+
+test("/agents prints every kind of session and names the mechanism", async () => {
+	resetSessionsRegistry();
+	const admission = createWorkerAdmission();
+	const harness = await parentHarness({ dependencies: { admission } });
+	const unreadable = await mkdtemp(join(tmpdir(), "kpi-agents-unreadable-"));
+	try {
+		registerLiveBus(harness.bus);
+		const worker = await harness.bus.spawn({ role: "reviewer", prompt: "review", node: "review" });
+		const startedAt = "2026-09-03T10:00:00.000Z";
+		registerLiveNodeSession({
+			kind: "node",
+			jobId: harness.fixture.jobId,
+			nodeId: "implement",
+			sessionId: "s-1",
+			contextMode: "isolated",
+			threadKey: "implement",
+			model: "stub/model",
+			startedAt,
+			stats: () => ({ cost: 0, toolCalls: 3 }),
+		});
+
+		type Handler = (args: string, ctx: unknown) => Promise<void>;
+		const commands = new Map<string, { description?: string; handler: Handler }>();
+		const pi = {
+			registerCommand(name: string, options: { description?: string; handler: Handler }) {
+				commands.set(name, options);
+			},
+		};
+		registerSessionsCommand(pi as unknown as Parameters<typeof registerSessionsCommand>[0], {
+			admission,
+			now: () => new Date(Date.parse(startedAt) + 65_000),
+		});
+		const command = commands.get("agents");
+		assert.ok(command, "/agents is registered");
+		assert.match(command.description ?? "", /live K-π sessions/);
+
+		const notifications: Array<{ message: string; level: string | undefined }> = [];
+		const contextFor = (cwd: string) => ({
+			cwd,
+			sessionManager: { getSessionId: () => "main-1" },
+			model: { provider: "stub", id: "model" },
+			ui: {
+				notify(message: string, level?: string) {
+					notifications.push({ message, level });
+				},
+			},
+			sendUserMessage() {
+				throw new Error("provider request attempted");
+			},
+			setModel() {
+				throw new Error("model mutation attempted");
+			},
+		});
+
+		await command.handler("", contextFor(harness.fixture.directory));
+		assert.equal(notifications.length, 1);
+		assert.equal(notifications[0].level, "info");
+		const text = notifications[0].message;
+		const lines = text.split("\n");
+		assert.ok(lines[0].startsWith("K-π "), "operator-facing output starts with K-π");
+		assert.ok(text.includes("SESSIONS 2 live · 1 node(s) in-process · 1 worker process(es)"), text);
+		const row = (needle: string): string => {
+			const found = lines.find((line) => line.includes(needle));
+			assert.ok(found, `row for ${needle} in:\n${text}`);
+			return found;
+		};
+		const main = row("main-1");
+		assert.ok(main.includes(String(process.pid)), main);
+		assert.ok(main.includes("stub/model"), main);
+		const node = row("implement");
+		for (const expected of ["node:isolated", "stub/model", "1m05s", " 3 ", String(process.pid)]) {
+			assert.ok(node.includes(expected), `${expected} in ${node}`);
+		}
+		const workerRow = row("worker  ");
+		// Ids are truncated at 28 columns; the prefix still names the worker.
+		for (const expected of [
+			worker.agentId.slice(0, 20),
+			"reviewer",
+			"7000",
+			"yes",
+			"review",
+			harness.fixture.jobId,
+		]) {
+			assert.ok(workerRow.includes(expected), `${expected} in ${workerRow}`);
+		}
+		assert.ok(text.includes("caps (this process): workers 1/2 · writers 0/1"), text);
+		assert.ok(text.includes(MECHANISM_SENTENCE), text);
+		assert.ok(text.includes(`job ${harness.fixture.jobId} RUNNING`), text);
+		assert.ok(!text.includes("not running in this kpi process"), "the node row proves the loop runs here");
+
+		notifications.length = 0;
+		await command.handler("bogus", contextFor(harness.fixture.directory));
+		assert.deepEqual(notifications, [{ message: "K-π usage: /agents", level: "warning" }]);
+
+		// The one failure path: an unreadable run store is reported, never swallowed.
+		await mkdir(join(unreadable, ".kpi"), { recursive: true });
+		await writeFile(join(unreadable, ".kpi", "runs"), "not a directory");
+		notifications.length = 0;
+		await command.handler("", contextFor(unreadable));
+		assert.equal(notifications.length, 1);
+		assert.equal(notifications[0].level, "error");
+		assert.ok(
+			notifications[0].message.startsWith("K-π /agents could not read the run store: "),
+			notifications[0].message,
+		);
+	} finally {
+		resetSessionsRegistry();
+		await harness.bus.stopAll();
+		await rm(harness.fixture.directory, { recursive: true, force: true });
+		await rm(unreadable, { recursive: true, force: true });
 	}
 });
 

@@ -8,13 +8,24 @@ import {
 	type BoardModel,
 	buildBoardRegions,
 	fitBoard,
+	formatCost,
+	formatElapsed,
+	normalizeStop,
+	type Row,
 	RUN_FILE_NAMES,
 	renderBoard,
 	researchCellFromDocument,
 	resolveCurrentStageIndex,
+	type StageActivity,
+	shortTool,
+	stopTone,
 	type Tone,
 } from "../packages/coding-agent/src/kpi/extensions/board.ts";
-import { PLAIN_PALETTE, paintBoard } from "../packages/coding-agent/src/kpi/extensions/board-frame.ts";
+import {
+	PLAIN_PALETTE,
+	paintBoard,
+	paintShrinkingRow,
+} from "../packages/coding-agent/src/kpi/extensions/board-frame.ts";
 import {
 	applyBoardTheme,
 	buildBoardModel,
@@ -76,7 +87,6 @@ test("amber board lights exactly one CURRENT stage and six nonempty file lamps",
 			job_id: "amber-1",
 			mode: "gated",
 			round: 2,
-			maxRounds: 3,
 			stage: "implement",
 			node: "implement",
 			passed: true,
@@ -133,7 +143,6 @@ test("empty run files keep lamps dark", async () => {
 				job_id: "lamps",
 				mode: "gated",
 				round: 0,
-				maxRounds: 3,
 				stage: "plan",
 				node: "plan",
 				status: "RUNNING",
@@ -168,7 +177,6 @@ test("protocol-blue pause derives APPROVAL lamp without persisting APPROVAL stat
 			job_id: "pause-1",
 			mode: "gated",
 			round: 1,
-			maxRounds: 3,
 			stage: "ship",
 			node: "human-confirm",
 			status: "RUNNING",
@@ -222,7 +230,7 @@ test("protocol-blue pause derives APPROVAL lamp without persisting APPROVAL stat
 				batches: 0,
 			},
 		};
-		await writeState(runDirectory, task, graphState as never, createStopState(3));
+		await writeState(runDirectory, task, graphState as never, createStopState());
 		const written = JSON.parse(await readFile(join(runDirectory, "state.json"), "utf8")) as Record<string, unknown>;
 		assert.notEqual(written.status, "APPROVAL");
 		assert.equal(written.status, "RUNNING");
@@ -268,7 +276,6 @@ test("narrow width keeps CURRENT stage and STOP visible", () => {
 		jobId: "narrow",
 		mode: "gated",
 		round: 1,
-		maxRounds: 3,
 		stage: "test",
 		node: "test",
 		stop: "RUNNING",
@@ -296,7 +303,6 @@ test("board and status rendering never call a model client", async () => {
 			job_id: "no-model",
 			mode: "gated",
 			round: 0,
-			maxRounds: 3,
 			stage: "specify",
 			node: "specify",
 			status: "RUNNING",
@@ -328,7 +334,6 @@ test("BUS lamp tracks bus.jsonl history independent of AGENTS count", async () =
 			job_id: "bus-1",
 			mode: "gated",
 			round: 0,
-			maxRounds: 3,
 			stage: "plan",
 			node: "plan",
 			status: "RUNNING",
@@ -355,7 +360,6 @@ test("playbook freeze ignores mutable kModeState.plan for an open job", async ()
 					job_id: "freeze-1",
 					mode: "gated",
 					round: 1,
-					maxRounds: 3,
 					stage: "implement",
 					node: "implement",
 					status: "RUNNING",
@@ -401,7 +405,6 @@ test("unknown stage still lights exactly one CURRENT via node then ac-compile", 
 		jobId: "cur-1",
 		mode: "gated",
 		round: 0,
-		maxRounds: 3,
 		stage: "not-a-stage",
 		node: "test",
 		stop: "RUNNING",
@@ -423,7 +426,6 @@ test("unknown stage still lights exactly one CURRENT via node then ac-compile", 
 		jobId: "cur-2",
 		mode: "gated",
 		round: 0,
-		maxRounds: 3,
 		stage: "???",
 		node: "also-bad",
 		stop: "RUNNING",
@@ -451,7 +453,6 @@ test("sticky kMode alone does not light K-STACK on for an active job without fre
 				job_id: "no-freeze",
 				mode: "gated",
 				round: 0,
-				maxRounds: 3,
 				stage: "plan",
 				node: "plan",
 				status: "RUNNING",
@@ -481,7 +482,6 @@ function boardModel(overrides: Partial<BoardModel> = {}): BoardModel {
 		jobId: "2026-09-02-healthcheck",
 		mode: "gated",
 		round: 2,
-		maxRounds: 3,
 		stage: "implement",
 		node: "implement",
 		stop: "RUNNING",
@@ -503,7 +503,7 @@ function boardModel(overrides: Partial<BoardModel> = {}): BoardModel {
 	};
 }
 
-const REQUIRED_FIELDS = ["K-π", "MODE gated", "JOB 2026-09", "ROUND 2/3", "STOP RUNNING"] as const;
+const REQUIRED_FIELDS = ["K-π", "MODE gated", "JOB 2026-09", "ROUND 2", "STOP RUNNING"] as const;
 
 function requireFields(text: string, label: string): void {
 	for (const field of REQUIRED_FIELDS) {
@@ -705,7 +705,6 @@ test("PASS/FAIL reads PENDING until a verdict exists", async () => {
 				job_id: "pending-1",
 				mode: "gated",
 				round: 0,
-				maxRounds: 3,
 				stage: "plan",
 				node: "plan",
 				passed: false,
@@ -807,4 +806,317 @@ test("folding a lamp row preserves every lamp in order", () => {
 	for (const line of folded) {
 		assert.ok(visibleWidth(line) <= 40, `"${line}" fits`);
 	}
+});
+
+// ---------------------------------------------------------------------------
+// Board live: the NOW row, per-stage activity and the AGENTS split
+// ---------------------------------------------------------------------------
+
+/** plan finished (3m12s, 3 calls, $0.42); implement running (12m04s, 41 calls, $1.20, last tool `edit board.ts`). */
+function liveActivity(lastTool = "edit board.ts"): Record<string, StageActivity> {
+	return {
+		plan: {
+			status: "completed",
+			runs: 1,
+			elapsedMs: 192_000,
+			costUsd: 0.42,
+			toolCalls: 3,
+			toolsByName: { read: 1, grep: 1, edit: 1 },
+			lastTool: "edit x.ts",
+			model: "m",
+			node: "plan",
+			result: "stack.json",
+		},
+		implement: {
+			status: "running",
+			runs: 1,
+			elapsedMs: 724_000,
+			costUsd: 1.2,
+			toolCalls: 41,
+			toolsByName: { edit: 41 },
+			lastTool,
+			model: "m",
+			node: "implement",
+		},
+	};
+}
+
+function nowRowOf(model: BoardModel): Row {
+	const now = buildBoardRegions(model).byId.now;
+	assert.equal(now?.kind, "rows");
+	return now?.kind === "rows" ? (now.rows[0] ?? []) : [];
+}
+
+test("elapsed and cost formatters are short and never fabricate a figure", () => {
+	assert.equal(formatElapsed(12_000), "12s");
+	assert.equal(formatElapsed(192_000), "3m12s");
+	assert.equal(formatElapsed(3_720_000), "1h02m");
+	for (const ms of [0, 999, 59_999, 60_000, 3_599_999, 3_600_000, 36_000_000, 360_000_000, 8_640_000_000]) {
+		assert.ok(formatElapsed(ms).length <= 6, `${ms} ms → ${formatElapsed(ms)}`);
+	}
+	assert.equal(formatElapsed(360_000_000), "4d04h");
+	assert.equal(formatElapsed(8_640_000_000), "99d23h", "a hundred days saturates rather than widens");
+	assert.equal(formatCost(0.42), "$0.42");
+	assert.equal(formatCost(12), "$12");
+	assert.equal(formatCost(undefined), "$—", "an unknown cost is never a fabricated $0");
+	assert.equal(shortTool("edit", "/a/b/board.ts"), "edit board.ts");
+	assert.equal(shortTool("bash"), "bash");
+});
+
+test("the NOW row names the running node and tool and the full board carries elapsed and cost per stage", () => {
+	const live = boardModel({ activity: liveActivity() });
+
+	const compact = paintBoard(live, { width: 120, layout: "compact" });
+	const nowLine = compact.find((line) => line.startsWith("NOW implement"));
+	assert.ok(nowLine !== undefined, "the compact widget carries a NOW row");
+	for (const field of ["run 1", "41 tools", "▸ edit board.ts", "12m04s", "$1.20", "MODEL m"]) {
+		assert.ok(nowLine.includes(field), `the NOW row carries ${field}`);
+	}
+	// Height: the design's 10/13 plus the compact cells' detail line (product
+	// decision 2026-09-03) — one more line per rail row.
+	assert.ok(compact.length <= 11, `the widget with activity is ${compact.length} lines at 120`);
+	const narrow = paintBoard(live, { width: 100, layout: "compact" });
+	assert.ok(narrow.length <= 14, `the widget with activity is ${narrow.length} lines at 100`);
+	// The compact rail is sized from the label lines: eight cells stay on one
+	// row at 120 and the detail shrinks to the cell — DONE keeps its cost, then
+	// CURRENT its elapsed — instead of wrapping the rail or cutting the figure.
+	assert.ok(
+		compact.some((line) => line.includes("ac-compile") && line.includes("ship")),
+		"eight stages on one compact row with activity",
+	);
+	const compactDetail = compact.find((line) => line.includes("3m12s · $0.42"));
+	assert.ok(compactDetail !== undefined, "the compact DONE cell keeps elapsed and cost at 120");
+	assert.ok(compactDetail.includes("edit  12m04s"), "the compact CURRENT cell keeps the tool and elapsed at 120");
+	assert.ok(!compactDetail.includes("…"), compactDetail);
+	const longTool = paintBoard(boardModel({ activity: liveActivity(`edit ${"x".repeat(60)}.ts`) }), {
+		width: 120,
+		layout: "compact",
+	});
+	assert.equal(longTool.length, compact.length, "a long tool target never grows the widget");
+	assert.ok(
+		longTool.some((line) => line.includes("edit  12m04s")),
+		"a long tool target gives way to the elapsed",
+	);
+
+	const wide = paintBoard(live, { width: 200, layout: "full" });
+	const planDetail = wide.find((line) => line.includes("3m12s · $0.42 est."));
+	assert.ok(planDetail !== undefined, "the full plan cell at 200 reads <elapsed> · $<cost> est. in one rail row");
+	assert.ok(planDetail.includes("edit board.ts  12m04s"), "the implement cell reads <lastTool>  <elapsed>");
+	assert.ok(/│\s+—\s+│/u.test(planDetail), "pending cells carry a — detail line");
+	assert.equal(
+		wide.length,
+		paintBoard(boardModel(), { width: 200, layout: "full" }).length + 2,
+		"activity adds exactly one detail line per rail row to the full board at 200 (one row of eight, plus NOW)",
+	);
+	const full = paintBoard(live, { width: 120, layout: "full" });
+	assert.ok(
+		full.some((line) => line.includes("3m12s · $0.42") && line.includes("edit  12m04s")),
+		"the full board at 120 shrinks the detail the same way",
+	);
+
+	for (const width of [200, 120, 80, 60]) {
+		for (const layout of ["full", "compact"] as const) {
+			const lines = paintBoard(live, { width, layout });
+			const text = lines.join("\n");
+			const label = `${layout} at ${width} with activity`;
+			requireFields(text, label);
+			const now = lines.find((line) => line.trimStart().startsWith("NOW implement"));
+			assert.ok(now !== undefined, `${label} keeps the NOW row`);
+			for (const field of ["41 tools", "12m04s", "$1.20"]) {
+				assert.ok(now.includes(field), `${label}: the NOW row keeps ${field}`);
+			}
+			assert.ok(!now.includes("…"), `${label}: the NOW row shrinks, it is never cut: ${now}`);
+		}
+	}
+
+	const flat = renderBoard(live);
+	const flatNow = flat.find((line) => line.startsWith("NOW implement"));
+	assert.ok(flatNow !== undefined && !flatNow.includes("CURRENT"), "the flat board carries the NOW line");
+	assert.equal((flat.join("\n").match(/CURRENT/gu) ?? []).length, 1);
+
+	const unreadable = renderBoard(boardModel({ activity: liveActivity(), eventsUnreadable: 2 })).join("\n");
+	assert.ok(unreadable.includes("EVENTS ✕ 2 unreadable"));
+	const failed = renderBoard(boardModel({ activity: liveActivity(), eventsError: "EACCES" })).join("\n");
+	assert.ok(failed.includes("EVENTS ✕ EACCES"));
+	const silent = renderBoard(boardModel({ activity: {} })).join("\n");
+	assert.ok(silent.includes("NOW implement  no node.started yet"));
+
+	const seen: Array<[Tone, string]> = [];
+	const spy = {
+		paint(tone: Tone, text: string) {
+			seen.push([tone, text]);
+			return text;
+		},
+	};
+	const selected = paintBoard(boardModel({ activity: liveActivity(), selectedStage: 4 }), {
+		width: 120,
+		layout: "full",
+		palette: spy,
+	});
+	assert.ok(
+		seen.some(([tone, text]) => tone === "warning" && text.trim() === "test"),
+		"the selected 05 cell is painted in the warning tone",
+	);
+	assert.equal((selected.join("\n").match(/CURRENT/gu) ?? []).length, 1, "selection never adds a CURRENT");
+});
+
+test("the NOW row shrinks its optional spans instead of forcing the STOP box below", () => {
+	const row = nowRowOf(
+		boardModel({ activity: liveActivity("edit packages/coding-agent/src/kpi/extensions/board.ts") }),
+	);
+	const at = (width: number) => paintShrinkingRow(row, width, PLAIN_PALETTE);
+	const wide = at(200);
+	assert.ok(
+		["MODEL m", "▸ edit", "run 1"].every((field) => wide.includes(field)),
+		"everything fits at 200",
+	);
+	const shrunk = at(60);
+	assert.ok(!shrunk.includes("…"), `no ellipsis while an optional span remains: ${shrunk}`);
+	for (const field of ["NOW implement", "41 tools", "12m04s", "$1.20"]) {
+		assert.ok(shrunk.includes(field), `the shrunk NOW row keeps ${field}`);
+	}
+	// Drop order, right to left: MODEL first, then the tool, then the run.
+	const droppedModel = at(visibleWidth(wide.trimEnd()) - 1);
+	assert.ok(!droppedModel.includes("MODEL") && droppedModel.includes("▸ edit") && droppedModel.includes("run 1"));
+	const droppedTool = at(visibleWidth(droppedModel.trimEnd()) - 1);
+	assert.ok(!droppedTool.includes("▸") && droppedTool.includes("run 1") && droppedTool.includes("41 tools"));
+	const droppedRun = at(visibleWidth(droppedTool.trimEnd()) - 1);
+	assert.ok(!droppedRun.includes("run 1") && droppedRun.includes("41 tools") && !droppedRun.includes("…"));
+	// Nothing optional left: only now may the row be cut.
+	assert.ok(at(20).endsWith("…"));
+
+	const short = paintBoard(boardModel({ activity: liveActivity() }), { width: 100, layout: "compact" });
+	const long = paintBoard(boardModel({ activity: liveActivity(`edit ${"y".repeat(65)}.ts`) }), {
+		width: 100,
+		layout: "compact",
+	});
+	assert.equal(long.length, short.length, "a 70-char tool target never pushes the STOP box below");
+	// The box sits beside the telemetry block (three rows tall, so it flanks
+	// LOOP/ROUND/CONTEXT) and the NOW row under it shrank instead of being cut.
+	assert.ok(
+		long.some((line) => line.startsWith("ROUND ") && line.includes("│ STOP RUNNING │")),
+		"the STOP box stays beside the telemetry block",
+	);
+	const nowLine = long.find((line) => line.startsWith("NOW implement"));
+	assert.ok(nowLine !== undefined && !nowLine.includes("…") && !nowLine.includes("▸"), nowLine);
+});
+
+test("the AGENTS cell breaks live sessions into nodes and workers", () => {
+	const split = paintBoard(boardModel({ agents: 3, sessions: { nodes: 1, workers: 2 } }), {
+		width: 120,
+		layout: "compact",
+	}).join("\n");
+	assert.ok(split.includes("AGENTS 3 · 1 node · 2 workers"), split);
+	const plural = renderBoard(boardModel({ agents: 2, sessions: { nodes: 2, workers: 0 } })).join("\n");
+	assert.ok(plural.includes("AGENTS 2 · 2 nodes · 0 workers"), plural);
+	const countOnly = renderBoard(boardModel({ agents: 1 })).join("\n");
+	assert.match(countOnly, /AGENTS 1 {2}BUS/u, "without the split the cell is the count alone");
+});
+
+test("the board shows ROUND without a maximum and a retry row while a node backs off", () => {
+	const retrying = boardModel({ retry: { node: "implement", attempt: 3, reason: "timeout", delayMs: 8_000 } });
+	for (const width of [200, 120, 100, 80, 60]) {
+		for (const layout of ["full", "compact"] as const) {
+			const lines = paintBoard(retrying, { width, layout });
+			const text = lines.join("\n");
+			const label = `${layout} at ${width}`;
+			assert.ok(text.includes("ROUND 2"), `${label} shows ROUND 2`);
+			assert.doesNotMatch(text, /ROUND 2[\d/]/u, `${label} shows no maximum after ROUND 2`);
+			assert.ok(text.includes("RETRY 3 · timeout · next 8s"), `${label} carries the retry row`);
+			assert.ok(text.includes("STOP RUNNING"), `${label} keeps STOP RUNNING while backing off`);
+			assert.ok(
+				lines.every((line) => visibleWidth(line) <= width),
+				`${label}: no line wider than ${width}`,
+			);
+		}
+	}
+	const flat = renderBoard(retrying).join("\n");
+	assert.match(flat, /^RETRY 3 · timeout · next 8s$/mu, "the flat board carries the retry row on its own line");
+	assert.doesNotMatch(renderBoard(boardModel()).join("\n"), /RETRY/u, "no retry row without a retry");
+	const flatWide = renderBoard(
+		boardModel({ round: 12, retry: { node: "plan", attempt: 1, reason: "http", delayMs: 1_000 } }),
+	);
+	assert.ok(
+		flatWide.some((line) => line.startsWith("ROUND 12  ")),
+		"the iteration line reads ROUND 12 with no maximum",
+	);
+	assert.ok(
+		flatWide.some((line) => line === "RETRY 1 · http · next 1s"),
+		"the first retry waits one second",
+	);
+
+	const bounds = boardModel({ stop: "NEEDS_HUMAN", recovery: "bounds", paused: false });
+	const boundsText = paintBoard(bounds, { width: 120, layout: "full" }).join("\n");
+	assert.ok(boundsText.includes("│ STOP NEEDS_HUMAN bounds │"), "a bounds pause names its recovery in the STOP box");
+	assert.ok(renderBoard(bounds).includes("STOP NEEDS_HUMAN bounds"), "the flat board names the recovery too");
+	/** The tone the STOP box is painted in for a model, at 120 columns. */
+	const stopBoxTone = (model: BoardModel, layout: "full" | "compact", text: string): Tone | undefined => {
+		let found: Tone | undefined;
+		paintBoard(model, {
+			width: 120,
+			layout,
+			palette: {
+				paint(tone, painted) {
+					if (painted === text) found = tone;
+					return painted;
+				},
+			},
+		});
+		return found;
+	};
+	assert.equal(
+		stopBoxTone(bounds, "compact", "STOP NEEDS_HUMAN bounds"),
+		"accent",
+		"a NEEDS_HUMAN STOP box is accent",
+	);
+
+	const stopped = boardModel({ stop: "STOPPED" });
+	assert.ok(paintBoard(stopped, { width: 100, layout: "compact" }).join("\n").includes("│ STOP STOPPED │"));
+	assert.equal(stopBoxTone(stopped, "full", "STOP STOPPED"), "error", "an operator stop is error");
+	assert.equal(stopBoxTone(boardModel({ stop: "DONE" }), "full", "STOP DONE"), "success", "DONE is success");
+
+	// Board B: the stop-state cells are DONE / STOPPED / APPROVAL. APPROVAL is the
+	// pause lamp (Board B only paints while a human node is paused); DONE and
+	// STOPPED light for the run state.
+	const pausedStopped = boardModel({
+		paused: true,
+		stage: "ship",
+		node: "human-confirm",
+		pendingQuestion: "Ship?",
+		stop: "STOPPED",
+	});
+	const cells = buildBoardRegions(pausedStopped).byId.stopStates;
+	assert.ok(cells?.kind === "cells");
+	assert.deepEqual(
+		cells.cells.map((cell) => [cell.lines[0], cell.lit]),
+		[
+			["DONE", false],
+			["STOPPED", true],
+			["APPROVAL", true],
+		],
+	);
+	const pausedText = paintBoard(pausedStopped, { width: 120, layout: "full" }).join("\n");
+	assert.ok(pausedText.includes("STOPPED"), "Board B has a STOPPED cell");
+	assert.ok(!pausedText.includes("BLOCKED"), "BLOCKED is no longer a stop state");
+	const compactPaused = paintBoard(pausedStopped, { width: 100, layout: "compact" }).join("\n");
+	assert.ok(compactPaused.includes("STOP STATES  DONE ○  STOPPED ●  APPROVAL ●"), compactPaused);
+});
+
+test("legacy stop tokens on disk normalise to the four run states", () => {
+	assert.equal(normalizeStop(undefined), "RUNNING");
+	assert.equal(normalizeStop("running"), "RUNNING");
+	assert.equal(normalizeStop("APPROVAL"), "RUNNING");
+	assert.equal(normalizeStop("INTERRUPTED"), "RUNNING");
+	assert.equal(normalizeStop("COMPLETED"), "DONE");
+	assert.equal(normalizeStop("DONE"), "DONE");
+	assert.equal(normalizeStop("STOPPED"), "STOPPED");
+	assert.equal(normalizeStop("NEEDS_HUMAN"), "NEEDS_HUMAN");
+	for (const legacy of ["BLOCKED", "EXHAUSTED", "NO_PROGRESS", "UNSAFE"]) {
+		assert.equal(normalizeStop(legacy), "NEEDS_HUMAN", `${legacy} is a NEEDS_HUMAN of an earlier release`);
+	}
+	assert.equal(normalizeStop("garbage"), "RUNNING");
+	assert.equal(stopTone("RUNNING"), "warning");
+	assert.equal(stopTone("NEEDS_HUMAN"), "accent");
+	assert.equal(stopTone("DONE"), "success");
+	assert.equal(stopTone("STOPPED"), "error");
 });

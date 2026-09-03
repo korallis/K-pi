@@ -1,6 +1,6 @@
 {
 	"name": "@earendil-works/pi-coding-agent",
-	"version": "0.2.1",
+	"version": "0.3.0",
 	"description": "K-π coding agent harness: graph-engineered coding loop, tools, and session management",
 	"type": "module",
 	"piConfig": {

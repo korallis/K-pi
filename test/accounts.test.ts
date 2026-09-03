@@ -1349,3 +1349,65 @@ test("a pool whose provider declares neither auth method names the pool in the f
 		await rm(subject.directory, { recursive: true, force: true });
 	}
 });
+
+test("a Claude Code version rejection is surfaced once and never cools or fails over", async () => {
+	const subject = await routingHarness();
+	try {
+		await subject.command("login anthropic home", subject.context);
+		const beforeHeaders = subject.hooks.get("before_provider_headers")!;
+		const afterResponse = subject.hooks.get("after_provider_response")!;
+		const messageEnd = subject.hooks.get("message_end")!;
+		const context = () => subject.hookContext(anthropicModel(), [anthropicModel()]);
+		// The verbatim assistant errorMessage Anthropic returns for an outdated Claude Code identity.
+		const rejection = {
+			role: "assistant",
+			stopReason: "error",
+			errorMessage:
+				'400 {"type":"error","error":{"type":"invalid_request_error","message":"Claude Code 2.1.75 does not support this model; version 2.1.251 or newer is required. Run \'claude update\', or update the Claude desktop app, then try again.","details":{"error_code":"claude_code_version_too_old"}},"request_id":"req_011CegQu2xW5e5oLygDDqtHQ"}',
+		};
+
+		const headers: Record<string, string> = {};
+		await beforeHeaders({ type: "before_provider_headers", headers, requestId: "request-1" }, context());
+		assert.equal(headers.authorization, "Bearer access-home");
+		await afterResponse(
+			{ type: "after_provider_response", requestId: "request-1", status: 400, headers: {} },
+			context(),
+		);
+		const result = (await messageEnd({ type: "message_end", message: rejection }, context())) as
+			| { message?: { diagnostics?: Array<{ type: string; details?: Record<string, unknown> }> } }
+			| undefined;
+
+		const diagnostic = result?.message?.diagnostics?.at(-1);
+		assert.equal(diagnostic?.type, "kpi_client_version_rejected");
+		assert.deepEqual(diagnostic?.details, { sent: "2.1.75", required: "2.1.251", slot: "anthropic/home" });
+		assert.ok(
+			!result?.message?.diagnostics?.some((entry) => entry.type === "kpi_account_failover"),
+			"a client-identity failure is not a failover",
+		);
+		assert.deepEqual(subject.setModelCalls, []);
+		const explained = subject.notifications.filter(
+			(note) => note.includes("Claude Code 2.1.75") && note.includes("2.1.251") && note.includes("@korallis/k-pi"),
+		);
+		assert.equal(explained.length, 1, subject.notifications.join("\n"));
+		assert.match(explained[0], /^K-π /u);
+
+		// The slot is not cooled: the next request on it still carries its credential.
+		const again: Record<string, string> = {};
+		await beforeHeaders({ type: "before_provider_headers", headers: again, requestId: "request-2" }, context());
+		assert.equal(again.authorization, "Bearer access-home");
+		assert.doesNotMatch(subject.status.at(-1) ?? "", /home \?% cd/u);
+
+		await afterResponse(
+			{ type: "after_provider_response", requestId: "request-2", status: 400, headers: {} },
+			context(),
+		);
+		await messageEnd({ type: "message_end", message: rejection }, context());
+		assert.equal(
+			subject.notifications.filter((note) => note.includes("Claude Code 2.1.75")).length,
+			1,
+			"the same rejection is explained once per session",
+		);
+	} finally {
+		await rm(subject.directory, { recursive: true, force: true });
+	}
+});

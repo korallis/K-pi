@@ -46,7 +46,7 @@ Most agent setups fail because nobody owns the return path, the shared state, or
 | G-14 | K-stack (forked pstack) is embedded: `/setup-kstack` + `/k-mode` |
 | G-15 | K-stack workers use only k-pi-wired models. No Cursor Cloud agents |
 | G-16 | z.ai, Kimi Coding, and local llama/Ollama/LM Studio are first-class pools |
-| G-17 | Optional Exa and Perplexity research. Research.md required before implement |
+| G-17 | Optional Exa, Perplexity, and Firecrawl research. Research.md required before implement |
 | G-18 | Folder-as-map + vertical slices. Auth lives in auth/ |
 | G-19 | `/setup-kstack` suggests a role map; frontend prefers Kimi K3 |
 | G-20 | Background Pi workers + communicate. No subagents |
@@ -103,7 +103,7 @@ Each AC is written so a later agent can turn it into a check. IDs are stable.
 
 ### US-02 — Start from a task (gated)
 
-**Story.** As an operator, I type `/kpi <goal>` (or `/loop <goal>`) and the system compiles AC, specifies if needed, plans, implements, tests, reviews, then asks me before commit.
+**Story.** As an operator, I type `/kpi <goal>` (or `/loop <goal>`) and the system compiles AC, specifies if needed, plans, shows me the plan and asks me to approve it or request changes, implements, tests, reviews, then asks me before commit.
 
 - **AC-02.1** A directory `.kpi/runs/<job_id>/` is created containing `task.json`, `context.md`, `events.jsonl`.
 - **AC-02.2** `task.json` has `goal`, `acceptance[]`, `nongoals`, `constraints`, `quality_gates`.
@@ -111,7 +111,11 @@ Each AC is written so a later agent can turn it into a check. IDs are stable.
 - **AC-02.4** Implementer tools include write/edit/bash. Planner, reviewer, and tester hold no general `write` or `edit`; their product tools are read-only (`read`,`grep`,`find`,`ls`). A read-only node publishes its run contract only through `write_contract` (`spec.md` §5 REQ-RS-06).
 - **AC-02.5** After isolated review `approved: true`, a human confirm dialog is shown before `git commit`.
 - **AC-02.6** The ship node commits on the job branch `kpi/<job_id>`, pushes only that branch to `origin` after release approval, and opens a pull request; it never pushes another branch, force-pushes, pushes tags, deletes a branch, or merges. Merging is the `auto-merge` workflow's after the required check passes.
-- **AC-02.7** Board widget shows `MODE gated`, current `STAGE`, `ROUND n/max`, and which run files exist.
+- **AC-02.7** Board widget shows `MODE gated`, current `STAGE`, `ROUND n` (a count, never `n/max`), and which run files exist.
+- **AC-02.8** After plan writes `stack.json` the graph pauses on the human node `plan-approval` (operator plan approval, distinct from the Dune structural plan gate of US-30); its dialog shows a rendered summary of `stack.json` (delivery, current slice, every module with folder, interface, allowed-path count, dependencies) and the file path, and offers Approve plan / Request changes / Stop; implement never runs before an approval is recorded as `approval.result` with `node: plan-approval`.
+- **AC-02.9** Request changes requires non-empty feedback (at most 4000 characters), records it in `approval.result.feedback` and the run state `plan.feedback`, and re-runs plan with the feedback in its prompt; the re-planned `stack.json` replaces the old one and is frozen before implement.
+- **AC-02.10** Plan revisions are unbounded: the dialog shows `Revision N` and no cap; the operator is the only bound.
+- **AC-02.11** A human gate reached without dialog UI, or dismissed, ends `NEEDS_HUMAN` with recovery `approval` and the exact resume command; it is never answered by the harness. An answered gate is persisted with the checkpoint and is not asked again on resume.
 
 ### US-03 — Start from a frozen plan
 
@@ -131,18 +135,21 @@ Each AC is written so a later agent can turn it into a check. IDs are stable.
 - **AC-04.3** Implementer does not write `verdict.json` or `release.approved`. `write_contract` is pinned to the calling agent, job, role, and declared contract path, so no other node can publish either file.
 - **AC-04.4** Tester binds `evidence.json` to `git rev-parse HEAD`.
 - **AC-04.5** On success, status is `DONE` and a conventional commit is created on the job feature branch.
-- **AC-04.6** Push/deploy/delete/new-dependency attempts set `NEEDS_HUMAN` or `UNSAFE` and do not execute.
+- **AC-04.6** Push/deploy/delete/new-dependency attempts are denied and do not execute; a job that reaches one shows `NEEDS_HUMAN` with its recovery.
 
-### US-05 — Autopilot stop states
+### US-05 — Self-healing loop and the operator stop
 
-**Story.** As an operator, I need the loop to stop instead of “keep going.”
+**Story.** As an operator, I need the loop to keep delivering my intent — retrying, re-planning — and to wait for me rather than end on its own; only I stop it.
 
-- **AC-05.1** Terminal states are exactly `DONE`, `BLOCKED`, `EXHAUSTED`, `NO_PROGRESS`, `UNSAFE`, `NEEDS_HUMAN`.
-- **AC-05.2** Same `output_fingerprint` twice → `NO_PROGRESS`.
-- **AC-05.3** `round >= maxRounds` (default 3) → `EXHAUSTED`.
-- **AC-05.4** Write outside `write_allow` → `UNSAFE`.
-- **AC-05.5** Untestable reviewer issue → `NEEDS_HUMAN`.
-- **AC-05.6** Retry of a transient 429 is not a new round. A new round requires new verifier evidence. A provider refusal that cannot fail over ends `NEEDS_HUMAN` with the real reason, a recovery question, and the exact resume command.
+- **AC-05.1** Run states are exactly `RUNNING`, `NEEDS_HUMAN`, `DONE`, `STOPPED`; `NEEDS_HUMAN` carries a `recovery` reason and the resume command; `NEEDS_HUMAN` and `STOPPED` resume with `/kpi <job>`. Only `RUNNING` is live. A run an earlier release wrote as `BLOCKED`, `EXHAUSTED`, `NO_PROGRESS`, or `UNSAFE` reads as `NEEDS_HUMAN`, is finished, and keeps that token on disk until it is resumed.
+- **AC-05.2** A failed round that repeats a witness — a review whose `output_fingerprint` or failing-AC set was seen before, or a failed test round whose evidence is identical to the previous failed test round's — is no progress: the loop routes back to plan with `repair.json` (`round`, `reason`, `failing_ac`, `evidence_ref`, `witness`, optional `guidance`) as the planner's feedback. An approved review is progress even when it repeats a fingerprint.
+- **AC-05.3** Rounds are unbounded. Two automatic re-plans are allowed per operator touch; the same witness repeating after them pauses `NEEDS_HUMAN` (`no_progress`), offering Give guidance / Keep going / Stop in the TUI and the resume command unattended. Guidance reaches the planner through `repair.json`; guidance or Keep going starts a fresh re-plan allowance.
+- **AC-05.4** A write outside `write_allow` pauses `NEEDS_HUMAN` (`bounds`) without a commit; the resume re-runs test.
+- **AC-05.5** An untestable reviewer issue, or an approved review over failed or stale receipts, pauses `NEEDS_HUMAN` (`review`); the resume re-runs implement.
+- **AC-05.6** Retry of a transient 429 is not a new round. A new round requires new verifier evidence. A provider refusal that cannot fail over pauses `NEEDS_HUMAN` (`provider`) with the real reason and the exact resume command.
+- **AC-05.7** Transient failures (http 408/429/5xx, timeout, transport) retry the same node run for as long as it takes, with a backoff of 1 s doubling to a 60 s ceiling; every retry writes a checkpoint before the wait, appends one `node.retry` event, and notifies once (`K-π <job> retry <attempt> on <node>: <reason>; next in <s>s (/kpi stop stops it)`). A process killed mid-backoff resumes by finishing the wait, not by restarting the node.
+- **AC-05.8** No spend cap, clock, step, node-run, or round counter ends a run: `cost_usd` and `elapsed_ms` are report-only estimates, `maxConcurrency` is the only graph limit, a `/kpi` invocation naming a retired cap flag is refused with `K-π runs have no caps`, and a checkpoint written under a retired cap resumes with its recorded spend.
+- **AC-05.9** `/kpi stop` writes `stop.json` and `STOPPED`: a loop live in this process stops at once and issues no further prompt, a loop in another process stops at its next checkpoint or wait, and a stop that lands before the run directory exists creates nothing. A stop that lands inside a gate or the no-progress prompt is `STOPPED`, never a loop failure. `STOPPED` resumes with `/kpi <job>` into the same node.
 
 ### US-06 — Control-board TUI
 
@@ -154,6 +161,7 @@ Each AC is written so a later agent can turn it into a check. IDs are stable.
 - **AC-06.4** Accounts widget shows per-slot remaining %, not one unlabeled aggregate. A `local` slot has no quota and shows no percentage.
 - **AC-06.5** Protocol events render as custom entries (`handoff.created`, `checkpoint`, `verdict`, `accounts.failover`), not as assistant markdown tables.
 - **AC-06.6** `/kpi status` draws the board from `state.json` + `events.jsonl`, not from a model call.
+- **AC-06.7** While a job runs, the chat shows one line when a node starts (`K-π ▶ NN node · run n · model`), one when it finishes (`K-π ■ NN node done · <elapsed> · <cost> · <result>` or `K-π ✕ NN node failed · <elapsed> · <error>`), one per retry (`K-π ↻ NN node retry <attempt> · <reason> · next <s>s`), and one on a route change (`K-π ⇄ route <from> → <to>`); never a line per tool call. The lines are read from `events.jsonl` by the widget's 1 s ticker, each record narrated once — a widget reinstall or `/kpi status` never re-narrates.
 
 ### US-07 — Concise model output
 
@@ -187,13 +195,15 @@ Each AC is written so a later agent can turn it into a check. IDs are stable.
 **Story.** As an operator, I attach multiple Anthropic / OpenAI / Codex / xAI / z.ai / Kimi / Cursor seats and work continues when one window dies.
 
 - **AC-10.1** `~/.kpi/agent/accounts.json` holds pools and slots. Secrets are not in the repo.
-- **AC-10.2** `/login anthropic` and `/accounts login anthropic` add a slot without deleting existing Anthropic slots; the `/login` subscription path activates the newly authenticated slot. Expiring OAuth credentials refresh independently per slot, never by substituting the provider's current `auth.json` credential.
+- **AC-10.2** `/login anthropic` and `/accounts login anthropic` add a slot without deleting existing Anthropic slots; the `/login` subscription path activates the newly authenticated slot. Each pool has at most one official slot, whose grant is the one `auth.json` holds and which the base runtime refreshes; every other slot refreshes independently in K-π; no grant is ever held by two refreshers, and a slot's credential is never substituted by another slot's.
 - **AC-10.3** Official `/model` ids stay `anthropic/<official-id>`. No `anthropic-account-2/claude-…` duplicate catalog.
 - **AC-10.4** On classified usage-limit (429/402/403-quota or a finalized quota-shaped 400 assistant error), the slot cools until parsed reset (else default 5h) and the next healthy sibling of the same family is used with the same model and thinking level.
 - **AC-10.5** Cross-family fallback happens only when the whole family is cooling. `/setup-kstack` derives an exact live-model fallback order from `model-ladder.md`, lets the operator edit it, and persists it; the default provider chain applies until setup writes one.
 - **AC-10.6** An exhausted sibling is never selected while a healthy sibling exists (regression of the known Oh My Pi Codex bug).
 - **AC-10.7** Widget lists remaining % per slot, including Codex subscription used-percent windows converted to remaining percent.
 - **AC-10.8** Session stickiness yields at 5% remaining to preserve the current provider/model on a healthier sibling; otherwise it holds until exhaustion (prompt-cache friendly).
+- **AC-10.9** A `claude_code_version_too_old` refusal is explained once per session — K-π's version, the Claude Code version it sent, the floor Anthropic requires, and the update command `npm install -g @korallis/k-pi@latest` — and never cools a slot or changes route.
+- **AC-10.10** An `invalid_grant` refresh — K-π's own on a non-official slot, or the runtime's on the official `auth.json` grant — marks that slot `needs login` (persisted in `accounts.json` as `needsLogin`, unselectable, shown in the widget) with one plain-language notification naming `/accounts login <pool> <slot>`; never a cooldown, never a stack trace. A transient refresh failure (http/transport) cools the slot 5h with a plain reason and no login demand.
 
 ### US-11 — Official catalogs stay live
 
@@ -231,6 +241,7 @@ Each AC is written so a later agent can turn it into a check. IDs are stable.
 - **AC-14.2** State files are written `*.tmp` → fsync → rename.
 - **AC-14.3** No tokens, cookies, or raw secrets in events.
 - **AC-14.4** Kill mid-implementer leaves a checkpoint that `/kpi status` can read. Resume is in scope for M7.
+- **AC-14.5** Every agent node run appends `node.started` {`run`, `model`?} and `node.finished` {`run`, `status` `completed | failed`, `elapsed_ms`, `cost_usd`?, `result`?, `session`?, `error`?} to `events.jsonl`, hash-chained and validated by `event.schema.json`; cost sums every attempt of the run and is omitted, never zeroed, when the node's session has no billing. Transient retries inside a run repeat neither event; each retry appends `node.retry` {`attempt`, `reason`, `delay_ms`, `status`?, `message`?} instead.
 
 ### US-15 — Oh My Pi status bar with K-π brand
 
@@ -254,11 +265,14 @@ Reference files: `visual/omp-statusbar-codemod.jpg`, `visual/omp-statusbar-colla
 **Story.** As an operator, I always know what the graph is doing. The industrial boards from https://x.com/av1dlive/status/2092622516544270781 are the TUI. In-repo reconstructions: `visual/kpi-board-amber-running.jpg`, `visual/kpi-board-protocol-pause.jpg`.
 
 - **AC-16.1** While a job is active, a widget above the editor shows the amber board: header (`K-π`, MODE, JOB, ROUND), context-layer lamps, stages 01–08 with current stage lit, iteration PASS/FAIL, six file lamps, STOP state.
-- **AC-16.2** `/kpi status` expands that widget into the full board. No model call.
+- **AC-16.2** `/kpi status` opens the K-π Command Centre over that widget (AC-16.8); in print/rpc mode it prints the full board as text. No model call.
 - **AC-16.3** When a human node is paused, the board flips to protocol-blue and shows SHARED RUN STATE, STOP STATES with APPROVAL lit, THREE LAWS, and WAITING ON OPERATOR with the pending question.
 - **AC-16.4** File lamps light only when the named file exists and is non-empty.
 - **AC-16.5** The assistant does not reprint the board as a markdown table. The TUI carries the state.
 - **AC-16.6** Pixel match to the JPEGs is not required. Required fields in US-25 are. Narrow terminals may wrap. See `visual-targets.md` §honesty.
+- **AC-16.7** The widget carries a `NOW` row naming the running node, its run number, tool-call count, last tool and target, elapsed and cost (`NOW <node>  run <n>  <k> tools  ▸ <tool> <target>  <elapsed>  <cost>  MODEL <m>`; `no node.started yet` before the first record), refreshed from `state.json` + `events.jsonl` every second with no model call; optional spans drop before anything truncates. Stage cells carry a detail line in both layouts: DONE `<elapsed> · <n> calls · $<cost> est.`, CURRENT `<tool> <target>  <elapsed>`, PENDING `—`; the widget adds a `RETRY <attempt> · <reason> · next <s>s` row while a node backs off and shows `ROUND n` with no maximum. Elapsed reads `12s`, `3m12s`, `1h02m`, `4d04h`; cost is an estimate, never a bill, and is never fabricated.
+- **AC-16.8** `/kpi status` in the TUI opens the Command Centre as a full-width overlay with HOME (STAGES 01–08, LIVE › <NN stage>, TELEMETRY without cap tokens, SHARED RUN STATE, CONTEXT LAYER, EVENTS, an input line and key hints) and SESSION (STAGES rail, the node's transcript, NODE panel with status, elapsed, cost, model, route) views drawn from run files, responsive at 200, 160, 120, 80 and 60 columns with no framed line wider than the terminal. Keys: tab/↑↓/←→ and `1`–`8` select a stage, enter opens its session, esc returns home or closes, `q`/ctrl+c close, `r` refreshes. The input line routes `/kpi stop` to the job's stop exactly once, `/kpi verify` to the verify line, refuses any other `/kpi …` (`K-π /kpi <goal> is refused while a job runs; /kpi stop first`) and `!…` (`K-π bash is not available inside the command centre`), and hands any other text to chat after closing.
+- **AC-16.9** The Command Centre is live mid-run: while the run is `RUNNING` it re-reads the run files on the same 1 s tick as the widget (run files every fifth tick), paints `EVENTS ✕ <code>` in its header on a failed read without throwing (the ticker retries an open that failed), paints `K-π no active job` and stops ticking when the job is gone, and stops ticking when the run ends (`DONE`, `NEEDS_HUMAN`, `STOPPED`) or the view closes. The loop runs detached from the `/kpi` handler, so `/kpi status`, `/agents` and chat stay usable while a job runs.
 
 ### US-17 — K-stack ships as built-in first-party skills
 
@@ -334,6 +348,8 @@ Source: https://github.com/alirezarezvani/claude-skills/blob/main/engineering/mi
 - **AC-23.7** At most one live worker has `write`/`edit`. A second writer spawn is denied.
 - **AC-23.8** `claim_path` is exclusive. A second claim on the same path is denied until release or the holder pid dies.
 - **AC-23.9** `write_contract` is not `write`/`edit`. A reviewer or tester holding only `write_contract` is not a writer, does not consume the single-writer slot, and can publish nothing but its own declared run-contract file.
+- **AC-23.10** `/agents` lists every live session this kpi process owns — the main session, in-process graph node sessions (node id, context mode, model, elapsed, tool calls) and worker processes (agent id, role, pid, alive, node, job) — under the columns `KIND ID ROLE MODEL PID ALIVE ELAPSED TOOLS LAST NODE JOB`, followed by `caps (this process): workers <w>/2 · writers <n>/1` and the mechanism line stating that graph nodes are in-process sessions while `workerRole` nodes and `spawn_background` are separate `kpi --mode rpc` processes over `bus.jsonl`, with no sub-agent API. With no job it still prints the main row and `no active job`; it reads files and memory only, never a model.
+- **AC-23.11** The board's `AGENTS n` cell is nodes + workers for the live job with the breakdown `· k nodes · w workers`, and it repaints when a node session or worker starts or ends, not only per superstep.
 
 ### US-24 — Bare message is plain chat; the agent starts a K-π job for substantial work
 
@@ -341,7 +357,7 @@ Source: https://github.com/alirezarezvani/claude-skills/blob/main/engineering/mi
 
 - **AC-24.1** With `kpi.routing = auto` (default) a bare message is ordinary harness input. For substantial engineering work the agent calls `kpi_start_job`, which queues a gated `/kpi` for that goal after the current turn and sets sticky `/k-mode`. Greetings, questions, pasted logs, and goals under 12 characters are refused by the tool and answered directly; no run directory is created for them.
 - **AC-24.2** Commands (`/kpi`, `/k-mode`, `/accounts`, `/setup-kstack`, …) are never wrapped. `kpi.routing = always` (or `/kpi always`) wraps every bare message into a gated `/kpi` with that text, on one line.
-- **AC-24.3** While a job is live, a bare follow-up is steer/followUp into the parent session and `kpi_start_job` refuses to start a second job. A finished run (`DONE`, `BLOCKED`, `EXHAUSTED`, `NO_PROGRESS`, `UNSAFE`, `NEEDS_HUMAN`) owns no follow-up and is not drawn as live.
+- **AC-24.3** While a job is live, a bare follow-up is steer/followUp into the parent session and `kpi_start_job` refuses to start a second job. A finished run (`DONE`, `NEEDS_HUMAN`, `STOPPED`, or a legacy token that reads as `NEEDS_HUMAN`) owns no follow-up and is not drawn as live.
 - **AC-24.4** `/kpi off` or `kpi.routing = off` disables automatic starts: only explicit `/kpi`, `/loop`, `/k-mode` start a job. Bus worker sessions never hold `kpi_start_job`.
 
 ### US-25 — TUI is information-complete, not pixel-perfect
@@ -379,26 +395,27 @@ Source: https://github.com/alirezarezvani/claude-skills/blob/main/engineering/mi
 - **AC-27.7** No runtime dep on `pi-ollama`, `@jamesjfoong/pi-ollama`, `pi-ollama-keyring`, or `pi-ollama-cloud-provider`.
 - **AC-27.8** Local traffic stays on the configured base URL. No silent cloud proxy.
 
-### US-28 — Optional Exa and Perplexity research
+### US-28 — Optional Exa, Perplexity, and Firecrawl research
 
-**Story.** As an operator, I can give k-pi an Exa key, a Perplexity key, or both at setup. Planning then searches the live web by default through the first-party research tools.
+**Story.** As an operator, I can give k-pi an Exa key, a Perplexity key, a Firecrawl key, or any combination at setup. Planning then searches the live web by default through the first-party research tools.
 
-- **AC-28.1** `/setup-kstack` offers Exa and Perplexity keys with save or skip. Saving either, both, or neither is valid.
-- **AC-28.2** Keys live in `accounts.secrets.json` at `exa/default` and `perplexity/default`, mode 0600. `EXA_API_KEY` and `PERPLEXITY_API_KEY` are fallbacks.
-- **AC-28.3** First-party REST tools cover Exa search and contents plus Perplexity Search. No provider SDK is a runtime dependency.
+- **AC-28.1** `/setup-kstack` offers Exa, Perplexity, and Firecrawl keys with save or skip. Saving any subset, or none, is valid.
+- **AC-28.2** Keys live in `accounts.secrets.json` at `exa/default`, `perplexity/default`, and `firecrawl/default`, mode 0600. `EXA_API_KEY`, `PERPLEXITY_API_KEY`, and `FIRECRAWL_API_KEY` are fallbacks.
+- **AC-28.3** First-party REST tools cover Exa search and contents, Perplexity Search, and Firecrawl Search. No provider SDK is a runtime dependency.
 - **AC-28.4** package.json has no `exa-js` or `@perplexity-ai/perplexity_ai` runtime dependency.
-- **AC-28.5** A 429, timeout, or unavailable service cools that research service and tries the other configured service. k-pi treats a 402 the same way, as defensive handling on our side rather than a documented Perplexity Search response. Attempts per service are bounded and recorded; the graph does not hang.
-- **AC-28.6** Footer / board can show `EXA`, `PPLX`, or both when keys are present.
-- **AC-28.7** `exa` and `perplexity` are research credential targets, not pool ids. Neither appears in `accounts.json.pools`, `/pool strategy`, `/pool chain`, or the fallback chain, and neither registers a provider or grants a model provider-native web search.
+- **AC-28.5** A 429, timeout, or unavailable service cools that research service and tries the next configured service. k-pi treats a 402 the same way, as defensive handling on our side rather than a documented Perplexity or Firecrawl response. Attempts per service are bounded and recorded; the graph does not hang.
+- **AC-28.6** Footer / board can show `EXA`, `PPLX`, `FC`, or any of them when keys are present.
+- **AC-28.7** `exa`, `perplexity`, and `firecrawl` are research credential targets, not pool ids. None appears in `accounts.json.pools`, `/pool strategy`, `/pool chain`, or the fallback chain, and none registers a provider or grants a model provider-native web search.
+- **AC-28.8** Firecrawl is a third research credential target: first-party `firecrawl_search` over `POST /v2/search` with Bearer auth, `limit` ≤ 10, `sources: [{type: "web"}]`, never scrape options, the same 10,000-character clamp, failure classes and bounded attempts as AC-28.5; `auto` order is Exa, then Perplexity, then Firecrawl.
 
 ### US-29 — Research before implement
 
 **Story.** As an operator, the agent does not write product code until it has researched the stack and current practice.
 
 - **AC-29.1** Specify and plan cannot leave their nodes without `.kpi/runs/<job>/research.md` and `research.json`.
-- **AC-29.2** With an Exa or Perplexity key and `network.state: "online"`, `research.json` records at least two **distinct** external sources — different origins, deduplicated — from `exa_search`, `exa_contents`, or `pplx_search`.
+- **AC-29.2** With an Exa, Perplexity, or Firecrawl key and `network.state: "online"`, `research.json` records at least two **distinct** external sources — different origins, deduplicated — from `exa_search`, `exa_contents`, `pplx_search`, or `firecrawl_search`.
 - **AC-29.3** Without a usable key, or under `no-network` from either origin, mode is `local` and sources are repository and frozen-plan files cited by repo-relative path. The lamp still lights. No external URL is recorded that this job did not fetch.
-- **AC-29.4** Implement is `UNSAFE` if research files are missing or older than the current `task.json` hash.
+- **AC-29.4** Implement pauses `NEEDS_HUMAN` (`research`) if research files are missing or older than the current `task.json` hash.
 - **AC-29.5** Assistant prose does not dump raw crawl pages. Citations live in research.md.
 - **AC-29.6** A healthy configured service that answers but supplies fewer than two distinct external sources ends the node `NEEDS_HUMAN`. Online shortfall is never downgraded to local research.
 - **AC-29.7** The engine may set effective `no-network` only after every configured service has failed its bounded attempts, writing `network.origin: "engine"`, a `network.reason` naming those services, and one recorded failure per attempt. An operator-flagged job uses `network.origin: "operator"`. `no-network` is a research state, never a stop state.
@@ -408,7 +425,7 @@ Source: https://github.com/alirezarezvani/claude-skills/blob/main/engineering/mi
 **Story.** As an operator, I can find auth in `auth/` and a feature in that feature’s folder. Agents use the same map.
 
 - **AC-30.1** Plan writes `stack.json` with `folder`, `interface`, `allowed_paths`, `scaffold_first` per module.
-- **AC-30.2** Implement `claim_path` outside the current module folder + test twin is `UNSAFE`.
+- **AC-30.2** Implement `claim_path` outside the current module folder + test twin is refused as an `UNSAFE` claim and denied; that boundary is the implementer's `write_allow`, so a write that leaves it pauses the run `NEEDS_HUMAN` (`bounds`).
 - **AC-30.3** Feature playbooks copy the dune checklist. `no-stack` playbooks (typo, unslop) are exempt.
 - **AC-30.4** Top-level `utils`, `helpers`, `common`, or `misc` without a tight purpose fails the plan gate.
 - **AC-30.5** Scaffold creates the feature folder, interface file, and test twin before behaviour.
@@ -418,6 +435,16 @@ Source: https://github.com/alirezarezvani/claude-skills/blob/main/engineering/mi
 - **AC-30.9** Default `delivery` is `vertical`. One implement round = one slice through that feature folder.
 - **AC-30.10** A plan that schedules “all APIs then all UI” without `delivery: "horizontal"` and a reason fails the plan gate.
 - **AC-30.11** Shared abstractions are extracted only when a second slice needs them.
+
+### US-31 — Onboarding
+
+**Story.** As a new operator, I run one guided setup on first launch or with `/onboarding`, and get from a clean install to a working K-π without reading the manual.
+
+- **AC-31.1** `/onboarding` exists at startup and walks welcome → model accounts → research keys (Exa, Perplexity, Firecrawl) → K-stack roles; each step is skippable and the wizard is re-runnable any time.
+- **AC-31.2** A TUI startup with no configured slot in any pool and no harness-available model opens the wizard; print/rpc/json sessions never do. "Not now" closes it for that launch; nothing is persisted to record the choice, so it returns next launch until a slot exists.
+- **AC-31.3** Model login reuses the pooled `/accounts login` path (same provider notices, slots, secrets); a cancelled or failed login is reported by pool name (`<pool> login not completed: …`) and the wizard continues.
+- **AC-31.4** A skipped step writes nothing; the wizard writes no project `.kpi/settings.json` and no `~/.kpi/agent/settings.json`.
+- **AC-31.5** The research step saves Exa/Perplexity/Firecrawl keys through the same writer as `/setup-kstack` (`accounts.secrets.json`, 0600) without writing the project research mode, and the K-stack step runs the same role-map function as `/setup-kstack`.
 
 ## 7. Workflows
 
@@ -437,9 +464,9 @@ operator types: add a healthcheck and verify it
 
 ```
 operator /kpi <goal>
-  → ac-compiler → specify? → research → plan (stack.json) → implement → test → bounds → review
-  → human confirm → ship commit
-  fail edges: test/review/bounds → implement or terminal state
+  → ac-compiler → specify? → research → plan (stack.json) → plan-approval (operator: approve / request changes → plan / stop)
+  → implement → test → bounds → review → human (approve / request changes → implement / stop) → ship commit
+  fail edges: test/review → implement; a repeated witness → plan with repair.json; bounds/review/no-progress → NEEDS_HUMAN pause, resumable
 ```
 
 ### WF-02 Plan entry
@@ -496,7 +523,7 @@ operator /k-mode <goal>
 | M-01 | Gated fixture: healthcheck feature reaches human confirm with green gates | 1/1 |
 | M-02 | Autopilot fixture with 5 executable AC reaches `DONE` and a commit | 1/1 |
 | M-03 | Narrative AC fixture is refused for autopilot | 1/1 |
-| M-04 | Bounds-violation fixture ends `UNSAFE` | 1/1 |
+| M-04 | Bounds-violation fixture pauses `NEEDS_HUMAN` (`bounds`) with zero commits | 1/1 |
 | M-05 | Two Anthropic slots: exhausted slot never selected while sibling healthy | 1/1 |
 | M-06 | Assistant visible reply on fixture verdict < 800 chars | 1/1 |
 | M-07 | `npm run check && npm test && npm run test:kpi` green on main | always |
@@ -526,7 +553,7 @@ operator /k-mode <goal>
 | US-02 | spec §Graphs, §Run store | M2–M3 |
 | US-03 | spec §Entry points | M3 |
 | US-04 | spec §Modes, §Graphs auto | M4 |
-| US-05 | spec §Stop states | M3–M4 |
+| US-05 | spec §Run states, §Recovery, §Graph engine | M3–M4 |
 | US-06 | spec §UI | M2, M5 |
 | US-07 | spec §Voice | M1 |
 | US-08 | spec §Skills | M3 |
@@ -552,3 +579,4 @@ operator /k-mode <goal>
 | US-28 | research.md | M3, M8 |
 | US-29 | research.md | M3 |
 | US-30 | dune-architecture.md | M3 |
+| US-31 | spec §Entry points, research.md, kstack.md | M5 |

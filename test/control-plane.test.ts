@@ -1,15 +1,29 @@
 import assert from "node:assert/strict";
+import { execFile as execFileCallback } from "node:child_process";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-
+import { promisify } from "node:util";
 import type { ExtensionCommandContext, ExtensionContext } from "../packages/coding-agent/src/core/extensions/types.ts";
 
-import { verifyChain } from "../packages/coding-agent/src/kpi/extensions/append-log.ts";
-import { createStatusWidget, registerControlPlane } from "../packages/coding-agent/src/kpi/extensions/control-plane.ts";
+import { appendEvent, verifyChain } from "../packages/coding-agent/src/kpi/extensions/append-log.ts";
+import {
+	registerLiveNodeSession,
+	resetSessionsRegistry,
+} from "../packages/coding-agent/src/kpi/extensions/bus/sessions-snapshot.ts";
+import {
+	buildBoardModel,
+	type ControlPlaneDependencies,
+	createStatusWidget,
+	liveLoopSettled,
+	registerControlPlane,
+} from "../packages/coding-agent/src/kpi/extensions/control-plane.ts";
+import type { GraphAgentSessionFactory } from "../packages/coding-agent/src/kpi/extensions/graph/engine.ts";
+import { readActiveJob, readLiveJob } from "../packages/coding-agent/src/kpi/extensions/run-store.ts";
 import { routingState } from "../packages/coding-agent/src/kpi/extensions/settings.ts";
 
+const execFile = promisify(execFileCallback);
 type CommandHandler = (args: string, context: ExtensionCommandContext) => Promise<void>;
 type SessionStartHandler = (event: unknown, context: ExtensionContext) => Promise<void>;
 
@@ -22,7 +36,7 @@ async function withFixture(run: (directory: string) => Promise<void>): Promise<v
 	}
 }
 
-function registerFixture() {
+function registerFixture(dependencies: ControlPlaneDependencies = {}, options: { detached?: boolean } = {}) {
 	const commands = new Map<string, CommandHandler>();
 	let sessionStart: SessionStartHandler | undefined;
 	const pi = {
@@ -31,8 +45,18 @@ function registerFixture() {
 				sessionStart = handler as SessionStartHandler;
 			}
 		},
-		registerCommand(name: string, options: { handler: CommandHandler }) {
-			commands.set(name, options.handler);
+		// The loop is detached from its handler; unless a test drives that
+		// itself, the harness settles it so assertions read the finished run.
+		registerCommand(name: string, options_: { handler: CommandHandler }) {
+			commands.set(
+				name,
+				options.detached === true
+					? options_.handler
+					: async (args, ctx) => {
+							await options_.handler(args, ctx);
+							await liveLoopSettled();
+						},
+			);
 		},
 		sendUserMessage() {
 			throw new Error("provider request attempted");
@@ -41,55 +65,113 @@ function registerFixture() {
 			throw new Error("model mutation attempted");
 		},
 	};
-	registerControlPlane(pi as unknown as Parameters<typeof registerControlPlane>[0]);
+	registerControlPlane(pi as unknown as Parameters<typeof registerControlPlane>[0], dependencies);
 	return { commands, getSessionStart: () => sessionStart };
 }
 
-type WidgetFactory = (tui: unknown, theme: unknown) => { render(width: number): string[] };
+type WidgetComponent = { render(width: number): string[]; dispose?(): void };
+type WidgetFactory = (tui: unknown, theme: unknown) => WidgetComponent;
+type CustomFactory = (
+	tui: unknown,
+	theme: unknown,
+	keybindings: unknown,
+	done: (value: unknown) => void,
+) => WidgetComponent | Promise<WidgetComponent>;
 
-function context(cwd: string, notifications: string[], widgets: Array<string[] | undefined>): ExtensionCommandContext {
+const plainTheme = { fg: (_tone: string, text: string) => text };
+
+function context(
+	cwd: string,
+	notifications: string[],
+	widgets: Array<string[] | undefined>,
+	options: {
+		hasUI?: boolean;
+		mode?: string;
+		components?: Array<WidgetComponent | undefined>;
+		custom?: (factory: CustomFactory, opts?: unknown) => Promise<unknown>;
+		theme?: { fg(tone: string, text: string): string };
+	} = {},
+): ExtensionCommandContext {
+	let installed: WidgetComponent | undefined;
 	return {
 		cwd,
-		hasUI: false,
-		mode: "json",
+		hasUI: options.hasUI ?? false,
+		mode: options.mode ?? "json",
 		newSession: async () => {
 			throw new Error("agent start attempted");
 		},
 		ui: {
-			custom: async () => {
-				throw new Error("unexpected overlay");
-			},
+			custom:
+				options.custom ??
+				(async () => {
+					throw new Error("unexpected overlay");
+				}),
 			notify(message: string) {
 				notifications.push(message);
 			},
-			// The board is a component; render it the way the interactive mode would.
+			// The board is a component; render it the way the interactive mode
+			// would, disposing whatever the key held before (setExtensionWidget).
 			setWidget(_key: string, content: string[] | WidgetFactory | undefined) {
-				widgets.push(
-					typeof content === "function"
-						? content({ requestRender() {} }, { fg: (_name: string, text: string) => text }).render(120)
-						: content,
-				);
+				installed?.dispose?.();
+				installed = undefined;
+				if (typeof content === "function") {
+					installed = content({ requestRender() {} }, options.theme ?? plainTheme);
+					options.components?.push(installed);
+					widgets.push(installed.render(120));
+				} else {
+					options.components?.push(undefined);
+					widgets.push(content);
+				}
 			},
 		},
 	} as unknown as ExtensionCommandContext;
 }
 
+/** Test/DI ticker: the caller fires the latest registered callback on demand; each stop counts once. */
+function manualTicker(): { tick: NonNullable<ControlPlaneDependencies["tick"]>; fire: () => void; stopCount: number } {
+	let callback: (() => void) | undefined;
+	const state = {
+		tick: (cb: () => void, _intervalMs: number) => {
+			callback = cb;
+			let stopped = false;
+			return () => {
+				if (stopped) return;
+				stopped = true;
+				if (callback === cb) callback = undefined;
+				state.stopCount += 1;
+			};
+		},
+		fire: () => callback?.(),
+		stopCount: 0,
+	};
+	return state;
+}
+
+async function waitUntil(check: () => boolean, timeoutMs = 3000): Promise<void> {
+	const start = Date.now();
+	while (!check()) {
+		if (Date.now() - start > timeoutMs) {
+			throw new Error("waitUntil timed out");
+		}
+		await new Promise((resolve) => setTimeout(resolve, 5));
+	}
+}
+
+const RUNNING_STATE = {
+	job_id: "2026-08-31-status",
+	mode: "gated",
+	round: 2,
+	superstep: 3,
+	stage: "implement",
+	node: "implementer",
+	passed: false,
+	status: "RUNNING",
+} as const;
+
 async function createRun(directory: string): Promise<string> {
 	const runDirectory = join(directory, ".kpi", "runs", "2026-08-31-status");
 	await mkdir(runDirectory, { recursive: true });
-	await writeFile(
-		join(runDirectory, "state.json"),
-		`${JSON.stringify({
-			job_id: "2026-08-31-status",
-			mode: "gated",
-			round: 2,
-			maxRounds: 3,
-			stage: "implement",
-			node: "implementer",
-			passed: false,
-			status: "RUNNING",
-		})}\n`,
-	);
+	await writeFile(join(runDirectory, "state.json"), `${JSON.stringify(RUNNING_STATE)}\n`);
 	await writeFile(join(runDirectory, "events.jsonl"), "");
 	return runDirectory;
 }
@@ -107,7 +189,7 @@ test("kpi status reports no active job without requesting a provider", async () 
 	});
 });
 
-test("kpi stop appends a terminal BLOCKED event", async () => {
+test("kpi stop appends a terminal STOPPED event", async () => {
 	await withFixture(async (directory) => {
 		const runDirectory = await createRun(directory);
 		const notifications: string[] = [];
@@ -116,13 +198,25 @@ test("kpi stop appends a terminal BLOCKED event", async () => {
 
 		await commands.get("kpi")!("stop", context(directory, notifications, widgets));
 
+		const marker = JSON.parse(await readFile(join(runDirectory, "stop.json"), "utf8")) as Record<string, unknown>;
+		assert.equal(marker.reason, "operator stop");
+		assert.equal(marker.recorded, true, "no loop was live in this process: the control plane recorded the stop");
+		assert.match(String(marker.at), /^\d{4}-\d{2}-\d{2}T/u);
 		const lines = (await readFile(join(runDirectory, "events.jsonl"), "utf8")).trimEnd().split("\n");
 		const event = JSON.parse(lines.at(-1)!) as Record<string, unknown>;
 		const state = JSON.parse(await readFile(join(runDirectory, "state.json"), "utf8")) as Record<string, unknown>;
 		assert.equal(event.type, "loop.terminal");
-		assert.equal(event.status, "BLOCKED");
-		assert.equal(state.status, "BLOCKED");
+		assert.equal(event.status, "STOPPED");
+		assert.equal(event.reason, "operator stop");
+		assert.equal(state.status, "STOPPED");
 		assert.equal(await verifyChain(join(runDirectory, "events.jsonl")), true);
+		assert.deepEqual(notifications, ["K-π job 2026-08-31-status STOPPED (resume with /kpi 2026-08-31-status)"]);
+		assert.equal(await readLiveJob(directory), undefined, "a STOPPED job is finished, not live");
+		// The widget shows only live jobs, but the Command Centre keeps the job it
+		// opened on: built for that job, the board reads STOP STOPPED.
+		assert.equal(await buildBoardModel(directory), undefined);
+		const stopped = await buildBoardModel(directory, { job: (await readActiveJob(directory))! });
+		assert.equal(stopped?.stop, "STOPPED");
 	});
 });
 
@@ -157,7 +251,7 @@ test("session widget reads files without changing models or starting agents", as
 });
 
 test("loop is an alias of the kpi command", () => {
-	const { commands } = registerFixture();
+	const { commands } = registerFixture({}, { detached: true });
 	assert.equal(commands.get("loop"), commands.get("kpi"));
 });
 
@@ -270,7 +364,7 @@ test("a finished job is not pinned above the editor", async () => {
 		const runDirectory = await createRun(directory);
 		await writeFile(
 			join(runDirectory, "state.json"),
-			`${JSON.stringify({ job_id: "2026-08-31-status", mode: "gated", stage: "plan", status: "UNSAFE" })}\n`,
+			`${JSON.stringify({ job_id: "2026-08-31-status", mode: "gated", stage: "plan", status: "STOPPED" })}\n`,
 		);
 		const notifications: string[] = [];
 		const widgets: Array<string[] | undefined> = [];
@@ -280,7 +374,7 @@ test("a finished job is not pinned above the editor", async () => {
 		assert.deepEqual(widgets, [undefined], "a dead run draws no widget");
 
 		await commands.get("kpi")?.("status", context(directory, notifications, widgets));
-		assert.deepEqual(notifications, ["no active job — last job 2026-08-31-status UNSAFE"]);
+		assert.deepEqual(notifications, ["no active job — last job 2026-08-31-status STOPPED"]);
 	});
 });
 
@@ -304,5 +398,216 @@ test("the session widget is a framed component painted at the live width", async
 		assert.match(text, /04 implement/);
 		assert.match(text, /STOP RUNNING/);
 		assert.match(text, /FILES {2}○ task\.json/, "an empty run file is a dark lamp");
+	});
+});
+
+/** Appends one chained record to the run's log through the product's own writer. */
+async function appendEventAt(runDirectory: string, nowMs: number, event: Record<string, unknown>): Promise<void> {
+	await appendEvent(join(runDirectory, "events.jsonl"), {
+		ts: new Date(nowMs).toISOString(),
+		job_id: "2026-08-31-status",
+		round: 2,
+		node: "implement",
+		...event,
+	} as Parameters<typeof appendEvent>[1]);
+}
+
+test("the session widget refreshes on the injected tick, narrates lifecycle once and drops itself when the job ends", async () => {
+	await withFixture(async (directory) => {
+		const runDirectory = await createRun(directory);
+		let nowMs = Date.parse("2026-08-31T10:00:00.000Z");
+		await appendEventAt(runDirectory, nowMs, { type: "handoff.created", node: "control-plane", mode: "gated" });
+		const ticker = manualTicker();
+		const notifications: string[] = [];
+		const widgets: Array<string[] | undefined> = [];
+		const components: Array<WidgetComponent | undefined> = [];
+		const { commands, getSessionStart } = registerFixture({ tick: ticker.tick, now: () => nowMs });
+		const ctx = context(directory, notifications, widgets, { components });
+		const latest = () => components.at(-1)?.render(120).join("\n") ?? "";
+
+		await getSessionStart()?.({}, ctx);
+		assert.match(latest(), /NOW implementer {2}no node\.started yet/u, "no lifecycle record yet");
+		assert.equal(notifications.length, 0, "history is never narrated");
+
+		// A node starts and works; the widget only learns of it on the tick.
+		await appendEventAt(runDirectory, nowMs, { type: "node.started", run: 1 });
+		await appendEventAt(runDirectory, nowMs, { type: "tool.request", tool: "read", path: "a", decision: "allow" });
+		await appendEventAt(runDirectory, nowMs, { type: "tool.request", tool: "edit", path: "b.ts", decision: "allow" });
+		nowMs += 65_000;
+		assert.doesNotMatch(latest(), /2 tools/u, "nothing repaints without a tick");
+		ticker.fire();
+		await waitUntil(() => notifications.length === 1);
+		assert.deepEqual(notifications, ["K-π ▶ 04 implement · run 1"]);
+		const painted = latest();
+		assert.match(painted, /NOW implementer/u);
+		assert.match(painted, /2 tools/u);
+		assert.match(painted, /▸ edit b\.ts/u);
+		assert.match(painted, /1m05s/u);
+		assert.equal(widgets.length, 1, "a refresh repaints in place; it never reinstalls the widget");
+
+		// The clock moves one second: the tick that repaints 1m06s has settled.
+		nowMs += 1_000;
+		ticker.fire();
+		await waitUntil(() => latest().includes("1m06s"));
+		assert.equal(notifications.length, 1, "a tick with nothing new narrates nothing");
+
+		await appendEventAt(runDirectory, nowMs, { type: "accounts.failover", node: "graph", from: "a", to: "b" });
+		await appendEventAt(runDirectory, nowMs, {
+			type: "node.finished",
+			run: 1,
+			status: "completed",
+			elapsed_ms: 65_000,
+			cost_usd: 0.42,
+		});
+		ticker.fire();
+		await waitUntil(() => notifications.length === 3);
+		assert.deepEqual(notifications.slice(1), ["K-π ⇄ route a → b", "K-π ■ 04 implement done · 1m05s · $0.42"]);
+
+		// A reinstall (onStateChange, `/kpi status`) continues from the module cursor.
+		await getSessionStart()?.({}, ctx);
+		assert.equal(ticker.stopCount, 1, "the previous widget's ticker stopped when it was disposed");
+		await writeFile(join(runDirectory, "state.json"), `${JSON.stringify({ ...RUNNING_STATE, round: 3 })}\n`);
+		ticker.fire();
+		await waitUntil(() => /ROUND 3(?![\d/])/u.test(latest()));
+		assert.equal(notifications.length, 3, "history is not narrated twice");
+
+		// `/kpi status` shows the board and leaves the widget ticking behind it.
+		await commands.get("kpi")?.("status", ctx);
+		assert.equal(notifications.length, 4, "the status board is one notification");
+		assert.match(notifications[3] ?? "", /NOW implementer/u);
+		assert.doesNotMatch(notifications[3] ?? "", /↵ detail/u, "the printed board carries no overlay key hint");
+		assert.equal(ticker.stopCount, 2, "status reinstalled the widget: the old ticker stopped, a new one runs");
+		await writeFile(join(runDirectory, "state.json"), `${JSON.stringify({ ...RUNNING_STATE, round: 1 })}\n`);
+		ticker.fire();
+		await waitUntil(() => /ROUND 1(?![\d/])/u.test(latest()));
+		assert.equal(notifications.length, 4, "status narrated nothing twice");
+
+		// A read failure is painted, not thrown: the log becomes a directory.
+		await rm(join(runDirectory, "events.jsonl"));
+		await mkdir(join(runDirectory, "events.jsonl"));
+		ticker.fire();
+		await waitUntil(() => latest().includes("EVENTS ✕ EISDIR"));
+		assert.ok(!notifications.some((line) => line.includes("board refresh failed")), notifications.join("\n"));
+
+		// The job ends: the next tick drops the widget and stops its ticker.
+		await writeFile(
+			join(runDirectory, "state.json"),
+			`${JSON.stringify({ job_id: "2026-08-31-status", mode: "gated", stage: "ship", status: "DONE" })}\n`,
+		);
+		ticker.fire();
+		await waitUntil(() => widgets.at(-1) === undefined);
+		assert.equal(ticker.stopCount, 3, "the ticker stopped with the job");
+		assert.equal(components.at(-1), undefined, "setWidget('kpi', undefined) cleared the board");
+	});
+});
+
+test("the session widget counts an in-process node session without starting one", async () => {
+	await withFixture(async (directory) => {
+		await createRun(directory);
+		resetSessionsRegistry();
+		registerLiveNodeSession({
+			kind: "node",
+			jobId: "2026-08-31-status",
+			nodeId: "implement",
+			sessionId: "01a0test",
+			contextMode: "isolated",
+			threadKey: "implement",
+			startedAt: new Date().toISOString(),
+			stats: () => ({ cost: 0, toolCalls: 0 }),
+		});
+		try {
+			const ticker = manualTicker();
+			const widgets: Array<string[] | undefined> = [];
+			const { getSessionStart } = registerFixture({ tick: ticker.tick });
+			await getSessionStart()?.({}, context(directory, [], widgets));
+			assert.match(widgets[0]?.join("\n") ?? "", /AGENTS 1 · 1 node · 0 workers/u);
+		} finally {
+			resetSessionsRegistry();
+		}
+	});
+});
+
+test("a running job leaves /kpi status, /agents and chat free and refuses a second goal", async () => {
+	await withFixture(async (directory) => {
+		const jobId = "20260903-detached-goal";
+		const notifications: string[] = [];
+		const widgets: Array<string[] | undefined> = [];
+		const reached = Promise.withResolvers<void>();
+		let settled = false;
+		let rejectPrompt: ((error: Error) => void) | undefined;
+		// A node session that hangs until the operator's stop aborts it.
+		const factory: GraphAgentSessionFactory = async (options) => ({
+			session: {
+				sessionId: "hanging",
+				prompt: () =>
+					new Promise<void>((_resolve, reject) => {
+						rejectPrompt = reject;
+						reached.resolve();
+					}).finally(() => {
+						settled = true;
+					}),
+				abort() {
+					rejectPrompt?.(Object.assign(new Error("prompt aborted"), { name: "AbortError" }));
+				},
+				getActiveToolNames: () => [...(options.tools ?? [])],
+				dispose() {},
+			},
+		});
+		// The loop snapshots the worktree, so the fixture is a repository.
+		await execFile("git", ["init"], { cwd: directory });
+		await execFile("git", ["config", "user.email", "fixture@example.test"], { cwd: directory });
+		await execFile("git", ["config", "user.name", "Fixture"], { cwd: directory });
+		await execFile("git", ["commit", "--allow-empty", "-m", "chore: seed"], { cwd: directory });
+		const { commands } = registerFixture({ createAgentSession: factory, jobId }, { detached: true });
+		const kpi = commands.get("kpi")!;
+		const ctx = context(directory, notifications, widgets);
+
+		// The handler returns while the node is still inside its prompt.
+		await kpi("add a healthcheck endpoint", ctx);
+		await reached.promise;
+		assert.equal(settled, false, "the loop is still running when the handler has returned");
+		const runDirectory = join(directory, ".kpi", "runs", jobId);
+
+		// The command line is free: status renders the live board.
+		notifications.length = 0;
+		await kpi("status", ctx);
+		assert.equal(notifications.length, 1, notifications.join("\n"));
+		assert.match(notifications[0] ?? "", /K-π/u);
+		assert.match(notifications[0] ?? "", /STOP RUNNING/u);
+		assert.equal(settled, false);
+
+		// A second goal is refused while this one runs; nothing new starts.
+		notifications.length = 0;
+		await kpi("add a second endpoint", ctx);
+		assert.deepEqual(notifications, [`K-π job ${jobId} is still running: /kpi status shows it, /kpi stop stops it`]);
+		assert.deepEqual(await readdir(join(directory, ".kpi", "runs")), [jobId]);
+		assert.equal(settled, false);
+
+		// Stop lands at once: the handler resolves after the loop recorded STOPPED.
+		notifications.length = 0;
+		await kpi("stop", ctx);
+		assert.equal(settled, true, "the hanging prompt was aborted");
+		await liveLoopSettled();
+		const marker = JSON.parse(await readFile(join(runDirectory, "stop.json"), "utf8")) as Record<string, unknown>;
+		assert.equal(marker.reason, "operator stop");
+		assert.equal(marker.recorded, false, "the aborted driver recorded its own terminal");
+		const terminals = (await readFile(join(runDirectory, "events.jsonl"), "utf8"))
+			.split("\n")
+			.filter((line) => line.length > 0)
+			.map((line) => JSON.parse(line) as { type: string; status?: string; reason?: string })
+			.filter((record) => record.type === "loop.terminal");
+		assert.deepEqual(
+			terminals.map((record) => [record.status, record.reason]),
+			[["STOPPED", "operator stop"]],
+		);
+		const state = JSON.parse(await readFile(join(runDirectory, "state.json"), "utf8")) as Record<string, unknown>;
+		assert.equal(state.status, "STOPPED");
+		assert.equal(await readLiveJob(directory), undefined);
+		assert.ok(
+			notifications.includes(`K-π job ${jobId} STOPPED (resume with /kpi ${jobId})`),
+			notifications.join("\n"),
+		);
+		assert.ok(notifications.includes(`K-π job ${jobId} STOPPED: operator stop`), notifications.join("\n"));
+		assert.equal(await verifyChain(join(runDirectory, "events.jsonl")), true);
 	});
 });

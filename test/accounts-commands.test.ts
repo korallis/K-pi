@@ -8,12 +8,14 @@ import type { Credential } from "@earendil-works/pi-ai";
 import type { ExtensionCommandContext } from "../packages/coding-agent/src/core/extensions/types.ts";
 
 import {
+	type AccountsDependencies,
 	CODEX_BILLING_CONFIRM,
 	CURSOR_BILLING_CONFIRM,
 	registerAccounts,
 	ZAI_PERSONAL_USE_NOTE,
 } from "../packages/coding-agent/src/kpi/extensions/accounts/index.ts";
 import { AccountsStore } from "../packages/coding-agent/src/kpi/extensions/accounts/store.ts";
+import { renderAccountsWidget } from "../packages/coding-agent/src/kpi/extensions/accounts/widget.ts";
 
 const FIXED_TIME = new Date("2026-09-01T12:00:00.000Z");
 
@@ -31,16 +33,30 @@ interface Harness {
 	prompts: string[];
 	status: Array<string | undefined>;
 	store: AccountsStore;
-	route: (provider?: string) => Promise<string>;
+	/** Runs the header hook from the seeded headers and returns the authorization it left. */
+	route: (provider?: string, seeded?: Record<string, string>) => Promise<string>;
+	/** A hook context whose provider can refresh; `refresh` stands in for the provider's oauth.refresh. */
+	refreshContext: (refresh: (credential: Credential) => Promise<Credential>) => Record<string, unknown>;
+	warnings: string[];
 }
 
-async function harness(confirm = true): Promise<Harness> {
-	const directory = await mkdtemp(join(tmpdir(), "k-pi-commands-"));
+/**
+ * `login` stands in for the runtime's login, which persists a pooled OAuth
+ * grant into auth.json (model-runtime.ts login → models.login); a test injects
+ * one that writes `store.authPath` itself to reproduce that.
+ */
+async function harness(
+	confirm = true,
+	login?: AccountsDependencies["login"],
+	existingDirectory?: string,
+): Promise<Harness> {
+	const directory = existingDirectory ?? (await mkdtemp(join(tmpdir(), "k-pi-commands-")));
 	const store = new AccountsStore(directory);
 	const commands = new Map<string, CommandHandler>();
 	const hooks = new Map<string, ProviderHook>();
 	const notes: string[] = [];
 	const errors: string[] = [];
+	const warnings: string[] = [];
 	const prompts: string[] = [];
 	const status: Array<string | undefined> = [];
 	const pi = {
@@ -57,9 +73,14 @@ async function harness(confirm = true): Promise<Harness> {
 	registerAccounts(pi as unknown as Parameters<typeof registerAccounts>[0], {
 		store,
 		now: () => FIXED_TIME,
-		async login(_providerId, slotId): Promise<Credential> {
-			return { type: "oauth", access: `access-${slotId}`, refresh: `refresh-${slotId}`, expires: 0 };
-		},
+		login:
+			login ??
+			(async (_providerId, slotId): Promise<Credential> => ({
+				type: "oauth",
+				access: `access-${slotId}`,
+				refresh: `refresh-${slotId}`,
+				expires: 0,
+			})),
 	});
 	const ui = {
 		async confirm(_title: string, message: string) {
@@ -67,15 +88,15 @@ async function harness(confirm = true): Promise<Harness> {
 			return confirm;
 		},
 		notify(message: string, level?: string) {
-			(level === "error" ? errors : notes).push(message);
+			(level === "error" ? errors : level === "warning" ? warnings : notes).push(message);
 		},
 		setStatus(_key: string, value?: string) {
 			status.push(value);
 		},
 	};
 	const context = { cwd: directory, hasUI: true, mode: "tui", ui } as unknown as ExtensionCommandContext;
-	const route = async (provider = "anthropic"): Promise<string> => {
-		const headers: Record<string, string> = {};
+	const route = async (provider = "anthropic", seeded: Record<string, string> = {}): Promise<string> => {
+		const headers: Record<string, string> = { ...seeded };
 		await hooks.get("before_provider_headers")!(
 			{ type: "before_provider_headers", headers, requestId: "request-1" },
 			{
@@ -87,6 +108,13 @@ async function harness(confirm = true): Promise<Harness> {
 		);
 		return headers.authorization ?? "";
 	};
+	const refreshContext = (refresh: (credential: Credential) => Promise<Credential>): Record<string, unknown> => ({
+		...(context as unknown as Record<string, unknown>),
+		modelRegistry: {
+			getAvailable: () => [],
+			getProvider: () => ({ name: "Anthropic", auth: { oauth: { refresh } } }),
+		},
+	});
 	return {
 		accounts: commands.get("accounts")!,
 		pool: commands.get("pool")!,
@@ -99,6 +127,8 @@ async function harness(confirm = true): Promise<Harness> {
 		status,
 		store,
 		route,
+		refreshContext,
+		warnings,
 	};
 }
 
@@ -263,7 +293,17 @@ test("a temporary auth.json imports one default slot without exposing its secret
 		for (const message of [...subject.notes, ...subject.errors]) {
 			assert.doesNotMatch(message, /official-access-token|official-xai-key/u, "no secret in operator output");
 		}
-		assert.equal(await subject.route("anthropic"), "Bearer official-access-token");
+		// The official slot's grant is the one auth.json holds: the runtime built
+		// this request's header from it, so the hook leaves it in place and K-π
+		// keeps no copy of the secret at all.
+		assert.equal(
+			await subject.route("anthropic", { authorization: "Bearer official-access-token" }),
+			"Bearer official-access-token",
+		);
+		assert.equal(document.pools.anthropic?.slots[0]?.official, true);
+		assert.equal(document.pools.xai?.slots[0]?.official, true);
+		assert.equal((await subject.store.readSecrets())["anthropic/default"], undefined, "no copy of the grant");
+		assert.doesNotMatch(await readFile(subject.store.secretsPath, "utf8").catch(() => ""), /official-/u);
 
 		// Re-importing is idempotent: the default slot is not duplicated.
 		await subject.hooks.get("session_start")!({ type: "session_start" }, subject.context as never);
@@ -273,10 +313,18 @@ test("a temporary auth.json imports one default slot without exposing its secret
 	}
 });
 
-test("an existing default slot is never overwritten by the official import", async () => {
+test("an existing default slot with a live grant of its own is never overwritten by the official import", async () => {
 	const subject = await harness();
 	try {
 		await subject.accounts("login anthropic default", subject.context);
+		const own = await subject.store.getSlot("anthropic", "default");
+		assert.ok(own);
+		await subject.store.putSlot("anthropic", own, {
+			type: "oauth",
+			access: "access-default",
+			refresh: "refresh-default",
+			expires: FIXED_TIME.getTime() + 3_600_000,
+		});
 		await writeFile(
 			subject.store.authPath,
 			JSON.stringify({ anthropic: { type: "oauth", access: "official", refresh: "r", expires: 0 } }),
@@ -284,8 +332,21 @@ test("an existing default slot is never overwritten by the official import", asy
 
 		await subject.hooks.get("session_start")!({ type: "session_start" }, subject.context as never);
 
-		assert.equal(await subject.route(), "Bearer access-default", "the operator's own slot wins");
-		assert.equal((await new AccountsStore(subject.directory).read()).pools.anthropic?.slots.length, 1);
+		const document = await new AccountsStore(subject.directory).read();
+		const slots = document.pools.anthropic?.slots ?? [];
+		assert.deepEqual(
+			slots.map((slot) => slot.id),
+			["default", "slot-2"],
+		);
+		const secrets = await subject.store.readSecrets();
+		assert.equal(
+			secrets["anthropic/default"]?.type === "oauth" && secrets["anthropic/default"].refresh,
+			"refresh-default",
+		);
+		assert.equal(slots[0]?.official, undefined, "the operator's own live grant stays K-π-owned");
+		assert.equal(slots[1]?.official, true);
+		assert.equal(secrets["anthropic/slot-2"], undefined, "the official slot has no secret copy");
+		assert.ok(subject.notes.some((note) => note === "Imported official credentials as anthropic/slot-2"));
 	} finally {
 		await rm(subject.directory, { recursive: true, force: true });
 	}
@@ -498,8 +559,279 @@ test("a malformed official credential is skipped without a partial import", asyn
 
 		const document = await new AccountsStore(subject.directory).read();
 		assert.deepEqual(Object.keys(document.pools), ["openai-codex"], "only the routable credential became a slot");
-		assert.deepEqual(Object.keys(await subject.store.readSecrets()), ["openai-codex/default"]);
-		assert.equal(await subject.route("openai-codex"), "Bearer usable-codex-key");
+		assert.equal(document.pools["openai-codex"]?.slots[0]?.official, true);
+		assert.deepEqual(Object.keys(await subject.store.readSecrets()), [], "an official slot keeps no secret copy");
+		assert.equal(
+			await subject.route("openai-codex", { authorization: "Bearer usable-codex-key" }),
+			"Bearer usable-codex-key",
+			"the runtime's own header is the official slot's grant",
+		);
+	} finally {
+		await rm(subject.directory, { recursive: true, force: true });
+	}
+});
+
+/** A refresh failure exactly as packages/ai/src/auth/oauth/anthropic.ts throws it, stack frames included. */
+function refreshFailure(status: number, body: string): Error {
+	return new Error(
+		`Anthropic token refresh request failed. url=https://console.anthropic.com/v1/oauth/token; details=Error: HTTP request failed. status=${status}; url=https://console.anthropic.com/v1/oauth/token; body=${body}; stack=Error: HTTP request failed\n    at postJson (file:///opt/k-pi/dist/bundle/cli.js:10:20)\n    at refreshAnthropicToken (file:///opt/k-pi/dist/bundle/cli.js:11:5)`,
+	);
+}
+
+const INVALID_GRANT_BODY = '{"error":"invalid_grant","error_description":"refresh token has been revoked"}';
+
+function officialGrant(access: string, refresh: string, expires: number): Credential {
+	return { type: "oauth", access, refresh, expires };
+}
+
+test("the official slot is served from auth.json and never refreshed by K-π", async () => {
+	const subject = await harness();
+	try {
+		await writeFile(
+			subject.store.authPath,
+			JSON.stringify({ anthropic: officialGrant("official-access-token", "official-refresh", 0) }),
+		);
+		await subject.hooks.get("session_start")!({ type: "session_start" }, subject.context as never);
+
+		// The runtime rotated the grant since: a copy would now hold a dead refresh token.
+		await writeFile(
+			subject.store.authPath,
+			JSON.stringify({
+				anthropic: officialGrant("rotated-access", "rotated-refresh", FIXED_TIME.getTime() + 7_200_000),
+			}),
+		);
+		const refreshCalls: string[] = [];
+		const context = subject.refreshContext(async (credential) => {
+			refreshCalls.push(credential.type);
+			throw new Error("the official slot must never be refreshed by K-π");
+		});
+		await subject.hooks.get("session_start")!({ type: "session_start" }, context);
+
+		assert.deepEqual(refreshCalls, [], "no refresh call for the official slot");
+		const document = await new AccountsStore(subject.directory).read();
+		assert.equal(document.pools.anthropic?.slots.length, 1);
+		assert.equal(document.pools.anthropic?.slots[0]?.official, true);
+		assert.equal((await subject.store.readSecrets())["anthropic/default"], undefined, "no anthropic/default copy");
+		assert.equal(
+			await subject.route("anthropic", { authorization: "Bearer runtime" }),
+			"Bearer runtime",
+			"the runtime's header is this slot's grant and is left in place",
+		);
+		for (const message of [...subject.notes, ...subject.warnings, ...subject.errors]) {
+			assert.doesNotMatch(message, /stack=|could not refresh/iu, message);
+		}
+	} finally {
+		await rm(subject.directory, { recursive: true, force: true });
+	}
+});
+
+test("an expired legacy default copy binds to the auth.json grant it duplicated", async () => {
+	const subject = await harness();
+	try {
+		// The harness credential expires at 0: the legacy copy is dead.
+		await subject.accounts("login anthropic default", subject.context);
+		await writeFile(subject.store.authPath, JSON.stringify({ anthropic: officialGrant("official", "r", 0) }));
+
+		await subject.hooks.get("session_start")!({ type: "session_start" }, subject.context as never);
+
+		const document = await new AccountsStore(subject.directory).read();
+		assert.deepEqual(
+			document.pools.anthropic?.slots.map((slot) => slot.id),
+			["default"],
+			"the expired copy is bound, not duplicated",
+		);
+		assert.equal(document.pools.anthropic?.slots[0]?.official, true);
+		assert.equal((await subject.store.readSecrets())["anthropic/default"], undefined);
+		assert.ok(
+			subject.notes.some(
+				(note) => note === "K-π accounts: anthropic/default now reads its credential from auth.json",
+			),
+			subject.notes.join("\n"),
+		);
+	} finally {
+		await rm(subject.directory, { recursive: true, force: true });
+	}
+});
+
+test("a pooled login the runtime persisted becomes the official slot and the previous official slot keeps its grant", async () => {
+	const before = officialGrant("official-access-token", "official-refresh", FIXED_TIME.getTime() + 3_600_000);
+	const work = officialGrant("access-work", "refresh-work", FIXED_TIME.getTime() + 3_600_000);
+	let authPath: string | undefined;
+	const subject = await harness(true, async (providerId) => {
+		// The runtime's login persists the new grant into auth.json before it returns.
+		await writeFile(authPath as string, JSON.stringify({ [providerId]: work }));
+		return work;
+	});
+	authPath = subject.store.authPath;
+	try {
+		await writeFile(subject.store.authPath, JSON.stringify({ anthropic: before }));
+		await subject.hooks.get("session_start")!({ type: "session_start" }, subject.context as never);
+
+		await subject.accounts("login anthropic work", subject.context);
+
+		const document = await new AccountsStore(subject.directory).read();
+		const slots = document.pools.anthropic?.slots ?? [];
+		assert.equal(slots.find((slot) => slot.id === "work")?.official, true, "the new login is the official slot");
+		assert.equal(slots.find((slot) => slot.id === "default")?.official, undefined, "the old one is demoted");
+		const secrets = await subject.store.readSecrets();
+		assert.equal(secrets["anthropic/work"], undefined, "the official slot keeps no copy");
+		assert.deepEqual(secrets["anthropic/default"], before, "the demoted slot keeps the grant auth.json held");
+		assert.ok(
+			subject.notes.some((note) => note.endsWith("(anthropic/default keeps its previous grant)")),
+			subject.notes.join("\n"),
+		);
+		assert.deepEqual(subject.errors, []);
+
+		await subject.hooks.get("session_start")!({ type: "session_start" }, subject.context as never);
+		assert.equal((await new AccountsStore(subject.directory).read()).pools.anthropic?.slots.length, 2);
+	} finally {
+		await rm(subject.directory, { recursive: true, force: true });
+	}
+});
+
+test("an api-key login that leaves auth.json alone stays a secret-backed slot", async () => {
+	const subject = await harness(true, async () => ({ type: "api_key", key: "xai-secret-key" }));
+	try {
+		await subject.accounts("login xai work", subject.context);
+
+		const slot = await subject.store.getSlot("xai", "work");
+		assert.equal(slot?.kind, "api_key");
+		assert.equal(slot?.official, undefined);
+		const secret = (await subject.store.readSecrets())["xai/work"];
+		assert.equal(secret?.type === "api_key" && secret.key, "xai-secret-key");
+		assert.deepEqual(subject.errors, []);
+	} finally {
+		await rm(subject.directory, { recursive: true, force: true });
+	}
+});
+
+test("an invalid_grant refresh marks the slot as needing login, once, without a stack trace", async () => {
+	const subject = await harness();
+	try {
+		await subject.accounts("login anthropic work", subject.context);
+		const refreshCalls: string[] = [];
+		const context = subject.refreshContext(async (credential) => {
+			refreshCalls.push(credential.type === "oauth" ? credential.refresh : credential.type);
+			throw refreshFailure(400, INVALID_GRANT_BODY);
+		});
+
+		await subject.hooks.get("turn_start")!({ type: "turn_start" }, context);
+
+		assert.deepEqual(refreshCalls, ["refresh-work"]);
+		assert.deepEqual(subject.errors, [
+			"K-π accounts: anthropic/work needs a new login: Anthropic rejected its refresh token (invalid_grant). Run /accounts login anthropic work",
+		]);
+		for (const message of [...subject.notes, ...subject.warnings, ...subject.errors]) {
+			assert.doesNotMatch(message, /stack=|\n\s+at /u, message);
+		}
+		const marked = await subject.store.getSlot("anthropic", "work");
+		assert.equal(typeof marked?.needsLogin, "string");
+		assert.match(renderAccountsWidget(await subject.store.read()), /work \?% needs login/u);
+
+		await subject.hooks.get("turn_start")!({ type: "turn_start" }, context);
+		assert.deepEqual(refreshCalls, ["refresh-work"], "a slot needing a login is not refreshed again");
+		assert.equal(subject.errors.length, 1, "said once");
+		assert.equal(await subject.route(), "", "a slot needing a login is never selected");
+
+		await subject.accounts("login anthropic work", subject.context);
+		assert.equal((await subject.store.getSlot("anthropic", "work"))?.needsLogin, undefined, "a login heals it");
+		assert.equal(await subject.route(), "Bearer access-work");
+	} finally {
+		await rm(subject.directory, { recursive: true, force: true });
+	}
+});
+
+test("a transient refresh failure cools the slot with a plain reason and no login demand", async () => {
+	const subject = await harness();
+	try {
+		await subject.accounts("login anthropic work", subject.context);
+		const context = subject.refreshContext(async () => {
+			throw refreshFailure(503, '{"error":"overloaded"}');
+		});
+
+		await subject.hooks.get("turn_start")!({ type: "turn_start" }, context);
+
+		assert.equal((await subject.store.getSlot("anthropic", "work"))?.needsLogin, undefined);
+		assert.equal(subject.warnings.length, 1, subject.warnings.join("\n"));
+		assert.match(subject.warnings[0], /^K-π accounts: could not refresh anthropic\/work: .+; cooling 300m$/u);
+		assert.doesNotMatch(subject.warnings[0], /stack=|\n\s+at /u);
+		assert.deepEqual(subject.errors, []);
+		assert.equal(await subject.route(), "", "the slot is cooling");
+		assert.match(subject.status.at(-1) ?? "", /work \?% cd 300m/u);
+	} finally {
+		await rm(subject.directory, { recursive: true, force: true });
+	}
+});
+
+test("a dead auth.json grant marks the official slot as needing login without touching auth.json", async () => {
+	const subject = await harness();
+	try {
+		await writeFile(
+			subject.store.authPath,
+			JSON.stringify({ anthropic: officialGrant("official-access-token", "official-refresh", 0) }),
+		);
+		await subject.hooks.get("session_start")!({ type: "session_start" }, subject.context as never);
+		const authBefore = await readFile(subject.store.authPath, "utf8");
+		const context = {
+			...subject.refreshContext(async () => {
+				throw new Error("not called");
+			}),
+			model: { provider: "anthropic", id: "anthropic-model" },
+		};
+		const runtimeFailure = (status: number, body: string) => ({
+			type: "message_end",
+			message: {
+				role: "assistant",
+				stopReason: "error",
+				errorMessage: `OAuth refresh failed for anthropic: ${refreshFailure(status, body).message}`,
+			},
+		});
+
+		// A transient runtime failure is not a dead grant: nothing is marked.
+		await subject.hooks.get("message_end")!(runtimeFailure(503, '{"error":"overloaded"}'), context);
+		assert.equal((await subject.store.getSlot("anthropic", "default"))?.needsLogin, undefined);
+		assert.deepEqual(subject.errors, []);
+
+		await subject.hooks.get("message_end")!(runtimeFailure(400, INVALID_GRANT_BODY), context);
+
+		assert.equal(typeof (await subject.store.getSlot("anthropic", "default"))?.needsLogin, "string");
+		assert.equal(await readFile(subject.store.authPath, "utf8"), authBefore, "auth.json is never written by K-π");
+		assert.equal(subject.errors.length, 1, subject.errors.join("\n"));
+		assert.match(subject.errors[0], /anthropic\/default needs a new login/u);
+		assert.match(subject.errors[0], /Run \/accounts login anthropic default$/u);
+		assert.doesNotMatch(subject.errors[0], /stack=|\n\s+at /u);
+	} finally {
+		await rm(subject.directory, { recursive: true, force: true });
+	}
+});
+
+test("an official slot whose auth.json entry vanished is reported once at session start", async () => {
+	const subject = await harness();
+	try {
+		await writeFile(
+			subject.store.authPath,
+			JSON.stringify({ anthropic: officialGrant("official-access-token", "official-refresh", 0) }),
+		);
+		await subject.hooks.get("session_start")!({ type: "session_start" }, subject.context as never);
+		await rm(subject.store.authPath);
+
+		await subject.hooks.get("session_start")!({ type: "session_start" }, subject.context as never);
+
+		assert.equal(
+			(await subject.store.getSlot("anthropic", "default"))?.needsLogin,
+			"auth.json no longer holds a anthropic credential",
+		);
+		assert.equal(subject.errors.length, 1, subject.errors.join("\n"));
+		assert.match(subject.errors[0], /Run \/accounts login anthropic default$/u);
+
+		await subject.hooks.get("session_start")!({ type: "session_start" }, subject.context as never);
+		assert.equal(subject.errors.length, 1, "the same slot is not reported twice in one session");
+
+		// A new session says it once again.
+		const next = await harness(true, undefined, subject.directory);
+		await next.hooks.get("session_start")!({ type: "session_start" }, next.context as never);
+		assert.equal(next.errors.length, 1, next.errors.join("\n"));
+		assert.match(next.errors[0], /Run \/accounts login anthropic default$/u);
 	} finally {
 		await rm(subject.directory, { recursive: true, force: true });
 	}

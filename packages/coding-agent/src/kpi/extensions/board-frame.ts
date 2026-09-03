@@ -79,6 +79,31 @@ function paintRow(row: Row, width: number, palette: BoardPalette, fallback: Tone
 	return painted + " ".repeat(width - visibleWidth(plain));
 }
 
+/**
+ * A row painted span by span, dropping `optional` spans right-to-left when it
+ * would otherwise overflow — MODEL, then ▸ lastTool, then run n for the NOW
+ * row — before ever falling back to `paintRow`'s ellipsis truncation. A row
+ * with no optional spans left that still overflows truncates exactly as
+ * `paintRow` would.
+ */
+export function paintShrinkingRow(row: Row, width: number, palette: BoardPalette): string {
+	let candidate = row;
+	while (visibleWidth(rowText(candidate)) > width) {
+		let lastOptional = -1;
+		for (let index = candidate.length - 1; index >= 0; index -= 1) {
+			if (candidate[index]?.optional === true) {
+				lastOptional = index;
+				break;
+			}
+		}
+		if (lastOptional === -1) {
+			break;
+		}
+		candidate = candidate.filter((_, index) => index !== lastOptional);
+	}
+	return paintRow(candidate, width, palette);
+}
+
 function wrapWords(text: string, width: number): string[] {
 	const lines: string[] = [];
 	let current = "";
@@ -141,15 +166,18 @@ interface CellRowLayout {
 function cellLayout(cells: readonly BoardCell[], width: number, lines: (cell: BoardCell) => string[]): CellRowLayout {
 	const widest = Math.max(...cells.map((cell) => Math.max(...lines(cell).map((text) => visibleWidth(text)))));
 	const fitting = (natural: number) => Math.min(cells.length, Math.max(1, Math.floor((width - 1) / (natural + 1))));
-	// Padded cells first; a single row without padding beats two padded rows.
-	let natural = widest + 2;
-	if (fitting(natural) < cells.length && fitting(widest) === cells.length) {
-		natural = widest;
-	}
-	const rows = Math.ceil(cells.length / fitting(natural));
-	const perRow = Math.ceil(cells.length / rows);
+	const rowsFor = (natural: number) => Math.ceil(cells.length / fitting(natural));
+	// Padded cells first; unpadded cells whenever that saves a whole row.
+	const natural = rowsFor(widest) < rowsFor(widest + 2) ? widest : widest + 2;
+	const perRow = Math.ceil(cells.length / rowsFor(natural));
 	const cellInner = Math.max(natural, Math.floor((width - (perRow + 1)) / perRow));
 	return { perRow, cellInner };
+}
+
+/** The longest detail form that fits the cell; only the shortest is ever cut. */
+function fitDetail(forms: readonly string[], cellInner: number): string {
+	const fitting = forms.find((form) => visibleWidth(form) <= cellInner);
+	return fitting ?? truncatePlain(forms.at(-1) ?? "", cellInner);
 }
 
 function junctionTone(left: BoardCell | undefined, right: BoardCell | undefined): Tone {
@@ -195,20 +223,28 @@ export function frameCells(
 ): string[] {
 	// Compact cells fold the id and label onto one line and keep the status
 	// below it; when that still needs two rows, one-line cells are tried and the
-	// shorter of the two boards wins.
+	// shorter of the two boards wins. A cell with live activity carries one more
+	// line — DONE/CURRENT/PENDING content per the 2026-09-03 product decision —
+	// in every layout. Cells are sized from their label lines alone and the
+	// detail takes its longest form that fits the cell (`fitDetail`), so a long
+	// tool target never widens a cell or wraps the rail in either layout.
 	const twoLine = (cell: BoardCell) =>
 		cell.lines.length > 2 ? [cell.lines.slice(0, -1).join(" "), cell.lines.at(-1) ?? ""] : cell.lines;
 	const oneLine = (cell: BoardCell) => [cell.compact];
-	let bodyOf = layout === "full" ? (cell: BoardCell) => cell.lines : twoLine;
-	let { perRow, cellInner } = cellLayout(region.cells, width, bodyOf);
+	const detailLines = region.cells.some((cell) => cell.detail !== undefined) ? 1 : 0;
+	let labelsOf = layout === "full" ? (cell: BoardCell) => cell.lines : twoLine;
+	let { perRow, cellInner } = cellLayout(region.cells, width, labelsOf);
 	if (layout === "compact" && perRow < region.cells.length) {
 		const single = cellLayout(region.cells, width, oneLine);
 		const rowsOf = (per: number) => Math.ceil(region.cells.length / per);
-		if (rowsOf(single.perRow) * 3 < rowsOf(perRow) * 4) {
-			bodyOf = oneLine;
+		// Each rail row costs its body lines plus two borders.
+		if (rowsOf(single.perRow) * (3 + detailLines) < rowsOf(perRow) * (4 + detailLines)) {
+			labelsOf = oneLine;
 			({ perRow, cellInner } = single);
 		}
 	}
+	const bodyOf = (cell: BoardCell) =>
+		cell.detail === undefined ? labelsOf(cell) : [...labelsOf(cell), fitDetail(cell.detail, cellInner)];
 	const out: string[] = [];
 	if (layout === "full") {
 		out.push(palette.paint("accent", fitWidth(region.title, width)));
@@ -293,6 +329,8 @@ export function paintFlat(regions: BoardRegions, width: number, palette: BoardPa
 			return regions.byId.stop?.kind === "stop" ? regions.byId.stop.tone : "warning";
 		if (line.includes("CURRENT") || line.startsWith("WAITING ON OPERATOR") || line.startsWith("HUMAN OVERSIGHT"))
 			return "accent";
+		if (line.includes("EVENTS ✕")) return "error";
+		if (line.startsWith("NOW ")) return "text";
 		return "text";
 	};
 	return fitBoard(flattenRegions(regions), width).map((line) => palette.paint(toneFor(line), line));
@@ -312,15 +350,30 @@ function telemetryBlock(regions: BoardRegions, width: number, palette: BoardPale
 	if (telemetry !== undefined) {
 		for (const row of telemetry.rows) lines.push(paintRow(row, width, palette));
 	}
+	if (layout !== "compact") {
+		const now = rowsOf(regions.byId.now);
+		if (now !== undefined && now.rows[0] !== undefined) {
+			lines.push(paintShrinkingRow(now.rows[0], width, palette));
+		}
+	}
 	if (layout === "compact") {
 		const iteration = rowsOf(regions.byId.iteration);
 		if (iteration !== undefined) {
+			// ROUND, PASS/FAIL and FINGERPRINT share one line; a RETRY row is a
+			// wait the operator is watching and keeps its own line, so the STOP
+			// box stays beside the block while a node backs off.
 			const spans: Row = [];
-			iteration.rows.forEach((row, index) => {
-				if (index > 0) spans.push({ text: "  " });
+			const retries: Row[] = [];
+			for (const row of iteration.rows) {
+				if (row[0]?.text.startsWith("RETRY ")) {
+					retries.push(row);
+					continue;
+				}
+				if (spans.length > 0) spans.push({ text: "  " });
 				spans.push(...row);
-			});
+			}
 			lines.push(paintRow(spans, width, palette));
+			for (const row of retries) lines.push(paintRow(row, width, palette));
 		}
 		const waiting = rowsOf(regions.byId.waiting);
 		if (waiting !== undefined) {
@@ -352,6 +405,10 @@ function telemetryBlock(regions: BoardRegions, width: number, palette: BoardPale
 					paintRow([{ text: "CONTEXT ", tone: "muted" }, ...lamps, { text: "  " }, ...summary], width, palette),
 				);
 			}
+		}
+		const now = rowsOf(regions.byId.now);
+		if (now !== undefined && now.rows[0] !== undefined) {
+			lines.push(paintShrinkingRow(now.rows[0], width, palette));
 		}
 		const stopStates = cellsOf(regions.byId.stopStates);
 		if (stopStates !== undefined) {
@@ -437,6 +494,8 @@ function paintFull(regions: BoardRegions, width: number, palette: BoardPalette, 
 	if (context !== undefined) out.push(...framePanel(context, width, palette));
 	const stages = cellsOf(regions.byId.stages);
 	if (stages !== undefined) out.push(...frameCells(stages, width, "full", palette));
+	const nodeDetail = rowsOf(regions.byId.nodeDetail);
+	if (nodeDetail !== undefined) out.push(...framePanel(nodeDetail, width, palette));
 	const iteration = rowsOf(regions.byId.iteration);
 	const oversight = rowsOf(regions.byId.oversight);
 	if (iteration !== undefined) {
@@ -457,6 +516,10 @@ function paintFull(regions: BoardRegions, width: number, palette: BoardPalette, 
 	if (waiting !== undefined) out.push(...framePanel(waiting, width, palette));
 	const stop = regions.byId.stop;
 	if (stop?.kind === "stop") out.push(...rightAlign(stopBox(stop.text, stop.tone, palette), width));
+	const keys = rowsOf(regions.byId.keys);
+	if (keys !== undefined) {
+		for (const row of keys.rows) out.push(paintRow(row, width, palette));
+	}
 	return out.map((line) => pad(line, width));
 }
 

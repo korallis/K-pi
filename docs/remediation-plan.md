@@ -4,7 +4,7 @@
 
 **How agents use this file.** Pick the lowest incomplete package whose dependencies are complete. Implement only that package. Run its scoped verification. Check its DoD only after the observable result passes. Do not use historical `[x]` boxes as proof.
 
-**Ordering.** IDs sort as written: `RP-00`, `RP-01`, `RP-01A`, `RP-02`, … `RP-19`. RP-00 through RP-19 are complete. **No incomplete remediation package remains** — next is feature acceptance in [`uat.md`](uat.md) (not an RP). This plan still names the whole-product DoD and UAT hand-off as the remaining authority.
+**Ordering.** IDs sort as written: `RP-00`, `RP-01`, `RP-01A`, `RP-02`, … `RP-19`, `RP-20`, `RP-21`. RP-00 through RP-19 are complete. RP-20 (onboarding) and RP-21 (self-healing) are the 0.3.0 batch: their code has landed and **RP-21 is the current package** — its open DoD box closes with the batch's full gates on the built 0.3.0 binary. After that, feature acceptance in [`uat.md`](uat.md) (not an RP). This plan still names the whole-product DoD and UAT hand-off as the remaining authority.
 
 IDs: `RP-##`. Stories and ACs: `PRD.md`. Normative contracts: `spec.md`, `../UPSTREAM.md`, and focused product docs. Research and gap IDs: [`remediation-research.md`](remediation-research.md).
 
@@ -26,8 +26,8 @@ IDs: `RP-##`. Stories and ACs: `PRD.md`. Normative contracts: `spec.md`, `../UPS
 - No custom prompt/skill/theme loader.
 - No Cursor authorization-code requirement. Paste/manual/device login satisfies the harness OAuth surface.
 - No cross-process worker cap in v1.
-- `APPROVAL` is a derived protocol-blue board lamp while a human node is paused, never a serialized stop state. Persisted stop states remain `DONE | BLOCKED | EXHAUSTED | NO_PROGRESS | UNSAFE | NEEDS_HUMAN`.
-- Exa and Perplexity are research credential targets, not model pools.
+- `APPROVAL` is a derived protocol-blue board lamp while a human node is paused, never a serialized stop state. Persisted run states are `RUNNING | NEEDS_HUMAN | DONE | STOPPED` (RP-21); `BLOCKED | EXHAUSTED | NO_PROGRESS | UNSAFE` written by earlier releases read as `NEEDS_HUMAN` until the run is resumed.
+- Exa, Perplexity, and Firecrawl are research credential targets, not model pools.
 - Exa content is capped at 10,000 characters before model handoff or persistence.
 - Global `after_provider_response` classification uses status and headers and never consumes a body. Custom fetch clients may classify bodies they own; the accounts extension may also classify a finalized assistant provider error after the stream has already been consumed.
 - The current Dune module is explicit; `modules[0]` is never an implicit current module.
@@ -36,14 +36,20 @@ IDs: `RP-##`. Stories and ACs: `PRD.md`. Normative contracts: `spec.md`, `../UPS
 
 ## `NEEDS_HUMAN` gates
 
-All four gates are `CLOSED` by recorded human decision. The `Selected decision` cell is the authoritative product behavior, and the `Aligned normative files` cell names where that behavior is written. The `Blocks` column is dependency history: those packages were blocked until the gate closed and are released by the recorded decision. Document precedence never selects an option. A newly discovered contract conflict opens a new `OPEN` gate, blocks its dependent packages, and closes only the same way: an explicit human decision recorded here with the deciding human, date, selected option, and aligned normative files.
+All four remediation gates are `CLOSED` by recorded human decision, and so is the one gate the 0.3.0 batch opened (NH-05, second table). The `Selected decision` cell is the authoritative product behavior, and the `Aligned normative files` cell names where that behavior is written. The `Blocks` column is dependency history: those packages were blocked until the gate closed and are released by the recorded decision. Document precedence never selects an option. A newly discovered contract conflict opens a new `OPEN` gate, blocks its dependent packages, and closes only the same way: an explicit human decision recorded here with the deciding human, date, selected option, and aligned normative files.
 
 | ID | Status | Decided by | Decided on | Decision required | Selected decision | Aligned normative files | Blocks |
 |---|---|---|---|---|---|---|---|
 | NH-01 | CLOSED | korallis | 2026-09-01 | Reconcile AC-27.6 local footer semantics with `spec.md`'s `oauth \| api_key` slot-kind enum. | Add credential-free `Slot.kind = local`. A local slot persists its configured base URL, may reference an optional credential without storing a dummy secret, renders exactly one cost cell as `(local) $0`, shows no quota percentage, and stays outside the default cloud chain. | `docs/spec.md` (§13 `Slot.kind` plus REQ-SL-01/REQ-SL-02; §11 REQ-SB-08 cost cell and accounts widget), `docs/PRD.md` (AC-06.4, AC-15.10, AC-27.3, AC-27.5, AC-27.6), `docs/visual-targets.md` (§1 `cost`/`usage` segments; §3 acceptance checks) | RP-01, RP-08, RP-18 |
 | NH-02 | CLOSED | korallis | 2026-09-01 | Reconcile local completion after provider exhaustion with AC-29.2's two-external-source rule unless `no-network` is set. | A successful online Exa or Perplexity run must cite at least two distinct external sources. After bounded, recorded failures of every configured service, the engine sets effective `no-network` and the planning model researches repository and frozen local sources with normal read and search tools, citing local files only; no external URL is ever fabricated. A healthy online service that still supplies fewer than two distinct sources ends `NEEDS_HUMAN`. | `docs/research.md` (planning default, effective no-network, local research), `docs/PRD.md` (AC-28.5, AC-29.2, AC-29.3, AC-29.6, AC-29.7), `docs/spec.md` (§5 `SCH-research` and REQ-RS-07; §6 `NEEDS_HUMAN` stop-state row), `docs/visual-targets.md` (§2 Board A research state; §3 acceptance checks) | RP-01, RP-09, RP-10, RP-18 |
 | NH-03 | CLOSED | korallis | 2026-09-01 | Reconcile reviewer/tester write denial with the requirement that the reviewer publish `verdict.json`. | Reviewer and tester keep no general `write` or `edit` tool. A dedicated `write_contract` capability is pinned to the spawned agent, job, role, and declared contract path, schema-validates the verdict or evidence payload, then performs an atomic write. Every other path is denied. | `docs/agents-bus.md` (`write_contract`, same-tree rule, forbidden list), `docs/spec.md` (§5 run-store writer column and REQ-RS-06; §7 node tool policy; §12 policy deny; NFR-04), `docs/PRD.md` (AC-02.4, AC-04.3, AC-08.4, AC-23.9) | RP-01, RP-13, RP-14, RP-18 |
-| NH-04 | CLOSED | korallis | 2026-09-02 | Reconcile REQ-DIST-05 and PRD Q-01 (`source build only; never published`) with the owner's instruction to distribute K-π through npm and rebuild CI/CD. | K-π publishes exactly one npm package, `@korallis/k-pi`, built from the CLI bundle (`dist/bundle` plus the runtime resource directories) by `scripts/pack-kpi.mjs`. Workspace packages keep their upstream names and are never published. Releases are tag-driven: the tag `v<version>` must equal `packages/coding-agent/package.json#version`, and `.github/workflows/release.yml` publishes from a GitHub-hosted runner through npm trusted publishing (OIDC, provenance, no long-lived token); the first publish of the package is manual. CI is `check` (required, self-hosted macOS hard gate), `ai-review` (advisory z.ai review, never required), `auto-merge`, `queue-stall-alarm`, and `upstream-drift`; the fail-closed Grok review and React Doctor workflows are deleted. | `docs/spec.md` (§2 distribution contract and REQ-DIST-05), `docs/PRD.md` (§10 Q-01), `../AGENTS.md` (Stack, Gates, Do not), `../UPSTREAM.md` (§4 root manifest row, §5 exclusions, §6 workflow register), `../README.md` (Install, Non-goals), `remediation-research.md` (NH-04), `../test/harness.test.ts` (root `pack` script, no publish scripts) | — |
+| NH-04 | CLOSED | korallis | 2026-09-02 | Reconcile REQ-DIST-05 and PRD Q-01 (`source build only; never published`) with the owner's instruction to distribute K-π through npm and rebuild CI/CD. | K-π publishes exactly one npm package, `@korallis/k-pi`, built from the CLI bundle (`dist/bundle` plus the runtime resource directories) by `scripts/pack-kpi.mjs`. Workspace packages keep their upstream names and are never published. Releases are tag-driven: the tag `v<version>` must equal `packages/coding-agent/package.json#version`, and `.github/workflows/release.yml` publishes from a GitHub-hosted runner through npm trusted publishing (OIDC, provenance, no long-lived token); the first publish of the package is manual. CI is `check` (required, self-hosted macOS host runner) plus advisory `ai-review`; rulesets enforce the required check with an empty bypass list, and `auto-merge` merges after it. | `docs/spec.md` (§2 distribution: REQ-DIST-01–REQ-DIST-06, NFR-05), `docs/PRD.md` (US-01, Q-01, AC-01.x), `README.md` (Install, Gates, Non-goals), `AGENTS.md` (Stack, Do not), `../UPSTREAM.md` | RP-01A, RP-19 |
+
+Gates opened by the 0.3.0 batch (`fix/operator-issues-0.3.0`). The design that raised this one called it NH-03; that id was taken, so it is NH-05. `test/docs-routing.test.ts` pins the remediation gate set above to NH-01–NH-04 and reads only the first table of this section; the batch's gates live in this second table.
+
+| ID | Status | Decided by | Decided on | Decision required | Selected decision | Aligned normative files | Blocks |
+|---|---|---|---|---|---|---|---|
+| NH-05 | CLOSED (YES) | korallis | 2026-09-03 | May AC-10.2 (`docs/PRD.md`, US-10) and `docs/spec.md` §13 be amended so that each pool's official slot is the grant `~/.kpi/agent/auth.json` holds, refreshed only by the base runtime (`model-runtime.ts:583`, `resolve.ts:139-155`), with K-π refreshing only non-official slots? | YES, answered by the product owner's instruction "fix /login anthropic so K-π synchronizes refreshed OAuth credentials into account routing and supports two distinct subscription slots" — Anthropic rotates refresh tokens, so two refreshers on one grant cannot both stay valid, and the runtime refreshes `auth.json` on every request. Each pool has at most one official slot; it has no `accounts.secrets.json` entry and K-π never calls `oauth.refresh` on it; every other slot is refreshed by K-π; a pooled login the runtime persisted becomes the official slot and the previous official slot keeps its grant; `invalid_grant` marks a slot `needsLogin`, never a cooldown. | `docs/PRD.md` (AC-10.2, AC-10.9, AC-10.10), `docs/spec.md` §13, `README.md` §4/§5/§20, `docs/uat.md` UAT-10 | RP-06, RP-07 (landed as `68da4505b`) |
 
 ## Dependency map
 
@@ -64,6 +70,9 @@ RP-05 + RP-11 → RP-15
 RP-08 + RP-10 + RP-13 + RP-15 → RP-16 → RP-17
 RP-05 + RP-07 + RP-10 + RP-12 + RP-13 + RP-16 → RP-18
 RP-01A + RP-02…RP-18 → RP-19  ← complete; UAT next
+
+RP-07 + RP-09 + RP-16 → RP-20            ← 0.3.0: onboarding + Firecrawl (US-31)
+RP-04 + RP-05 + RP-18 → RP-21            ← 0.3.0: self-healing loop and the operator stop (US-05)
 ```
 
 ---
@@ -280,18 +289,20 @@ node --test --experimental-strip-types test/shell-classifier.test.ts test/policy
 
 ### Change
 
-- Inject clock and accumulated-cost sources into the engine.
-- Enforce `maxCostUsd`, `timeoutMs`, `maxNodeRuns`, `maxRounds`, and existing step limits.
-- Translate every exhausted limit to product terminal `EXHAUSTED` plus one `loop.terminal` event; do not leak internal `failed`/throw as the product result.
+**Superseded by RP-21 for caps, `EXHAUSTED`, `NO_PROGRESS` and the retry bound; concurrency batching, persistence and resume remain as written.** Bullets struck below are the retired behaviour; GRAPH-01–GRAPH-03 are rebound in RP-21's Tests.
+
+- Inject clock and accumulated-cost sources into the engine (kept: they feed the report-only `elapsed_ms` and `cost_usd`).
+- ~~Enforce `maxCostUsd`, `timeoutMs`, `maxNodeRuns`, `maxRounds`, and existing step limits.~~ No counter or clock ends a run (RP-21).
+- ~~Translate every exhausted limit to product terminal `EXHAUSTED` plus one `loop.terminal` event.~~ Never leak internal `failed`/throw as the product result: a contract failure pauses `NEEDS_HUMAN (contract)`.
 - Schedule ready nodes in batches no larger than `maxConcurrency`; do not reject a valid wide superstep.
-- Source caps from the validated task/job contract and persist counters needed by RP-04.
+- Source `maxConcurrency` from the graph and persist the report counters needed by RP-04.
 
 ### Tests
 
-- Injected cost and clock cross each cap without sleeps.
+- ~~Injected cost and clock cross each cap without sleeps.~~ Rebound: `test/graph-engine.test.ts` "no counter or clock ends a run: cost, elapsed time, steps, and node runs only report" (GRAPH-06, RP-03).
 - Eight ready nodes at concurrency two execute in four batches; peak concurrency is exactly two.
-- Each cap produces persisted `EXHAUSTED`, one terminal event, and no unhandled exception.
-- Custom task limits override defaults.
+- ~~Each cap produces persisted `EXHAUSTED`, one terminal event, and no unhandled exception.~~ Rebound: GRAPH-01 → `test/run-store.test.ts` "the run vocabulary is exactly RUNNING, NEEDS_HUMAN, DONE, and STOPPED"; REQ-GE-01 → `test/stop.test.ts` "rounds are unbounded and a passing verifier is never a stop".
+- ~~Custom task limits override defaults.~~ A task carrying `limits` is rejected by `task.schema.json`; a legacy one is read leniently on resume.
 
 ### Verification
 
@@ -301,9 +312,9 @@ node --test --experimental-strip-types test/graph-engine.test.ts test/stop.test.
 
 ### DoD
 
-- [x] Every configured cap is enforced
+- [x] ~~Every configured cap is enforced~~ No cap is enforced (RP-21); `maxConcurrency` is the only limit
 - [x] Wide supersteps are bounded, not rejected
-- [x] Exhaustion is a durable product state
+- [x] ~~Exhaustion is a durable product state~~ `EXHAUSTED` is a legacy token read as `NEEDS_HUMAN` (RP-21)
 
 ---
 
@@ -320,18 +331,20 @@ node --test --experimental-strip-types test/graph-engine.test.ts test/stop.test.
 
 ### Change
 
+**Superseded by RP-21 for caps, `EXHAUSTED`, `NO_PROGRESS` and the retry bound; persistence and resume remain as written.** Bullets struck below are the retired behaviour.
+
 - Extend the pure stop reducer with canonical output fingerprints and sorted failing-AC-id sets.
-- Return `NO_PROGRESS` when the same failing AC-id set occurs in two rounds, even if prose changes.
-- Execute at most two transient transport/429/timeout retries in the same round with injected exponential backoff.
-- Persist start time, accumulated cost, round/maxRounds, fingerprints, failing AC sets, retry counters, and completed-node/checkpoint state.
+- ~~Return `NO_PROGRESS` when the same failing AC-id set occurs in two rounds, even if prose changes.~~ The same failing AC-id set twice is a repeated witness that re-plans (RP-21).
+- ~~Execute at most two transient transport/429/timeout retries in the same round with injected exponential backoff.~~ Transient retries are unbounded, same-round, with injected backoff 1 s doubling to 60 s (RP-21).
+- Persist start time, accumulated cost, round, fingerprints, failing AC sets, retry state, and completed-node/checkpoint state.
 - Restore the full state on resume and run unresolved nodes only.
 
 ### Tests
 
-- Same failing AC set twice stops; a changed set continues.
-- First two transient failures retry with increasing delays and unchanged round; the third stops deterministically.
-- Kill after a checkpoint, resume, and prove all stop/retry/cost/time fields survive and completed nodes do not rerun.
-- A non-default `maxRounds` value survives resume.
+- ~~Same failing AC set twice stops; a changed set continues.~~ Rebound: `test/stop.test.ts` "the same failing acceptance set twice is a repeated witness even when the prose changes".
+- ~~First two transient failures retry with increasing delays and unchanged round; the third stops deterministically.~~ Rebound: GRAPH-04 → `test/graph-engine.test.ts` "a transient 429 retry does not increment the round"; GRAPH-06 → "no counter or clock ends a run: cost, elapsed time, steps, and node runs only report".
+- Kill after a checkpoint, resume, and prove all stop/retry/cost/time fields survive and completed nodes do not rerun — GRAPH-05 → `test/resume.test.ts` "a resumed run restores every stop, retry, cost, and time field".
+- ~~A non-default `maxRounds` value survives resume.~~ A checkpoint written under a retired cap resumes: `test/resume.test.ts` "a checkpoint that ended EXHAUSTED under a retired cap resumes and keeps its recorded spend".
 
 ### Verification
 
@@ -341,8 +354,8 @@ node --test --experimental-strip-types test/stop.test.ts test/resume.test.ts tes
 
 ### DoD
 
-- [x] Failing-AC and fingerprint no-progress rules both work
-- [x] Retry is bounded, same-round, and backoff-driven
+- [x] Failing-AC and fingerprint no-progress rules both work — the reducer now reports a repeated witness (`repeatedWitness`) and RP-21 routes it to a re-plan
+- [x] ~~Retry is bounded, same-round, and backoff-driven~~ retry is same-round and backoff-driven; the bound is gone (RP-21)
 - [x] Resume restores every stop-safety field
 
 ---
@@ -361,7 +374,7 @@ node --test --experimental-strip-types test/stop.test.ts test/resume.test.ts tes
 
 ### Change
 
-- Encode conditional routing in graph data: test red→implement; bounds false→`UNSAFE`; review red testable→implement; review red untestable→`NEEDS_HUMAN`; gated review pass→human; human deny→configured retry/end; autopilot review pass→guarded release.
+- Encode conditional routing in graph data: test red→implement; bounds false→`NEEDS_HUMAN (bounds)`; review red testable→implement; review red untestable→`NEEDS_HUMAN (review)`; gated review pass→human; human deny→configured retry/end; autopilot review pass→guarded release.
 - Remove set nodes that manufacture green test/bounds state.
 - Set `release.approved` and `DONE` only from fresh evidence, approved review, and held bounds.
 - Add a durable job marker for ship. Replay after a crash must no-op; one job creates at most one commit.
@@ -621,7 +634,7 @@ node --test --experimental-strip-types test/research-clients.test.ts test/resear
 
 ### Change
 
-- Require a valid, fresh `stack.json` before implement; missing/stale is `UNSAFE`.
+- Require a valid, fresh `stack.json` before implement; missing/stale pauses `NEEDS_HUMAN (stack)`.
 - Freeze an explicit `current_module_id`/current slice in the job contract. Never infer `modules[0]`.
 - Match `allowed_paths` by normalized path segments/globs, including the module's declared test twin. Close prefix escapes such as `src/auth-admin` for `src/auth`.
 - Enforce folder=id, auth home, nested-only layers, tight-purpose generic folders, two-consumer shared extraction, vertical delivery default, horizontal reason, no API-then-UI vertical staging, second-slice extraction, and named no-stack exemptions.
@@ -631,7 +644,7 @@ node --test --experimental-strip-types test/research-clients.test.ts test/resear
 ### Tests
 
 - Fixtures cover missing/stale stack, second selected module, prefix escape, auth under lib, top-level layer/generic folders, one-consumer shared, invalid horizontal delivery, no-stack exemption, second-slice extraction, and scaffold order.
-- Valid stack reaches implement; every invalid fixture reaches `UNSAFE` before a write.
+- Valid stack reaches implement; every invalid fixture reaches `NEEDS_HUMAN (stack)` before a write.
 
 ### Verification
 
@@ -1002,7 +1015,7 @@ node scripts/verify-product.mjs --json .kpi/remediation-proof.json
 - M-01: gated fixture reaches human confirmation with green receipts.
 - M-02: autopilot fixture reaches `DONE`, no human node, exactly one job-marked commit.
 - M-03: narrative AC refuses autopilot and writes `ac.refused`.
-- M-04: bounds violation reaches `UNSAFE` and creates no commit.
+- M-04: bounds violation reaches `NEEDS_HUMAN (bounds)` and creates no commit.
 - M-05: exhausted sibling is never selected while a healthy sibling exists.
 - M-06: actual visible assistant reply is below 800 characters.
 - M-07: all repository gates and built-harness checks pass.
@@ -1021,6 +1034,115 @@ RP-19 proves the product is built, traceable, and green. It does not decide whet
 
 ---
 
+## RP-20 — Onboarding: guided first-run setup and Firecrawl research
+
+**Depends on:** RP-07, RP-09, RP-16  
+**Owns gaps:** — (0.3.0 batch; no research-register gap)  
+**Stories:** US-31 (AC-31.1–AC-31.5); US-28 AC-28.8; US-29 AC-29.2
+
+### Read first
+
+- `PRD.md` US-31, US-28; `spec.md` §4 entry points, §5 SCH-research, §13; `research.md`; `kstack.md` §3
+- `extensions/onboarding.ts`, `extensions/accounts/index.ts` (`defaultLogin`, `loginPoolInteractively`, `isResearchService`, `saveResearchKeys`), `extensions/research/{session,endpoints,firecrawl,gate,setup,index}.ts`, `extensions/settings.ts` (`RESEARCH_MODES`), `kstack/models.ts` (`runKStackSetup`)
+- `test/onboarding.test.ts`, `test/research-clients.test.ts`, `test/research-control-plane.test.ts`, `test/extension.test.ts`
+
+### Change
+
+- `onboarding.ts`: `ONBOARDING_COMMAND`, `WELCOME_LINES` (the harness, the gated graph with its plan gate and release gate, the worker bus), `runOnboarding` (welcome `Start setup` / `Not now`; `Add a model account` per pool → `loginPoolInteractively`, `Continue`; `Research keys (Exa, Perplexity, Firecrawl)` → `promptResearchKeys`, which saves keys only and never writes the project research mode; `K-stack roles` → `runKStackSetup`; a summary notice), `shouldAutoOnboard` (session_start `startup`, `mode === "tui"`, `hasUI`, every pool empty, `modelRegistry.getAvailable()` empty — no marker, none exists), `registerOnboarding` registered last in `extensions/index.ts`.
+- Every step is skippable and every step's failure is reported by name (`Onboarding step "<name>" failed: …`) and swallowed; a cancelled or failed login is `<pool> login not completed: …` and the wizard continues. `Not now` and every `Skip` write nothing.
+- Firecrawl as the third `ResearchService`: `RESEARCH_SERVICES = ["exa", "perplexity", "firecrawl"]`, `FIRECRAWL_API_KEY` / `FIRECRAWL_BASE_URL` fallbacks, `DEFAULT_FIRECRAWL_BASE_URL = https://api.firecrawl.dev`, client `firecrawl.ts` (`POST /v2/search`, Bearer, `sources: [{type: "web"}]`, `limit` 1..10, query ≤ 500 characters, never `scrapeOptions`, status-first classification and `success !== true` → `ResearchHttpError`), `firecrawl_search` tool, `auto` order exa → perplexity → firecrawl, `/accounts login|logout firecrawl` as a credential target that creates no slot, `RESEARCH_MODES` and the event schema `mode` enum gain `firecrawl`, board `RESEARCH_MARKS` `FC`.
+- `promptResearchSetup` (used by `/setup-kstack`) = `promptResearchKeys` + `writeResearchMode(auto|local)`; the three prompts read `<Service> API key for research` with `Enter to save, s to skip`.
+
+### Tests
+
+- `test/onboarding.test.ts`: "the onboarding factory registers /onboarding last and one session_start hook"; "a scripted onboarding adds accounts, saves research keys, maps K-stack, and writes no project file"; "skipped onboarding steps write nothing and Not now closes the wizard for this launch"; "first-run onboarding fires only for a tui startup with nothing to route"; "/onboarding re-runs after setup and a failed login is reported by name"; "welcome copy names the plan gate, the release gate, and the worker bus".
+- `test/research-clients.test.ts`: "Firecrawl Search posts to v2 search with a bounded limit and no scrape options"; "Firecrawl failures are classified by status, and a 200 without success cools the service".
+- `test/research-control-plane.test.ts`: "auto asks exa, then perplexity, then firecrawl, and a firecrawl key alone goes online"; "firecrawl is a research credential target: /accounts login firecrawl saves a key and creates no slot".
+- `test/extension.test.ts`: the registered command list ends with `onboarding` after `statusbar`.
+
+### Verification
+
+```bash
+node --test --experimental-strip-types test/onboarding.test.ts test/research-clients.test.ts test/research-control-plane.test.ts test/extension.test.ts test/accounts-commands.test.ts
+node scripts/generate-traceability-map.mjs && node --test --experimental-strip-types test/traceability.test.ts
+# real artifact: build; KPI_CODING_AGENT_DIR=<scratch> HOME=<scratch> kpi in a fresh directory → the welcome select opens;
+# Not now → relaunch → it opens again; `kpi -p "hi"` under the same scratch → no prompt; /onboarding after a login → it runs again
+```
+
+### DoD
+
+- [x] AC-31.1 `/onboarding` exists at startup and walks welcome → model accounts → research keys → K-stack roles, each step skippable, re-runnable — "the onboarding factory registers /onboarding last and one session_start hook", "/onboarding re-runs after setup and a failed login is reported by name"
+- [x] AC-31.2 the wizard opens only on a TUI startup with no configured slot and no available model; print/rpc/json never prompt; `Not now` persists nothing — "first-run onboarding fires only for a tui startup with nothing to route", "skipped onboarding steps write nothing and Not now closes the wizard for this launch"
+- [x] AC-31.3 model login reuses the pooled `/accounts login` path and a failed login is reported by pool name — "/onboarding re-runs after setup and a failed login is reported by name"
+- [x] AC-31.4 / AC-31.5 a skipped step writes nothing; the research step saves keys only and writes no project file — "a scripted onboarding adds accounts, saves research keys, maps K-stack, and writes no project file"
+- [x] AC-28.8 Firecrawl is the third research credential target with the documented request shape, failure classes and `auto` order — the four research titles above
+- [ ] Real-artifact walk on the built 0.3.0 binary recorded under `.kpi/uat/UAT-31/`
+
+---
+
+## RP-21 — Self-healing loop and the operator stop
+
+**Depends on:** RP-04, RP-05, RP-18; plan-gate (`ae3565bc4`) and board-live (`fixes.md` FX-05)  
+**Owns gaps:** — (0.3.0 batch; no research-register gap of its own — the graph gaps stay owned by the packages it supersedes and are rebound below)  
+**Stories:** US-05 rewritten (AC-05.1–AC-05.9); AC-02.7, AC-02.10, AC-04.6, AC-16.8, AC-16.9, AC-24.3, AC-29.4, AC-30.2, M-04
+
+Owner decisions (2026-09-03, normative over the design): no caps at all — `maxCostUsd`, `timeoutMs`, `maxRounds`, `maxSteps`, `maxNodeRuns`, `maxTransientRetries` and the `--max-cost-usd` / `--timeout-ms` / `--max-rounds` flags are deleted, cost and elapsed time are report-only estimates; graphs never fail on their own; the run vocabulary is `RUNNING | NEEDS_HUMAN <recovery> | DONE | STOPPED`; the loop is detached from the `/kpi` handler; `/kpi status` opens the Command Centre.
+
+### Read first
+
+- `PRD.md` US-05, US-02 AC-02.7–02.11, US-16 AC-16.7–16.9, US-24 AC-24.3; `spec.md` §4, §5 SCH-event, §6–§8, §11; `uat.md` UAT-05
+- `extensions/run-store.ts` (`RUN_STATUSES`, `LOOP_RECOVERIES`, legacy tokens), `extensions/graph/{engine,stop,schema}.ts`, `graphs/coding-loop.gated.json`, `graphs/coding-loop.auto.json`, `graphs/spec-first.json`, `extensions/gated-loop.ts` (`parseLoopInvocation`, `stateDocument`, `recordNoProgress`, `settleNoProgress`, `askGateWithFeedback`, `writeStopMarker`, `resumeLoop`), `extensions/control-plane.ts` (`handleKpiCommand`, `stopJob`, `showStatus`, `commandCentreSources`), `extensions/board.ts`, `extensions/board-overlay.ts`, `extensions/command-centre.ts`, `extensions/status-line/segments.ts`
+- `test/stop.test.ts`, `test/graph-engine.test.ts`, `test/resume.test.ts`, `test/run-store.test.ts`, `test/gated-loop.test.ts`, `test/control-plane.test.ts`, `test/command-centre.test.ts`, `test/schema-conformance.test.ts`; `test/fixtures/retired-cap-resume/`
+
+### Change
+
+- **Vocabulary.** `RUN_STATUSES = ["RUNNING", "NEEDS_HUMAN", "DONE", "STOPPED"]`; `LOOP_RECOVERIES` = approval, provider, delivery, ship, bounds, review, no_progress, research, stack, contract, ac_quality. Legacy `BLOCKED | EXHAUSTED | NO_PROGRESS | UNSAFE` on disk read as `NEEDS_HUMAN` and are finished; only `RUNNING` is live (`isFinished`, `readLiveJob`). `loop.terminal` keeps its name and carries `status` ∈ DONE | NEEDS_HUMAN | STOPPED, optional `reason`, and `recovery` on NEEDS_HUMAN. Every NEEDS_HUMAN reason is `<message>. <advice>, then resume with /kpi <job>` (`RECOVERY_ADVICE`).
+- **No caps.** `graph/budget.ts` shrinks to `isBudgetState` (requires `limits.maxConcurrency` and the report counters; a checkpoint written under the retired caps still passes and the engine reports those keys as `retiredLimits`) and `batchReadyNodes`; `validateLimits` accepts `maxConcurrency` only (gated/auto 2, spec-first 1); `task.schema.json` has no `limits` (a legacy `task.json` carrying one is read leniently by `resumeLoop`, reported once as `K-π job <id>: retired caps ignored: …` on a `checkpoint` record, never validated or enforced). `parseLoopInvocation` refuses `--max-cost-usd` / `--timeout-ms` / `--max-rounds` with `/kpi --<flag> was removed: K-π runs have no caps; cost and elapsed time are reported on the board`. `state.json` drops `maxRounds`, `retries`, `retry_delays_ms`, `exhausted_limit`; `cost_usd`, `elapsed_ms`, `graph_round`, `batches` are report-only.
+- **Transient retries without bound.** `classifyTransientFailure`: http 408/429/5xx, timeout, transport. Backoff `retryDelayMs(spent)` = 1 s doubling to `RETRY_MAX_DELAY_MS = 60_000`; the engine checkpoints before each wait, calls `onRetry`, and the driver appends `node.retry { node, attempt, reason, delay_ms, status?, message? }`, writes the `state.json` `retry { node, attempt, reason, delay_ms, until_ms }` row (the board's `RETRY <attempt> · <reason> · next <s>s`), and notifies `K-π <job> retry <attempt> on <node>: <reason>; next in <s>s (/kpi stop stops it)`. A retry is not a round. `stopRequested` (the `stop.json` marker) is honoured at every checkpoint and after every backoff.
+- **No progress.** `repeatedWitness`: a review repeating an `output_fingerprint` or a canonical failing-AC set, or identical evidence in consecutive failed test rounds (a review round in between clears it); a green round is progress. `recordNoProgress` writes `repair.json { round, reason, failing_ac, evidence_ref, witness, guidance? }`, unfreezes the slice, and the graph routes `REVISE and progress.repeated and not plan.repair_tried and not plan.provided → plan`; `MAX_AUTOMATIC_REPLANS = 2` per operator touch, then the `no-progress` pause node (`REVISE and progress.repeated and (plan.repair_tried or plan.provided) → pause no_progress`, resume plan). In the TUI `settleNoProgress` asks `K-π no progress after 2 re-plans` with `NO_PROGRESS_OPTIONS = ["Give guidance", "Keep going", "Stop"]`: guidance goes into `repair.json` and resets the allowance, `Keep going` resets it, `Stop` (or a dismissed prompt) ends `STOPPED`; unattended it is `NEEDS_HUMAN (no_progress)` and the resume asks first.
+- **Pause nodes.** Node type `pause { recovery, reason, resume[] }`: `unsafe` (bounds → resume test), `needs-human` (review → resume implement), `no-progress` (no_progress → resume plan). Paused runs re-arm at their resume targets on restore; a contract pause keeps still-pending active siblings scheduled; a legacy checkpoint's missing node records are backfilled `pending`.
+- **Gates.** `PLAN_GATE_OPTIONS = ["Approve plan", "Request changes", "Stop"]`, `RELEASE_GATE_OPTIONS = ["Approve", "Request changes", "Stop"]`; feedback non-empty and ≤ `MAX_HUMAN_FEEDBACK_CHARS = 4000`, recorded in `approval.result.feedback` and the node's `feedbackPath` (`plan.feedback`, `release.feedback`); `Stop` ends `STOPPED` with `stopped by the operator at <title> (resume with /kpi <job>)`; without dialog UI or on Escape the gate stops `NEEDS_HUMAN (approval)`; revisions are unbounded (`Revision N`, no cap in the dialog).
+- **The operator stop.** `/kpi stop` writes `stop.json { reason: "operator stop", at, recorded }`; a loop live in this process is aborted at once (`assertNotAborted` before every prompt and spawn) and records its own `STOPPED` terminal; otherwise the control plane appends `loop.terminal STOPPED reason operator stop` and writes `state.json` `STOPPED`; notice `K-π job <id> STOPPED (resume with /kpi <id>)`, or `K-π job <id> stopped before its run was created; nothing to resume` when the contract had not been written. A stop inside a gate select, its editor or the no-progress prompt is `STOPPED`, never a failure. `resumeLoop` removes the marker, refuses nothing but `DONE`, and re-arms the engine.
+- **Detached loop.** `handleKpiCommand` starts `runLoop`/`resumeLoop` detached (`live: LiveLoop`) and returns; `/kpi status`, `/agents`, `/kpi stop` and chat work mid-run; `/kpi <goal>` while a job runs is refused with `K-π job <id> is still running: /kpi status shows it, /kpi stop stops it`; `reportOutcome` notifies `K-π job <id> <status>[: <reason>]` when the loop settles.
+- **Board and footer.** `ROUND n` (no maximum), `RETRY` row, `STOP RUNNING | NEEDS_HUMAN <recovery> | DONE | STOPPED`, `STOP STATES DONE / STOPPED / APPROVAL`, footer `K-π LOOP <mode> r<n> STAGE … GATE … [AC …] [ROUTE …]`; `/kpi status` in the TUI opens the Command Centre (`createCommandCentre`, `board-overlay.ts` + `command-centre.ts`), live on `BOARD_TICK_MS` while `RUNNING`, with HOME and SESSION views, `TELEMETRY` without cap tokens, and the input line routing `/kpi stop`, `/kpi verify`, chat.
+- **Events.** `EVENT_TYPES` gains `node.retry` (26 types: the 23 existing + `node.started`, `node.finished`, `node.retry`); `event.schema.json` validates it and the three-word `loop.terminal` vocabulary.
+
+### Tests
+
+- `test/run-store.test.ts`: "the run vocabulary is exactly RUNNING, NEEDS_HUMAN, DONE, and STOPPED" (AC-05.1, GRAPH-01); "the live job skips finished runs and is absent when every run has ended" (AC-24.3).
+- `test/stop.test.ts`: "rounds are unbounded and a passing verifier is never a stop" (REQ-GE-01); "a repeated output fingerprint is a repeated witness and a fresh one is not"; "the same failing acceptance set twice is a repeated witness even when the prose changes"; "identical evidence in consecutive failed test rounds is a repeated witness and a review round in between clears it"; "retry delays double from the base and stop growing at the ceiling".
+- `test/graph-engine.test.ts`: "no counter or clock ends a run: cost, elapsed time, steps, and node runs only report" (AC-05.8, RP-03, GRAPH-06); "a transient 429 retry does not increment the round" (AC-05.6, GRAPH-04); "transient failures retry for as long as it takes with a capped backoff and a node.retry event each time" (AC-05.7); "an operator stop lands after the current backoff and leaves the node resumable"; "an aborted signal stops the engine at once and leaves the node resumable"; "a pause node parks the run with its resume targets and a rearm continues there"; "a contract failure pauses with recovery contract instead of failing the run".
+- `test/resume.test.ts`: "a resumed run restores every stop, retry, cost, and time field" (GRAPH-05); "a checkpoint that ended EXHAUSTED under a retired cap resumes and keeps its recorded spend" (AC-05.8, fixture `test/fixtures/retired-cap-resume/`); "a paused job resumes at its pause node's resume targets and a legacy checkpoint re-arms its active nodes"; "a contract pause keeps an unexecuted sibling scheduled and a restore runs it"; "a mid-superstep stop marks only the work that ran and never reruns it"; "every stop-safety field survives a state document round trip".
+- `test/gated-loop.test.ts`: "a review round with no progress re-plans with the failing criteria as feedback" (AC-05.2, GRAPH-02, RP-04); "no progress after a re-plan pauses NEEDS_HUMAN offering guidance, keep going, or stop" (AC-05.3, GRAPH-03); "two automatic re-plans then a pause, and an operator touch resets the allowance"; "a failed test round counts as a round and identical evidence twice re-plans"; "an approved review that repeats an earlier fingerprint is progress, not a re-plan"; "a retry is visible on the board and in the event log before the wait starts"; "kpi stop written during a backoff stops the loop at the next wait and leaves a resumable STOPPED job" (AC-05.9); "a stop while the guidance editor is open records one STOPPED terminal and no failure"; "a stop that lands before the run is created creates nothing and says so"; "the release gate offers approve, request changes, and stop"; "a provider refusal becomes actionable NEEDS_HUMAN with the provider's reason" (AC-05.6); "an invalid or missing stack pauses implement NEEDS_HUMAN before any write" (AC-30.2).
+- `test/autopilot.test.ts`: "an autopilot write outside bounds pauses NEEDS_HUMAN without a commit" (AC-05.4, M-04); "an untestable reviewer issue stops autopilot at NEEDS_HUMAN" (AC-05.5).
+- `test/control-plane.test.ts`: "kpi stop appends a terminal STOPPED event"; "a running job leaves /kpi status, /agents and chat free and refuses a second goal".
+- `test/command-centre.test.ts`: "the command centre paints home and session views from run files at 200, 160, 120, 80 and 60 columns"; "the command centre selects stages, opens a session, and routes stop, verify and chat through its sources" (AC-16.8); "the command centre follows a running job on the injected tick and stops ticking when the job ends" (AC-16.9).
+- `test/schema-conformance.test.ts`: "event schema has one valid normalized branch per event type" (26 types); "event schema accepts node.retry and the three-word loop.terminal vocabulary"; "task, evidence, and verdict schemas match live payloads" (a task carrying `limits` is rejected).
+
+### Verification
+
+```bash
+node --test --experimental-strip-types test/stop.test.ts test/graph-engine.test.ts test/resume.test.ts test/run-store.test.ts test/schema-conformance.test.ts test/graph-routing.test.ts
+node --test --experimental-strip-types test/gated-loop.test.ts test/autopilot.test.ts test/control-plane.test.ts test/command-centre.test.ts test/operator-ui.test.ts test/status-line.test.ts test/policy.test.ts test/milestone.test.ts test/research-control-plane.test.ts
+node scripts/generate-traceability-map.mjs && node --test --experimental-strip-types test/traceability.test.ts
+grep -rnE 'maxCostUsd|maxSteps|maxNodeRuns|timeoutMs|maxRounds|maxTransientRetries|EXHAUSTED|NO_PROGRESS|UNSAFE|BLOCKED' packages/coding-agent/src/kpi docs README.md   # only the legacy-token mapping and retirement comments remain
+npm run build:offline && npm run verify:built
+node scripts/pty-rows/uat-06.mjs && node scripts/pty-rows/uat-16.mjs
+# real artifact: copy test/fixtures/retired-cap-resume into a scratch repo's .kpi/runs and run /kpi <job> on the built binary → RUNNING, `retired caps ignored` once, spend preserved
+```
+
+### DoD
+
+- [x] AC-05.1–AC-05.9 are each bound in `docs/traceability-map.json` to a title above and green
+- [x] No cap, clock, step, node-run or round counter ends a run; the three flags are refused; `limits` is `maxConcurrency` only — `graph/budget.ts` keeps only `isBudgetState` and `batchReadyNodes`, the grep above clean
+- [x] Transient failures retry without bound with the documented backoff, one `node.retry` record, one notification and a checkpoint per attempt; the operator stop lands at the next wait
+- [x] Repeated witnesses re-plan twice with `repair.json`, then pause with `Give guidance / Keep going / Stop`; a green round never re-plans
+- [x] `RUNNING | NEEDS_HUMAN <recovery> | DONE | STOPPED` is the whole vocabulary on disk, on the board, in the footer and in `loop.terminal`; legacy tokens read as `NEEDS_HUMAN` until resumed
+- [x] The loop is detached; `/kpi status` opens the live Command Centre; `/kpi stop` is immediate and writes `stop.json`
+- [ ] The retired-cap fixture resumes on the built 0.3.0 binary and the pty rows uat-05/06/16 pass — recorded with the batch's full gates
+
+---
+
 ## Execution waves
 
 RP-01A was a hard barrier and it has landed. From here the only constraints are the dependency map above and one writer per file: any set of packages whose dependencies are complete may run concurrently.
@@ -1036,6 +1158,11 @@ RP-01A was a hard barrier and it has landed. From here the only constraints are 
 | 7 | RP-14, RP-16 | RP-14 takes the reviewer path in `gated-loop.ts`; RP-16 takes `kstack/**` and the `STEPS` table in `kstack/mode.ts` |
 | 8 | RP-17, RP-18 | RP-18 re-owns `accounts/widget.ts`, `control-plane.ts`, `status-line/*`, `renderers.ts` |
 | 9 | RP-19 | Full product proof, run once |
+| 10 | anthropic-auth (NH-05), plan-gate, agents-visibility (`fixes.md` FX-06) | `accounts/{errors,store,index,balancer,widget}.ts` · `stack.ts`, `graph/{schema,engine}.ts`, `graphs/coding-loop.gated.json`, `gated-loop.ts`, `append-log.ts`, `schemas/event.schema.json` · `bus/{sessions-snapshot,sessions-command,spawn,communicate}.ts` — landed as `68da4505b`, `ae3565bc4`, `640fbaa81` |
+| 11 | RP-20 ∥ board-live (`fixes.md` FX-05) | RP-20 owns `onboarding.ts`, `research/{firecrawl,session,endpoints,gate,setup,index}.ts`, `accounts/index.ts` (login helpers), `kstack/models.ts`; board-live owns `board*.ts`, `control-plane.ts` (widget/status), `renderers.ts`, `graph/engine.ts` (node events) |
+| 12 | RP-21 core (engine ∥ contracts) | `graph/{engine,stop,schema,budget}.ts`, `graphs/*.json`, `prompts/*` · `run-store.ts`, `append-log.ts`, `schemas/*.json` |
+| 13 | RP-21 driver ∥ surface ∥ command-centre | `gated-loop.ts`, `control-plane.ts` (handler, `stopJob`, `showStatus` wiring) · `board.ts`, `board-frame.ts`, `status-line/*`, `scripts/pty-rows/*` · `board-overlay.ts`, new `command-centre.ts` |
+| 14 | Docs and traceability (this file, PRD, spec, uat, README, visual-targets, agents-bus, research; `scripts/generate-traceability-map.mjs` + regenerated map) | one writer per document; then the full gates, `npm run build:offline`, `verify:built`, the pty rows, and the 0.3.0 tag |
 
 Serialize any packages that touch `extensions/index.ts`, `extensions/gated-loop.ts`, `extensions/accounts/index.ts`, a `package.json`, or generated K-stack output. A wave's registration edits to `extensions/index.ts` land as one integration commit owned by one agent. Merge a wave and run its owning scoped checks before the next dependent wave starts.
 
@@ -1043,7 +1170,7 @@ From RP-02 onward, a source path written `extensions/…`, `graphs/…`, `prompt
 
 ## Definition of done for the whole product
 
-Remediation packages RP-00–RP-19 are closed. Items 1–7 below are satisfied by that scoped evidence plus `.kpi/remediation-proof.json`. **Item 8 (UAT)** machine rows are green on the tip binary; one attended residual remains (see below). The product is not finished until that residual is closed too.
+Remediation packages RP-00–RP-19 are closed; RP-20 and RP-21 (the 0.3.0 batch) are landed in code and documented here, and close with the batch's full gates. Items 1–7 below are satisfied by that scoped evidence plus `.kpi/remediation-proof.json`. **Item 8 (UAT)** machine rows are green on the tip binary; one attended residual remains (see below). The product is not finished until that residual is closed too.
 
 All of:
 
@@ -1054,4 +1181,4 @@ All of:
 5. [x] Fixtures run against that binary cover gated, autopilot, policy, accounts, local providers, research, Dune, KG, bus/reviewer, K-stack, footer, and both boards.
 6. [x] M-01–M-07 are true in `.kpi/remediation-proof.json`.
 7. [x] Docs match the built behavior; historical plan/roadmap remain clearly non-authoritative.
-8. [~] Every machine-drivable row of [`uat.md`](uat.md) — US-01 through US-30 — **PASS** against the built binary under `.kpi/uat/UAT-*/result.json`, rolled into `.kpi/remediation-proof.json` with `uat.rows_executed=true` and `uat.all_pass=true` for those machine verdicts. **Still open (attended-only):** **AC-10.2** on UAT-10 — live `/accounts login anthropic` twice (stacked OAuth slots) needs a human with real Anthropic credentials and network; the machine half (loopback z.ai pool, 429 sibling failover, cooled-never-reselected) already passes. Do not mark this line `[x]` until AC-10.2 is attended and evidence is filed. The product is finished at this line and not before.
+8. [~] Every machine-drivable row of [`uat.md`](uat.md) — US-01 through US-31 — **PASS** against the built binary under `.kpi/uat/UAT-*/result.json`, rolled into `.kpi/remediation-proof.json` with `uat.rows_executed=true` and `uat.all_pass=true` for those machine verdicts. **Still open (attended-only):** **AC-10.2** on UAT-10 — live `/accounts login anthropic` twice (stacked OAuth slots) needs a human with real Anthropic credentials and network; the machine half (loopback z.ai pool, 429 sibling failover, cooled-never-reselected) already passes. Do not mark this line `[x]` until AC-10.2 is attended and evidence is filed. The 0.3.0 rows UAT-02/05/06/10/16/23/28/31 are re-run against the 0.3.0 binary before that tag. The product is finished at this line and not before.

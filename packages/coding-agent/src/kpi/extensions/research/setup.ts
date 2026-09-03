@@ -4,9 +4,9 @@ import { dirname, join } from "node:path";
 
 import { getAgentDir } from "../../../config.ts";
 
-import type { ExtensionCommandContext } from "../../../core/extensions/types.ts";
+import type { ExtensionContext } from "../../../core/extensions/types.ts";
 import { writeResearchMode } from "../settings.ts";
-import { type ResearchService, researchSecretName } from "./session.ts";
+import { RESEARCH_SERVICES, type ResearchKeys, type ResearchService, researchSecretName } from "./session.ts";
 
 async function readSecrets(path: string): Promise<Record<string, unknown>> {
 	try {
@@ -39,13 +39,15 @@ async function writeSecrets(path: string, secrets: Record<string, unknown>): Pro
 }
 
 export async function saveResearchKeys(
-	values: { exa?: string; perplexity?: string },
+	values: ResearchKeys,
 	path = join(getAgentDir(), "accounts.secrets.json"),
 ): Promise<void> {
 	const secrets = await readSecrets(path);
-	if (values.exa !== undefined) secrets[researchSecretName("exa")] = { type: "api_key", key: values.exa };
-	if (values.perplexity !== undefined) {
-		secrets[researchSecretName("perplexity")] = { type: "api_key", key: values.perplexity };
+	for (const service of RESEARCH_SERVICES) {
+		const value = values[service];
+		if (value !== undefined) {
+			secrets[researchSecretName(service)] = { type: "api_key", key: value };
+		}
 	}
 	await writeSecrets(path, secrets);
 }
@@ -65,18 +67,45 @@ export async function removeResearchKey(
 	return true;
 }
 
-export async function promptResearchSetup(context: ExtensionCommandContext): Promise<void> {
-	const exa = await context.ui.input("Exa API key for research", "Enter to save, s to skip");
-	const perplexity = await context.ui.input("Perplexity API key for research", "Enter to save, s to skip");
-	const values = {
-		exa: exa === undefined || exa.trim() === "" || exa.trim().toLowerCase() === "s" ? undefined : exa.trim(),
-		perplexity:
-			perplexity === undefined || perplexity.trim() === "" || perplexity.trim().toLowerCase() === "s"
-				? undefined
-				: perplexity.trim(),
-	};
-	const configured = values.exa !== undefined || values.perplexity !== undefined;
-	if (configured) await saveResearchKeys(values);
+/** The label each research key prompt shows, in `RESEARCH_SERVICES` order. */
+const RESEARCH_SERVICE_LABELS: Readonly<Record<ResearchService, string>> = {
+	exa: "Exa",
+	perplexity: "Perplexity",
+	firecrawl: "Firecrawl",
+};
+
+function normalizedAnswer(answer: string | undefined): string | undefined {
+	const trimmed = answer?.trim() ?? "";
+	return trimmed.length === 0 || trimmed.toLowerCase() === "s" ? undefined : trimmed;
+}
+
+/**
+ * Asks one API key per research service and saves whichever were given. Never
+ * writes the project research mode: onboarding calls this so a first launch
+ * saving a key does not make the launch directory trust-requiring.
+ */
+export async function promptResearchKeys(ui: Pick<ExtensionContext["ui"], "input">): Promise<ResearchService[]> {
+	const values: ResearchKeys = {};
+	for (const service of RESEARCH_SERVICES) {
+		const answer = await ui.input(
+			`${RESEARCH_SERVICE_LABELS[service]} API key for research`,
+			"Enter to save, s to skip",
+		);
+		const value = normalizedAnswer(answer);
+		if (value !== undefined) {
+			values[service] = value;
+		}
+	}
+	const saved = RESEARCH_SERVICES.filter((service) => values[service] !== undefined);
+	if (saved.length > 0) {
+		await saveResearchKeys(values);
+	}
+	return [...saved];
+}
+
+export async function promptResearchSetup(context: Pick<ExtensionContext, "ui" | "cwd">): Promise<void> {
+	const saved = await promptResearchKeys(context.ui);
+	const configured = saved.length > 0;
 	// Saving either key means research goes online by default; skipping both is a
 	// narrower mode, not a broken setup.
 	await writeResearchMode(context.cwd, configured ? "auto" : "local");

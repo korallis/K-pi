@@ -10,8 +10,10 @@ import { promisify } from "node:util";
 import type { ExtensionCommandContext } from "../packages/coding-agent/src/core/extensions/types.ts";
 
 import type { BusDependencies } from "../packages/coding-agent/src/kpi/extensions/bus/spawn.ts";
-import { registerControlPlane } from "../packages/coding-agent/src/kpi/extensions/control-plane.ts";
+import { liveLoopSettled, registerControlPlane } from "../packages/coding-agent/src/kpi/extensions/control-plane.ts";
 import type { GraphAgentSessionFactory } from "../packages/coding-agent/src/kpi/extensions/graph/engine.ts";
+import type { GraphRunState } from "../packages/coding-agent/src/kpi/extensions/graph/schema.ts";
+import { isFinishedRunStatus } from "../packages/coding-agent/src/kpi/extensions/run-store.ts";
 import { reviewerBusDependencies } from "./helpers/reviewer-bus.ts";
 
 const execFile = promisify(execFileCallback);
@@ -63,6 +65,12 @@ type CommandHandler = (args: string, context: ExtensionCommandContext) => Promis
 async function git(directory: string, ...args: string[]): Promise<string> {
 	const { stdout } = await execFile("git", args, { cwd: directory });
 	return stdout.trim();
+}
+
+async function latestCheckpoint(directory: string, jobId: string): Promise<GraphRunState> {
+	const graphDirectory = join(directory, ".kpi", "runs", jobId, "graph");
+	const names = (await readdir(graphDirectory)).filter((name) => /^checkpoint-\d{6}\.json$/u.test(name)).sort();
+	return JSON.parse(await readFile(join(graphDirectory, names.at(-1) as string), "utf8")) as GraphRunState;
 }
 
 async function fixture(name: string): Promise<string> {
@@ -196,10 +204,15 @@ function commandHarness(
 	const commands = new Map<string, CommandHandler>();
 	const confirmations: string[] = [];
 	const notifications: string[] = [];
+	// The loop is detached from its handler: the harness settles it so a test
+	// reads the outcome the operator would, after the run.
 	const pi = {
 		on() {},
 		registerCommand(name: string, options: { handler: CommandHandler }) {
-			commands.set(name, options.handler);
+			commands.set(name, async (args, ctx) => {
+				await options.handler(args, ctx);
+				await liveLoopSettled();
+			});
 		},
 	};
 	registerControlPlane(pi as unknown as Parameters<typeof registerControlPlane>[0], {
@@ -300,7 +313,7 @@ test("autopilot healthcheck reaches DONE with one commit and no human node", asy
 	}
 });
 
-test("an autopilot write outside bounds stops UNSAFE without a commit", async () => {
+test("an autopilot write outside bounds pauses NEEDS_HUMAN without a commit", async () => {
 	const directory = await fixture("bounds-violation");
 	const jobId = "20260831-bounds-unsafe";
 	const initialHead = await git(directory, "rev-parse", "HEAD");
@@ -311,8 +324,23 @@ test("an autopilot write outside bounds stops UNSAFE without a commit", async ()
 		await harness.command(`--mode autopilot ${task}`, harness.context);
 
 		const document = await state(directory, jobId);
-		assert.equal(document.status, "UNSAFE");
-		assert.match(String(document.reason), /outside\.txt/u);
+		assert.equal(document.status, "NEEDS_HUMAN");
+		assert.equal(document.recovery, "bounds");
+		assert.match(String(document.reason), /write outside write_allow: .*outside\.txt/u);
+		assert.ok(String(document.reason).includes(`resume with /kpi ${jobId}`), String(document.reason));
+		assert.equal(isFinishedRunStatus(document.status), true);
+		const checkpoint = await latestCheckpoint(directory, jobId);
+		assert.equal(checkpoint.status, "paused");
+		assert.deepEqual(checkpoint.pause?.resume, ["test"]);
+		const terminals = (await readFile(join(directory, ".kpi", "runs", jobId, "events.jsonl"), "utf8"))
+			.split("\n")
+			.filter((line) => line.length > 0)
+			.map((line) => JSON.parse(line) as { type: string; status?: string; recovery?: string })
+			.filter((record) => record.type === "loop.terminal");
+		assert.deepEqual(
+			terminals.map((record) => [record.status, record.recovery]),
+			[["NEEDS_HUMAN", "bounds"]],
+		);
 		assert.equal(executed.includes("review"), false);
 		assert.equal(executed.includes("ship"), false);
 		assert.equal(await git(directory, "rev-parse", "HEAD"), initialHead);
@@ -338,6 +366,7 @@ test("an untestable reviewer issue stops autopilot at NEEDS_HUMAN", async () => 
 
 		const document = await state(directory, jobId);
 		assert.equal(document.status, "NEEDS_HUMAN");
+		assert.equal(document.recovery, "review");
 		assert.match(String(document.reason), /untestable blocking issue/u);
 		assert.equal(executed.includes("ship"), false);
 		assert.equal(await git(directory, "rev-parse", "HEAD"), initialHead);
@@ -547,7 +576,8 @@ test("an unrelated conventional commit never counts as this job shipping", async
 		assert.ok(executed.includes("ship"), "the unrelated commit did not let the job skip shipping");
 		const document = await state(directory, jobId);
 		assert.notEqual(document.status, "DONE", "an unrelated commit is not this job's decision");
-		assert.equal(document.status, "BLOCKED");
+		assert.equal(document.status, "NEEDS_HUMAN");
+		assert.equal(document.recovery, "ship");
 		assert.match(String(document.reason), /KPI-Job: 20260831-healthcheck-unrelated/u);
 		await assert.rejects(readFile(join(directory, ".kpi", "runs", jobId, "ship.json"), "utf8"), { code: "ENOENT" });
 		assert.deepEqual(await markedCommits(directory, jobId), [], "no commit claims this job");
@@ -659,7 +689,8 @@ test("two commits claiming one job fail closed", async () => {
 
 		const document = await state(directory, jobId);
 		assert.notEqual(document.status, "DONE", "an ambiguous decision is never accepted");
-		assert.equal(document.status, "BLOCKED");
+		assert.equal(document.status, "NEEDS_HUMAN");
+		assert.equal(document.recovery, "ship");
 		assert.match(String(document.reason), /2 commits instead of one|Ambiguous ship commits/u);
 		await assert.rejects(readFile(join(directory, ".kpi", "runs", jobId, "ship.json"), "utf8"), { code: "ENOENT" });
 	} finally {

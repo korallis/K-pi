@@ -128,7 +128,9 @@ export class AccountBalancer {
 		if (pool === undefined) {
 			return undefined;
 		}
-		const healthy = pool.slots.filter((slot) => this.isHealthy(poolId, slot.id));
+		// A slot that needs a login has no grant to send: it is never selected,
+		// whatever its cooldown says, until `/accounts login` rewrites it.
+		const healthy = pool.slots.filter((slot) => slot.needsLogin === undefined && this.isHealthy(poolId, slot.id));
 		if (healthy.length === 0) {
 			return undefined;
 		}

@@ -33,7 +33,6 @@ const RUNNING = {
 	job_id: JOB,
 	mode: "gated",
 	round: 2,
-	maxRounds: 3,
 	stage: "implement",
 	node: "implement",
 	status: "RUNNING",
@@ -78,7 +77,9 @@ async function capture(label, { state, cols, outDir }) {
 		rows: 50,
 		script: [
 			{ expect: paused ? "WAITING ON OPERATOR" : "STOP RUNNING", send: "/kpi status\r", timeout: 40 },
-			{ expect: paused ? "THREE LAWS" : "NODE implement", timeout: 30, drain: 3, after: 2.5 },
+			// `/kpi status` opens the Command Centre: the paused review stage reads
+			// ◉ WAITING and the running LIVE panel names 04 implement.
+			{ expect: paused ? "◉ WAITING" : "LIVE › 04 implement", timeout: 30, drain: 3, after: 2.5 },
 		],
 		outDir,
 	});
@@ -109,7 +110,7 @@ const rows = runs.map(({ cols, running, paused }) => {
 		brand: running.raw.includes(bytesOf("K-π")),
 		mode: board.includes(`MODE ${RUNNING.mode}`),
 		job: board.includes(`JOB ${JOB}`),
-		round: board.includes(`ROUND ${RUNNING.round}/${RUNNING.maxRounds}`),
+		round: new RegExp(`ROUND ${RUNNING.round}(?![\\d/])`, "u").test(board),
 		stages: ["01", "02", "03", "04", "05", "06", "07", "08"].every((id) => board.includes(id)),
 		currentStage: /CURRENT/u.test(board),
 		passFail: /PASS|FAIL/u.test(board),

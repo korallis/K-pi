@@ -173,7 +173,6 @@ async function footerCapture(label, { promptTokens, slotKind = "local", outDir, 
 				job_id: jobId,
 				mode: "gated",
 				round: 1,
-				maxRounds: 3,
 				stage: "implement",
 				node: "implement",
 				status: "RUNNING",
@@ -193,7 +192,7 @@ async function footerCapture(label, { promptTokens, slotKind = "local", outDir, 
 		args: slotKind === "oauth" ? ["--offline"] : [],
 		script: [
 			{ expect: `⬡ ${modelCell}`, send: "/kpi off\r", timeout: 40 },
-			{ expect: "goal wrapping off", send: "say ok\r", timeout: 30 },
+			{ expect: "K-π routing off", send: "say ok\r", timeout: 30 },
 			// The footer's four context colours resolve through the *active theme*,
 			// and K-π's own theme is only applied once the board is drawn. Grading
 			// the palette outside it would grade Pi's default dark theme instead.

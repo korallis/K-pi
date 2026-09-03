@@ -16,7 +16,9 @@ import {
 	matchesPathPattern,
 	moduleOwnsPath,
 	normalizeProjectPath,
+	PLAN_SUMMARY_MAX_MODULES,
 	readDuneStack,
+	renderPlanSummary,
 	resolveCurrentModule,
 	type StackModule,
 	scaffoldModule,
@@ -972,4 +974,56 @@ test("nested links that stay inside the module resolve and are allowed", async (
 	} finally {
 		await rm(directory, { recursive: true, force: true });
 	}
+});
+
+test("the plan summary names delivery, the current slice, and every module's bounds from stack.json alone", () => {
+	// A plain object, no filesystem: the summary words a stack the driver already read.
+	const stack = stack_({
+		delivery: "horizontal",
+		delivery_reason: "the schema must land before either slice",
+		current_module_id: "auth",
+		modules: [
+			module_(),
+			module_({
+				id: "billing",
+				purpose: "invoices and receipts",
+				folder: "src/billing",
+				interface: "src/billing/api.ts",
+				allowed_paths: ["src/billing/**", "test/billing/**"],
+				depends_on: ["auth"],
+			}),
+		],
+	});
+	assert.deepEqual(renderPlanSummary(stack).split("\n"), [
+		"Delivery: horizontal — the schema must land before either slice",
+		"Root: src",
+		"Current slice: auth",
+		"Modules (2):",
+		"  1. auth — login and sessions",
+		"     folder src/auth · interface src/auth/api.ts · 2 allowed path(s) · depends on nothing",
+		"  2. billing — invoices and receipts",
+		"     folder src/billing · interface src/billing/api.ts · 2 allowed path(s) · depends on auth",
+	]);
+
+	// A map that names no slice is still shown, and the operator is told what implement will do with it.
+	const unnamed = renderPlanSummary(stack_()).split("\n");
+	assert.equal(unnamed[0], "Delivery: vertical");
+	assert.equal(unnamed[2], "Current slice: (none named — implement will refuse this map)");
+
+	// The dialog is bounded: past the cap the summary points at the file.
+	const many = stack_({
+		current_module_id: "m1",
+		modules: Array.from({ length: PLAN_SUMMARY_MAX_MODULES + 2 }, (_, index) =>
+			module_({
+				id: `m${index + 1}`,
+				folder: `src/m${index + 1}`,
+				interface: `src/m${index + 1}/api.ts`,
+				allowed_paths: [`src/m${index + 1}/**`, `test/m${index + 1}/**`],
+			}),
+		),
+	});
+	const rendered = renderPlanSummary(many).split("\n");
+	assert.equal(rendered[3], `Modules (${PLAN_SUMMARY_MAX_MODULES + 2}):`);
+	assert.equal(rendered.filter((line) => /^ {2}\d+\. /u.test(line)).length, PLAN_SUMMARY_MAX_MODULES);
+	assert.equal(rendered.at(-1), "  … and 2 more modules (see stack.json)");
 });

@@ -11,41 +11,37 @@ import { type CreateAgentSessionOptions, createAgentSession } from "../../../cor
 import { SessionManager } from "../../../core/session-manager.ts";
 import { SettingsManager } from "../../../core/settings-manager.ts";
 import { AccountsStore } from "../accounts/store.ts";
-import { appendEvent, buildReviewVerdictEventFields } from "../append-log.ts";
+import { appendEvent, buildReviewVerdictEventFields, type NodeLifecycleEvent } from "../append-log.ts";
 import { ROLE_CONTRACT_FILE } from "../bus/roles.ts";
+import { registerLiveBus, registerLiveNodeSession } from "../bus/sessions-snapshot.ts";
 import { BackgroundBus, type BusDependencies } from "../bus/spawn.ts";
 import { type LocalProviderId, registerLocalProviders } from "../local/providers.ts";
 import { registerPolicy } from "../policy.ts";
-import { atomicWrite, readLiveJob, type Task, writeAllowForTask } from "../run-store.ts";
+import { atomicWrite, LOOP_RECOVERIES, readLiveJob, type Task, writeAllowForTask } from "../run-store.ts";
 import { assertDuneStack, DuneStackError } from "../stack.ts";
-import {
-	type BudgetExhaustion,
-	batchReadyNodes,
-	findExhaustedNodeLimit,
-	findExhaustedRunLimit,
-	isBudgetState,
-	type RunBudgetReading,
-	resolveGraphBudgetLimits,
-} from "./budget.ts";
+import { batchReadyNodes, isBudgetState } from "./budget.ts";
 import { type JsonSchema, validateJsonSchema } from "./json-schema.ts";
 import {
 	type AgentGraphNode,
 	type AgentWorkerRole,
-	GRAPH_ROUTED_TERMINALS,
-	type GraphBudgetLimits,
-	type GraphBudgetOverrides,
 	type GraphDefinition,
 	type GraphEdge,
 	type GraphNode,
-	type GraphRoutedTerminal,
+	type GraphPauseState,
 	type GraphRunState,
-	type GraphTerminalState,
+	type HumanAnswer,
 	isJsonObject,
 	type JsonObject,
 	type JsonValue,
-	type TerminalGraphNode,
+	type PauseGraphNode,
 } from "./schema.ts";
-import { classifyTransientFailure, DEFAULT_RETRY_BASE_MS, type Sleeper, type TransientReason } from "./stop.ts";
+import {
+	classifyTransientFailure,
+	DEFAULT_RETRY_BASE_MS,
+	retryDelayMs,
+	type Sleeper,
+	type TransientReason,
+} from "./stop.ts";
 
 const READ_ONLY_TOOLS = new Set(["read", "grep", "find", "ls"]);
 const FORBIDDEN_PATH_PARTS = new Set(["__proto__", "prototype", "constructor"]);
@@ -54,18 +50,32 @@ const END_NODE_ID = "__end__";
 export interface GraphAgentSession {
 	readonly sessionId: string;
 	prompt(text: string): Promise<void>;
+	/** Interrupts the prompt in flight. The core AgentSession has it; test fakes may omit it. */
+	abort?(): Promise<void> | void;
 	getLastAssistantText?(): string | undefined;
 	getLastAssistantError?(): string | undefined;
 	/**
-	 * Session-billed USD so far (provider usage × model.cost). Graph budget
+	 * Session-billed USD so far (provider usage × model.cost). The run's cost
 	 * accumulates deltas after each node; optional so test fakes stay thin.
 	 */
-	getSessionStats?(): { cost: number };
+	getSessionStats?(): { cost: number; toolCalls?: number };
 	getActiveToolNames(): string[];
 	dispose(): void;
 }
 
 export type GraphAgentSessionFactory = (options: CreateAgentSessionOptions) => Promise<{ session: GraphAgentSession }>;
+
+/** What the driver is told before every backoff wait. */
+export interface NodeRetry {
+	nodeId: string;
+	/** 1 for the first retry of this run of the node. */
+	attempt: number;
+	reason: TransientReason;
+	/** The HTTP status when the provider answered with one. */
+	status?: number;
+	delayMs: number;
+	message: string;
+}
 
 export interface GraphEngineOptions {
 	projectRoot: string;
@@ -83,37 +93,65 @@ export interface GraphEngineOptions {
 	 * session usage×rates. Never invent spend; clamp external readings at 0.
 	 */
 	accumulatedCostUsd?: () => number;
-	/** Cap overrides from the validated task/job contract. */
-	limits?: GraphBudgetOverrides;
 	/**
 	 * Facts only the caller can establish, merged into run state before routing.
 	 * Keys are state paths, so `{ "bounds.held": false }` is what an edge tests.
 	 */
 	resolveFacts?: () => Promise<JsonObject>;
 	/**
-	 * Sink for the one product terminal event a stopped run produces. Defaults to
-	 * appending `loop.terminal` to the run's event log.
+	 * Sink for the one product terminal event a paused run produces. Defaults to
+	 * appending `loop.terminal` NEEDS_HUMAN with the pause's reason and recovery.
 	 */
-	emitTerminal?: (terminal: GraphTerminalState) => Promise<void>;
+	emitTerminal?: (pause: GraphPauseState) => Promise<void>;
 	/** Injected backoff. Tests record the delays instead of waiting them out. */
 	sleep?: Sleeper;
-	/** First backoff step; each further retry doubles it. */
+	/** First backoff step; each further retry doubles it up to the ceiling. */
 	retryBaseDelayMs?: number;
+	/** Told before every backoff wait, after the checkpoint that records it. */
+	onRetry?: (retry: NodeRetry) => Promise<void>;
+	/** Asked after every backoff wait; true unwinds the run as OperatorStopError. */
+	stopRequested?: () => Promise<boolean>;
+	/** The operator's immediate stop: aborts every in-flight session and wait at once. */
+	signal?: AbortSignal;
 	/** Host UI so nested agent policy confirms reach the operator. */
 	uiContext?: ExtensionUIContext;
 	/** Parent-session routing inherited by every graph and worker node. */
 	model?: Model<any>;
 	thinkingLevel?: ThinkingLevel;
+	/** Fired (fire-and-forget) whenever a live node/worker session registers or releases. */
+	onSessionsChange?: () => void | Promise<void>;
 }
 
-export interface GraphHumanUI {
-	confirm(title: string, message: string): Promise<boolean>;
+/** The production backoff: a timer the operator's stop clears at once. */
+function defaultSleep(milliseconds: number, signal?: AbortSignal): Promise<void> {
+	const { promise, resolve } = Promise.withResolvers<void>();
+	const timer = setTimeout(done, milliseconds);
+	function done(): void {
+		clearTimeout(timer);
+		signal?.removeEventListener("abort", done);
+		resolve();
+	}
+	signal?.addEventListener("abort", done, { once: true });
+	return promise;
 }
 
-function defaultSleep(milliseconds: number): Promise<void> {
-	return new Promise((resolve) => {
-		setTimeout(resolve, milliseconds);
-	});
+/** The HTTP status a failure carries, on the error or one level down. */
+function httpStatus(error: unknown): number | undefined {
+	for (const candidate of [
+		error,
+		typeof error === "object" && error !== null && "cause" in error ? error.cause : undefined,
+	]) {
+		if (typeof candidate !== "object" || candidate === null) {
+			continue;
+		}
+		if ("status" in candidate && typeof candidate.status === "number") {
+			return candidate.status;
+		}
+		if ("statusCode" in candidate && typeof candidate.statusCode === "number") {
+			return candidate.statusCode;
+		}
+	}
+	return undefined;
 }
 
 /**
@@ -145,18 +183,15 @@ export class GraphNodeProviderError extends Error {
 	}
 }
 
-/** A node whose transient-retry allowance is spent. Ends the run as EXHAUSTED. */
-class TransientRetriesExhaustedError extends Error {
-	readonly nodeId: string;
-
-	constructor(nodeId: string, reason: TransientReason, spent: number, cause: unknown) {
-		super(
-			`node ${nodeId} exhausted maxTransientRetries ${spent} after a ${reason} failure: ${
-				cause instanceof Error ? cause.message : String(cause)
-			}`,
-		);
-		this.name = "TransientRetriesExhaustedError";
-		this.nodeId = nodeId;
+/**
+ * The operator stopped the run. Thrown out of the engine untouched, with a
+ * checkpoint already written that leaves the stopped node `running` so a
+ * restore continues it; the driver records STOPPED.
+ */
+export class OperatorStopError extends Error {
+	constructor() {
+		super("operator stop");
+		this.name = "OperatorStopError";
 	}
 }
 
@@ -207,11 +242,15 @@ function validateNode(value: unknown, index: number): asserts value is GraphNode
 		return;
 	}
 
-	if (value.type === "terminal") {
-		if (!GRAPH_ROUTED_TERMINALS.includes(value.status as GraphRoutedTerminal)) {
-			throw new Error(`terminal node ${value.id}.status must be one of ${GRAPH_ROUTED_TERMINALS.join(" | ")}`);
+	if (value.type === "pause") {
+		if (!(LOOP_RECOVERIES as readonly unknown[]).includes(value.recovery)) {
+			throw new Error(`pause node ${value.id}.recovery must be one of ${LOOP_RECOVERIES.join(" | ")}`);
 		}
-		assertString(value.reason, `terminal node ${value.id}.reason`);
+		assertString(value.reason, `pause node ${value.id}.reason`);
+		assertStringArray(value.resume, `pause node ${value.id}.resume`);
+		if (value.resume.length === 0) {
+			throw new Error(`pause node ${value.id}.resume must name at least one node`);
+		}
 		return;
 	}
 
@@ -220,6 +259,13 @@ function validateNode(value: unknown, index: number): asserts value is GraphNode
 		assertString(value.question, `human node ${value.id}.question`);
 		assertString(value.statePath, `human node ${value.id}.statePath`);
 		assertStatePath(value.statePath, `human node ${value.id}`);
+		if (value.detail !== undefined && value.detail !== "stack.json") {
+			throw new Error(`human node ${value.id}.detail must be stack.json, the only run file with a summary renderer`);
+		}
+		if (value.feedbackPath !== undefined) {
+			assertString(value.feedbackPath, `human node ${value.id}.feedbackPath`);
+			assertStatePath(value.feedbackPath, `human node ${value.id}`);
+		}
 		return;
 	}
 
@@ -240,6 +286,10 @@ function validateNode(value: unknown, index: number): asserts value is GraphNode
 		(typeof value.context.threadKey !== "string" || value.context.threadKey.length === 0)
 	) {
 		throw new Error(`agent node ${value.id}.context.threadKey must be non-empty`);
+	}
+	if (value.feedbackPath !== undefined) {
+		assertString(value.feedbackPath, `agent node ${value.id}.feedbackPath`);
+		assertStatePath(value.feedbackPath, `agent node ${value.id}`);
 	}
 	if (value.readOnly) {
 		const mutatingTool = value.tools.find((tool) => !READ_ONLY_TOOLS.has(tool));
@@ -304,15 +354,23 @@ function validateNode(value: unknown, index: number): asserts value is GraphNode
 	}
 }
 
+/**
+ * A graph carries exactly one limit. One still declaring a cap is refused
+ * rather than silently uncapped: K-π runs have no caps, and the file must say so.
+ */
 function validateLimits(value: unknown): void {
 	if (!isJsonObject(value)) {
 		throw new Error("graph limits must be an object");
 	}
-	for (const key of ["maxSteps", "maxNodeRuns", "maxConcurrency", "maxCostUsd", "timeoutMs"]) {
-		const limit = value[key];
-		if (typeof limit !== "number" || !Number.isFinite(limit) || limit <= 0) {
-			throw new Error(`graph limits.${key} must be a positive number`);
-		}
+	const concurrency = value.maxConcurrency;
+	if (typeof concurrency !== "number" || !Number.isFinite(concurrency) || concurrency <= 0) {
+		throw new Error("graph limits.maxConcurrency must be a positive number");
+	}
+	const retired = Object.keys(value).find((key) => key !== "maxConcurrency");
+	if (retired !== undefined) {
+		throw new Error(
+			`graph limits.${retired} was retired: K-π runs have no caps, a graph carries only maxConcurrency`,
+		);
 	}
 }
 
@@ -395,14 +453,23 @@ export function validateGraphDefinition(value: unknown): asserts value is GraphD
 		}
 	}
 
-	// A terminal is a sink: an edge leaving one would claim the run continues
-	// after it stopped.
+	// A pause is a sink: an edge leaving one would claim the run continues after
+	// it parked, and a resume that lands on another pause would never run.
 	for (const node of nodes) {
-		if (node.type !== "terminal") {
+		if (node.type !== "pause") {
 			continue;
 		}
+		for (const target of node.resume) {
+			const resumed = nodes.find((candidate) => candidate.id === target);
+			if (resumed === undefined) {
+				throw new Error(`pause node ${node.id} resumes at ${target}, which does not exist`);
+			}
+			if (resumed.type === "pause") {
+				throw new Error(`pause node ${node.id} cannot resume at pause node ${target}`);
+			}
+		}
 		if (value.edges.some((edge) => isJsonObject(edge) && edge.from === node.id)) {
-			throw new Error(`terminal node ${node.id} cannot have outgoing edges`);
+			throw new Error(`pause node ${node.id} cannot have outgoing edges`);
 		}
 	}
 
@@ -545,18 +612,52 @@ export class GraphEngine {
 	private readonly now: () => number;
 	private readonly accumulatedCostUsd: () => number;
 	/**
-	 * Durable spend already on the checkpoint (prior process). Restored runs must
-	 * keep it so maxCostUsd cannot rearm by forgetting what was already billed.
+	 * Durable spend already on the checkpoint (prior process). Restored runs
+	 * keep it so the reported cost never forgets what was already billed.
 	 */
 	private readonly baselineCostUsd: number;
 	/** USD billed by agent sessions in this process (provider usage × model.cost). */
 	private sessionCostUsd = 0;
 	/** Last getSessionStats().cost observed per live session (for deltas). */
 	private readonly sessionCostBaseline = new WeakMap<object, number>();
-	private readonly sleep: Sleeper;
+	/** Cost summed across every attempt of a node's current run, reset at node.started. */
+	private readonly nodeRunCostUsd = new Map<string, number>();
+	/** Sessions inside prompt() right now; the operator's stop aborts each of them. */
+	private readonly inFlight = new Set<GraphAgentSession>();
+	private readonly sleep: (milliseconds: number, signal?: AbortSignal) => Promise<void>;
 	private readonly retryBaseDelayMs: number;
 	private checkpointWrites: Promise<void> = Promise.resolve();
 	private runState: GraphRunState;
+	/**
+	 * Limit keys the checkpoint carried that no longer mean anything, in
+	 * checkpoint order: the caps a retired release enforced. Empty for a new
+	 * run. The driver tells the operator they were ignored.
+	 */
+	readonly retiredLimits: string[];
+
+	/**
+	 * The operator's stop reaches every in-flight session at once. A session
+	 * whose abort itself fails is logged, not thrown: the stop still lands
+	 * when its prompt settles.
+	 */
+	private readonly onAbort = (): void => {
+		for (const session of this.inFlight) {
+			let aborting: Promise<void> | void;
+			try {
+				aborting = session.abort?.();
+			} catch (error) {
+				console.warn(`K-π graph: session abort failed: ${error instanceof Error ? error.message : String(error)}`);
+				continue;
+			}
+			if (aborting instanceof Promise) {
+				aborting.catch((error: unknown) => {
+					console.warn(
+						`K-π graph: session abort failed: ${error instanceof Error ? error.message : String(error)}`,
+					);
+				});
+			}
+		}
+	};
 
 	constructor(graph: GraphDefinition, options: GraphEngineOptions, initialState?: GraphRunState) {
 		validateGraphDefinition(graph);
@@ -589,7 +690,7 @@ export class GraphEngine {
 		this.retryBaseDelayMs = options.retryBaseDelayMs ?? DEFAULT_RETRY_BASE_MS;
 
 		if (initialState === undefined) {
-			const limits = resolveGraphBudgetLimits(graph.limits, options.limits);
+			this.retiredLimits = [];
 			this.runState = {
 				graphId: graph.id,
 				jobId: options.jobId,
@@ -601,7 +702,7 @@ export class GraphEngine {
 				values: { policy: { onHumanDeny: graph.policy.onHumanDeny ?? "revise" } },
 				nodes: Object.fromEntries(graph.nodes.map((node) => [node.id, { status: "pending" as const, runs: 0 }])),
 				budget: {
-					limits,
+					limits: { maxConcurrency: graph.limits.maxConcurrency },
 					startedAtMs: this.now(),
 					elapsedMs: 0,
 					costUsd: 0,
@@ -614,80 +715,61 @@ export class GraphEngine {
 				throw new Error("checkpoint is missing budget counters");
 			}
 			this.runState = initialState;
-			// A checkpoint written before this configuration existed still routes.
+			// Caps a checkpoint still carries are read, never enforced: the run they
+			// stopped resumes, and the driver tells the operator which were ignored.
+			this.retiredLimits = Object.keys(initialState.budget.limits).filter((key) => key !== "maxConcurrency");
+			this.runState.budget.limits = { maxConcurrency: graph.limits.maxConcurrency };
+			// A checkpoint written before this configuration existed still routes,
+			// and one written before a node existed still schedules it.
 			if (!isJsonObject(this.runState.values.policy)) {
 				this.runState.values.policy = { onHumanDeny: graph.policy.onHumanDeny ?? "revise" };
 			}
-			// A restored run keeps the caps it was started under unless the
-			// caller supplies a freshly validated contract.
-			this.runState.budget.limits = resolveGraphBudgetLimits(
-				graph.limits,
-				options.limits ?? initialState.budget.limits,
-			);
-			this.rearmIfAffordable();
+			for (const node of graph.nodes) {
+				this.runState.nodes[node.id] ??= { status: "pending", runs: 0 };
+			}
+			// A paused run, or one a retired terminal ended (exhausted, failed,
+			// terminated), is re-armed: only the operator ends a run, and the
+			// operator restoring one is the operator continuing it.
+			if (
+				this.runState.status !== "running" &&
+				this.runState.status !== "interrupted" &&
+				this.runState.status !== "completed"
+			) {
+				this.rearm();
+			}
 		}
 
 		if (this.runState.graphId !== graph.id || this.runState.jobId !== options.jobId) {
 			throw new Error("checkpoint does not match graph and job");
 		}
+		options.signal?.addEventListener("abort", this.onAbort);
 	}
 
 	get state(): Readonly<GraphRunState> {
 		return this.runState;
 	}
 
-	get limits(): Readonly<GraphBudgetLimits> {
-		return this.runState.budget.limits;
-	}
-
 	/**
-	 * An exhausted run is durable, not permanent. Restoring one whose run-wide
-	 * caps no longer bind re-arms exactly the nodes it never finished; the
-	 * terminal record goes with the status so a stale `EXHAUSTED` can never be
-	 * reported as the new outcome. Caps that still bind leave the run stopped, so
-	 * a resume never silently re-runs work the budget already refused.
+	 * Re-arms a parked run so the next superstep continues it: status running,
+	 * the pause's resume targets (or the active set) scheduled, and every
+	 * scheduled node that is not mid-run reset to pending. A node a kill left
+	 * `running` continues its own run with its retry count and backoff deadline
+	 * intact. Public because the operator's "keep going" is exactly this.
 	 */
-	private rearmIfAffordable(): void {
-		if (this.runState.status !== "exhausted" || this.runState.active.length === 0) {
-			return;
-		}
-		const limits = this.runState.budget.limits;
-		const terminal = this.runState.terminal;
-
-		if (terminal?.limit === "maxTransientRetries") {
-			// A spent retry allowance re-arms only when the cap itself was raised.
-			// Resuming at the same cap would hand the node unlimited attempts.
-			const stillSpent = terminal.nodes.some(
-				(nodeId) => (this.runState.nodes[nodeId]?.transientRetries ?? 0) >= limits.maxTransientRetries,
-			);
-			if (stillSpent) {
-				return;
-			}
-			this.runState.status = "running";
-			delete this.runState.terminal;
-			for (const nodeId of this.runState.active) {
-				const nodeState = this.runState.nodes[nodeId];
-				if (nodeState.status !== "exhausted") {
-					continue;
-				}
-				// The stalled node continues its own run, so its spent retries still
-				// count against the raised cap. Nodes that never started are fresh.
-				nodeState.status = terminal.nodes.includes(nodeId) ? "running" : "pending";
-			}
-			return;
-		}
-
-		if (findExhaustedRunLimit(limits, this.readBudget()) !== undefined) {
-			return;
-		}
+	rearm(): void {
 		this.runState.status = "running";
-		delete this.runState.terminal;
+		this.runState.active = [...(this.runState.pause?.resume ?? this.runState.active)];
 		for (const nodeId of this.runState.active) {
 			const nodeState = this.runState.nodes[nodeId];
-			if (nodeState.status === "exhausted") {
+			if (nodeState !== undefined && nodeState.status !== "running") {
 				nodeState.status = "pending";
 			}
 		}
+		delete this.runState.pause;
+		// A checkpoint from the release that enforced caps carries the terminal
+		// record of the cap or status that ended it; it goes with the status.
+		const legacy: GraphRunState & { terminal?: unknown } = this.runState;
+		delete legacy.terminal;
 	}
 
 	private runDirectory(): string {
@@ -707,6 +789,19 @@ export class GraphEngine {
 		if (node.response !== undefined) {
 			lines.push(
 				`Return only JSON matching ${node.response.schema}; the graph engine writes ${node.response.path}.`,
+			);
+		}
+		// An isolated re-run has no memory of the answer the operator sent back,
+		// so the change request travels in the prompt. `runs` already counts this
+		// run, so the first re-run reads "node run 2".
+		const feedback =
+			node.feedbackPath === undefined ? undefined : getStatePath(this.runState.values, node.feedbackPath);
+		if (typeof feedback === "string" && feedback.length > 0) {
+			lines.push(
+				"",
+				`Operator feedback on your previous response (node run ${this.runState.nodes[node.id].runs}):`,
+				feedback,
+				"Address every point, then return the corrected JSON only.",
 			);
 		}
 		return lines.join("\n");
@@ -771,17 +866,17 @@ export class GraphEngine {
 	}
 
 	/**
-	 * Routes the nodes that just ran. A terminal sink wins over any sibling
-	 * target: the run stopped, so scheduling more work would be a contradiction.
-	 * Priority among terminals is graph edge order, which makes an ambiguous
-	 * topology resolve the same way every replay.
+	 * Routes the nodes that just ran. A pause node wins over any sibling
+	 * target: the run is parking, so scheduling more work would be a
+	 * contradiction. Priority among pauses is graph edge order, which makes an
+	 * ambiguous topology resolve the same way every replay.
 	 */
 	private route(
 		nodeIds: readonly string[],
 		values: JsonObject,
-	): { targets: string[]; terminal?: TerminalGraphNode; gap?: string } {
+	): { targets: string[]; pause?: PauseGraphNode; gap?: string } {
 		const targets = new Set<string>();
-		let terminal: TerminalGraphNode | undefined;
+		let pause: PauseGraphNode | undefined;
 		let gap: string | undefined;
 		for (const nodeId of nodeIds) {
 			const outgoing = this.outgoing(nodeId);
@@ -792,8 +887,8 @@ export class GraphEngine {
 				}
 				fired = true;
 				const target = this.nodes.get(edge.to);
-				if (target?.type === "terminal") {
-					terminal ??= target;
+				if (target?.type === "pause") {
+					pause ??= target;
 					continue;
 				}
 				targets.add(edge.to);
@@ -806,22 +901,62 @@ export class GraphEngine {
 			}
 		}
 		targets.delete(END_NODE_ID);
-		return { targets: [...targets], terminal, gap };
+		return { targets: [...targets], pause, gap };
 	}
 
 	/**
 	 * Fold session-billed cost into the job meter. Uses deltas so threaded
-	 * sessions that keep running across nodes are not double-counted.
+	 * sessions that keep running across nodes are not double-counted. Returns
+	 * the delta applied, or undefined when the session carries no finite cost
+	 * (never a fabricated zero).
 	 */
-	private recordSessionCost(session: GraphAgentSession): void {
+	private recordSessionCost(session: GraphAgentSession): number | undefined {
 		const stats = session.getSessionStats?.();
 		if (stats === undefined || typeof stats.cost !== "number" || !Number.isFinite(stats.cost)) {
-			return;
+			return undefined;
 		}
 		const previous = this.sessionCostBaseline.get(session) ?? 0;
 		const delta = Math.max(0, stats.cost - previous);
 		this.sessionCostBaseline.set(session, stats.cost);
 		this.sessionCostUsd += delta;
+		return delta;
+	}
+
+	/** The one source of the model label: bus.spawn, node.started, and LiveNodeSession all read it here. */
+	private modelLabel(): string | undefined {
+		return this.options.model === undefined ? undefined : `${this.options.model.provider}/${this.options.model.id}`;
+	}
+
+	/**
+	 * Fire-and-forget notice that the live sessions registry changed (a node or
+	 * worker session registered or released). Never blocks node execution; a
+	 * rejecting hook is logged, not thrown.
+	 */
+	private noteSessionsChange(): void {
+		let result: void | Promise<void>;
+		try {
+			result = this.options.onSessionsChange?.();
+		} catch (error) {
+			console.warn(
+				`[kpi/graph] sessions change hook failed: ${error instanceof Error ? error.message : String(error)}`,
+			);
+			return;
+		}
+		if (result instanceof Promise) {
+			result.catch((error: unknown) => {
+				console.warn(
+					`[kpi/graph] sessions change hook failed: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			});
+		}
+	}
+
+	/** Appends a node.started or node.finished record to the run's event log. */
+	private async appendNodeEvent(event: NodeLifecycleEvent): Promise<void> {
+		// node.started can be the very first write of a fresh run, before any
+		// checkpoint (whose atomicWrite otherwise creates the directory) has run.
+		await mkdir(this.runDirectory(), { recursive: true });
+		await appendEvent(join(this.runDirectory(), "events.jsonl"), event);
 	}
 
 	private async createSessionForNode(
@@ -907,10 +1042,10 @@ export class GraphEngine {
 		if (node.type === "human") {
 			throw new Error(`human node ${node.id} must interrupt before execution`);
 		}
-		if (node.type === "terminal") {
-			// Routing stops at a terminal, so reaching execution would mean the run
-			// was scheduled past its own end.
-			throw new Error(`terminal node ${node.id} must stop the run before execution`);
+		if (node.type === "pause") {
+			// Routing parks at a pause node, so reaching execution would mean the
+			// run was scheduled past its own park.
+			throw new Error(`pause node ${node.id} must pause the run before execution`);
 		}
 
 		if (node.workerRole !== undefined) {
@@ -919,8 +1054,22 @@ export class GraphEngine {
 
 		const { session, disposeAfter } = await this.createSessionForNode(node);
 		this.runState.nodes[node.id].sessionId = session.sessionId;
+		const releaseSession = registerLiveNodeSession({
+			kind: "node",
+			jobId: this.options.jobId,
+			nodeId: node.id,
+			sessionId: session.sessionId,
+			contextMode: node.context.mode,
+			threadKey: node.context.threadKey ?? node.id,
+			model: this.modelLabel(),
+			startedAt: new Date(this.now()).toISOString(),
+			stats: () => session.getSessionStats?.(),
+		});
+		this.noteSessionsChange();
+		this.inFlight.add(session);
 		try {
 			if (node.response === undefined) {
+				this.assertNotAborted();
 				await session.prompt(this.nodePrompt(node));
 				const providerError = session.getLastAssistantError?.();
 				if (providerError !== undefined) {
@@ -936,6 +1085,9 @@ export class GraphEngine {
 					attempt === 0
 						? this.nodePrompt(node)
 						: `Your previous response failed ${node.response.schema}: ${validationErrors.join("; ")}. Return corrected JSON only.`;
+				// A stop that landed while the session was idle (creating it, or
+				// between validation attempts) has no run to abort: refuse the next prompt.
+				this.assertNotAborted();
 				await session.prompt(prompt);
 				const providerError = session.getLastAssistantError?.();
 				if (providerError !== undefined) {
@@ -997,7 +1149,13 @@ export class GraphEngine {
 				`agent node ${node.id} failed response validation after ${node.response.retries + 1} attempts: ${validationErrors.join("; ")}`,
 			);
 		} finally {
-			this.recordSessionCost(session);
+			this.inFlight.delete(session);
+			releaseSession();
+			this.noteSessionsChange();
+			const delta = this.recordSessionCost(session);
+			if (delta !== undefined) {
+				this.nodeRunCostUsd.set(node.id, (this.nodeRunCostUsd.get(node.id) ?? 0) + delta);
+			}
 			if (disposeAfter) {
 				session.dispose();
 			}
@@ -1026,15 +1184,18 @@ export class GraphEngine {
 			this.options.jobId,
 			this.options.busDependencies ?? {},
 		);
+		const releaseBus = registerLiveBus(bus);
 		let agentId: string | undefined;
 		try {
+			this.assertNotAborted();
 			const worker = await bus.spawn({
 				role: node.workerRole,
 				prompt: this.workerNodePrompt(node),
-				model:
-					this.options.model === undefined ? undefined : `${this.options.model.provider}/${this.options.model.id}`,
+				model: this.modelLabel(),
+				node: node.id,
 			});
 			agentId = worker.agentId;
+			this.noteSessionsChange();
 			const nodeState = this.runState.nodes[node.id];
 			nodeState.sessionId = worker.sessionPath;
 			nodeState.agentId = worker.agentId;
@@ -1044,8 +1205,12 @@ export class GraphEngine {
 				document: Record<string, unknown>;
 			};
 			try {
-				published = await bus.awaitInitialContract(worker.agentId);
+				// The operator's stop lands here at once; `finally` stops the worker.
+				published = await this.abortable(bus.awaitInitialContract(worker.agentId));
 			} catch (error) {
+				if (error instanceof OperatorStopError) {
+					throw error;
+				}
 				throw new GraphNodeContractError(
 					node.id,
 					`worker-role agent node ${node.id} failed closed without a receipt-backed ${node.response.path}: ${
@@ -1083,19 +1248,10 @@ export class GraphEngine {
 			if (agentId !== undefined) {
 				await bus.stop(agentId).catch(() => undefined);
 			}
+			releaseBus();
+			this.noteSessionsChange();
 		}
 	}
-
-	/**
-	 * Runs one node, retrying only a transient transport, 429, or timeout failure
-	 * and only inside the allowance the checkpoint already records.
-	 *
-	 * A retry is neither a round nor a run: the node's `runs` count and the
-	 * graph's round are untouched, which is what keeps `maxRounds` and
-	 * `maxNodeRuns` meaning what they say. The counter and its delay are
-	 * checkpointed before the wait, so a kill during a backoff resumes with the
-	 * allowance already spent rather than a fresh one.
-	 */
 
 	/**
 	 * Concise review.verdict event when a receipt-backed reviewer contract is accepted.
@@ -1120,19 +1276,45 @@ export class GraphEngine {
 		});
 	}
 
+	/**
+	 * Runs one node, retrying a transient failure (http 408/429/5xx, timeout,
+	 * transport) for as long as it takes: the backoff doubles from the base to
+	 * the ceiling and the loop has no bound. A retry is neither a round nor a
+	 * run. Before every wait the count, reason and deadline are checkpointed and
+	 * `onRetry` is told, so a kill mid-wait resumes into the same wait and the
+	 * operator sees every attempt. The only ways out are success, a
+	 * non-transient failure, and the operator's stop.
+	 */
 	private async executeWithRetries(node: GraphNode): Promise<NodeResult> {
 		const nodeState = this.runState.nodes[node.id];
-		// Retries are same-run. A new legitimate run gets a fresh allowance; a run
-		// resumed after a kill keeps exactly what it had already spent.
+		// Retries are same-run. A new legitimate run counts from zero; a run
+		// resumed after a kill keeps its count and its place in the sequence.
 		if (nodeState.retryRun !== nodeState.runs) {
 			nodeState.retryRun = nodeState.runs;
 			nodeState.transientRetries = 0;
 			nodeState.retryDelaysMs = [];
+			delete nodeState.retryReason;
+			delete nodeState.retryAtMs;
+		}
+		// A run resumed mid-backoff finishes the wait it was in rather than
+		// restarting the node, and the stop checks apply to that wait too.
+		if (nodeState.retryAtMs !== undefined) {
+			const remainder = nodeState.retryAtMs - this.now();
+			if (remainder > 0) {
+				await this.backoff(remainder);
+			} else {
+				await this.assertNotStopped();
+			}
+			delete nodeState.retryAtMs;
 		}
 		for (;;) {
+			this.assertNotAborted();
+			let result: NodeResult;
 			try {
-				return await this.executeNode(node);
+				result = await this.executeNode(node);
 			} catch (error) {
+				// Whatever an aborted session threw, the operator's stop is the reason.
+				this.assertNotAborted();
 				if (error instanceof GraphNodeContractError) {
 					throw error;
 				}
@@ -1141,111 +1323,150 @@ export class GraphEngine {
 					throw error;
 				}
 				const spent = nodeState.transientRetries ?? 0;
-				if (spent >= this.runState.budget.limits.maxTransientRetries) {
-					throw new TransientRetriesExhaustedError(node.id, reason, spent, error);
-				}
-				const delayMs = this.retryBaseDelayMs * 2 ** spent;
+				const delayMs = retryDelayMs(spent, this.retryBaseDelayMs);
+				const message = error instanceof Error ? error.message : String(error);
 				nodeState.transientRetries = spent + 1;
+				nodeState.retryReason = reason;
+				nodeState.retryAtMs = this.now() + delayMs;
 				nodeState.retryDelaysMs = [...(nodeState.retryDelaysMs ?? []), delayMs];
-				nodeState.error = `transient ${reason}: ${error instanceof Error ? error.message : String(error)}`;
+				nodeState.error = `transient ${reason}: ${message}`;
 				await this.writeCheckpoint();
-				await this.sleep(delayMs);
+				const status = httpStatus(error);
+				await this.options.onRetry?.({
+					nodeId: node.id,
+					attempt: spent + 1,
+					reason,
+					...(status === undefined ? {} : { status }),
+					delayMs,
+					message,
+				});
+				await this.backoff(delayMs);
+				delete nodeState.retryAtMs;
+				continue;
 			}
+			// The attempt returned, but the operator's stop came first: the result
+			// is not committed, and the node continues on resume.
+			this.assertNotAborted();
+			return result;
 		}
 	}
 
-	private async fail(message: string, nodeIds: readonly string[], cause?: Error): Promise<never> {
-		this.runState.status = "failed";
+	/**
+	 * Waits one backoff. The wait races the operator's signal so a stop lands
+	 * at once, and the stop marker is consulted after it, so `/kpi stop` from
+	 * another session lands here rather than after the next attempt.
+	 */
+	private async backoff(delayMs: number): Promise<void> {
+		await this.abortable(this.sleep(delayMs, this.options.signal));
+		await this.assertNotStopped();
+	}
+
+	/** The operator's stop, checked before any work an aborted signal could not otherwise interrupt. */
+	private assertNotAborted(): void {
+		if (this.options.signal?.aborted) {
+			throw new OperatorStopError();
+		}
+	}
+
+	private async assertNotStopped(): Promise<void> {
+		if (this.options.signal?.aborted || (await this.options.stopRequested?.()) === true) {
+			throw new OperatorStopError();
+		}
+	}
+
+	/** Settles with the promise, or rejects with OperatorStopError the moment the operator aborts. */
+	private abortable<T>(promise: Promise<T>): Promise<T> {
+		const signal = this.options.signal;
+		if (signal === undefined) {
+			return promise;
+		}
+		if (signal.aborted) {
+			return Promise.reject(new OperatorStopError());
+		}
+		const settled = Promise.withResolvers<T>();
+		const onAbort = (): void => {
+			settled.reject(new OperatorStopError());
+		};
+		signal.addEventListener("abort", onAbort, { once: true });
+		promise.then(settled.resolve, settled.reject).finally(() => {
+			signal.removeEventListener("abort", onAbort);
+		});
+		return settled.promise;
+	}
+
+	/**
+	 * A contract defect — a routing gap, two writers of one path, a node that
+	 * will not validate — is neither the operator's stop nor a retry: the run
+	 * parks NEEDS_HUMAN (contract) with the nodes marked failed. A resume
+	 * re-runs those nodes and every active node the pause left unexecuted, so
+	 * a sibling in a later batch is never dropped from the topology's schedule.
+	 */
+	private fail(message: string, nodeIds: readonly string[]): Promise<Readonly<GraphRunState>> {
 		for (const nodeId of nodeIds) {
 			this.runState.nodes[nodeId].status = "failed";
 			this.runState.nodes[nodeId].error = message;
 		}
-		this.runState.superstep += 1;
-		await this.writeCheckpoint();
-		// Preserve typed provider/contract failures so the outer loop can choose an
-		// actionable terminal instead of flattening every rejection into Error.
-		throw cause ?? new Error(message);
-	}
-
-	/**
-	 * Folds the injected clock and cost source into the durable counters and
-	 * returns what the run-wide caps are checked against.
-	 */
-	private readBudget(): RunBudgetReading {
-		const budget = this.runState.budget;
-		budget.elapsedMs = Math.max(0, this.now() - budget.startedAtMs);
-		budget.costUsd = this.accumulatedCostUsd();
-		return {
-			superstep: this.runState.superstep,
-			elapsedMs: budget.elapsedMs,
-			costUsd: budget.costUsd,
-		};
-	}
-
-	/**
-	 * A crossed cap is a product outcome, not a crash. The run becomes durably
-	 * `exhausted`, the checkpoint records which cap ended it, and exactly one
-	 * terminal event leaves the engine. `active` is preserved so a run resumed
-	 * under raised caps still knows what it owed.
-	 */
-	private async exhaust(exhaustion: BudgetExhaustion, nodeIds: readonly string[]): Promise<Readonly<GraphRunState>> {
-		this.runState.status = "exhausted";
-		for (const nodeId of nodeIds) {
-			this.runState.nodes[nodeId].status = "exhausted";
-		}
-		const terminal: GraphTerminalState = {
-			status: "EXHAUSTED",
-			limit: exhaustion.limit,
-			reason: exhaustion.reason,
+		const pending = this.runState.active.filter(
+			(id) => !nodeIds.includes(id) && this.runState.nodes[id]?.status === "pending",
+		);
+		return this.pause({
+			recovery: "contract",
+			reason: message,
 			round: this.runState.budget.round,
 			superstep: this.runState.superstep,
 			nodes: [...nodeIds],
-		};
-		this.runState.terminal = terminal;
-		this.runState.superstep += 1;
-		await this.writeCheckpoint();
-		await this.emitTerminal(terminal);
-		return this.runState;
+			resume: [...nodeIds, ...pending],
+		});
+	}
+
+	/** Folds the injected clock and cost source into the durable, report-only counters. */
+	private readBudget(): void {
+		const budget = this.runState.budget;
+		budget.elapsedMs = Math.max(0, this.now() - budget.startedAtMs);
+		budget.costUsd = this.accumulatedCostUsd();
 	}
 
 	/**
-	 * Stops the run at a terminal the topology routed to. The shape matches cap
-	 * exhaustion on purpose: one durable checkpoint, one `loop.terminal` event,
-	 * and the nodes the run still owed left in `active` so the record shows what
-	 * was unfinished.
+	 * Parks the run: durable status, one checkpoint, one `loop.terminal`.
+	 * `active` is left as the record of what was running; `rearm()` schedules
+	 * `resume`.
 	 */
-	private async terminate(node: TerminalGraphNode, pending: readonly string[]): Promise<Readonly<GraphRunState>> {
-		this.runState.status = "terminated";
-		this.runState.active = [...pending];
-		const terminal: GraphTerminalState = {
-			status: node.status,
+	private async pause(pause: GraphPauseState): Promise<Readonly<GraphRunState>> {
+		this.runState.status = "paused";
+		this.runState.pause = pause;
+		this.runState.superstep += 1;
+		await this.writeCheckpoint();
+		await this.emitTerminal(pause);
+		return this.runState;
+	}
+
+	/** Parks at a pause node the topology routed to. The pause node itself never runs. */
+	private routedPause(node: PauseGraphNode): Promise<Readonly<GraphRunState>> {
+		return this.pause({
+			recovery: node.recovery,
 			reason: node.reason,
 			round: this.runState.budget.round,
 			superstep: this.runState.superstep,
 			nodes: [node.id],
-		};
-		this.runState.terminal = terminal;
-		this.runState.nodes[node.id].status = "completed";
-		this.runState.superstep += 1;
-		await this.writeCheckpoint();
-		await this.emitTerminal(terminal);
-		return this.runState;
+			resume: [...node.resume],
+		});
 	}
 
-	/** The single terminal event a stopped run is allowed to emit. */
-	private async emitTerminal(terminal: GraphTerminalState): Promise<void> {
+	/** The single terminal event a paused run is allowed to emit. */
+	private async emitTerminal(pause: GraphPauseState): Promise<void> {
 		if (this.options.emitTerminal !== undefined) {
-			await this.options.emitTerminal(terminal);
+			await this.options.emitTerminal(pause);
 			return;
 		}
 		await appendEvent(join(this.runDirectory(), "events.jsonl"), {
 			ts: new Date(this.now()).toISOString(),
 			type: "loop.terminal",
 			job_id: this.options.jobId,
-			round: terminal.round,
-			node: terminal.nodes[0] ?? "graph",
-			status: terminal.status,
-			reason: terminal.reason,
+			round: pause.round,
+			node: pause.nodes[0] ?? "graph",
+			status: "NEEDS_HUMAN",
+			reason: pause.reason,
+			recovery: pause.recovery,
 		});
 	}
 
@@ -1256,12 +1477,7 @@ export class GraphEngine {
 		if (this.runState.status !== "running") {
 			return this.runState;
 		}
-
-		const limits = this.runState.budget.limits;
-		const runExhaustion = findExhaustedRunLimit(limits, this.readBudget());
-		if (runExhaustion !== undefined) {
-			return this.exhaust(runExhaustion, this.runState.active);
-		}
+		this.readBudget();
 
 		const activeNodes = this.runState.active.map((id) => {
 			const node = this.nodes.get(id);
@@ -1270,13 +1486,6 @@ export class GraphEngine {
 			}
 			return node;
 		});
-
-		for (const node of activeNodes) {
-			const nodeExhaustion = findExhaustedNodeLimit(limits, node.id, this.runState.nodes[node.id].runs);
-			if (nodeExhaustion !== undefined) {
-				return this.exhaust(nodeExhaustion, [node.id]);
-			}
-		}
 
 		const humanNode = activeNodes.find((node) => node.type === "human");
 		if (humanNode !== undefined) {
@@ -1304,23 +1513,7 @@ export class GraphEngine {
 		// a resume would repeat the side effects of the batches that did.
 		const results: NodeResult[] = [];
 		const executed: GraphNode[] = [];
-		for (const [index, batch] of batchReadyNodes(activeNodes, limits.maxConcurrency).entries()) {
-			if (index > 0) {
-				const batchExhaustion = findExhaustedRunLimit(limits, this.readBudget());
-				if (batchExhaustion !== undefined) {
-					const pending = activeNodes.filter((node) => !executed.includes(node)).map((node) => node.id);
-					// The batches that ran keep their work: their side effects already
-					// happened, so the checkpoint records them as completed and leaves
-					// only the untouched nodes for the resume.
-					const conflict = this.commitResults(results, executed);
-					if (conflict !== undefined) {
-						return this.fail(conflict, this.runState.active);
-					}
-					this.runState.active = pending;
-					return this.exhaust(batchExhaustion, pending);
-				}
-			}
-
+		for (const batch of batchReadyNodes(activeNodes, this.runState.budget.limits.maxConcurrency)) {
 			for (const node of batch) {
 				const nodeState = this.runState.nodes[node.id];
 				// A node whose checkpoint already says `running` was killed mid-run;
@@ -1333,6 +1526,30 @@ export class GraphEngine {
 				delete nodeState.error;
 			}
 			this.countRound();
+
+			// Bracket every agent node in the batch with node.started/node.finished on
+			// events.jsonl; a resumed `running` node re-emits node.started with the
+			// same run number since its runs count did not move above. Transient
+			// retries inside executeWithRetries never repeat either event.
+			const startedAt = new Map<string, number>();
+			for (const node of batch) {
+				if (node.type !== "agent") {
+					continue;
+				}
+				const t = this.now();
+				startedAt.set(node.id, t);
+				this.nodeRunCostUsd.delete(node.id);
+				const model = this.modelLabel();
+				await this.appendNodeEvent({
+					ts: new Date(t).toISOString(),
+					type: "node.started",
+					job_id: this.options.jobId,
+					round: this.runState.budget.round,
+					node: node.id,
+					run: this.runState.nodes[node.id].runs,
+					...(model === undefined ? {} : { model }),
+				});
+			}
 
 			// Settled, not fail-fast. A sibling that finished has already had its
 			// side effects, so discarding its result would make a resumed run repeat
@@ -1347,8 +1564,63 @@ export class GraphEngine {
 					continue;
 				}
 				rejected.push({ node, error: outcome.reason });
+				// A stopped node is not finished: it keeps its retry record and
+				// continues on resume, so it is neither marked nor reported failed.
+				if (outcome.reason instanceof OperatorStopError) {
+					continue;
+				}
+				this.runState.nodes[node.id].status = "failed";
 				this.runState.nodes[node.id].error =
 					outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason);
+			}
+
+			for (const [index, outcome] of settled.entries()) {
+				const node = batch[index];
+				if (
+					node.type !== "agent" ||
+					(outcome.status === "rejected" && outcome.reason instanceof OperatorStopError)
+				) {
+					continue;
+				}
+				const nodeStartedAt = startedAt.get(node.id);
+				if (nodeStartedAt === undefined) {
+					continue;
+				}
+				const t = this.now();
+				const elapsedMs = Math.max(0, t - nodeStartedAt);
+				const costUsd = this.nodeRunCostUsd.get(node.id);
+				this.nodeRunCostUsd.delete(node.id);
+				const nodeState = this.runState.nodes[node.id];
+				if (outcome.status === "fulfilled") {
+					await this.appendNodeEvent({
+						ts: new Date(t).toISOString(),
+						type: "node.finished",
+						job_id: this.options.jobId,
+						round: this.runState.budget.round,
+						node: node.id,
+						run: nodeState.runs,
+						status: "completed",
+						elapsed_ms: elapsedMs,
+						...(costUsd === undefined ? {} : { cost_usd: costUsd }),
+						...(node.response !== undefined ? { result: node.response.path } : {}),
+						...(nodeState.sessionId === undefined ? {} : { session: nodeState.sessionId }),
+					});
+				} else {
+					const error = outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason);
+					await this.appendNodeEvent({
+						ts: new Date(t).toISOString(),
+						type: "node.finished",
+						job_id: this.options.jobId,
+						round: this.runState.budget.round,
+						node: node.id,
+						run: nodeState.runs,
+						status: "failed",
+						elapsed_ms: elapsedMs,
+						...(costUsd === undefined ? {} : { cost_usd: costUsd }),
+						...(nodeState.sessionId === undefined ? {} : { session: nodeState.sessionId }),
+						error,
+					});
+				}
 			}
 
 			if (rejected.length > 0) {
@@ -1357,17 +1629,21 @@ export class GraphEngine {
 					return this.fail(conflict, this.runState.active);
 				}
 				this.runState.active = activeNodes.filter((node) => !executed.includes(node)).map((node) => node.id);
-				// Deterministic when several siblings reject: batch order decides,
-				// and every rejection is already recorded on its own node.
-				const first = rejected[0].error;
-				if (first instanceof TransientRetriesExhaustedError) {
-					// A spent retry allowance is a budget outcome, not a crash.
-					return this.exhaust({ limit: "maxTransientRetries", reason: first.message }, [first.nodeId]);
+				// The operator's stop wins over any sibling's failure; otherwise batch
+				// order decides, and every rejection is already recorded on its node.
+				const first =
+					rejected.find((entry) => entry.error instanceof OperatorStopError)?.error ?? rejected[0].error;
+				if (first instanceof OperatorStopError || first instanceof GraphNodeProviderError) {
+					// Both are the driver's to record: STOPPED, or NEEDS_HUMAN (provider).
+					// The checkpoint keeps a stopped node `running` with its retry count
+					// and deadline so a restore continues it, and a refused node
+					// `failed` with the refusal so a restore re-runs it.
+					await this.writeCheckpoint();
+					throw first;
 				}
 				return this.fail(
 					first instanceof Error ? first.message : String(first),
 					rejected.map((entry) => entry.node.id),
-					first instanceof Error ? first : undefined,
 				);
 			}
 			this.runState.budget.batches += 1;
@@ -1386,8 +1662,8 @@ export class GraphEngine {
 			executed.map((node) => node.id),
 			this.runState.values,
 		);
-		if (routed.terminal !== undefined) {
-			return this.terminate(routed.terminal, routed.targets);
+		if (routed.pause !== undefined) {
+			return this.routedPause(routed.pause);
 		}
 		if (routed.gap !== undefined) {
 			return this.fail(`no graph edge from ${routed.gap} matched the run state`, [routed.gap]);
@@ -1456,7 +1732,7 @@ export class GraphEngine {
 		return this.runState;
 	}
 
-	async submitHuman(approved: boolean): Promise<Readonly<GraphRunState>> {
+	async submitHuman(answer: HumanAnswer): Promise<Readonly<GraphRunState>> {
 		const pending = this.runState.pendingHuman;
 		if (this.runState.status !== "interrupted" || pending === undefined) {
 			throw new Error("graph has no pending human node");
@@ -1465,16 +1741,28 @@ export class GraphEngine {
 		if (node?.type !== "human") {
 			throw new Error(`pending human node does not exist: ${pending.nodeId}`);
 		}
+		// Every refusal happens before any state moves, so a refused answer leaves
+		// the gate pending and the caller asks again.
+		if (answer.feedback !== undefined && node.feedbackPath === undefined) {
+			throw new Error(`human node ${node.id} accepts no feedback`);
+		}
+		const feedback = answer.feedback?.trim() ?? "";
+		if (node.feedbackPath !== undefined && !answer.approved && feedback.length === 0) {
+			throw new Error(`human node ${node.id} was denied without feedback`);
+		}
 
 		const values = structuredClone(this.runState.values);
-		setStatePath(values, node.statePath, approved);
+		setStatePath(values, node.statePath, answer.approved);
+		if (node.feedbackPath !== undefined && !answer.approved) {
+			setStatePath(values, node.feedbackPath, feedback);
+		}
 		this.runState.values = values;
 		this.runState.nodes[node.id].status = "completed";
 		await this.refreshFacts();
 		const routed = this.route([node.id], this.runState.values);
 		delete this.runState.pendingHuman;
-		if (routed.terminal !== undefined) {
-			return this.terminate(routed.terminal, routed.targets);
+		if (routed.pause !== undefined) {
+			return this.routedPause(routed.pause);
 		}
 		if (routed.gap !== undefined) {
 			return this.fail(`no graph edge from ${routed.gap} matched the run state`, [routed.gap]);
@@ -1486,20 +1774,13 @@ export class GraphEngine {
 		return this.runState;
 	}
 
-	async resume(approved: boolean): Promise<Readonly<GraphRunState>> {
-		await this.submitHuman(approved);
+	async resume(answer: HumanAnswer): Promise<Readonly<GraphRunState>> {
+		await this.submitHuman(answer);
 		return this.runUntilPause();
 	}
 
-	async resumeWithUI(ui: GraphHumanUI): Promise<Readonly<GraphRunState>> {
-		const pending = this.runState.pendingHuman;
-		if (pending === undefined) {
-			throw new Error("graph has no pending human node");
-		}
-		return this.resume(await ui.confirm(pending.title, pending.question));
-	}
-
 	dispose(): void {
+		this.options.signal?.removeEventListener("abort", this.onAbort);
 		for (const session of this.threadSessions.values()) {
 			session.dispose();
 		}

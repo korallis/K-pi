@@ -81,6 +81,15 @@
     },
     {
       "$ref": "#/$defs/agentDenied"
+    },
+    {
+      "$ref": "#/$defs/nodeStarted"
+    },
+    {
+      "$ref": "#/$defs/nodeFinished"
+    },
+    {
+      "$ref": "#/$defs/nodeRetry"
     }
   ],
   "$defs": {
@@ -116,6 +125,7 @@
       "enum": [
         "exa",
         "perplexity",
+        "firecrawl",
         "local"
       ]
     },
@@ -123,6 +133,7 @@
       "enum": [
         "exa",
         "perplexity",
+        "firecrawl",
         "auto",
         "local"
       ]
@@ -338,6 +349,9 @@
           "type": "boolean"
         },
         "question": {
+          "$ref": "#/$defs/text"
+        },
+        "feedback": {
           "$ref": "#/$defs/text"
         }
       },
@@ -730,15 +744,27 @@
         "status": {
           "enum": [
             "DONE",
-            "BLOCKED",
-            "EXHAUSTED",
-            "NO_PROGRESS",
-            "UNSAFE",
-            "NEEDS_HUMAN"
+            "NEEDS_HUMAN",
+            "STOPPED"
           ]
         },
         "reason": {
           "$ref": "#/$defs/text"
+        },
+        "recovery": {
+          "enum": [
+            "approval",
+            "provider",
+            "delivery",
+            "ship",
+            "bounds",
+            "review",
+            "no_progress",
+            "research",
+            "stack",
+            "contract",
+            "ac_quality"
+          ]
         }
       },
       "additionalProperties": false
@@ -1306,6 +1332,176 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 128
+        }
+      },
+      "additionalProperties": false
+    },
+    "nodeStarted": {
+      "type": "object",
+      "required": [
+        "ts",
+        "type",
+        "job_id",
+        "round",
+        "node",
+        "prev_hash",
+        "record_hash",
+        "run"
+      ],
+      "properties": {
+        "ts": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "type": {
+          "const": "node.started"
+        },
+        "job_id": {
+          "$ref": "#/$defs/jobId"
+        },
+        "round": {
+          "$ref": "#/$defs/round"
+        },
+        "node": {
+          "$ref": "#/$defs/node"
+        },
+        "prev_hash": {
+          "$ref": "#/$defs/hash"
+        },
+        "record_hash": {
+          "$ref": "#/$defs/hash"
+        },
+        "run": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "model": {
+          "$ref": "#/$defs/identifier"
+        }
+      },
+      "additionalProperties": false
+    },
+    "nodeFinished": {
+      "type": "object",
+      "required": [
+        "ts",
+        "type",
+        "job_id",
+        "round",
+        "node",
+        "prev_hash",
+        "record_hash",
+        "run",
+        "status",
+        "elapsed_ms"
+      ],
+      "properties": {
+        "ts": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "type": {
+          "const": "node.finished"
+        },
+        "job_id": {
+          "$ref": "#/$defs/jobId"
+        },
+        "round": {
+          "$ref": "#/$defs/round"
+        },
+        "node": {
+          "$ref": "#/$defs/node"
+        },
+        "prev_hash": {
+          "$ref": "#/$defs/hash"
+        },
+        "record_hash": {
+          "$ref": "#/$defs/hash"
+        },
+        "run": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "status": {
+          "enum": [
+            "completed",
+            "failed"
+          ]
+        },
+        "elapsed_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "cost_usd": {
+          "type": "number",
+          "minimum": 0
+        },
+        "result": {
+          "$ref": "#/$defs/text"
+        },
+        "session": {
+          "$ref": "#/$defs/text"
+        },
+        "error": {
+          "$ref": "#/$defs/text"
+        }
+      },
+      "additionalProperties": false
+    },
+    "nodeRetry": {
+      "type": "object",
+      "required": [
+        "ts",
+        "type",
+        "job_id",
+        "round",
+        "node",
+        "prev_hash",
+        "record_hash",
+        "attempt",
+        "reason",
+        "delay_ms"
+      ],
+      "properties": {
+        "ts": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "type": {
+          "const": "node.retry"
+        },
+        "job_id": {
+          "$ref": "#/$defs/jobId"
+        },
+        "round": {
+          "$ref": "#/$defs/round"
+        },
+        "node": {
+          "$ref": "#/$defs/node"
+        },
+        "prev_hash": {
+          "$ref": "#/$defs/hash"
+        },
+        "record_hash": {
+          "$ref": "#/$defs/hash"
+        },
+        "attempt": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "reason": {
+          "enum": [
+            "http",
+            "timeout",
+            "transport"
+          ]
+        },
+        "delay_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "status": {
+          "type": "integer"
+        },
+        "message": {
+          "$ref": "#/$defs/text"
         }
       },
       "additionalProperties": false
