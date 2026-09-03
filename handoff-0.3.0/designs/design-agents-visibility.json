@@ -1,0 +1,504 @@
+{
+ "key": "agents-visibility",
+ "design": {
+  "issue": "ISSUE D — the operator cannot see how K-π is concurrent. Graph nodes run as in-process AgentSession objects and only workerRole nodes (reviewer) become separate `kpi --mode rpc` processes over the bus, but nothing on screen says so, and the board's AGENTS cell reads 0 during a running job because (a) in-process node sessions are never counted, (b) the engine's own BackgroundBus is invisible to the count provider, and (c) the board only repaints at superstep boundaries, after the node has already finished.",
+  "root_cause": "Three defects compound, all inside this process. (1) Non-worker agent nodes are in-process: GraphEngine.executeNode calls createSessionForNode (engine.ts:920) which uses this.sessionFactory (default core/sdk.ts createAgentSession, engine.ts:10/567) and stores the session under .kpi/runs/<job>/agents/<threadKey>/ (engine.ts:836-846); no registry records these sessions, so no surface can count them. (2) workerRole nodes spawn through a fresh `new BackgroundBus(...)` inside executeWorkerAgentNode (engine.ts:1023-1028) that is never added to the `buses` map in communicate.ts (activeBus, communicate.ts:319-330); the live count provider only sums that map (communicate.ts:287-293 → live-snapshot.ts:11-13); buildBoardModel reads liveWorkerCount() at control-plane.ts:217 and board.ts:335 prints `AGENTS ${model.agents}` — so a graph-spawned reviewer process is also counted as 0. (3) The widget is reinstalled only through LoopDependencies.onStateChange (gated-loop.ts:45), which the loop awaits after writeState at superstep boundaries (gated-loop.ts:1910, 1951, 2018; control-plane.ts:483-485); GraphEngineOptions (engine.ts:70-107) has no per-node hook, so even a correct count would be painted only when nothing is running. Worker liveness is already owned by the bus: countLiveProcesses (spawn.ts:383-391) uses the bus's injected isProcessAlive (spawn.ts:217, 233) and never reaps; the caps are per process by design (spawn.ts:37-39, 139). The fix is an in-memory, process-local registry that the engine and the parent tools feed explicitly, a pure snapshot the board and a `/agents` command render, and one engine hook so the loop repaints when a node session or worker starts or ends.",
+  "evidence": [
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/graph/engine.ts",
+    "line": 920,
+    "note": "executeNode: `const { session, disposeAfter } = await this.createSessionForNode(node)`; sessionId recorded at L921; the finally at L1001-1006 calls recordSessionCost then dispose for isolated sessions. This is where a node session's lifetime is bracketed."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/graph/engine.ts",
+    "line": 916,
+    "note": "Only nodes with workerRole go through executeWorkerAgentNode (L916-918); graph validation at L250-274 admits workerRole 'reviewer' only."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/graph/engine.ts",
+    "line": 1023,
+    "note": "executeWorkerAgentNode constructs its own BackgroundBus (L1023-1028), spawns (L1031-1035), records sessionId/agentId (L1037-1039), and stops with bus.stop(agentId) in finally (L1082-1086). This bus is not in communicate.ts's buses map."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/graph/engine.ts",
+    "line": 63,
+    "note": "GraphAgentSession.getSessionStats?(): { cost: number } — the real AgentSession.getSessionStats returns SessionStats with toolCalls (core/agent-session.ts L287, L3355-3392), so widening the type to { cost; toolCalls? } is structural, no new counter."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/graph/engine.ts",
+    "line": 106,
+    "note": "GraphEngineOptions ends with `thinkingLevel?: ThinkingLevel;` at L106, closing brace L107 — the new onSessionsChange option goes after L106. Engine clock is this.now (L545, used at L605/L1242)."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/bus/spawn.ts",
+    "line": 383,
+    "note": "countLiveProcesses() is the only sync liveness path and it uses `this.isProcessAlive` (private, L217, set L233 from dependencies or defaultIsProcessAlive). A registry must ask the bus, not re-check pids with its own predicate."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/bus/spawn.ts",
+    "line": 139,
+    "note": "processWorkerAdmission is the process-wide table; L48-52 'Tests MUST inject createWorkerAdmission()' — test harnesses (test/bus.test.ts L1913) inject their own, so a caps line must take its admission from the caller, not the process table."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/bus/spawn.ts",
+    "line": 141,
+    "note": "WorkerRecord L141-161 (no node field); WorkerStatus L163-174; spawn options L413-418; record literal L503-518; status() L553-569; stopAll sets closing L908-915; isClosing L918-920; public jobId/runDirectory L200-205."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/bus/communicate.ts",
+    "line": 287,
+    "note": "setLiveWorkerCountProvider block L287-293 sums the parent-tool buses only; activeBus creates buses at L319-330; agents_status L473-491; session_shutdown stops every bus and clears the map at L594-599; BusRegistrationOptions extends BusDependencies (L43-46) so options.admission/now are the same injections its buses use."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/bus/live-snapshot.ts",
+    "line": 11,
+    "note": "liveWorkerCount() is a bare number provider set by communicate.ts; callers: communicate.ts L21/L287, control-plane.ts L20/L217, test/bus.test.ts L3488-3493. Replaced, not shimmed."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/control-plane.ts",
+    "line": 217,
+    "note": "buildBoardModel: `const agents = options.agents ?? liveWorkerCount();` with job already read by readLiveJob at L210; BoardBuildOptions L194-202; model literal emits agents at L239; createStatusWidget(cwd, options: BoardBuildOptions) at L257 is what operator-ui tests call with { agents } — so a `sessions` option must live on BoardBuildOptions for those tests to compile."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/control-plane.ts",
+    "line": 325,
+    "note": "installWidget L325-336 (no try; buildBoardModel then applyBoardTheme then setWidget); onStateChange closure L483-485; session_start hook L517 installs the widget; applyBoardTheme L295-307 calls ctx.ui.setTheme each time."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/board.ts",
+    "line": 335,
+    "note": "contextRows summary cell `{ text: `AGENTS ${model.agents}`, tone: \"text\" }` L334-338; BoardModel.agents/busLit L80-81; the compact painter joins CONTEXT lamps + this row (board-frame.ts L343-350)."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/gated-loop.ts",
+    "line": 1891,
+    "note": "GraphEngine constructed L1891-1904 (fresh run) and GraphEngine.restore L1654-1660 (resume) with no session hook; LoopDependencies.onStateChange L45; awaited unguarded at L1910/1951/2018 — anything the hook throws ends the run through runLoop's catch (L2000)."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/bus/leases.ts",
+    "line": 314,
+    "note": "releaseDeadLeases already runs on claim/reap and is what removes a dead holder's lease; no manual command exists and none is added here."
+   },
+   {
+    "file": "test/bus.test.ts",
+    "line": 1859,
+    "note": "parentHarness fakes pids from 7_000 (L1859), `isAlive: () => alive.has(pid)` L1896, bus built with `isProcessAlive: (pid) => alive.has(pid)` and `admission: createWorkerAdmission()` L1905-1913 — any registry count must go through the bus's own predicate or it depends on whether pid 7000 exists on the host."
+   },
+   {
+    "file": "test/bus.test.ts",
+    "line": 3473,
+    "note": "'countLiveProcesses excludes dead PIDs without reaping the table' L3473-3500 imports set/resetLiveWorkerCountProvider at L3488-3493 — body migrates; title is not bound in the traceability map."
+   },
+   {
+    "file": "test/operator-ui.test.ts",
+    "line": 325,
+    "note": "'BUS lamp tracks bus.jsonl history independent of AGENTS count' (bound to AC-23.6, generate-traceability-map.mjs L700-704) asserts /AGENTS 3/ and /AGENTS 0/ via createStatusWidget(root, { agents }); L120 asserts /AGENTS 1/. All survive a suffix after the number. BoardModel literals with `agents:` at L283/416/438/500 keep compiling because `sessions` is optional."
+   },
+   {
+    "file": "test/control-plane.test.ts",
+    "line": 77,
+    "note": "createRun writes job_id '2026-08-31-status' RUNNING; registerFixture exposes commands and getSessionStart (L26-45); context() renders the widget component at 120 columns (L52-62). The widget test must register its node session with jobId '2026-08-31-status'."
+   },
+   {
+    "file": "test/reviewer-session.test.ts",
+    "line": 29,
+    "note": "reviewGraph() has a workerRole 'reviewer' node 'review' (L34-53) and jobRoot() writes task.json; L103 'fake reviewer accepts the prompt before settlement…' drives a GraphEngine with a fake launcher — the fixture for the worker-node registration test."
+   },
+   {
+    "file": "scripts/generate-traceability-map.mjs",
+    "line": 700,
+    "note": "AC map is one [file, title, observable] triple per AC (L43 'One primary binding per AC', bind() L1156); US-23 block L674-719 ends with AC-23.9. traceability.test.ts L290-330 requires each bound title to exist verbatim and be selectable; map entry count must equal the PRD's `- **AC-x.y**` lines, so PRD line and map row land together."
+   },
+   {
+    "file": "scripts/pty-rows/uat-16.mjs",
+    "line": 147,
+    "note": "PTY grader token /CONTEXT LAYER/ && /AGENTS \\d+/ && /BUS/ — the cell must keep the `AGENTS <digits>` prefix."
+   },
+   {
+    "file": "docs/spec.md",
+    "line": 129,
+    "note": "§4 'Entry points' command table L129-162 is the normative slash-command list (`/kpi status`, `/statusbar`, `/accounts …`, `/pool …`, `/kg`, `/setup-kstack`, `/k-mode`); `/agents` must be added there. §5 run-store table L176-188; §11 Widgets mock L507-535 shows `AGENTS n`."
+   },
+   {
+    "file": "docs/visual-targets.md",
+    "line": 151,
+    "note": "'2. **Context layer**' is L151-152 (L155-159 is the stage-cell block); §1 'Default k-pi footer (normative)' L72 is unchanged by this design."
+   },
+   {
+    "file": "docs/agents-bus.md",
+    "line": 112,
+    "note": "§Board says only 'Header can show AGENTS 2'; no visibility section. docs/PRD.md L324-336 US-23 has AC-23.1–23.9; AC-23.6 'Board can show AGENTS n' stays verbatim."
+   },
+   {
+    "file": "fixes.md",
+    "line": 3,
+    "note": "ACTIVE FX-## work queue; §4 waves table L296-302 coordinates shared files — this change is recorded as FX-05 there."
+   }
+  ],
+  "change": [
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/bus/sessions-snapshot.ts",
+    "action": "create",
+    "what": "Replaces live-snapshot.ts. Pure in-memory, synchronous, no I/O, no imports of spawn.ts values (only `import type { BackgroundBus, LiveWorker, WorkerRole } from \"./spawn.ts\"`), so spawn.ts → sessions-snapshot.ts is not a cycle in any direction. Module state: `const nodeSessions = new Set<LiveNodeSession>()` and `const buses = new Set<BackgroundBus>()`. Exports: `registerLiveNodeSession(record: LiveNodeSession): () => void` (adds; returns an idempotent remover); `registerLiveBus(bus: BackgroundBus): () => void` (same shape; owners call the remover — the engine in its node finally, communicate.ts at session_shutdown); `resetSessionsRegistry(): void` (clears both sets; test seam); `liveNodeSessions(jobId?: string): LiveNodeSession[]` (filtered by record.jobId when jobId given); `liveWorkerSessions(jobId?: string): LiveWorkerSession[]` — for each registered bus, skip `bus.isClosing`, filter `bus.jobId === jobId` when given, map `bus.liveWorkers()` (the bus's own predicate, never reaping) to `{ kind: 'worker', jobId: bus.jobId, ...worker }`; a worker with alive === false is still returned (one rule: dead-but-unreaped workers are listed alive:false in /agents and never counted); `liveWorkerCount(jobId?): number` = liveWorkerSessions(jobId).filter(w => w.alive).length; `sessionsSnapshot(options: { jobId?: string; main?: { sessionId?: string; model?: string; pid: number }; now?: () => Date }): SessionsSnapshot` — rows: one 'main' row when options.main is given (id = sessionId ?? 'main', role 'main', pid, alive true); one 'node' row per live node session (id nodeId, role `node:${contextMode}`, model, pid process.pid, alive true, startedAt, elapsedMs = now - startedAt clamped at 0, toolCalls from `record.stats?.()?.toolCalls` wrapped in try/catch → undefined on throw, job = record.jobId); one 'worker' row per bus worker (id agentId, role, pid, alive, startedAt = spawnedAt, lastActivity = lastEvent, node, job); counts = { nodes, workers (alive only), liveTotal = nodes + workers }. Also exports `MECHANISM_SENTENCE` = 'K-π runs graph nodes as in-process sessions in this kpi process; a node with workerRole (the reviewer) and the spawn_background tool start separate kpi --mode rpc processes that talk over .kpi/runs/<job>/bus.jsonl. No sub-agent API is used.' Nothing here reads disk or starts anything."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/bus/live-snapshot.ts",
+    "action": "delete",
+    "what": "Superseded by sessions-snapshot.ts; migrate all three callers (communicate.ts L21/L287-293, control-plane.ts L20/L217, test/bus.test.ts L3488-3493). No re-export shim."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/bus/spawn.ts",
+    "action": "edit",
+    "what": "(1) Export `interface LiveWorker { agentId: string; role: WorkerRole; pid: number; alive: boolean; isWriter: boolean; spawnedAt: string; lastEvent: string; node?: string }` next to WorkerStatus (after L174). (2) Add public sync `liveWorkers(): LiveWorker[]` beside countLiveProcesses (L383): maps this.workers.values() with `alive: worker.launch.isAlive() && this.isProcessAlive(worker.pid)`; never reaps or releases (same doc comment as countLiveProcesses). Rewrite countLiveProcesses as `return this.liveWorkers().filter((worker) => worker.alive).length;` so there is one liveness computation. (3) Add `node?: string` to the spawn options (L413-418), to WorkerRecord (L141-161; set `node: options.node` in the literal at L503-518) and to WorkerStatus (L163-174; emit `node: worker.node` at L556-567). No import of sessions-snapshot.ts; no constructor side effect."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/bus/sessions-command.ts",
+    "action": "create",
+    "what": "Imports `sessionsSnapshot, MECHANISM_SENTENCE, type SessionsSnapshot` from ./sessions-snapshot.ts, `MAX_LIVE_WORKERS, MAX_LIVE_WRITERS, processWorkerAdmission, type WorkerAdmission` from ./spawn.ts, `readLiveJob` from ../run-store.ts, `truncatePlain` from ../board.ts. `formatSessionsTable(snapshot: SessionsSnapshot, caps: { workers: number; writers: number }, job?: { jobId: string; status: string }): string[]` — line 1 `SESSIONS ${liveTotal} live · ${nodes} node(s) in-process · ${workers} worker process(es)`; a fixed-column table `KIND  ID  ROLE  MODEL  PID  ALIVE  ELAPSED  LAST  NODE  JOB` (ids truncated at 28 cols, elapsed as `12s`/`3m04s`, `-` for absent); then `caps (this process): workers ${caps.workers}/${MAX_LIVE_WORKERS} · writers ${caps.writers}/${MAX_LIVE_WRITERS}`; then MECHANISM_SENTENCE; then, when job is given with status RUNNING and no node row carries job.jobId, the honest line `no in-process node session for job ${jobId}: its loop is not running in this kpi process`. `registerSessionsCommand(pi: ExtensionAPI, options: { admission?: WorkerAdmission; now?: () => Date } = {})` — guarded by `typeof pi.registerCommand === 'function'`; registers command `agents` (description 'Show live K-π sessions: main, in-process graph nodes, worker processes'). Handler: args.trim() === '' → `const job = await readLiveJob(ctx.cwd)` (only disk read; ENOENT-free by construction), `sessionsSnapshot({ main: { sessionId: ctx.sessionManager.getSessionId(), model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined, pid: process.pid }, now: options.now })`, caps from `(options.admission ?? processWorkerAdmission).counts()`, `ctx.ui.notify(lines.join('\\n'), 'info')`. Any other args → `ctx.ui.notify('usage: /agents', 'warning')`. The handler wraps readLiveJob in try/catch and reports `ctx.ui.notify(`/agents could not read the run store: ${message}`, 'error')` — the one failure path, named. No `clean` subcommand, no lease reading, no mutation."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/bus/communicate.ts",
+    "action": "edit",
+    "what": "Remove the live-snapshot import (L21) and the setLiveWorkerCountProvider block (L287-293). Import `registerLiveBus` from ./sessions-snapshot.ts and `registerSessionsCommand` from ./sessions-command.ts. Beside `const buses = new Map<string, BackgroundBus>()` add `const busReleases = new Map<string, () => void>()`; in activeBus (L326-329) after `buses.set(job.jobId, bus)` add `busReleases.set(job.jobId, registerLiveBus(bus))`; in the session_shutdown hook (L594-599) after the stopAll loop call every release then `busReleases.clear()` before `buses.clear()`. In registerParentTools add `registerSessionsCommand(pi, { admission: options.admission, now: options.now })` so the caps line reads the same admission table these buses use. The agents_status tool (L473-491) needs no change beyond WorkerStatus now carrying `node` (its JSON gains the field automatically)."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/graph/engine.ts",
+    "action": "edit",
+    "what": "(1) L63: `getSessionStats?(): { cost: number; toolCalls?: number }`. (2) GraphEngineOptions after L106: `/** Fires when an in-process node session or a worker process starts or ends. Fire-and-forget: a failing hook is warned, never awaited for correctness. */ onSessionsChange?: () => void | Promise<void>;`. (3) Import `registerLiveNodeSession, registerLiveBus` from ../bus/sessions-snapshot.ts. In executeNode after L921 (`this.runState.nodes[node.id].sessionId = session.sessionId;`) add `const releaseSession = registerLiveNodeSession({ kind: 'node', jobId: this.options.jobId, nodeId: node.id, sessionId: session.sessionId, contextMode: node.context.mode, threadKey: node.context.threadKey ?? node.id, model: this.options.model === undefined ? undefined : `${this.options.model.provider}/${this.options.model.id}`, startedAt: new Date(this.now()).toISOString(), stats: () => session.getSessionStats?.() }); this.noteSessionsChange();` and in the finally (L1001-1006) call `releaseSession(); this.noteSessionsChange();` before recordSessionCost. (4) In executeWorkerAgentNode: after the bus is constructed (L1028) `const releaseBus = registerLiveBus(bus);`; pass `node: node.id` in bus.spawn (L1031-1035); call `this.noteSessionsChange()` after spawn returns; in the finally keep `await bus.stop(agentId).catch(() => undefined)` unchanged and add `releaseBus(); this.noteSessionsChange();` after it. (5) New private `noteSessionsChange(): void { void Promise.resolve().then(() => this.options.onSessionsChange?.()).catch((error) => { console.warn(`[kpi/graph] sessions change hook failed: ${error instanceof Error ? error.message : String(error)}`); }); }` — a repaint failure is recorded and bounded to one warning per event, and never fails a node."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/gated-loop.ts",
+    "action": "edit",
+    "what": "At both GraphEngine construction sites (GraphEngine.restore L1654-1660 and `new GraphEngine` L1891-1904) pass `onSessionsChange: dependencies.onStateChange`, so the control plane's installWidget repaints when a node session or worker starts/ends. No new LoopDependencies field."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/board.ts",
+    "action": "edit",
+    "what": "BoardModel (after L80 `agents: number;`): add `/** Breakdown of `agents`; absent when the count was injected without one. */ sessions?: { nodes: number; workers: number };`. contextRows (L334-338): replace the literal with `agentsCell(model)` returning `{ text: model.sessions === undefined ? `AGENTS ${model.agents}` : `AGENTS ${model.agents} · ${plural(model.sessions.nodes, 'node')} · ${plural(model.sessions.workers, 'worker')}`, tone: 'text' }` where plural(n, word) = `${n} ${word}${n === 1 ? '' : 's'}`. The `AGENTS <digits>` prefix is preserved for the pty grader and existing tests; no new tone."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/control-plane.ts",
+    "action": "edit",
+    "what": "L20: import `sessionsSnapshot` from ./bus/sessions-snapshot.ts instead of liveWorkerCount. BoardBuildOptions (L194-202): add `/** Injected breakdown for tests; production derives it from the process-local registry. */ sessions?: BoardModel['sessions'];`. In buildBoardModel replace L217 with: `const live = options.agents === undefined ? sessionsSnapshot({ jobId: job.jobId }).counts : undefined; const agents = options.agents ?? live!.nodes + live!.workers; const sessions = options.sessions ?? live;` and emit `...(sessions === undefined ? {} : { sessions: { nodes: sessions.nodes, workers: sessions.workers } })` after `agents,` at L239. `agents` is therefore always derived from the breakdown unless a test injects it; sessionsSnapshot is pure memory, so buildBoardModel gains no I/O and no new throw path. installWidget/applyBoardTheme unchanged."
+   },
+   {
+    "file": "test/bus.test.ts",
+    "action": "edit",
+    "what": "In 'countLiveProcesses excludes dead PIDs without reaping the table' (L3487-3493) replace the live-snapshot block with `resetSessionsRegistry(); const release = registerLiveBus(harness.bus); assert.equal(liveWorkerCount(), 1); release(); assert.equal(liveWorkerCount(), 0);` (imports from ../packages/coding-agent/src/kpi/extensions/bus/sessions-snapshot.ts at the top of the file). Add the two new tests listed under tests; each calls resetSessionsRegistry() first and in finally."
+   },
+   {
+    "file": "test/graph-engine.test.ts",
+    "action": "edit",
+    "what": "Add the node-session visibility test (deferred prompt in the fake session factory, pattern of L195-230), with resetSessionsRegistry() first and in finally."
+   },
+   {
+    "file": "test/reviewer-session.test.ts",
+    "action": "edit",
+    "what": "Add the worker-node registration test using reviewGraph()/jobRoot() and the fake launcher of the L103 test, with resetSessionsRegistry() first and in finally."
+   },
+   {
+    "file": "test/operator-ui.test.ts",
+    "action": "edit",
+    "what": "Add the AGENTS-cell breakdown test using createStatusWidget(root, { agents, sessions }) and paintBoard at 80 columns."
+   },
+   {
+    "file": "test/control-plane.test.ts",
+    "action": "edit",
+    "what": "Add the widget test that seeds registerLiveNodeSession with jobId '2026-08-31-status' and asserts the session_start widget text."
+   },
+   {
+    "file": "scripts/generate-traceability-map.mjs",
+    "action": "edit",
+    "what": "After the AC-23.9 triple (L715-719) add `\"AC-23.10\": [\"test/bus.test.ts\", \"/agents prints every kind of session and names the mechanism\", \"operator can list the main session, in-process node sessions and worker processes, with the mechanism stated\"]` and `\"AC-23.11\": [\"test/operator-ui.test.ts\", \"the AGENTS cell breaks live sessions into nodes and workers\", \"board AGENTS cell is nodes + workers with the breakdown; the per-node repaint hook is proven by the graph-engine title\"]`; regenerate docs/traceability-map.json with `node scripts/generate-traceability-map.mjs`."
+   },
+   {
+    "file": "docs/traceability-map.json",
+    "action": "edit",
+    "what": "Regenerated only (never hand-edited)."
+   },
+   {
+    "file": "fixes.md",
+    "action": "edit",
+    "what": "Add `## FX-05 — Sessions visibility: AGENTS counts in-process node sessions and the engine's own bus; /agents lists them; the board repaints per node` after FX-04 (before §4 L296) with Depends-on: FX-01 (board component), the owned files above, the verification block below, and a DoD line per AC-23.10/23.11; add a wave-4 row `| 4 | FX-05 | control-plane.ts (buildBoardModel L194-239 only), board.ts (contextRows only), engine.ts, gated-loop.ts (two option literals) |` to the §4 table so the overlap with the board-live/plan-gate packages is coordinated in the queue."
+   }
+  ],
+  "event_or_data_contracts": [
+   "bus/sessions-snapshot.ts exports: `interface LiveNodeSession { kind: 'node'; jobId: string; nodeId: string; sessionId: string; contextMode: 'isolated' | 'thread'; threadKey: string; model?: string; startedAt: string; stats?: () => { cost: number; toolCalls?: number } | undefined }`; `interface LiveWorkerSession extends LiveWorker { kind: 'worker'; jobId: string }`; `interface SessionRow { kind: 'main' | 'node' | 'worker'; id: string; role: string; model?: string; pid: number; alive: boolean; startedAt?: string; elapsedMs?: number; lastActivity?: string; job?: string; node?: string; toolCalls?: number }`; `interface SessionsSnapshot { rows: SessionRow[]; counts: { nodes: number; workers: number; liveTotal: number }; mechanism: string }`; functions `registerLiveNodeSession(record: LiveNodeSession): () => void`, `registerLiveBus(bus: BackgroundBus): () => void`, `resetSessionsRegistry(): void`, `liveNodeSessions(jobId?: string): LiveNodeSession[]`, `liveWorkerSessions(jobId?: string): LiveWorkerSession[]`, `liveWorkerCount(jobId?: string): number`, `sessionsSnapshot(options: { jobId?: string; main?: { sessionId?: string; model?: string; pid: number }; now?: () => Date }): SessionsSnapshot` (synchronous, pure); constant `MECHANISM_SENTENCE`. Job scoping rule: the board counts the live job only (`jobId` passed); `/agents` passes no jobId and lists every session this process owns with a JOB column. Liveness rule: a worker whose launch or pid is dead is a row with alive:false and is never counted.",
+   "bus/spawn.ts: `export interface LiveWorker { agentId: string; role: WorkerRole; pid: number; alive: boolean; isWriter: boolean; spawnedAt: string; lastEvent: string; node?: string }`; `BackgroundBus.liveWorkers(): LiveWorker[]` (sync, uses the bus's injected isProcessAlive, never reaps); `countLiveProcesses()` unchanged in behaviour, now derived from liveWorkers(); `BackgroundBus.spawn({ role, prompt, model?, tools?, node?: string })`; `WorkerRecord.node?: string`; `WorkerStatus.node?: string` (also surfaced in the agents_status tool JSON).",
+   "bus/sessions-command.ts exports: `registerSessionsCommand(pi: ExtensionAPI, options?: { admission?: WorkerAdmission; now?: () => Date }): void` registering slash command `agents` with args '' only (anything else → usage warning); `formatSessionsTable(snapshot: SessionsSnapshot, caps: { workers: number; writers: number }, job?: { jobId: string; status: string }): string[]`.",
+   "board.ts: `BoardModel.sessions?: { nodes: number; workers: number }` (optional; `agents` remains the live total and equals nodes + workers whenever buildBoardModel derives it). Cell text contract: `AGENTS <n>` alone when `sessions` is absent; `AGENTS <n> · <k> node|nodes · <w> worker|workers` otherwise; tone 'text'.",
+   "control-plane.ts: `BoardBuildOptions.sessions?: BoardModel['sessions']` (test injection alongside the existing `agents`).",
+   "graph/engine.ts: `GraphEngineOptions.onSessionsChange?: () => void | Promise<void>`; `GraphAgentSession.getSessionStats?(): { cost: number; toolCalls?: number }`.",
+   "bus/live-snapshot.ts is removed; `setLiveWorkerCountProvider`/`resetLiveWorkerCountProvider` no longer exist.",
+   "No new event types, on-disk files, schema fields, or settings keys. No disk is read for the count; `/agents` reads only readLiveJob(cwd) for the job id and status."
+  ],
+  "tests": [
+   {
+    "file": "test/bus.test.ts",
+    "title": "a registered bus lists its workers for the sessions snapshot and leaves it when released",
+    "asserts": "resetSessionsRegistry(); harness = await parentHarness(); release = registerLiveBus(harness.bus); after harness.bus.spawn({ role: 'reviewer', prompt: 'review', node: 'review' }): liveWorkerSessions() is one row { jobId: harness.fixture.jobId, agentId, role: 'reviewer', pid: 7000, alive: true, node: 'review' }, liveWorkerCount() === 1, liveWorkerCount('other-job') === 0, sessionsSnapshot({ jobId: harness.fixture.jobId }).counts deep-equals { nodes: 0, workers: 1, liveTotal: 1 }; harness.alive.delete(pid) → the row is still returned with alive: false, liveWorkerCount() === 0 and harness.bus.live === 1 (no reap ran); release() → liveWorkerSessions() is []; registering again then harness.bus.stopAll() → [] via isClosing; resetSessionsRegistry() in finally."
+   },
+   {
+    "file": "test/bus.test.ts",
+    "title": "/agents prints every kind of session and names the mechanism",
+    "asserts": "resetSessionsRegistry(); admission = createWorkerAdmission(); harness = await parentHarness({ dependencies: { admission } }); registerLiveBus(harness.bus); one live reviewer spawned with node 'review'; registerLiveNodeSession({ kind: 'node', jobId: harness.fixture.jobId, nodeId: 'implement', sessionId: 's-1', contextMode: 'isolated', threadKey: 'implement', model: 'stub/model', startedAt: <fixed ISO>, stats: () => ({ cost: 0, toolCalls: 3 }) }); a fake pi capturing registerCommand('agents') gets registerSessionsCommand(pi, { admission, now: () => fixed + 65s }); handler('', ctx with cwd = harness.fixture.directory, sessionManager.getSessionId() → 'main-1', model { provider: 'stub', id: 'model' }, ui.notify sink, and sendUserMessage/setModel that throw) → the single info notification contains 'SESSIONS 2 live · 1 node(s) in-process · 1 worker process(es)', a main row with 'main-1' and String(process.pid), a node row 'implement' with 'node:isolated', 'stub/model', '1m05s' and '3', a worker row with the agent id, '7000', 'yes' and 'review', 'caps (this process): workers 1/2 · writers 0/1', and the exact MECHANISM_SENTENCE; handler('bogus') notifies 'usage: /agents' at level 'warning'; no model client was constructed."
+   },
+   {
+    "file": "test/graph-engine.test.ts",
+    "title": "a running agent node is a live in-process session until it settles, and the engine says when it changes",
+    "asserts": "resetSessionsRegistry(); fake createAgentSession whose prompt() awaits a deferred and whose getSessionStats returns { cost: 0, toolCalls: 2 }; engine built with jobId 'vis-job', model { provider: 'stub', id: 'm' }, and onSessionsChange = () => { calls += 1; if (calls === 2) throw new Error('boom'); }. Start engine.runUntilPause() without awaiting; once prompt is pending, liveNodeSessions('vis-job') deep-equals one record with nodeId = graph entry, contextMode 'isolated', sessionId 'session-1', model 'stub/m', and calls === 1; resolve the deferred and await the run → liveNodeSessions() is [] and calls === 2; the thrown hook was warned (console.warn captured, /sessions change hook failed: boom/) and the run's state is the same terminal it reaches with no hook installed."
+   },
+   {
+    "file": "test/reviewer-session.test.ts",
+    "title": "a graph reviewer worker is a live worker session while its node runs and is gone after",
+    "asserts": "resetSessionsRegistry(); reviewGraph()/jobRoot() with the fake launcher of the L103 test; onSessionsChange records `liveWorkerSessions(jobId)` on every call. After engine.runUntilPause(): the first recorded snapshot has one row { role: 'reviewer', node: 'review', alive: true, jobId } and the pid the fake launcher issued; the final liveWorkerSessions() is [] and liveWorkerCount() === 0 (bus released in finally); the node's state still carries agentId/sessionId as before."
+   },
+   {
+    "file": "test/operator-ui.test.ts",
+    "title": "the AGENTS cell breaks live sessions into nodes and workers",
+    "asserts": "createStatusWidget(root, { agents: 2, sessions: { nodes: 1, workers: 1 } }) text matches /AGENTS 2 · 1 node · 1 worker/; with { agents: 2 } alone the row contains 'AGENTS 2  BUS' and no '·'; { agents: 3, sessions: { nodes: 3, workers: 0 } } renders 'AGENTS 3 · 3 nodes · 0 workers'; paintBoard(model with sessions, { width: 80, layout: 'compact', palette: PLAIN_PALETTE }) with no route/usage contains 'AGENTS 2 · 1 node · 1 worker' uncut and every line is ≤ 80 visible columns."
+   },
+   {
+    "file": "test/control-plane.test.ts",
+    "title": "the session widget counts an in-process node session without starting one",
+    "asserts": "resetSessionsRegistry(); withFixture → createRun(directory); registerLiveNodeSession({ kind: 'node', jobId: '2026-08-31-status', nodeId: 'plan', sessionId: 's', contextMode: 'thread', threadKey: 'coder', startedAt: new Date().toISOString() }); registerFixture().getSessionStart() handler runs with context(directory, notifications, widgets) → widgets[0] text matches /AGENTS 1 · 1 node · 0 workers/, and the context's newSession/sendUserMessage were never called; registering a node session for jobId 'other' instead → /AGENTS 0 · 0 nodes · 0 workers/ (scoped to the live job); resetSessionsRegistry() in finally."
+   }
+  ],
+  "docs": [
+   {
+    "file": "docs/agents-bus.md",
+    "section": "## Board (L112-114) → rewrite; add ## Visibility after it",
+    "what": "Board: the CONTEXT row's AGENTS cell is the live total with its breakdown — `AGENTS 2 · 1 node · 1 worker` — counted for the live job in this process; `BUS ●` still tracks bus.jsonl history. New §Visibility: MECHANISM_SENTENCE verbatim; the two session kinds and their source (an in-process registry fed by the graph engine for node sessions and by the engine/parent tools for buses; liveness from each bus's own pid check, never reaping); `/agents` columns KIND ID ROLE MODEL PID ALIVE ELAPSED LAST NODE JOB; a dead-but-unreaped worker is listed `ALIVE no` and not counted; the honest limit — node sessions are visible only from the kpi process running the loop and `/agents` says so; caps are per process (`caps (this process)`); another K-π process's workers are not listed (same rule as the caps)."
+   },
+   {
+    "file": "docs/PRD.md",
+    "section": "### US-23 (L324-336)",
+    "what": "Add `- **AC-23.10** `/agents` lists every live session this kpi process owns — the main session, in-process graph node sessions (node id, context mode, model, elapsed, tool calls) and worker processes (agent id, role, pid, alive, node, job) — and states that graph nodes are in-process sessions while workerRole nodes and `spawn_background` are separate `kpi --mode rpc` processes over `bus.jsonl`, with no sub-agent API.` and `- **AC-23.11** The board's `AGENTS n` cell is nodes + workers for the live job with the breakdown `· k nodes · w workers`, and it repaints when a node session or worker starts or ends, not only per superstep.` AC-23.6 'Board can show AGENTS n' stays verbatim."
+   },
+   {
+    "file": "docs/spec.md",
+    "section": "## 4. Entry points (L129-162), ## 11. UI › Widgets (L507-535)",
+    "what": "§4: add the row `| `/agents` | Live sessions of this kpi process: main, in-process graph nodes, worker processes, per-process caps, and the mechanism line. Files and memory only, no model. |` after `/kpi stop`. §11 widget mock: `CONTEXT product ● structure ● tech ○  AGENTS n · k nodes · w workers  BUS ●  ROUTE …  USAGE …`; add a `/agents` paragraph after the `/kpi status` overlay paragraph describing the table, the mechanism line, and that the widget repaints on node-session start/end (GraphEngineOptions.onSessionsChange → the loop's onStateChange), not only per superstep."
+   },
+   {
+    "file": "docs/visual-targets.md",
+    "section": "### Board A › 2. Context layer (L151-152)",
+    "what": "Add one sentence: the context layer also carries the live-session cell `AGENTS n · k nodes · w workers`; the `AGENTS <n>` prefix is the graded token. §1 default footer is explicitly unchanged."
+   },
+   {
+    "file": "docs/uat.md",
+    "section": "### UAT-23 (L170-174)",
+    "what": "Action: add 'run /agents while the review node is live and again after the run'. Pass evidence: '/agents lists the main session, the in-process node sessions with context mode and model, and the reviewer worker with its pid and node; the board reads AGENTS 1 · 0 nodes · 1 worker while the reviewer runs and repaints when it ends; the output states nodes are in-process and workers are separate kpi processes.' ACs: AC-23.1–23.11."
+   },
+   {
+    "file": "README.md",
+    "section": "## 9. Reading the board (L471-531), ## 12. Other commands (L575-608), ## 14. Background workers (L704-717)",
+    "what": "§9: keep the at-rest mock `AGENTS 0  BUS ○` and add a bullet: **AGENTS** — live sessions for the job: `AGENTS 2 · 1 node · 1 worker`; nodes are in-process sessions, workers are separate kpi processes. §12: add `/agents` — 'lists this process's live sessions and the per-process caps; `no active job` is not an error, the main row still prints'. §14: replace 'The board's AGENTS <n> count … track that file' (L716) with the mechanism sentence, the breakdown cell, `/agents`, and the note that caps and the count are per process while bus.jsonl is per run directory."
+   },
+   {
+    "file": "scripts/generate-traceability-map.mjs",
+    "section": "AC map, US-23 block (L674-719)",
+    "what": "Add the AC-23.10 row bound to test/bus.test.ts '/agents prints every kind of session and names the mechanism' and the AC-23.11 row bound to test/operator-ui.test.ts 'the AGENTS cell breaks live sessions into nodes and workers'; keep AC-23.6's binding verbatim; regenerate docs/traceability-map.json."
+   },
+   {
+    "file": "fixes.md",
+    "section": "## 3. Packages (new FX-05 after FX-04) and ## 4. Execution waves (L296-302)",
+    "what": "FX-05 entry: root cause (the three defects), owned files, tests, verification, DoD (AC-23.10/23.11 rows green, uat-16 pty row still passes, /agents shown against the built cli.js); wave-4 row naming the shared files so board-live/plan-gate merges are coordinated."
+   }
+  ],
+  "verification": [
+   "cd /Users/leebarry/K-pi && git status --porcelain",
+   "cd /Users/leebarry/K-pi && node --test --experimental-strip-types --test-name-pattern '^a running agent node is a live in-process session until it settles, and the engine says when it changes$' test/graph-engine.test.ts   # reproduces: fails before the fix (registry module absent / empty while prompt is pending)",
+   "cd /Users/leebarry/K-pi && node --test --experimental-strip-types test/bus.test.ts test/graph-engine.test.ts test/reviewer-session.test.ts test/operator-ui.test.ts test/control-plane.test.ts test/status-line.test.ts test/gated-loop.test.ts",
+   "cd /Users/leebarry/K-pi && node scripts/generate-traceability-map.mjs && git diff --stat docs/traceability-map.json && node --test --experimental-strip-types test/traceability.test.ts",
+   "cd /Users/leebarry/K-pi && npm run check",
+   "cd /Users/leebarry/K-pi && npm run test:kpi",
+   "cd /Users/leebarry/K-pi && npm test",
+   "cd /Users/leebarry/K-pi && npm run build -w packages/coding-agent && node --test --experimental-strip-types test/harness.test.ts",
+   "cd /Users/leebarry/K-pi && npm run verify:built",
+   "cd /Users/leebarry/K-pi && node scripts/pty-rows/uat-16.mjs   # context-layer-lamps row must still pass on /AGENTS \\d+/ against the built cli.js",
+   "cd /Users/leebarry/K-pi && echo 'manual, against packages/coding-agent/dist/bundle/cli.js in a scratch repo with a workerRole review graph: type /agents while 07 review is CURRENT and confirm a worker row with a pid and node review and the board reading AGENTS 1 · 0 nodes · 1 worker; type /agents with no job and confirm the main row, caps line and the mechanism sentence; confirm the board repaints to AGENTS 0 · 0 nodes · 0 workers as soon as the reviewer ends, before the superstep closes'"
+  ],
+  "risks": [
+   "Module-level registry: registration is explicit (engine finally / communicate session_shutdown / test harness), so unrelated buses never appear, but a test that registers and then fails before its finally would leak rows into the next test in the same file — every new test calls resetSessionsRegistry() first and in finally.",
+   "Repaint frequency: onSessionsChange → installWidget now runs at each node start/end in addition to each superstep, i.e. at most 2 × maxNodeRuns extra repaints per run; each repaint stats ~10 files and scans events.jsonl once (busLogLit/fileLitMap), unchanged per call. Bounded by maxNodeRuns; if a long job shows it, cap the events.jsonl scan to a tail.",
+   "rejected: make applyBoardTheme skip setTheme when the theme is unchanged. setTheme is idempotent in the TUI, the extra calls are bounded as above, and test/operator-ui.test.ts L756-790 exercises applyBoardTheme's refusal-once contract directly — adding a name cache there is unrelated state with its own test surface, so it stays out of this change.",
+   "rejected (scope cut, not disagreement): listing workers spawned by another K-π process from `agent.spawned` pids in events.jsonl, and stale-lease rows / `/agents clean`. The issue names three in-process defects; the caps comment (spawn.ts L37) already defines the count as per process; releaseDeadLeases (leases.ts L314-333) already clears dead holders on claim/reap; and both features add disk reads, a pid-reuse ambiguity, and a throw path (readLeasesFile L226) into the board repaint. The count now has no I/O and no failure path; the limits are printed by /agents and documented.",
+   "At 80 columns with ROUTE and USAGE present the compact CONTEXT row can exceed the width and be cut with '…' by the existing painter; 'AGENTS n' sits first in the summary so the graded token survives, but the breakdown may be truncated. The full board (/kpi status) and /agents always show the whole line.",
+   "Node sessions of another process are deliberately not inferred from checkpoints (a dead loop process would leave phantom 'running' nodes); /agents prints an explicit 'not running in this kpi process' line instead.",
+   "control-plane.ts, board.ts, engine.ts and gated-loop.ts are also edited by the board-live and plan-gate packages; this design touches control-plane.ts L20/L194-202/L217/L239, board.ts L80 and L334-338, engine.ts L63/L106/L920-921/L1001-1006/L1023-1039/L1082-1086, and the two option literals in gated-loop.ts only — recorded in fixes.md §4 so the merge order is decided in the queue."
+  ],
+  "open_questions": [
+   "Should a follow-up package add cross-process visibility (workers of another K-π process on the same checkout via `agent.spawned` pids, and a stale-lease indicator / manual release)? Cut from this change because the caps and count are per process by design and releaseDeadLeases already clears dead holders; a human decides whether that visibility is wanted at all."
+  ],
+  "size": "M"
+ },
+ "critiques": [
+  {
+   "lens": "correctness",
+   "verdict": "needs-revision",
+   "problems": [
+    {
+     "severity": "major",
+     "claim": "In-process worker liveness is re-derived by the registry with its own isProcessAlive (default = kernel signal 0), not the bus's injected one, so the migrated bus test and test 1 assert on real host pid liveness for fake pids.",
+     "evidence": "spawn.ts L217 `private readonly isProcessAlive` (not reachable from sessions-snapshot.ts); countLiveProcesses (L383-391) is the only public path that uses it. test/bus.test.ts parentHarness L1859 `let nextPid = 7_000` and L1896 `isAlive: () => alive.has(pid)`. The design's migrated assertion `assert.equal(liveWorkerCount(), 1)` takes no deps, so `liveWorkerSessions()` falls back to process.kill(7000,0)/kill(7001,0): whether pid 7000/7001 exists on the developer's machine decides the count. Test 1 only works because it threads `harness.alive.has` through readSessionsSnapshot; the board path (buildBoardModel → readSessionsSnapshot(cwd) with no deps) and the migrated test do not."
+    },
+    {
+     "severity": "major",
+     "claim": "The module-level bus registry is polluted by every earlier bus in test/bus.test.ts (none call resetSessionsRegistry, most never stopAll), and per-harness pids restart at 7000, so 'no worker rows after stopAll', 'counts.workers===1', and the pid-based 'already known in-process' dedupe are unsound.",
+     "evidence": "parentHarness L1857-1859 creates a fresh `alive` Set and `nextPid = 7_000` per harness; ~40 buses are constructed before L3473 in the same node:test process. The design keeps dead rows visible (`harness.alive.delete(pid) → row alive:false`) and resets the registry only in `finally`, so a test's snapshot sees rows from prior harnesses' buses whose pid 7000 collides with its own. BackgroundBus exposes public `jobId`/`runDirectory` (spawn.ts L200-213) but the design never scopes worker rows to the snapshot's job."
+    },
+    {
+     "severity": "minor",
+     "claim": "The stated reason the spawn.ts → sessions-snapshot.ts import is cycle-safe ('that module imports spawn.ts types only') is false: readSessionsSnapshot reads `processWorkerAdmission.counts()`, a value export of spawn.ts, and sessions-command.ts reads MAX_LIVE_WORKERS/MAX_LIVE_WRITERS.",
+     "evidence": "spawn.ts L139 `export const processWorkerAdmission`, L38-39 caps; design change (a)/(c) for sessions-snapshot.ts. The ESM cycle still evaluates because neither side touches the other at top level, but the safety argument in the design is wrong and should be replaced (inject admission, or state the real reason)."
+    },
+    {
+     "severity": "minor",
+     "claim": "registerLiveBus never unregisters; every executeWorkerAgentNode constructs a fresh BackgroundBus (engine.ts L1023) so closed buses accumulate for the life of the parent session.",
+     "evidence": "Design says liveWorkerSessions 'skips bus.isClosing' but no removal; stopAll (spawn.ts L908-915) only sets `closing`."
+    },
+    {
+     "severity": "minor",
+     "claim": "Node-row job scoping is unspecified: SessionsSnapshotInput has `jobId?: string` but buildSessionsSnapshot's node rows are 'one per live node session' with no filter, while the control-plane test registers a node session with an arbitrary jobId against createRun's job.",
+     "evidence": "test/control-plane.test.ts createRun L77; design test 'the session widget counts an in-process node session without starting one' asserts /AGENTS 1 · 1 node · 0 workers/ without saying which jobId is registered."
+    },
+    {
+     "severity": "minor",
+     "claim": "Several cited lines are off: GraphEngineOptions.thinkingLevel is L106 (L108 is past the closing brace); visual-targets 'Context layer' is L151, not L157-158 (L155-159 is the stage-cell block); createStatusWidget is exported from control-plane.ts L257 (BoardBuildOptions), not an operator-ui test helper — which is why the `sessions` option must be added to BoardBuildOptions for the operator-ui test to compile.",
+     "evidence": "engine.ts L106 `thinkingLevel?: ThinkingLevel;`; docs/visual-targets.md L151 `2. **Context layer**`; control-plane.ts L257 `export async function createStatusWidget(cwd, options: BoardBuildOptions = {})`."
+    },
+    {
+     "severity": "minor",
+     "claim": "onSessionsChange → installWidget calls applyBoardTheme → ctx.ui.setTheme on every node start/end, not only per superstep; also readSessionsSnapshot re-runs readActiveJob (a second stateCandidates scan) inside buildBoardModel which already ran readLiveJob.",
+     "evidence": "control-plane.ts L325-340 installWidget → applyBoardTheme (L295-307) → setTheme; run-store.ts L426/L439 both call stateCandidates(cwd)."
+    },
+    {
+     "severity": "minor",
+     "claim": "All remaining cited anchors verified correct: engine.ts L10/63/544/827/836-846/895/899/916/920/1000-1006/1023-1039/1084; communicate.ts L21/L285-293/L473-491; live-snapshot.ts; spawn.ts L37-39/56-61/139/141-161/163-174/225-239/270-290/413-418/503-518/549/553-569/908-920; leases.ts L37-49/108/201-228/314-333; run-store.ts L426; append-log.ts EVENT_TYPES L9-33; schema.ts L161-172/L222-233; agent-session.ts L287; board.ts L80-81/L334-338 and Tone includes 'warning'; board-frame.ts L343-350; control-plane.ts L20/194-202/208/217/239/483-485/528; gated-loop.ts L45/1654/1891-1904/1910/1951/2018; uat-16.mjs L147 token; operator-ui.test.ts L120/L325; bus.test.ts L3473-3493; generate-traceability-map.mjs L700-719; UAT-23 leases.json/events.jsonl line 9; docs PRD/agents-bus/spec/README/uat/status-line.test anchors.",
+     "evidence": "Verified by reading the files; AGENTS <digits> prefix survives the new cell so uat-16 context-layer-lamps and operator-ui /AGENTS 3/ /AGENTS 0/ /AGENTS 1/ keep passing; traceability.test.ts parses PRD `- **AC-x.y**` lines and requires map count == PRD count, so the AC-23.10 PRD line and map row must land together (design does both)."
+    }
+   ],
+   "required_changes": [
+    "Make the bus the source of truth for its own workers' liveness: add a public `BackgroundBus.liveWorkers(): Array<{agentId, role, pid, alive, isWriter, spawnedAt, lastEvent, node?}>` (computed with the bus's injected `isProcessAlive`, like countLiveProcesses, never reaping) and have liveWorkerSessions()/liveWorkerCount() call it instead of re-checking pids with a registry-level isProcessAlive; drop the `deps.isProcessAlive` override for in-process rows (keep it only for events.jsonl 'other-process' pids and leases).",
+    "Scope the snapshot to one job: liveWorkerSessions/buildSessionsSnapshot must filter registered buses by `bus.jobId === job.jobId` (both are public on BackgroundBus and ActiveJob) and node sessions by `record.jobId === job.jobId`; specify that the control-plane test registers the node session with createRun's job id. Dedupe events.jsonl rows against in-process rows by agent_id, not pid.",
+    "Unregister buses: remove a bus from the registry when stopAll() marks it closing (or prune `isClosing` buses on every read), and make every new bus test call resetSessionsRegistry() at the start as well as in finally. Decide and document one rule for dead in-process pids (either dropped from rows, or listed alive:false) — the design currently states both.",
+    "Correct the cycle claim: either inject `admission` counts into readSessionsSnapshot (from communicate.ts's options / spawn.ts caller) so sessions-snapshot.ts truly imports spawn.ts types only, or state that the value cycle is tolerated because neither module reads the other at top level.",
+    "Fix the line citations (engine.ts thinkingLevel L106; visual-targets Context layer L151; createStatusWidget is control-plane.ts L257) and note that BoardBuildOptions.sessions is what makes the operator-ui test's createStatusWidget(root, {agents, sessions}) compile.",
+    "Have buildBoardModel pass the already-read job into readSessionsSnapshot (e.g. `readSessionsSnapshot(cwd, { job })`) to avoid a second run-directory scan per repaint, and either throttle onSessionsChange repaints or make applyBoardTheme skip setTheme when the theme is unchanged."
+   ],
+   "file_conflicts_seen": [
+    "packages/coding-agent/src/kpi/extensions/graph/engine.ts (board-live, plan-gate)",
+    "packages/coding-agent/src/kpi/extensions/gated-loop.ts (board-live, plan-gate)",
+    "packages/coding-agent/src/kpi/extensions/board.ts (board-live, onboarding)",
+    "packages/coding-agent/src/kpi/extensions/control-plane.ts (board-live)",
+    "test/graph-engine.test.ts (board-live, plan-gate)",
+    "test/operator-ui.test.ts (board-live)",
+    "test/control-plane.test.ts (board-live)",
+    "scripts/generate-traceability-map.mjs (anthropic-auth, board-live, plan-gate, onboarding)",
+    "docs/traceability-map.json (anthropic-auth, plan-gate)",
+    "docs/PRD.md (board-live)",
+    "docs/spec.md (board-live)",
+    "docs/visual-targets.md (board-live)",
+    "docs/uat.md (board-live)",
+    "README.md (board-live)"
+   ]
+  },
+  {
+   "lens": "minimalism-and-contract",
+   "verdict": "needs-revision",
+   "problems": [
+    {
+     "severity": "major",
+     "claim": "`/agents clean` and the stale-lease rows are unrequested scope and a silent product decision. ISSUE D is about seeing how K-π is concurrent; a manual lease-release command is a new operator mutation surface that dead-pid reaping already covers automatically (leases.ts releaseDeadLeases runs on claim/reap). Nothing in the issue, PRD US-23, or AC-23.6 asks for it, and open_questions is empty.",
+     "evidence": "packages/coding-agent/src/kpi/extensions/bus/leases.ts L314-333 (releaseDeadLeases already invoked by the bus); docs/PRD.md L324-336 (US-23 has no lease-management story); design change[2] `sessions-command.ts` handler for `clean`; design open_questions: []."
+    },
+    {
+     "severity": "major",
+     "claim": "The `caps (this process): workers 1/2` assertion cannot pass as designed: `readSessionsSnapshot` reads `processWorkerAdmission.counts()`, but every bus.test harness injects its own `admission: createWorkerAdmission()`, so the process-wide table stays 0/0 while the harness bus has one live worker. `readSessionsSnapshot`'s deps expose no `admission` injection either.",
+     "evidence": "test/bus.test.ts L1913 and L2614 (`admission: createWorkerAdmission()`); spawn.ts L48-52 comment 'Tests MUST inject createWorkerAdmission()'; design change[0] 'admission from processWorkerAdmission.counts()' and `readSessionsSnapshot(cwd, deps: {now?, isProcessAlive?, main?})`; design test 4 asserts 'caps (this process): workers 1/2'."
+    },
+    {
+     "severity": "major",
+     "claim": "The registry applies a global liveness predicate to buses that were built with their own. `liveWorkerSessions(deps?)`/`liveWorkerCount()` compute alive as `launch.isAlive() && isProcessAlive(pid)` with `defaultIsProcessAlive` (kernel `kill(pid,0)`) when no deps are given, while the harness bus injects `isProcessAlive: pid => alive.has(pid)` and fakes pids from 7000. The migrated test `assert.equal(liveWorkerCount(), 1)` and the widget path therefore depend on whether pid 7000/7001 exist on the developer's machine. The bus already owns `countLiveProcesses()` — reuse it.",
+     "evidence": "test/bus.test.ts L1859 (`let nextPid = 7_000`), L1907-1909 (`isProcessAlive: (pid) => alive.has(pid)`); spawn.ts L383-391 (`countLiveProcesses` uses `this.isProcessAlive`); leases.ts L37-49 (`defaultIsProcessAlive`); design change[0](a) and change[10]."
+    },
+    {
+     "severity": "major",
+     "claim": "A new unnamed failure path enters the board repaint. `buildBoardModel` will call `readSessionsSnapshot`, which calls `readLeasesFile`; that rethrows every non-ENOENT error (malformed leases.json, EACCES). `installWidget` has no catch and gated-loop awaits `onStateChange` unguarded, so a corrupt leases.json now blanks the widget and ends the run through runLoop's catch. The design names a real path only for the `/agents` command handler.",
+     "evidence": "packages/coding-agent/src/kpi/extensions/bus/leases.ts L201-228 (`throw error` unless ENOENT); control-plane.ts L325-336 (installWidget, no try); gated-loop.ts L1910 (`await dependencies.onStateChange?.()`), L2000 (runLoop catch); design change[8] 'buildBoardModel still starts nothing' but no error path; AGENTS.md rule 5 / minimalist.md 'a swallowed failure is a defect' and its inverse — an unbounded new throw."
+    },
+    {
+     "severity": "major",
+     "claim": "The owning command doc is not updated in the same change: docs/spec.md §4 'Entry points' is the normative slash-command table and lists every command (`/kpi …`, `/accounts …`, `/pool …`, `/kg`, `/setup-kstack`, `/k-mode`); the design adds `/agents` and `/agents clean` but touches only spec §5 and §11.",
+     "evidence": "docs/spec.md L129-162 (command table); design docs[2] names only '## 5. Run store table' and '## 11. UI › Widgets'."
+    },
+    {
+     "severity": "minor",
+     "claim": "Redundant model field and duplicated directory scan. `BoardModel.sessions` is added beside `agents`, yet `agents` is always `nodes + workers` whenever `sessions` is present; and `readSessionsSnapshot(cwd)` re-runs `readActiveJob` (a full `.kpi/runs` candidate scan) inside `buildBoardModel`, which already holds `job` from `readLiveJob`. Pass the job in and derive `agents` from the breakdown.",
+     "evidence": "control-plane.ts L210-217 (`readLiveJob` then `liveWorkerCount()`); run-store.ts L426-428 (`readActiveJob` = `stateCandidates(cwd)[0]`); design change[7] and change[8]."
+    },
+    {
+     "severity": "minor",
+     "claim": "Constructor-side-effect registry that only grows. `registerLiveBus(this)` in the `BackgroundBus` constructor appends to a module-level collection that is never pruned — closing buses are skipped, not removed — so every worker-role node leaves a retained bus for the process lifetime, and any test that does `new BackgroundBus` leaks into siblings (the design's own risk #1). The `registerLiveNodeSession` half already returns an unregister function; use the same shape for buses (unregister on `stopAll`) instead of changing `bus.stop(agentId)` to `bus.stopAll()` purely to trip the `closing` filter.",
+     "evidence": "spawn.ts L225-239 (constructor), L908-920 (`stopAll` sets `closing`; `isClosing`); engine.ts L1082-1086 (`bus.stop(agentId)`); design change[4] and change[5](4)."
+    },
+    {
+     "severity": "minor",
+     "claim": "`diagnostics.skippedEventLines` is counted but never surfaced by `formatSessionsTable` or the board, so a malformed `agent.spawned` line is silently dropped from the operator's view.",
+     "evidence": "design change[0](c) 'malformed lines skipped and counted in snapshot.diagnostics.skippedEventLines'; change[2] `formatSessionsTable` output list has no diagnostics line; docs/minimalist.md 'a swallowed failure is a defect'."
+    },
+    {
+     "severity": "minor",
+     "claim": "`/agents clean` reports `released ${n} stale lease(s): <keys>` from the pre-release snapshot, but `releaseDeadLeases` returns `void`, so under a concurrent reap or a pid that died between snapshot and release the message misreports what happened.",
+     "evidence": "leases.ts L314-333 (`Promise<void>`, no returned keys); design change[2] handler text."
+    },
+    {
+     "severity": "minor",
+     "claim": "AC-23.10 as written spans two observables — the `/agents` listing and the board cell breakdown with per-node repaint — but binds a single `test/bus.test.ts` title; the board half is proven by the operator-ui and graph-engine tests that are not bound. The generator's exact-title rule wants one observable per bound check.",
+     "evidence": "scripts/generate-traceability-map.mjs L674-719 (one file+title per AC); test/traceability.test.ts L290 ('every named check binds an exact test title that exists and is selectable'); design docs[1] AC-23.10 text."
+    },
+    {
+     "severity": "minor",
+     "claim": "`MECHANISM_SENTENCE` says K-π 'spawns reviewer/tester workers as separate kpi processes', but graph validation admits `workerRole: reviewer` only; tester workers exist only via the parent `spawn_background` tool. The sentence is the one line meant to be exactly right about the mechanism.",
+     "evidence": "design evidence[1] 'validation at L250-274 allows workerRole reviewer only'; design change[0](b) MECHANISM_SENTENCE."
+    },
+    {
+     "severity": "minor",
+     "claim": "No work-queue entry. fixes.md is the active FX queue for this batch (board-live adds to it) and AGENTS.md requires each package to edit the normative docs it changes in the same change; this design records nothing in fixes.md or docs/remediation-plan.md.",
+     "evidence": "fixes.md L1-4 ('Status: ACTIVE work queue … Package IDs here are FX-##'); AGENTS.md AUTHORITY block; design change list has no fixes.md entry while board-live's file list does."
+    }
+   ],
+   "required_changes": [
+    "Drop `/agents clean` (and the lease rows unless the operator asked for them) from this change, or move the question 'should the operator have a manual dead-lease release command and a stale-lease board warning?' into open_questions with the automatic releaseDeadLeases behaviour cited; do not ship the mutation silently.",
+    "Make admission injectable: either `readSessionsSnapshot(cwd, { admission?: WorkerAdmission })` or derive occupancy from the registered buses' own tables; fix the `caps 1/2` test to match whatever source is chosen.",
+    "Compute worker liveness through each bus's own predicate — reuse `bus.countLiveProcesses()` / a per-bus `liveWorkers()` that uses `this.isProcessAlive` — instead of a registry-level `isProcessAlive` default; the migrated bus.test assertion must not depend on real pids 7000+.",
+    "Name the failure path for `readSessionsSnapshot` inside `buildBoardModel`/`installWidget`: catch read errors (leases.json parse, events.jsonl read) and render `AGENTS ?` or the last-known count with a recorded reason (console.warn `[kpi/board] …` like run-store.ts L335 / status-line/index.ts L85), so a corrupt leases.json cannot end the run; add a test for it.",
+    "Add `/agents` (and `clean` if kept) to the docs/spec.md §4 command table in the same change.",
+    "Pass the already-read `job` into `readSessionsSnapshot` from `buildBoardModel` rather than re-running `readActiveJob`; drop the redundant `BoardModel.sessions`/`agents` split or make `agents` derived so the two cannot disagree.",
+    "Replace the constructor-side-effect `registerLiveBus(this)` with the same `register → unregister` shape used for node sessions (unregister on `stopAll`, and in tests via the harness), and keep engine.ts's `bus.stop(agentId)` unless there is a reason unrelated to the registry to change it.",
+    "Surface `diagnostics.skippedEventLines` in `formatSessionsTable` (one line) or remove the field.",
+    "Have `releaseDeadLeases` return the released keys and report those, or word the notify as what was requested rather than what happened.",
+    "Split AC-23.10 so each bound check names one observable (listing → bus.test title; board breakdown/repaint → the operator-ui or graph-engine title), or bind both titles.",
+    "Correct the mechanism sentence to what the graph actually does (reviewer worker nodes; other worker roles only via the parent's spawn tool).",
+    "Add an FX-## entry to fixes.md (or the queue this batch uses) with owned files, so the design has a queue owner and the shared-file conflicts with board-live/plan-gate are coordinated there."
+   ],
+   "file_conflicts_seen": [
+    "packages/coding-agent/src/kpi/extensions/control-plane.ts (board-live)",
+    "packages/coding-agent/src/kpi/extensions/board.ts (board-live, onboarding)",
+    "packages/coding-agent/src/kpi/extensions/graph/engine.ts (board-live, plan-gate)",
+    "packages/coding-agent/src/kpi/extensions/gated-loop.ts (board-live, plan-gate)",
+    "test/graph-engine.test.ts (board-live, plan-gate)",
+    "test/operator-ui.test.ts (board-live)",
+    "test/control-plane.test.ts (board-live)",
+    "scripts/generate-traceability-map.mjs (anthropic-auth, board-live, plan-gate, onboarding)",
+    "docs/traceability-map.json (anthropic-auth, plan-gate)",
+    "docs/PRD.md (board-live)",
+    "docs/spec.md (board-live)",
+    "docs/visual-targets.md (board-live)",
+    "docs/uat.md (board-live)",
+    "README.md (board-live)"
+   ]
+  }
+ ]
+}

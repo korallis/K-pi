@@ -1,0 +1,610 @@
+{
+ "key": "board-live",
+ "design": {
+  "issue": "ISSUE B — the operator board is static and mute during a node run: stage cells show only id/label/DONE|CURRENT|PENDING, nothing on the board or in the chat changes for the minutes a node runs, no per-node elapsed/cost/tool activity is shown or even recorded, and the /kpi status overlay closes on any key instead of letting the operator select a stage and inspect what it did.",
+  "root_cause": "Three gaps compound. (1) No refresh trigger while a node runs: installWidget (control-plane.ts:325-336) builds one BoardModel and wraps it in a component; the only rebuild path is dependencies.onStateChange (control-plane.ts:483-485), which gated-loop awaits after writeState at the end of a superstep (gated-loop.ts:1518-1519, after engine.runSuperstep() at :1396 returns), at runLoop's initial write (:1910) and after resumeLoop's terminal write (:1776). board-component.ts:38 refresh(model) exists but nothing calls it, so the board is frozen for the whole duration of an agent node. (2) No per-node data exists to draw: the engine sets nodeState.status = \"running\" only in memory (engine.ts:1324-1334) and checkpoints at the end of the superstep (:1412-1414) or on retry backoff (:1149); GraphNodeRunState (schema.ts:161-181) has no startedAt/elapsed/cost/model; recordSessionCost (engine.ts:816-825) computes a per-node cost delta and folds it into sessionCostUsd, discarding the per-node figure, and it runs once per attempt from executeNode's finally (:1000) inside the executeWithRetries loop (:1132-1134); the only per-node signal on disk is tool.request (policy.ts:963-971, node stamped from job.state.node) and nobody counts it. EVENT_TYPES/EventInput (append-log.ts:9-33, :83-151) and event.schema.json (:15 oneOf) have no node lifecycle type — the real run .kpi/runs/20260903-fix-claude-model-requests-failin-42986cfa/events.jsonl has 261 tool.request records and zero node.* records. (3) The board model has no activity slot and the overlay has no input model: stageCells (board.ts:239-251) emits three fixed lines, telemetryRegion (:464-476) has no activity row, and showStatus's overlay implements handleInput() { done() } (control-plane.ts:366-368). A verified constraint shapes the fix: while `/kpi <goal>` runs, the interactive main loop is blocked in `await this.session.prompt(userInput)` (interactive-mode.ts:1188-1191, the handler is awaited at agent-session.ts:1360) and further input is queued in pendingUserInputs (interactive-mode.ts:3176-3179) because the main session is neither streaming nor compacting (graph nodes run on sdk sessions, engine.ts:567) — so `/kpi status` cannot open mid-run and the always-on widget, ticking on its own setInterval, is the only live surface; the interactive overlay serves live-but-paused jobs (NEEDS_HUMAN/interrupted), which is exactly when an operator inspects what a stage did before approving.",
+  "evidence": [
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/control-plane.ts",
+    "line": 325,
+    "note": "installWidget builds the BoardModel once and installs a factory component around it; no timer, watcher, or hook ever calls component.refresh."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/control-plane.ts",
+    "line": 483,
+    "note": "onStateChange = installWidget is the sole refresh trigger handed to runLoop/resumeLoop."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/control-plane.ts",
+    "line": 366,
+    "note": "Overlay component: handleInput() { done(); } — any key closes; no selection, no detail."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/control-plane.ts",
+    "line": 516,
+    "note": "registerControlPlane(pi, dependencies: LoopDependencies = {}) — the seam where an injected ticker enters; LoopDependencies already carries now (gated-loop.ts:48)."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/gated-loop.ts",
+    "line": 1518,
+    "note": "writeState + onStateChange run only after engine.runSuperstep() (:1396) returns."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/gated-loop.ts",
+    "line": 1910,
+    "note": "runLoop's initial writeState + onStateChange (resumeLoop's post-terminal onStateChange is :1776)."
+   },
+   {
+    "file": "packages/coding-agent/src/modes/interactive/interactive-mode.ts",
+    "line": 1188,
+    "note": "Main loop: `while (true) { const userInput = await this.getUserInput(); await this.session.prompt(userInput); }` — a `/kpi <goal>` handler that awaits the loop blocks the next prompt."
+   },
+   {
+    "file": "packages/coding-agent/src/modes/interactive/interactive-mode.ts",
+    "line": 3176,
+    "note": "When not streaming/compacting, submitted text goes to onInputCallback or pendingUserInputs — a `/kpi status` typed mid-run is queued until the job's handler returns."
+   },
+   {
+    "file": "packages/coding-agent/src/core/agent-session.ts",
+    "line": 1360,
+    "note": "_tryExecuteExtensionCommand awaits command.handler(args, ctx); extension commands run immediately only from the streaming/compaction paths (interactive-mode.ts:3151-3166), which a K-π job does not enter."
+   },
+   {
+    "file": "packages/coding-agent/src/modes/interactive/interactive-mode.ts",
+    "line": 2223,
+    "note": "setExtensionWidget disposes the previous component before installing the next; dispose is where the widget ticker stops."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/graph/engine.ts",
+    "line": 1324,
+    "note": "Batch loop: runs += 1 only when status !== 'running' (a killed-and-resumed node keeps its run number), status = 'running' in memory, countRound(), then Promise.allSettled(executeWithRetries) at :1338 — no event, no start time."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/graph/engine.ts",
+    "line": 1339,
+    "note": "settled results are folded at :1339-1352; rejected handling (exhaust/fail) starts at :1354 — node.finished must be appended between them."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/graph/engine.ts",
+    "line": 1123,
+    "note": "executeWithRetries loops executeNode per transient attempt; executeNode's finally (:1000) calls recordSessionCost once per attempt, so per-node cost must be summed across attempts, not overwritten."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/graph/engine.ts",
+    "line": 816,
+    "note": "recordSessionCost: returns nothing when getSessionStats is absent/non-finite; otherwise adds max(0, delta) to sessionCostUsd — the delta is discarded per node."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/graph/engine.ts",
+    "line": 1035,
+    "note": "bus.spawn already formats `${this.options.model.provider}/${this.options.model.id}` — one modelLabel() serves both this and node.started."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/graph/engine.ts",
+    "line": 1113,
+    "note": "review.verdict is the precedent for an engine-appended product event via appendEvent(join(runDirectory(), 'events.jsonl'), …)."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/graph/engine.ts",
+    "line": 1242,
+    "note": "emitTerminal stamps ts with new Date(this.now()).toISOString(); this.now() is also read at :605 and :1176 (readBudget, called at :680, :1261, :1309, :1380) so a per-call-advancing clock stub cannot be used to assert a literal elapsed."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/graph/engine.ts",
+    "line": 916,
+    "note": "Agent nodes with workerRole run through executeWorkerAgentNode (no GraphAgentSession, no session stats) — cost is absent for them, never zero."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/append-log.ts",
+    "line": 9,
+    "note": "EVENT_TYPES has no node.* type; EventInput (:83-151) is a closed union; sanitizeEvent (:303) redacts keys matching SENSITIVE_KEY_PATTERN (:228)."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/append-log.ts",
+    "line": 398,
+    "note": "withAppendLock serialises appends per path — the pattern the activity reader mirrors with an in-flight coalesce so overlapping reads never double-parse."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/schemas/event.schema.json",
+    "line": 15,
+    "note": "Top-level oneOf lists one $def per type; $defs (:86) include text/identifier/timestamp/jobId; reviewVerdict (:1251) shows the base-seven required list every def repeats, additionalProperties false."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/policy.ts",
+    "line": 963,
+    "note": "tool.request is appended with node = job.state.node, tool = event.toolName, optional path — attributable per node for the shipped single-agent-node supersteps."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/board.ts",
+    "line": 239,
+    "note": "stageCells: lines [id, label, status], compact `NN label STATUS`; BoardModel (:56-87) has no activity/selection fields; board.ts imports only visibleWidth (:6) and must stay a leaf."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/board.ts",
+    "line": 604,
+    "note": "STAGE_CELL_PATTERN and isEssentialRow (:650-658, includes('CURRENT')) — new rows must not contain the word CURRENT and must keep `NN label STATUS` contiguous."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/board-frame.ts",
+    "line": 141,
+    "note": "cellLayout measures width from the widest line the `lines` callback returns; frameCells (:190-235) uses twoLine for compact and cell.lines for full — detail lines are painted in full only."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/board-frame.ts",
+    "line": 365,
+    "note": "telemetryWithStop pushes the STOP box below whenever a compact telemetry line ends with '…'; the NOW row must shrink instead of truncating."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/board-frame.ts",
+    "line": 309,
+    "note": "telemetryBlock: telemetry row, then (compact) iteration row, WAITING or CONTEXT row, STOP STATES — the NOW row goes after the CONTEXT row."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/board-frame.ts",
+    "line": 289,
+    "note": "paintFlat tones lines by prefix (K-π accent, STOP, CURRENT); NOW / EVENTS lines need their own tone cases."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/board-component.ts",
+    "line": 38,
+    "note": "refresh(model) exists and is uncalled."
+   },
+   {
+    "file": "packages/coding-agent/src/core/extensions/types.ts",
+    "line": 208,
+    "note": "ui.custom factory receives (tui, theme, keybindings, done); handleInput(data) gets raw key bytes, matched with matchesKey (packages/tui/src/keys.ts:820; left/right/escape/return at :110-127, single letters at :1149)."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/renderers.ts",
+    "line": 17,
+    "note": "formatEventEntry branches per type; registration iterates EVENT_TYPES so new types get renderers automatically (test/extension.test.ts:44)."
+   },
+   {
+    "file": "test/schema-conformance.test.ts",
+    "line": 84,
+    "note": "eventPayload() switch needs node.started/node.finished cases; 'event schema rejects cross-type and research vocabulary drift' (:180) is where an extra-field rejection belongs."
+   },
+   {
+    "file": "scripts/generate-traceability-map.mjs",
+    "line": 1129,
+    "note": "Local EVENT_TYPES copy (22 entries, already missing agent.denied) drives EVT-* map entries at :1759-1776; test/traceability.test.ts:15-38 holds the same copy."
+   },
+   {
+    "file": "test/operator-ui.test.ts",
+    "line": 657,
+    "note": "'the compact widget is at most 12 lines at 100 columns and keeps STOP and the lamps' pins <=9 at 120 / <=12 at 100 for boardModel() (no activity) — the NOW row only appears when model.activity is defined."
+   },
+   {
+    "file": "test/control-plane.test.ts",
+    "line": 53,
+    "note": "Fake ctx.setWidget calls the factory with ({ requestRender() {} }, theme) and renders at 120; ui.custom throws 'unexpected overlay' — the seams for the tick and overlay tests."
+   },
+   {
+    "file": "test/graph-engine.test.ts",
+    "line": 332,
+    "note": "Fake session with getSessionStats: () => ({ cost: prompts * 0.04 }) is the fixture to reuse for per-node cost."
+   },
+   {
+    "file": "scripts/pty-rows/uat-25.mjs",
+    "line": 118,
+    "note": "Graders search literal tokens MODE gated, JOB <id>, ROUND n/m, stage ids, one CURRENT, STOP RUNNING, six lamp names at 200/120/80/60."
+   }
+  ],
+  "change": [
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/append-log.ts",
+    "action": "edit",
+    "what": "Append \"node.started\" and \"node.finished\" to EVENT_TYPES (end of array). Extend EventInput with Event<\"node.started\", { run: number; model?: string }> and Event<\"node.finished\", { run: number; status: \"completed\" | \"failed\"; elapsed_ms: number; cost_usd?: number; result?: string; session?: string; error?: string }>. Export `type NodeLifecycleEvent = Extract<EventInput, { type: \"node.started\" | \"node.finished\" }>`. No behaviour change in appendEvent."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/schemas/event.schema.json",
+    "action": "edit",
+    "what": "Add $defs.nodeStarted (base seven required + run; type const \"node.started\"; run integer minimum 1; model $ref identifier; additionalProperties false) and $defs.nodeFinished (base seven + run, status, elapsed_ms required; status enum [\"completed\",\"failed\"]; elapsed_ms integer minimum 0; cost_usd number minimum 0; result/session/error $ref text; additionalProperties false); append both $refs to the top-level oneOf. Resource dir change: rebuild packages/coding-agent for test/harness.test.ts."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/graph/engine.ts",
+    "action": "edit",
+    "what": "(a) `private modelLabel(): string | undefined` returning `${provider}/${id}` or undefined; use it at :1035 (bus.spawn) and in node.started. (b) recordSessionCost returns `number | undefined` (the delta, undefined when no finite stats); add `private readonly nodeRunCostUsd = new Map<string, number>()`; in executeNode's finally (:1000): `const delta = this.recordSessionCost(session); if (delta !== undefined) this.nodeRunCostUsd.set(node.id, (this.nodeRunCostUsd.get(node.id) ?? 0) + delta)` — summed across transient attempts of one run; worker nodes never set it. (c) `private async appendNodeEvent(event: NodeLifecycleEvent)` = appendEvent(join(this.runDirectory(), 'events.jsonl'), event) — same path and error behaviour as review.verdict (:1113): an append failure propagates and fails the batch like any run-store write. (d) runSuperstep: after the status loop and countRound() (:1324-1334) and before Promise.allSettled (:1338): `const startedAt = new Map<string, number>()`; for each batch node with node.type === 'agent': `const t = this.now(); startedAt.set(node.id, t); this.nodeRunCostUsd.delete(node.id); await this.appendNodeEvent({ ts: new Date(t).toISOString(), type: 'node.started', job_id, round: this.runState.budget.round, node: node.id, run: nodeState.runs, model: this.modelLabel() })` (model key omitted when undefined). After the settled fold (:1339-1352) and before `if (rejected.length > 0)` (:1354): for each agent node, sample `const t = this.now()` once and append node.finished { ts: new Date(t).toISOString(), run, status: fulfilled ? 'completed' : 'failed', elapsed_ms: Math.max(0, t - startedAt.get(node.id)), cost_usd: this.nodeRunCostUsd.get(node.id) (key omitted when undefined; then delete), result: fulfilled && node.response ? node.response.path : omitted, session: nodeState.sessionId ?? omitted, error: rejected ? message : omitted }. Set/human/terminal nodes emit nothing. A node resumed from a `running` checkpoint re-emits node.started with the same run number (its runs did not move, :1329-1331)."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/board.ts",
+    "action": "edit",
+    "what": "Leaf module stays a leaf (no new imports). Add and export: `interface StageActivity { status: 'pending'|'running'|'completed'|'failed'; runs: number; elapsedMs?: number; costUsd?: number; toolCalls: number; toolsByName: Readonly<Record<string, number>>; lastTool?: string; model?: string; node: string; result?: string; session?: string; error?: string }`, `interface NodeDetail { node: string; status: string; runs: number; elapsedMs?: number; costUsd?: number; model?: string; session?: string; toolsByName: Readonly<Record<string, number>>; result?: { name: string; lit: boolean; bytes?: number }; error?: string; loadError?: string }`, `formatElapsed(ms: number): string` ('12s' | '3m12s' | '1h02m', never > 6 chars), `formatCost(usd: number | undefined): string` ('$0.42' | '$12' when >= 10 | '$—'), `shortTool(name: string, path?: string): string` (`${name} ${basename(path)}` via string split on '/', or name). BoardModel gains `activity?: Readonly<Record<string, StageActivity>>` (by BOARD_STAGES key), `eventsUnreadable?: number`, `eventsError?: string`, `surface?: 'widget' | 'overlay'`, `selectedStage?: number`, `detail?: NodeDetail`. Span gains `optional?: boolean`. BoardCell gains `detail?: string[]` (painted in the full layout only, never measured for compact). stageCells(current, activity?, selected?): when activity is defined, detail = [`${formatElapsed(elapsedMs)} ${formatCost(costUsd)}`] for stages with a record and elapsedMs, else [''] (equal cell heights); when index === selected: tone 'warning', borderTone 'borderAccent', lit true, text unchanged (CURRENT count stays one). New RowsRegion id 'now' (frame 'none'), built only when model.activity !== undefined, from the current stage's record: spans `NOW <node>` (required), `  run <n>` (optional), `  <toolCalls> tools` (required), `  ▸ <lastTool>` (optional), `  <elapsed>` (required), `  <cost>` (required), `  MODEL <model>` (optional); when the current stage has no record the row is `NOW <node>  no node.started yet` (dim); when eventsUnreadable > 0 append `  EVENTS ✕ <n> unreadable` (error, required); when eventsError is set append `  EVENTS ✕ <code>` (error, required). flat: [rowText(row)]. Overlay-only regions when surface === 'overlay': 'nodeDetail' (RowsRegion frame 'panel', title `NODE <node> · <status lowercase>`; single-span rows so framePanel wraps: `runs n · elapsed … · cost … · model …` (absent fields omitted), `tools <total>: read 20 · grep 8 · edit 3` (top 6 by count) or `tools 0`, `result <name> ● <bytes> B` | `result <name> ○ not written` | `result — none declared`, `session <id>` when present, `error <text>` when present, `load error <code>` when detail.loadError is set; a pending stage without a record renders one row `no run yet`), and 'keys' (RowsRegion frame 'none', one dim span `←/→ select · ↵ detail · q close`). RegionId union += 'now' | 'nodeDetail' | 'keys'. buildBoardRegions order: header, telemetry, contextLayer, stages, now, nodeDetail?, iteration, …, stop, keys?. Nothing new contains 'CURRENT' or starts with 'STOP '/'K-π' (statuses in detail rows are lowercase), so fitBoard essentials are unchanged."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/board-frame.ts",
+    "action": "edit",
+    "what": "Export `paintShrinkingRow(row: Row, width: number, palette: BoardPalette): string` — drops spans with optional === true from the right (MODEL, then ▸ lastTool, then run n) until rowText(row) fits, then paints span by span; only when no optional span is left does it fall back to fitWidth truncation. telemetryBlock (both layouts): after the CONTEXT row (compact) / telemetry rows (full) push regions.byId.now through paintShrinkingRow, so telemetryWithStop's '…' check never forces the STOP box below because of the NOW row. frameCells: in layout 'full', bodyOf(cell) = [...cell.lines, ...(cell.detail ?? [])]; compact twoLine/oneLine ignore detail, so cellLayout and the compact height are untouched by detail. paintFull: after the stages block, framePanel(nodeDetail) when present; after the STOP box, the 'keys' row (paintRow, dim). paintFlat toneFor: lines starting with 'NOW ' → 'text'; lines containing 'EVENTS ✕' → 'error'. Height contract with activity present: compact 120 columns <= 10 lines (9 + NOW), compact 100 columns <= 13 (12 + NOW); without activity the existing 9/12 caps hold."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/board-activity.ts",
+    "action": "create",
+    "what": "Imports node:fs/promises, node:path, append-log types (EventRecord, NodeLifecycleEvent), and from board.ts: BOARD_STAGES, stageIndex, StageActivity, formatElapsed, formatCost, shortTool — board.ts never imports back. Exports: `interface NodeActivity { node: string; status: 'pending'|'running'|'completed'|'failed'; runs: number; startedAtMs?: number; elapsedMs?: number; costUsd?: number; model?: string; toolCalls: number; toolsByName: Record<string, number>; lastTool?: string; result?: string; session?: string; error?: string }`; `foldActivity(records: Iterable<EventRecord>, nowMs: number): Map<string, NodeActivity>` — every node.started record sets status running, startedAtMs = Date.parse(ts), runs = record.run, model, and resets toolCalls/toolsByName/lastTool (a resumed running node re-emits node.started with the same run, so counts restart at the resumption); node.finished sets status, elapsedMs = elapsed_ms, costUsd = sum of cost_usd across records for the node, result, session, error; tool.request increments toolCalls/toolsByName[record.tool] and sets lastTool = shortTool(tool, path) (attribution is record.node; exact for single-agent-node supersteps, which both shipped graphs are); a running node's elapsedMs = max(0, nowMs - startedAtMs). `stageActivities(byNode: Map<string, NodeActivity>, nowMs): Record<string, StageActivity>` keyed by BOARD_STAGES key via stageIndex(node) (nodes with stageIndex -1 are dropped; several nodes on one stage: sum toolCalls/cost, merge toolsByName, the latest-started node supplies status/runs/elapsed/lastTool/model/node/result/session/error). `interface ActivitySnapshot { records: readonly EventRecord[]; nodes: Map<string, NodeActivity>; stages: Record<string, StageActivity>; unreadableLines: number; readError?: string }` and `interface ActivityReader { read(eventsPath: string, nowMs: number): Promise<ActivitySnapshot>; last(): ActivitySnapshot | undefined }`; `createActivityReader(): ActivityReader` keeps { path, offset, records, unreadableLines, inflight }: read() coalesces — while a read is in flight every caller awaits the same promise (mirrors withAppendLock's chain, append-log.ts:398); stat the file; ENOENT → empty snapshot (records [], no error); size < offset (truncated/rotated) → reset to 0 and re-read; else read only bytes [offset, size) with an fs.open handle, keep any trailing partial line unconsumed (offset advances to the last newline), JSON.parse complete lines, count unparsable lines into unreadableLines (never throw); any other fs error is caught and reported as readError = the errno code (or message) with the previous records kept. `narrateRecord(record: EventRecord): { text: string; level: 'info' | 'warning' } | undefined` — node.started → `K-π ▶ 03 plan · run 1 · openai-codex/gpt-5.6-sol` (stage id from stageIndex, omitted when -1; model segment omitted when absent), node.finished completed → `K-π ■ 03 plan done · 3m12s · $0.42 · stack.json` (cost/result segments omitted when absent), failed → `K-π ✕ 03 plan failed · 3m12s · <error cut to 80 chars>` level warning, accounts.failover → `K-π ⇄ route <from> → <to>` level warning; every other type (tool.request included) → undefined."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/board-overlay.ts",
+    "action": "create",
+    "what": "`createBoardOverlay(options: { palette: BoardPalette; model: BoardModel; done: () => void; loadDetail: (stage: number) => Promise<NodeDetail> }): Component & { dispose(): void; settled(): Promise<void> }`. State: selected = resolveCurrentStageIndex(model.stage, model.node) (the existing board.ts helper), detailOpen = false. Wraps createBoardComponent({ ...model, surface: 'overlay', selectedStage }, { layout: 'full', palette }). handleInput(data): matchesKey(data,'left') → selected = max(0, selected-1); 'right' → min(7, selected+1); 'return' | 'enter' → detailOpen = !detailOpen; 'q' | 'escape' | 'ctrl+c' → dispose() then done(). Every handled key runs apply(): if detailOpen, detail = await loadDetail(selected) (a rejection becomes { node, status: 'unknown', runs: 0, toolsByName: {}, loadError: code|message }); component.refresh({ ...model, selectedStage: selected, detail: detailOpen ? detail : undefined }). settled() resolves when the pending apply() finishes (test seam). invalidate() forwards to the inner component (theme swap). No fs access: model and detail come through the options. No ticker: the overlay can only be opened while the main input loop is idle (interactive-mode.ts:1188-1191), i.e. on a paused live job whose run files do not change."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/control-plane.ts",
+    "action": "edit",
+    "what": "(a) `export type Ticker = (callback: () => void, intervalMs: number) => () => void`; `export const BOARD_TICK_MS = 1000`; default ticker = setInterval(...).unref() / clearInterval. `export type ControlPlaneDependencies = LoopDependencies & { tick?: Ticker }`; registerControlPlane(pi, dependencies: ControlPlaneDependencies = {}) — `now` is the existing LoopDependencies.now (default Date.now). (b) BoardBuildOptions gains `now?: () => number`, `activity?: ActivityReader`, `surface?: BoardModel['surface']`. Module-level `activityReaders = new Map<string /* eventsPath */, ActivityReader>()` and `narrationCursor = new Map<string, number>()`; `activityReaderFor(eventsPath)` creates on demand; `forgetJob(eventsPath)` deletes both entries. buildBoardModel: when options.activity is given (or a reader exists/created for job.eventsPath), `const snapshot = await reader.read(job.eventsPath, (options.now ?? Date.now)())` and set activity: snapshot.stages, eventsUnreadable: snapshot.unreadableLines || undefined, eventsError: snapshot.readError, surface: options.surface. Export `readNodeDetail(job: ActiveJob, snapshot: ActivitySnapshot, stage: number): Promise<NodeDetail>` — picks the StageActivity for BOARD_STAGES[stage].key (pending → { node: stage key, status: 'pending', runs: 0, toolsByName: {} }), result lit/bytes via stat(join(job.directory, result)) (ENOENT → lit false; other errors → loadError code). (c) installWidget(ctx, deps): builds the model with the job's reader and surface 'widget'; initialises narrationCursor for job.eventsPath to snapshot.records.length when unset (history is never narrated); factory `(tui, theme) => { const component = createBoardComponent(model, …); let busy = false, disposed = false, current = model; const warned = new Set<string>(); const stop = tick(() => { if (busy || disposed) return; busy = true; void buildBoardModel(ctx.cwd, { now, activity: reader, surface: 'widget' }).then((next) => { if (disposed) return; if (next === undefined) { stop(); forgetJob(eventsPath); ctx.ui.setWidget('kpi', undefined); return; } narrate(); if (next.paused !== current.paused) applyBoardTheme(ctx, next.paused); current = next; component.refresh(next); tui.requestRender(); }).catch((error) => { const key = errorCode(error); if (!warned.has(key) && warned.size < 8) { warned.add(key); ctx.ui.notify(`K-π board refresh failed: ${key}`, 'warning'); } }).finally(() => { busy = false; }); }, BOARD_TICK_MS); return { ...component, dispose() { disposed = true; stop(); component.dispose(); } }; }`. narrate(): `const records = reader.last()?.records ?? []; let cursor = narrationCursor.get(eventsPath) ?? records.length; if (cursor > records.length) cursor = records.length; for (const record of records.slice(cursor)) { const line = narrateRecord(record); if (line) ctx.ui.notify(line.text, line.level); } narrationCursor.set(eventsPath, records.length)` — the cursor is module state keyed by eventsPath so reinstalls from onStateChange continue where the previous ticker stopped; exactly one line per lifecycle/failover record. (d) showStatus: TUI path builds the model with surface 'overlay' (one read), then `ctx.ui.custom(( _tui, theme, _kb, done) => createBoardOverlay({ palette: paletteFromTheme(theme), model, done, loadDetail: (stage) => readNodeDetail(job, reader.last()!, stage) }), { overlay: true, overlayOptions unchanged })`; non-TUI path notifies renderBoard(model) (now including the NOW line). (e) handleKpiCommand's onStateChange stays `installWidget(ctx, dependencies)`; stopJob's installWidget call clears the widget and forgets the job. No engine or loop callback is added: narration and repaint come from the tick alone."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/renderers.ts",
+    "action": "edit",
+    "what": "formatEventEntry: branch for type.startsWith('node.'): node.started → `K-π node.started job=… r<n> <node> run=<run>[ model=<model>]`; node.finished → `K-π node.finished job=… r<n> <node> <status> <formatElapsed(elapsed_ms)>[ <formatCost(cost_usd)>][ → <result>][ — <error>]` (import the two formatters from board.ts). Renderer registration is automatic via EVENT_TYPES."
+   },
+   {
+    "file": "test/board-activity.test.ts",
+    "action": "create",
+    "what": "Pure tests for foldActivity/stageActivities/createActivityReader/narrateRecord with temp dirs and fixed nowMs; no timers."
+   },
+   {
+    "file": "test/operator-ui.test.ts",
+    "action": "edit",
+    "what": "Add the three new tests named below (formatters, NOW row + full-layout cell detail, shrinking row); every existing title stays verbatim; boardModel() fixture unchanged (activity undefined) so the 9/12 caps still hold."
+   },
+   {
+    "file": "test/control-plane.test.ts",
+    "action": "edit",
+    "what": "context() fake gains `hasUI`/`mode` overrides and a `custom` that runs the factory with a fake tui and returns the component so a test can feed handleInput bytes and await settled(); registerFixture accepts dependencies { tick, now }; add the two new tests named below."
+   },
+   {
+    "file": "test/graph-engine.test.ts",
+    "action": "edit",
+    "what": "Add the two engine tests named below using the getSessionStats fake (:332-343) and a controllable clock `let nowMs = 0; now: () => nowMs` that the fake session's prompt advances explicitly (no per-call stepping)."
+   },
+   {
+    "file": "test/schema-conformance.test.ts",
+    "action": "edit",
+    "what": "eventPayload(): add 'node.started' → { ...base, run: 1, model: 'openai-codex/gpt-test' } and 'node.finished' → { ...base, run: 1, status: 'completed', elapsed_ms: 1200, cost_usd: 0.42, result: 'stack.json', session: '01a0test' }; in the existing 'event schema rejects cross-type and research vocabulary drift' add `assertInvalid({ ...eventPayload('node.finished'), approved: true }, schema)`; titles unchanged."
+   },
+   {
+    "file": "test/concise-output.test.ts",
+    "action": "edit",
+    "what": "Add test 'node lifecycle renderers are field-aware' asserting the two one-line formats; existing map-bound title untouched."
+   },
+   {
+    "file": "test/traceability.test.ts",
+    "action": "edit",
+    "what": "Add \"node.started\", \"node.finished\" (and the already-missing \"agent.denied\") to the local EVENT_TYPES copy (:15-38) so it matches append-log.ts."
+   },
+   {
+    "file": "scripts/generate-traceability-map.mjs",
+    "action": "edit",
+    "what": "Add \"node.started\", \"node.finished\" (and \"agent.denied\") to the local EVENT_TYPES copy (:1129-1152) so EVT-node.* entries are generated. Add AC rows in the existing triple format: 'AC-06.7' → ['test/board-activity.test.ts', 'narration is one line per node start and finish and none per tool call', 'chat shows one line per node start/finish and route change; never per tool call']; 'AC-14.5' → ['test/graph-engine.test.ts', 'agent nodes append node.started and node.finished with run, elapsed and cost', 'node lifecycle is a chained, schema-valid event with run, elapsed_ms, cost_usd, result']; 'AC-16.7' → ['test/operator-ui.test.ts', 'the NOW row names the running node and tool and the full board carries elapsed and cost per stage', 'NOW row shows the running node, tool count, last tool, elapsed, cost; full board cells show elapsed/cost']; 'AC-16.8' → ['test/control-plane.test.ts', 'the status overlay selects stages with arrow keys, opens the node detail on enter and closes on q', '/kpi status overlay is interactive: select, detail, close']. Then regenerate docs/traceability-map.json (never hand-edit)."
+   },
+   {
+    "file": "docs/PRD.md",
+    "action": "edit",
+    "what": "US-06: add AC-06.7. US-14: add AC-14.5. US-16: add AC-16.7 and AC-16.8 (text in docs section)."
+   },
+   {
+    "file": "docs/spec.md",
+    "action": "edit",
+    "what": "§5 SCH-event EVT list + payloads; §8 engine bullet; §11 Widgets/Overlay blocks (see docs section)."
+   },
+   {
+    "file": "docs/visual-targets.md",
+    "action": "edit",
+    "what": "§2 Honesty + Board A region 3 (see docs section); no height numbers are asserted there."
+   },
+   {
+    "file": "docs/uat.md",
+    "action": "edit",
+    "what": "UAT-06 and UAT-16 action/evidence/AC lines (see docs section)."
+   },
+   {
+    "file": "README.md",
+    "action": "edit",
+    "what": "§9 'Reading the board' example, bullets and the overlay sentence (see docs section)."
+   },
+   {
+    "file": "fixes.md",
+    "action": "edit",
+    "what": "Append an FX-05 entry (board activity, narration, interactive overlay) in the FX format: Depends on, Owns files, Facts (including: `/kpi status` cannot open while `/kpi <goal>` runs because interactive-mode.ts:1188-1191 awaits the handler and queues input at :3176-3179; the widget tick is the live surface), Change, Tests (FX-01 titles preserved verbatim), Verification, DoD."
+   }
+  ],
+  "event_or_data_contracts": [
+   "events.jsonl new type `node.started`: { ts, type: \"node.started\", job_id, round, node, run: integer >= 1, model?: \"<provider>/<model-id>\" } — appended by GraphEngine.runSuperstep for every agent node in a batch (workerRole nodes included), before its session is prompted; one per batch attempt of the node: transient retries inside executeWithRetries do not repeat it, but a node resumed from a `running` checkpoint re-emits it with the same run number.",
+   "events.jsonl new type `node.finished`: { ts, type: \"node.finished\", job_id, round, node, run, status: \"completed\" | \"failed\", elapsed_ms: integer >= 0 (ts and elapsed_ms derive from one this.now() sample), cost_usd?: number >= 0 (sum of the session cost deltas of every attempt of this run; absent for worker-role nodes and when the session has no finite stats — never a fabricated 0), result?: node.response.path when the node completed and declares a response, session?: nodeState.sessionId, error?: message (redacted by sanitizeEvent) } — appended after Promise.allSettled and before exhaust/fail handling, so a failed node is always recorded.",
+   "append-log.ts: EVENT_TYPES += \"node.started\", \"node.finished\" (end of array); EventInput members as above; new export `type NodeLifecycleEvent`. event.schema.json: $defs.nodeStarted, $defs.nodeFinished (additionalProperties: false) in the top-level oneOf. The EVENT_TYPES copies in scripts/generate-traceability-map.mjs and test/traceability.test.ts carry the same two names (plus agent.denied).",
+   "GraphEngine: no new public option. Private `modelLabel()`, `nodeRunCostUsd: Map<nodeId, number>` (summed per run, reset at node.started), `appendNodeEvent(event)`.",
+   "board.ts exports: StageActivity, NodeDetail, formatElapsed(ms), formatCost(usd?), shortTool(name, path?); BoardModel += activity?: Record<stageKey, StageActivity>, eventsUnreadable?: number, eventsError?: string, surface?: 'widget' | 'overlay', selectedStage?: number, detail?: NodeDetail; Span += optional?: boolean; BoardCell += detail?: string[]; RegionId += 'now' | 'nodeDetail' | 'keys'.",
+   "Board text contracts: NOW row `NOW <node>  run <n>  <k> tools  ▸ <tool> <basename>  <elapsed>  <cost>  MODEL <provider/id>` (optional spans drop right-to-left: MODEL, ▸ tool, run n; never truncated with '…' while an optional span remains); `NOW <node>  no node.started yet` before the first record; `EVENTS ✕ <n> unreadable` for unparsable lines and `EVENTS ✕ <code>` for a read error; full-layout stage cell detail line `<elapsed> <cost>` (<= 12 chars); overlay NODE panel rows `runs n · elapsed … · cost … · model …`, `tools <total>: name count · …`, `result <name> ● <bytes> B | ○ not written | — none declared`, `session <id>`, `error <text>`, `load error <code>`, `no run yet`; overlay keys row `←/→ select · ↵ detail · q close`. Compact widget height with activity: <= 10 lines at 120 columns, <= 13 at 100; cell detail lines appear only in the full layout.",
+   "board-activity.ts exports: NodeActivity, ActivitySnapshot { records, nodes, stages, unreadableLines, readError? }, ActivityReader { read(eventsPath, nowMs), last() }, foldActivity(records, nowMs), stageActivities(byNode, nowMs), createActivityReader(), narrateRecord(record) → { text, level } | undefined.",
+   "board-frame.ts exports += paintShrinkingRow(row, width, palette). board-overlay.ts exports createBoardOverlay({ palette, model, done, loadDetail }) → Component & { dispose(), settled() }.",
+   "control-plane.ts exports: `type Ticker = (callback, intervalMs) => stop`; `BOARD_TICK_MS = 1000`; `type ControlPlaneDependencies = LoopDependencies & { tick?: Ticker }` (now comes from LoopDependencies.now); BoardBuildOptions += { now?, activity?: ActivityReader, surface? }; `readNodeDetail(job, snapshot, stage)`. Module state: one ActivityReader and one narration cursor per live job's eventsPath, both dropped when the job is no longer live.",
+   "Chat narration (ctx.ui.notify from the widget tick, at most once per record, history before the widget was installed never narrated): `K-π ▶ <NN> <node> · run <n> · <provider/model>`; `K-π ■ <NN> <node> done · <elapsed> · <cost> · <result>`; `K-π ✕ <NN> <node> failed · <elapsed> · <error<=80>` (warning); `K-π ⇄ route <from> → <to>` (warning). No line per tool.request. Latency is bounded by BOARD_TICK_MS.",
+   "Overlay keys: ← previous stage, → next stage, Enter toggles the NODE detail panel, q/Esc/Ctrl+C close. The overlay is static (one read on open, detail read on demand) and is reachable only while the main input loop is idle — i.e. on a live paused job; a `/kpi status` typed during a running job is queued by the interactive mode and executes after the job's handler returns.",
+   "Traceability: new AC ids AC-06.7, AC-14.5, AC-16.7, AC-16.8 bound to the test titles listed in `tests`; EVT-node.started / EVT-node.finished generated; docs/traceability-map.json regenerated."
+  ],
+  "tests": [
+   {
+    "file": "test/board-activity.test.ts",
+    "title": "activity folds node lifecycle and tool requests into per-node elapsed, cost and last tool",
+    "asserts": "Given node.started(plan, run 1, model X) at t0, tool.request(plan: read a), (plan: grep), (plan: edit src/x.ts) and node.finished(plan, completed, elapsed_ms 3000, cost_usd 0.42, result stack.json), foldActivity(records, t0+9000) yields plan {status completed, runs 1, elapsedMs 3000, costUsd 0.42, toolCalls 3, toolsByName {read:1,grep:1,edit:1}, lastTool 'edit x.ts', result stack.json, model X}; a node with node.started only reports status running and elapsedMs = now - startedAtMs; a second node.started for the same node and run (resume) resets toolCalls/lastTool while a later node.finished sums cost across both finished records; stageActivities maps plan-check into 'plan', sums toolCalls and drops nodes with stageIndex -1."
+   },
+   {
+    "file": "test/board-activity.test.ts",
+    "title": "the activity reader reads only appended bytes, coalesces overlapping reads and survives a truncated log",
+    "asserts": "With a temp events.jsonl: read() then append two lines and read() again → records grows by exactly two and a wrapped fs.open spy shows the second read started at the previous size; two concurrent read() calls resolve to the same snapshot object with no double-counted tool.request; an unparsable middle line increments unreadableLines without throwing; a trailing partial line is not counted until its newline arrives; truncating the file to zero and appending fresh lines yields only the fresh records; ENOENT yields an empty snapshot with no readError; replacing the file with a directory yields readError 'EISDIR' and keeps the previous records; last() returns the latest snapshot."
+   },
+   {
+    "file": "test/board-activity.test.ts",
+    "title": "narration is one line per node start and finish and none per tool call",
+    "asserts": "narrateRecord(node.started plan run 1 model m).text === 'K-π ▶ 03 plan · run 1 · m' (info); node.finished completed elapsed 192000 cost 0.42 result stack.json → 'K-π ■ 03 plan done · 3m12s · $0.42 · stack.json'; failed with a 200-char error → level warning, text <= 120 chars, error cut at 80; accounts.failover a→b → 'K-π ⇄ route a → b' (warning); tool.request, research.*, review.verdict, checkpoint → undefined."
+   },
+   {
+    "file": "test/operator-ui.test.ts",
+    "title": "elapsed and cost formatters are short and never fabricate a figure",
+    "asserts": "formatElapsed: 12000 → '12s', 192000 → '3m12s', 3720000 → '1h02m', every result <= 6 chars; formatCost: 0.42 → '$0.42', 12 → '$12', undefined → '$—'; shortTool('edit', '/a/b/board.ts') → 'edit board.ts', shortTool('bash') → 'bash'."
+   },
+   {
+    "file": "test/operator-ui.test.ts",
+    "title": "the NOW row names the running node and tool and the full board carries elapsed and cost per stage",
+    "asserts": "paintBoard(boardModel({ activity }), { width: 120, layout: 'compact' }) with plan completed 3m12s $0.42 and implement running 12m04s $1.20, 41 tools, lastTool 'edit board.ts', model m: a line contains 'NOW implement', '41 tools', '▸ edit board.ts', '12m04s', '$1.20'; the widget is <= 10 lines at 120 and <= 13 at 100; stage cells at compact still have two text lines (no detail); paintBoard(…, { layout: 'full' }) at 120 puts '3m12s $0.42' in the plan cell column and '12m04s $1.20' in the implement cell column with pending cells carrying a blank detail line; exactly one CURRENT everywhere; requireFields passes at 200/120/80/60; renderBoard flat output contains the NOW line without CURRENT; a model with eventsUnreadable 2 paints 'EVENTS ✕ 2 unreadable' and eventsError 'EACCES' paints 'EVENTS ✕ EACCES'; a model whose current stage has no record paints 'no node.started yet'; selectedStage 4 paints the 05 cell in tone 'warning' (spy palette) with the CURRENT count still 1."
+   },
+   {
+    "file": "test/operator-ui.test.ts",
+    "title": "the NOW row shrinks its optional spans instead of forcing the STOP box below",
+    "asserts": "paintShrinkingRow with a NOW row whose MODEL and ▸ path spans overflow width 60 returns a line without '…' that still contains 'NOW implement', '41 tools', '12m04s', '$1.20'; MODEL is dropped before ▸ lastTool, which is dropped before 'run 1'; paintBoard compact at 100 with a 70-char lastTool keeps the STOP box beside the telemetry block (line count equals the short-path board and one line contains both 'NOW implement' and '│')."
+   },
+   {
+    "file": "test/control-plane.test.ts",
+    "title": "the session widget refreshes on the injected tick, narrates lifecycle once and drops itself when the job ends",
+    "asserts": "registerControlPlane(pi, { tick: manual, now }) with a live run whose events.jsonl already holds handoff.created: session_start renders a widget whose NOW line says 'no node.started yet' and notifies nothing (history is not narrated); append node.started(implement) + two tool.request records, advance now by 65 s, fire the tick → the component's render(120) shows 'NOW implement', '2 tools', '1m05s' and notifications equal ['K-π ▶ 04 implement · run 1']; fire the tick again → no new notification; append accounts.failover a→b and node.finished(implement, completed) and tick → exactly ['K-π ⇄ route a → b', 'K-π ■ 04 implement done · …'] appended, in file order; re-running session_start (a reinstall) and ticking narrates nothing again (cursor is module state); write status DONE to state.json and tick → setWidget('kpi', undefined) was called and the ticker's stop ran; replacing events.jsonl with a directory before a tick yields one 'K-π board refresh failed: EISDIR'-free board (readError painted as 'EVENTS ✕ EISDIR') rather than a thrown error."
+   },
+   {
+    "file": "test/control-plane.test.ts",
+    "title": "the status overlay selects stages with arrow keys, opens the node detail on enter and closes on q",
+    "asserts": "With hasUI true / mode 'tui', a paused live run (state NEEDS_HUMAN, node human-confirm) whose events.jsonl holds plan node.started/tool.requests/node.finished and a written stack.json, and a fake ui.custom that instantiates the factory: `/kpi status` renders a full board containing the keys row '←/→ select · ↵ detail · q close' and no NODE panel; '\\x1b[D' (left) moves the warning-toned cell from 08 to 07 while the CURRENT count stays 1; '\\r' then await settled() adds a panel titled 'NODE review · pending' with the row 'no run yet'; four more lefts then '\\r' twice (close, reopen) show 'NODE plan · completed', 'runs 1 · elapsed 3m12s · cost $0.42 · model m', 'tools 3: read 1 · grep 1 · edit 1', 'result stack.json ● <bytes> B'; a loadDetail rejection (stat on a directory) shows 'load error EISDIR'; 'q' resolves done and dispose ran; '\\x03' also closes."
+   },
+   {
+    "file": "test/graph-engine.test.ts",
+    "title": "agent nodes append node.started and node.finished with run, elapsed and cost",
+    "asserts": "A one-agent-node graph with `now: () => nowMs` and a fake session whose prompt advances nowMs by 1500 and whose getSessionStats().cost rises 0.04 per prompt: events.jsonl contains node.started {node, run 1, model 'openai-codex/gpt-test' when options.model is set} before node.finished {status 'completed', elapsed_ms 1500, cost_usd 0.04, result <response.path>, session <sessionId>} and its ts equals the ISO of the same clock sample used for elapsed_ms; both validate against event.schema.json; verifyChain(path) is true; a set node emits nothing; a workerRole node emits both records with no cost_usd key."
+   },
+   {
+    "file": "test/graph-engine.test.ts",
+    "title": "a failed agent node records node.finished failed with its error and sums cost across retries",
+    "asserts": "A node whose session throws a contract error yields node.finished {status 'failed', error containing the message, no cost_usd key when the fake has no getSessionStats} appended before the fail checkpoint; a node whose first attempt throws a transient 429 and whose second attempt succeeds (retryBaseDelayMs 0, injected sleep) yields exactly one node.started and one node.finished for that run with cost_usd equal to the sum of both attempts' deltas (0.08 with the 0.04-per-prompt fake) and elapsed_ms spanning both attempts."
+   },
+   {
+    "file": "test/schema-conformance.test.ts",
+    "title": "event schema has one valid normalized branch per event type",
+    "asserts": "(existing title, fixture extended) the node.started and node.finished payloads validate; the sibling test 'event schema rejects cross-type and research vocabulary drift' additionally rejects node.finished with `approved: true`."
+   },
+   {
+    "file": "test/concise-output.test.ts",
+    "title": "node lifecycle renderers are field-aware",
+    "asserts": "formatEventEntry('node.started', record) === 'K-π node.started job=j r0 plan run=1 model=m'; formatEventEntry('node.finished', record) contains 'plan completed 3m12s $0.42 → stack.json'; neither is a markdown table."
+   }
+  ],
+  "docs": [
+   {
+    "file": "docs/PRD.md",
+    "section": "US-06 — Control-board TUI",
+    "what": "Add **AC-06.7** While a job runs, the chat shows one line when a node starts (`K-π ▶ NN node · run n · provider/model`), one when it finishes (`K-π ■ … done · elapsed · cost · result` or `K-π ✕ … failed · elapsed · error`), and one on a route change (`K-π ⇄ route from → to`); never a line per tool call; lines come from `events.jsonl` within the board's refresh interval."
+   },
+   {
+    "file": "docs/PRD.md",
+    "section": "US-14 — Observability",
+    "what": "Add **AC-14.5** Every agent node run appends `node.started` {run, model} and `node.finished` {run, status, elapsed_ms, cost_usd?, result?, session?, error?} to `events.jsonl`, hash-chained and validated by `event.schema.json`; cost sums every attempt of the run and is omitted, never zeroed, when the node's session has no billing."
+   },
+   {
+    "file": "docs/PRD.md",
+    "section": "US-16 — Graph-engineering TUI (Avid boards)",
+    "what": "Add **AC-16.7** The widget carries a `NOW` row naming the running node, its run number, tool-call count, last tool and target, elapsed and cost, refreshed from `state.json` + `events.jsonl` at least every 2 s with no model call; the full board's stage cells add the node's elapsed and cost for DONE and CURRENT stages. Add **AC-16.8** `/kpi status` is interactive: ←/→ select a stage, ↵ opens the node detail (status, runs, elapsed, cost, model, tool counts, result file, session, error), `q`/Esc close; it is reachable while a live job is paused (the running job holds the command loop)."
+   },
+   {
+    "file": "docs/spec.md",
+    "section": "§5 Run store → SCH-event",
+    "what": "Extend the EVT types list with `node.started`, `node.finished` and add the two payload shapes with field semantics (run, model, status, elapsed_ms, cost_usd optional-not-zero summed across attempts, result, session, error; a resumed running node re-emits node.started with the same run)."
+   },
+   {
+    "file": "docs/spec.md",
+    "section": "§8 Graph engine (ours)",
+    "what": "Add bullet: 'Each agent node batch attempt is bracketed by `node.started` / `node.finished` events written to the run's events.jsonl before any exhaust/fail handling; transient retries do not repeat them. The engine exposes nothing else — the control plane reads the log.'"
+   },
+   {
+    "file": "docs/spec.md",
+    "section": "§11 UI → Widgets and Overlay (Avid boards)",
+    "what": "Widget block: add the `NOW implement  run 1  41 tools  ▸ edit board.ts  12m04s  $1.20  MODEL …` row under CONTEXT (optional spans drop before anything truncates; `no node.started yet` before the first record; `EVENTS ✕ n unreadable` / `EVENTS ✕ <code>` on log problems), the 1 s refresh from run files with one chat line per node start/finish/route change, and the height note (one extra line while a job has activity). Overlay: replace 'any key closes it' with: full-layout cells carry `<elapsed> <cost>`; ←/→ select a stage (warning tone), ↵ toggles the NODE panel, q/Esc/Ctrl+C close; the overlay is static and is reachable when the main input loop is idle (paused job) — a `/kpi status` typed mid-run is queued by the interactive mode until the job returns."
+   },
+   {
+    "file": "docs/visual-targets.md",
+    "section": "§2 Honesty and Board A region 3 (Stages 01–08)",
+    "what": "Honesty: add 'While a node runs the board must change: a NOW row names the running node, tool count, last tool, elapsed and cost, refreshed from run files at least every 2 s; the chat carries one line per node start/finish/route change and none per tool call. Stage cells in the compact widget stay two lines; the full board's cells add an elapsed/cost line.' Region 3: show the full-board three-line cell form and the NOW row; add a short 'Inspecting a stage' paragraph with the overlay keys and the NODE panel."
+   },
+   {
+    "file": "docs/uat.md",
+    "section": "UAT-06 and UAT-16",
+    "what": "UAT-06 action: add 'watch the widget and chat while a node runs'; evidence: 'the NOW row changes without a keypress; the chat shows one ▶ line and one ■/✕ line per node and nothing per tool call'; ACs AC-06.1–06.7. UAT-16 action: add 'while the job is paused at the ship gate run `/kpi status`, press ← twice, ↵, q'; evidence: 'the selected cell moves, the NODE panel shows status/elapsed/cost/model/tools/result, q closes; the full board cells show elapsed and cost'; ACs AC-16.1–16.8."
+   },
+   {
+    "file": "README.md",
+    "section": "§9 Reading the board",
+    "what": "Add the NOW row to the widget example and a bullet '**NOW** — the running node, run number, tool count, last tool and target, elapsed, cost; refreshed every second from run files'; add the chat narration lines; replace 'Any key closes it' with the overlay key list (←/→, ↵, q/Esc), the elapsed/cost cell line in the full board, and the note that the overlay opens while a job is paused (a running job holds the command line until it returns)."
+   },
+   {
+    "file": "fixes.md",
+    "section": "New FX-05 entry (after FX-04)",
+    "what": "Record this package in the FX format: stories US-06/14/16, owned files, the verified fact that `/kpi status` is queued while `/kpi <goal>` runs (interactive-mode.ts:1188-1191, :3176-3179), the preserved FX-01 test titles, the new titles, verification commands and DoD; note the pty-grader tokens that must stay contiguous."
+   },
+   {
+    "file": "docs/traceability-map.json",
+    "section": "generated",
+    "what": "Regenerate with `node scripts/generate-traceability-map.mjs` after adding AC-06.7, AC-14.5, AC-16.7, AC-16.8 rows and the EVENT_TYPES names; never hand-edit."
+   }
+  ],
+  "verification": [
+   "cd /Users/leebarry/K-pi && grep -c '\"type\":\"node.started\"' .kpi/runs/20260903-fix-claude-model-requests-failin-42986cfa/events.jsonl; grep -c '\"type\":\"tool.request\"' .kpi/runs/20260903-fix-claude-model-requests-failin-42986cfa/events.jsonl   # reproduce: 0 lifecycle records against 261 tool.request records",
+   "cd /Users/leebarry/K-pi && node --test --experimental-strip-types test/operator-ui.test.ts test/control-plane.test.ts test/graph-engine.test.ts test/gated-loop.test.ts test/schema-conformance.test.ts test/traceability.test.ts   # baseline green before editing",
+   "cd /Users/leebarry/K-pi && node --test --experimental-strip-types test/board-activity.test.ts test/operator-ui.test.ts test/control-plane.test.ts test/graph-engine.test.ts test/gated-loop.test.ts test/schema-conformance.test.ts test/extension.test.ts test/concise-output.test.ts test/append-log.test.ts test/runtime-milestone.test.ts",
+   "cd /Users/leebarry/K-pi && node scripts/generate-traceability-map.mjs && node --test --experimental-strip-types test/traceability.test.ts && git diff --stat docs/traceability-map.json",
+   "cd /Users/leebarry/K-pi && npm run check",
+   "cd /Users/leebarry/K-pi && npm run build:offline   # schemas/ changed: dist/kpi must match src/kpi byte-for-byte for test/harness.test.ts",
+   "cd /Users/leebarry/K-pi && npm run test:kpi && npm test && npm run verify:built",
+   "cd /Users/leebarry/K-pi && node scripts/pty-rows/uat-16.mjs && node scripts/pty-rows/uat-06.mjs && node scripts/pty-rows/uat-25.mjs   # every check ok; JOB <id> intact at 80/60, exactly one CURRENT, no 'widget truncated'",
+   "cd /Users/leebarry/K-pi && node --experimental-strip-types -e \"const {paintBoard}=await import('./packages/coding-agent/src/kpi/extensions/board-frame.ts');const activity={plan:{node:'plan',status:'completed',elapsedMs:192000,costUsd:0.42,toolCalls:3,toolsByName:{read:1,grep:1,edit:1},runs:1},implement:{node:'implement',status:'running',elapsedMs:724000,costUsd:1.2,toolCalls:41,toolsByName:{},lastTool:'edit board.ts',model:'openai-codex/gpt-5.6-sol',runs:1}};for(const w of [200,120,100,80,60]){for(const layout of ['compact','full']){const l=paintBoard({jobId:'20260903-fix-claude-model-requests-failin-42986cfa',mode:'gated',round:0,maxRounds:3,stage:'implement',node:'implement',stop:'RUNNING',paused:false,fileLit:{},contextPack:{product:false,structure:false,tech:false},agents:0,busLit:false,surface:layout==='full'?'overlay':'widget',activity},{width:w,layout});console.log(w,layout,l.length);console.log(l.join('\\n'))}}\"   # eyeball: compact <=10 at 120 / <=13 at 100 with the NOW row; full cells carry elapsed/cost",
+   "cd /Users/leebarry/K-pi && ./kpi-test.sh   # live in this repo: /kpi <small goal> → chat shows '▶ 01 ac-compile' within a second of the node starting, widget NOW row ticks every second with tool count/elapsed, '■ … done · … · $…' per node; when the job pauses at the ship gate: /kpi status → ←/→ moves the selection, ↵ shows the NODE panel with tools/result/cost, q closes; /kpi verify → 'events.jsonl verified: N records chained'",
+   "cd /Users/leebarry/K-pi && grep -c '\"type\":\"node.finished\"' .kpi/runs/<new-job>/events.jsonl   # real artifact proof: lifecycle records present and chained"
+  ],
+  "risks": [
+   "The widget tick does file I/O every second (state.json read, six stats, one events.jsonl stat and an incremental read of appended bytes only); the first read of a long log (tens of thousands of tool.request lines) folds it once, linear in size, and every later tick is O(appended bytes). Overlapping reads are coalesced into one in-flight promise, so an onStateChange reinstall or a slow disk never double-parses.",
+   "tool.request attribution uses record.node, which policy stamps from state.json.node (written at superstep end); both shipped graphs run one agent node per superstep, but a graph with two concurrent agent nodes would count both nodes' tool calls under one node. node.started/finished remain the authoritative per-node timing/cost regardless.",
+   "Verified: `/kpi status` cannot be opened while `/kpi <goal>` runs — the interactive main loop awaits the handler (interactive-mode.ts:1188-1191) and queues further input (:3176-3179). The always-on widget (its own setInterval) is therefore the only live surface during a node; the queued `/kpi status` fires after the job returns and, for a finished job, reports 'no active job — last job … DONE'. Opening the overlay mid-run would need a registered shortcut (types.ts:1350 registerShortcut) — see open_questions.",
+   "An events.jsonl append failure inside runSuperstep propagates and fails the batch, the same way review.verdict (engine.ts:1113) and emitTerminal do; a run store that cannot be appended to is treated as a broken run, not silently skipped (tool.request's swallow at policy.ts:974 is the deliberate exception for the tool hook, which has no batch to fail).",
+   "Adding two records per node attempt to events.jsonl changes record counts; audited tests filter by type (loop.terminal) and none pin totals, but `/kpi verify` output ('N records chained') and any downstream line-counting tooling will see more records.",
+   "Compact widget height for a live job grows by exactly one line (NOW row): 9→10 at 120 columns, 12→13 at 100; the activity-less caps pinned by the existing test are unchanged. Cell elapsed/cost lines are confined to the full layout, pending the open question.",
+   "Narration relies on ctx.ui.notify; in print/JSON mode there is no widget factory and no notify rendering, so narration is TUI-only (the events.jsonl records remain the durable trail). Narration latency is bounded by BOARD_TICK_MS (1 s) rather than instantaneous.",
+   "Failure paths are separate and bounded: unparsable lines → `EVENTS ✕ n unreadable`; fs errors → `EVENTS ✕ <code>` on the board with previous records kept; a tick that throws outside the reader warns once per distinct error code (at most 8 codes) instead of once per process; overlay detail load errors render as `load error <code>` in the NODE panel.",
+   "event.schema.json is a shipped resource: forgetting the rebuild fails test/harness.test.ts; the schema-conformance fixture and both EVENT_TYPES copies must be extended or the suites fail.",
+   "rejected: 'drop the engine emission and narrate from the widget tick' was accepted only for the callback — the engine still appends node.started/node.finished to events.jsonl (there is no other source of per-node timing and cost); what is removed is GraphEngineOptions.onNodeEvent, LoopDependencies.onNodeEvent, both gated-loop forwardings and the extra installWidget per lifecycle event.",
+   "rejected: the minimalism critique's claim that extension commands are 'unlocked' mid-run (agent-session.ts:1344) is wrong for this loop — _tryExecuteExtensionCommand is awaited by session.prompt (:1180), which the main loop awaits (interactive-mode.ts:1188-1191); the immediate paths at interactive-mode.ts:3151-3166 apply only when the main session is compacting or streaming, which a K-π job (sdk sessions, engine.ts:567) never is. The design records the verified behaviour instead, and the 'open overlay during ctx.ui.confirm' case cannot occur because the overlay cannot be open while the handler runs.",
+   "rejected: adding agent.denied to the two EVENT_TYPES copies is included (three names in one edit) rather than left stale, because the critique asked for the copies to match append-log.ts and the schema-conformance fixture already covers it; if the reviewer prefers strict scope, drop that one name."
+  ],
+  "open_questions": [
+   "Compact-widget height: the design adds only the NOW row (+1 line: 10 at 120 columns, 13 at 100) and keeps per-stage elapsed/cost in the full `/kpi status` board. Should the compact widget's stage cells also carry the `<elapsed> <cost>` line (a further +1 line, 11 at 120), or is the NOW row enough for the always-on surface?",
+   "Because a running `/kpi <goal>` holds the interactive command loop, `/kpi status` cannot open mid-run. Is the always-on widget (live, ticking) sufficient during a run, or should a keyboard shortcut (pi.registerShortcut, types.ts:1350) open the overlay while a job runs — and if so, which key?"
+  ],
+  "size": "L"
+ },
+ "critiques": [
+  {
+   "lens": "correctness",
+   "verdict": "needs-revision",
+   "problems": [
+    {
+     "severity": "major",
+     "claim": "The shared incremental ActivityReader is unserialized and its `newRecords` (\"records appended since the previous read\") is single-consumer, but the design gives it three concurrent callers: the widget ticker (guarded only by its own `busy` flag), `onNodeEvent -> installWidget -> buildBoardModel`, and the overlay's `load()`/`readNodeDetail` — all resolving the same reader from the module-level `activityReaders` Map keyed by eventsPath. Two overlapping `read()` calls both see the same `offset`, both parse the same byte range and both push into `records[]`, so toolCalls/toolsByName double-count and `accounts.failover` is narrated twice (contradicting the spec'd test 'a second tick does not repeat it'); conversely a non-narrating read (overlay or onNodeEvent path) that lands between two ticks consumes `newRecords`, so the failover line is silently dropped. The installWidget pseudo-code also references `snapshot.newRecords` although `buildBoardModel` returns only a BoardModel — there is no defined way for the tick to obtain the snapshot.",
+     "evidence": "Design change (c) for control-plane.ts: `activityReaders = new Map<string, ActivityReader>()` shared by buildBoardModel; tick callback reads `snapshot.newRecords` while calling `buildBoardModel(...)`. Design change (e): `onNodeEvent: async (event) => { ...; await installWidget(ctx, dependencies); }` runs while the ticker is live. board-activity.ts spec: reader 'keeps { path, offset, partial, records[] }' with no lock; compare append-log.ts:395-413 `withAppendLock` which exists precisely because check-then-act on a shared file cursor races. Engine awaits `onNodeEvent` inside runSuperstep (engine.ts:1325-1338 region) so the handler overlaps the 1 s ticker in the same event loop."
+    },
+    {
+     "severity": "minor",
+     "claim": "The engine test as specified ('injected now advancing 1500 ms per call ... node.finished { elapsed_ms: 1500 }') will not pass with the emission as designed: node.finished takes `ts: new Date(this.now())` and `elapsed_ms: this.now() - startedAtMs` as two separate clock samples, and executeNode's path may call `this.now()` again via readBudget, so elapsed would be 3000+ under a +1500-per-call clock.",
+     "evidence": "Design change (d) for engine.ts: 'emit node.finished { ts (this.now()), ..., elapsed_ms: this.now() - startedAtMs }'. Existing clock stubs advance per call (test/graph-engine.test.ts:388-394); engine.ts:1176 readBudget also calls this.now()."
+    },
+    {
+     "severity": "minor",
+     "claim": "board.ts and board-activity.ts become a circular value-import pair: stageCells needs formatElapsed/formatCost (value imports from board-activity), and board-activity imports stageIndex/BOARD_STAGES from board.ts. It works only because nothing is evaluated at module top level; a later top-level use (e.g. a const table built from BOARD_STAGES) would throw a TDZ error.",
+     "evidence": "Design: board-activity.ts 'imports only node:fs/promises, node:path, append-log types, and stageIndex/BOARD_STAGES from board.ts'; board.ts stageCells 'detail = [`${formatElapsed(elapsedMs)} ${formatCost(costUsd)}`]'."
+    },
+    {
+     "severity": "minor",
+     "claim": "The stated contract 'exactly one started/finished pair per node per batch (retries do not repeat it)' is not the whole story: a node resumed from a `running` checkpoint re-executes without incrementing `runs`, so a second node.started with the same `run` number is appended; foldActivity's 'run-2 resets lastTool/toolCalls' rule keys on run number and will not reset, and elapsed for that run restarts from the second started ts while tool counts accumulate across both attempts.",
+     "evidence": "engine.ts:1325-1332 — `if (nodeState.status !== \"running\") { nodeState.runs += 1; }`; design foldActivity: 'node.started sets status running/startedAtMs/runs/model (resets lastTool/toolCalls for a new run)'."
+    },
+    {
+     "severity": "minor",
+     "claim": "scripts/generate-traceability-map.mjs and test/traceability.test.ts each carry their own hard-coded EVENT_TYPES copy (already missing `agent.denied`), so EVT-node.started / EVT-node.finished map entries do not follow from editing append-log.ts; the design's generator edit adds only the four AC rows and leaves the event list copies stale. traceability.test.ts still passes (the two copies agree with each other), but the map will not carry the new event contracts.",
+     "evidence": "scripts/generate-traceability-map.mjs:1129-1152 `const EVENT_TYPES = [...]` (22 entries); test/traceability.test.ts:15-38 identical local copy; generator :1759-1776 loops that local list to emit EVT-* entries; append-log.ts:9-33 has 23 entries."
+    },
+    {
+     "severity": "minor",
+     "claim": "Two evidence citations are slightly off: gated-loop.ts:1776 is resumeLoop's post-terminal `onStateChange` (runLoop's initial write is :1910), and the schema assertion 'adding approved:true to node.finished is rejected' belongs to the existing test 'event schema rejects cross-type and research vocabulary drift' (:180), not to 'one valid normalized branch per event type'.",
+     "evidence": "gated-loop.ts:1770-1777 (writeTerminalState then `await dependencies.onStateChange?.()` inside resumeLoop); :1910 in runLoop; test/schema-conformance.test.ts:169-189."
+    }
+   ],
+   "required_changes": [
+    "Make the activity reader safe for the three callers that share it: serialize `read()` per reader with an internal promise chain (mirror append-log.ts withAppendLock) or coalesce an in-flight read so overlapping callers await the same result; and replace single-consumer `newRecords` with a monotonic cursor (e.g. snapshot.records with a sequence index, or `read(path, now, { since })`) so the widget ticker narrates every accounts.failover exactly once regardless of overlay/onNodeEvent reads in between. Define concretely how installWidget's tick obtains the snapshot (return it from buildBoardModel or expose reader.last()); the current pseudo-code references an out-of-scope `snapshot`.",
+    "In engine.ts, sample `this.now()` once when building node.finished and derive both `ts` and `elapsed_ms` from that sample; rewrite the graph-engine test expectation to match the clock stub's actual call count (or use a controllable clock that is advanced explicitly between started and finished) instead of asserting a literal 1500.",
+    "Move formatElapsed/formatCost/shortTool into a leaf module (or into board.ts) so board.ts does not value-import from board-activity.ts while board-activity.ts imports board.ts.",
+    "Document (and make foldActivity handle) the same-run repeat of node.started after a kill/resume of a `running` node: either key the reset on (run, startedAt) or state that counts accumulate across attempts of one run; adjust the contract sentence 'exactly one pair per node per batch' to say 'per batch; a resumed running node re-emits node.started with the same run'.",
+    "Add \"node.started\" and \"node.finished\" to the EVENT_TYPES copies in scripts/generate-traceability-map.mjs (:1129) and test/traceability.test.ts (:15) so EVT-node.* entries are generated and asserted, then regenerate docs/traceability-map.json (note the copies already lack agent.denied; keep them consistent with append-log.ts).",
+    "Correct the two citations (gated-loop.ts :1910 for runLoop's initial onStateChange; place the `approved: true` rejection in the existing 'rejects cross-type and research vocabulary drift' test)."
+   ],
+   "file_conflicts_seen": [
+    "packages/coding-agent/src/kpi/extensions/graph/engine.ts (plan-gate, agents-visibility)",
+    "packages/coding-agent/src/kpi/extensions/gated-loop.ts (plan-gate, agents-visibility)",
+    "packages/coding-agent/src/kpi/extensions/append-log.ts (plan-gate, onboarding)",
+    "packages/coding-agent/src/kpi/schemas/event.schema.json (plan-gate, onboarding)",
+    "packages/coding-agent/src/kpi/extensions/board.ts (agents-visibility, onboarding)",
+    "packages/coding-agent/src/kpi/extensions/control-plane.ts (agents-visibility)",
+    "test/graph-engine.test.ts (plan-gate, agents-visibility)",
+    "test/gated-loop.test.ts (plan-gate)",
+    "test/operator-ui.test.ts (agents-visibility)",
+    "test/control-plane.test.ts (agents-visibility)",
+    "test/schema-conformance.test.ts (plan-gate)",
+    "scripts/generate-traceability-map.mjs (anthropic-auth, plan-gate, agents-visibility, onboarding)",
+    "docs/traceability-map.json (anthropic-auth, plan-gate, agents-visibility)",
+    "packages/coding-agent/dist (plan-gate)"
+   ]
+  },
+  {
+   "lens": "minimalism-and-contract",
+   "verdict": "needs-revision",
+   "problems": [
+    {
+     "severity": "major",
+     "claim": "Two code paths do the same job: the engine gains `onNodeEvent`, LoopDependencies forwards it at two construction sites, and the control plane narrates + re-runs installWidget from it — while the same design already narrates accounts.failover from `snapshot.newRecords` on the widget tick, which sees node.started/node.finished the same way within one BOARD_TICK_MS.",
+     "evidence": "Design change (c) engine `emitNodeEvent` → `await this.options.onNodeEvent?.(event)` in runSuperstep (engine.ts:1325-1345 batch loop); change (d) gated-loop forwarding at :1654 and :1891; control-plane (c) `for (const record of snapshot.newRecords.filter(type === 'accounts.failover')) ctx.ui.notify(...)` and (e) `onNodeEvent: async (event) => { notify; await installWidget }`. The AC text the design itself writes (AC-16.7) only requires refresh 'at least every 2 s'. The callback is also unguarded: an exception from ctx.ui.notify/installWidget propagates out of runSuperstep and fails the node, contradicting the doc comment 'never affects routing'."
+    },
+    {
+     "severity": "major",
+     "claim": "node.finished.cost_usd is wrong for any run with a transient retry: `this.nodeRunCostUsd.set(node.id, delta)` in executeNode's finally overwrites on every attempt, so the recorded cost is the last attempt's delta only, while the design promises exactly one started/finished pair per run with retries folded inside.",
+     "evidence": "engine.ts:1121-1150 `executeWithRetries` loops `await this.executeNode(node)`; :1000 `finally { this.recordSessionCost(session) }` runs once per attempt; design change (b) stores with `.set`, not `+=`, and only deletes after node.finished. Isolated-mode nodes get a fresh session per attempt (engine.ts:898 `disposeAfter: isolated`), so each attempt's delta is the whole attempt cost."
+    },
+    {
+     "severity": "major",
+     "claim": "A visual-contract decision is made silently: the always-on compact widget grows from 9 to 11 lines at 120 columns and from 9 to 12 at 100 (three-line stage cells plus a NOW row) for every live job, and the design rewrites docs/visual-targets.md §2 to match — but open_questions is empty.",
+     "evidence": "Design risks: 'operators on short terminals lose two chat rows'; board-frame change 'Height contract with activity present: compact 120 columns = 11 lines'; fixes.md FX-01 landed 'The always-on widget is 9 lines running at 120 columns'. docs/visual-targets.md §2 Honesty (lines 119-129) is the operator-surface authority; AGENTS.md 'Stop, do not improvise' and this lens require the trade-off (per-cell detail line in the widget vs NOW row only vs overlay only) to be put to the human, not chosen by the design."
+    },
+    {
+     "severity": "minor",
+     "claim": "YAGNI: the transcript tail (`t` key, `readTranscriptTail` with a 256 KB bounded read, `findNodeTranscript`, a TRANSCRIPT panel, `BoardModel.transcript`), the per-node `recent` last-8 record ring, h/l vim aliases, Space alias, and an `r` refresh key on an overlay that already reloads every second are not asked for by ISSUE B ('select a stage and inspect what it did' is met by the NODE detail panel).",
+     "evidence": "Design board-activity.ts exports readTranscriptTail/findNodeTranscript; board-overlay handleInput lists left|'h', right|'l', enter|return|space, 't', 'r'; tests 'a transcript tail returns the last assistant lines from a bounded read'. docs/minimalist.md rung 1 YAGNI; each item adds a test, a docs key table entry and a schema-free contract."
+    },
+    {
+     "severity": "minor",
+     "claim": "Circular runtime import: board.ts calls formatElapsed/formatCost from board-activity.ts, and board-activity.ts imports stageIndex/BOARD_STAGES from board.ts. FX-01 made board.ts 'pure and import-light'; the two 6-char formatters belong in board.ts (or StageActivity carries preformatted strings).",
+     "evidence": "Design board-activity.ts: 'imports only … stageIndex/BOARD_STAGES from board.ts'; board.ts stageCells: 'detail = [`${formatElapsed(elapsedMs)} ${formatCost(costUsd)}`]'; fixes.md FX-01 §Change 1 'board.ts, stays pure and import-light'."
+    },
+    {
+     "severity": "minor",
+     "claim": "Reuse missed: the engine already formats `${this.options.model.provider}/${this.options.model.id}` for bus.spawn; the design adds a second copy in node.started instead of one expression used by both.",
+     "evidence": "engine.ts:1035 `this.options.model === undefined ? undefined : `${this.options.model.provider}/${this.options.model.id}``; design change (d) 'model: this.options.model ? `${provider}/${id}` : undefined'."
+    },
+    {
+     "severity": "minor",
+     "claim": "Failure modes are conflated rather than named: any reader I/O error (EACCES, EISDIR, a directory swap) is folded into `unreadableEvents` and painted as 'EVENTS ✕ n unreadable' — the count of unparsable lines — and the tick's catch warns once per process, hiding later distinct failures; overlay `loadDetail` failures other than ENOENT have no branch at all ('transcript — not found' is the only path).",
+     "evidence": "Design control-plane (b): 'Any reader error is caught and reported as unreadableEvents'; (c) `.catch(error => { if (!refreshWarned) {...} })`; board.ts nodeDetail rows list only 'transcript … | transcript — not found'. AGENTS.md 'Handle the failures your contracts name … Silence is a defect'."
+    },
+    {
+     "severity": "minor",
+     "claim": "Risk 3 (can `/kpi status` be typed while `/kpi <goal>` awaits the loop) is answerable from the code and should be stated, not deferred to fixes.md: extension command handlers run through `_tryExecuteExtensionCommand` with no busy lock, so the overlay is reachable mid-run; the untested interaction is an open `ctx.ui.custom` overlay when a human node calls `ctx.ui.confirm`.",
+     "evidence": "packages/coding-agent/src/core/agent-session.ts:1344-1368 `await command.handler(args, ctx)` with no streaming/busy check; interactive-mode.ts:3151-3166 executes extension commands immediately even while streaming."
+    }
+   ],
+   "required_changes": [
+    "Drop GraphEngineOptions.onNodeEvent, LoopDependencies.onNodeEvent, the two gated-loop forwardings, and the gated-loop forwarding test; narrate node.started/node.finished/accounts.failover from `snapshot.newRecords` on the existing widget tick (one path), and let the tick's component.refresh be the only repaint trigger — remove the extra `installWidget` per lifecycle event.",
+    "Accumulate per-node cost across retry attempts (`nodeRunCostUsd.set(id, (get(id) ?? 0) + delta)`), reset it when node.started is emitted, and add the retried-once case to the engine test asserting cost_usd equals the sum of both attempts.",
+    "Move the widget-height trade-off into open_questions: (a) three-line stage cells in the always-on widget (9→11/12 lines), (b) NOW row only in the widget with per-cell elapsed/cost in the overlay, or (c) overlay only. Do not rewrite docs/visual-targets.md §2 height text until the human picks.",
+    "Cut the transcript tail (readTranscriptTail, findNodeTranscript, TRANSCRIPT panel, `t` key, BoardModel.transcript), the per-node `recent` ring, the h/l/Space aliases and the `r` key; keep ←/→, Enter, q/Esc/Ctrl+C. Remove the corresponding test, docs key-table entries and AC-16.8 wording.",
+    "Put formatElapsed/formatCost in board.ts (or pass preformatted strings on StageActivity) so board-activity.ts depends on board.ts and never the reverse.",
+    "Reuse one `modelLabel()` expression in engine.ts for both bus.spawn and node.started.",
+    "Name the failure paths separately: reader I/O errors surface as `EVENTS ✕ <errno>` (distinct from the unparsable-line count) and are warned per distinct code, not once per process; overlay loadDetail errors other than ENOENT are shown as `error <code>` in the NODE panel.",
+    "State in the design (not fixes.md later) that extension commands are unlocked (agent-session.ts:1344) so `/kpi status` is reachable mid-run, and add a test or explicit note for an open overlay when a human node calls ctx.ui.confirm."
+   ],
+   "file_conflicts_seen": [
+    "packages/coding-agent/src/kpi/extensions/graph/engine.ts (plan-gate, agents-visibility)",
+    "packages/coding-agent/src/kpi/extensions/gated-loop.ts (plan-gate, agents-visibility)",
+    "packages/coding-agent/src/kpi/extensions/append-log.ts (plan-gate, onboarding)",
+    "packages/coding-agent/src/kpi/schemas/event.schema.json (plan-gate, onboarding)",
+    "packages/coding-agent/src/kpi/extensions/board.ts (agents-visibility, onboarding)",
+    "packages/coding-agent/src/kpi/extensions/control-plane.ts (agents-visibility)",
+    "test/graph-engine.test.ts (plan-gate, agents-visibility)",
+    "test/gated-loop.test.ts (plan-gate)",
+    "test/schema-conformance.test.ts (plan-gate)",
+    "test/operator-ui.test.ts (agents-visibility)",
+    "test/control-plane.test.ts (agents-visibility)",
+    "scripts/generate-traceability-map.mjs (anthropic-auth, plan-gate, agents-visibility, onboarding)",
+    "docs/traceability-map.json (anthropic-auth, plan-gate, agents-visibility)",
+    "packages/coding-agent/dist (plan-gate; this design's `npm run build:offline` rewrites dist/kpi/schemas for the harness byte compare)"
+   ]
+  }
+ ]
+}

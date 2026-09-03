@@ -1,0 +1,559 @@
+{
+ "key": "anthropic-auth",
+ "design": {
+  "issue": "A1: every request through a K-π Anthropic OAuth slot is refused with `400 {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Claude Code 2.1.75 does not support this model; version 2.1.251 or newer is required. Run 'claude update', or update the Claude desktop app, then try again.\",\"details\":{\"error_code\":\"claude_code_version_too_old\"}},\"request_id\":\"req_011CegQu2xW5e5oLygDDqtHQ\"}` (verbatim errorMessage from ~/.kpi/agent/sessions/--Users-leebarry-K-pi--/2026-09-03T11-17-14-058Z_*.jsonl) because packages/ai still identifies as claude-cli/2.1.75, and K-π surfaces it only as the raw assistant error. A2: the official Anthropic grant lives in two files with two refreshers — the base runtime refreshes ~/.kpi/agent/auth.json on every request, K-π refreshes its accounts.secrets.json copy (anthropic/default) at every session_start/turn_start; Anthropic rotates refresh tokens, so the copy that refreshes second is dead forever (invalid_grant), the slot is cooled 5h instead of told to re-login, and the warning embeds a full JS stack every session start and every turn.",
+  "root_cause": "A1: packages/ai/src/api/anthropic-messages.ts:77 pins `const claudeCodeVersion = \"2.1.75\"`, sent at :938 as `user-agent: claude-cli/<v>` (with `anthropic-beta: claude-code-20250219,oauth-2025-04-20` at :937) for every sk-ant-oat token (isOAuthToken :874-876). The server floor is now 2.1.251; upstream fixed it in 96317e50b (one line, 2.1.75 → 2.1.251, nothing else). In K-π the 400 reaches after_provider_response (index.ts:850) with no body, then message_end (:890) where classifyProviderBodyFailure (:930; QUOTA_TOKENS errors.ts:2) does not match the text, so the handler returns at :934 and says nothing. A2: one grant, two owners. (1) packages/coding-agent/src/core/model-runtime.ts:583 prepareRequest calls getAuth(model) on EVERY request before transformHeaders (:593) runs K-π's before_provider_headers hook; packages/ai/src/auth/resolve.ts:139-155 refreshes an auth.json OAuth credential with <5 min left under the auth.json lock and persists the rotated tokens. (2) store.ts:393-431 importOfficialCredentials copies auth.json's grant into accounts.secrets.json as slot `default` once (only when no `default`, :412); index.ts:559-585 refreshExpiringCredentials then calls oauth.refresh on that copy with the same refresh token. After either side rotates, the other side's refresh token is revoked (on this machine auth.json anthropic expires=1788453002792, the slot copy expires=1788387252486 — the base rotated, K-π's copy is dead). (3) index.ts:579 cools the slot DEFAULT_COOLDOWN_MS and :581 notifies error.message, which packages/ai/src/auth/oauth/anthropic.ts:330 builds from formatErrorDetails (:82-95, `stack=` at :92). (4) Every pooled OAuth login also lands in auth.json: index.ts:217 → model-runtime.ts:673-677 → packages/ai/src/models.ts:581 credentials.modify — so `/accounts login anthropic work` silently makes auth.json mirror `work` (two owners again). (5) When the base's own refresh dies, prepareRequest throws ModelsError(\"OAuth refresh failed for anthropic: …\") whose message embeds the cause text via withCauseDetail (resolve.ts:30, :37-42), and packages/agent/src/agent.ts:511-524 turns it into an assistant error with that errorMessage; K-π's message_end has no pending response to pair (:898-899) and returns silently, so the operator is never told the grant in auth.json needs a new login.",
+  "evidence": [
+   {
+    "file": "packages/ai/src/api/anthropic-messages.ts",
+    "line": 77,
+    "note": "const claudeCodeVersion = \"2.1.75\" — the value Anthropic rejects; upstream 96317e50b changes only this line to \"2.1.251\" (git show --stat: 1 file, 1 insertion, 1 deletion)"
+   },
+   {
+    "file": "packages/ai/src/api/anthropic-messages.ts",
+    "line": 938,
+    "note": "\"user-agent\": `claude-cli/${claudeCodeVersion}` for OAuth tokens (isOAuthToken :874-876); anthropic-beta claude-code-20250219,oauth-2025-04-20 at :937"
+   },
+   {
+    "file": "packages/ai/src/api/anthropic-messages.ts",
+    "line": 284,
+    "note": "mergeClientHeaders prepends `\"User-Agent\": getPiUserAgent()` and Object.assign (mergeHeaders :274) keeps both the capitalised and the lowercase `user-agent` key; the SDK's case-insensitive header build lets the later lowercase claude-cli key win — the dual-key reliance upstream ships today"
+   },
+   {
+    "file": "packages/ai/src/api/anthropic-messages.ts",
+    "line": 581,
+    "note": "`onResponse: (failed) => options?.onResponse?.(failed, model)` is a pre-existing K-π insertion (git diff b79e4cc shows one hunk) not yet recorded in UPSTREAM.md §6 — register it while touching the file"
+   },
+   {
+    "file": "packages/coding-agent/src/core/model-runtime.ts",
+    "line": 583,
+    "note": "prepareRequest: getAuth(model) (base OAuth refresh + persist to auth.json) runs before transformHeaders at :593 (K-π's hook), on every request"
+   },
+   {
+    "file": "packages/ai/src/auth/resolve.ts",
+    "line": 155,
+    "note": "any oauth.refresh failure (invalid_grant, 503, DNS, the 30s AbortSignal.timeout at :149-152) becomes ModelsError(\"OAuth refresh failed for <provider>\", {cause}); withCauseDetail (:30, :37-42) appends the cause text, so the assistant errorMessage carries `status=`/`invalid_grant` from anthropic.ts"
+   },
+   {
+    "file": "packages/ai/src/auth/oauth/anthropic.ts",
+    "line": 330,
+    "note": "refresh error wraps formatErrorDetails(error) (:82-95), which appends `stack=${error.stack}` at :92; :184 is the HTTP failure text `HTTP request failed. status=…; url=…; body=…`"
+   },
+   {
+    "file": "packages/coding-agent/src/core/model-runtime.ts",
+    "line": 673,
+    "note": "login() → models.login (:676) → synchronizeCredentialState: a pooled OAuth login is persisted into auth.json"
+   },
+   {
+    "file": "packages/ai/src/models.ts",
+    "line": 581,
+    "note": "models.login persists the credential via credentials.modify"
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/accounts/index.ts",
+    "line": 217,
+    "note": "loginWithOfficialProvider: OAuth pools go through context.modelRegistry.login (writes auth.json); the api_key branch (:220-228) returns the key without touching auth.json"
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/accounts/store.ts",
+    "line": 393,
+    "note": "importOfficialCredentials copies auth.json into accounts.secrets.json as slot default when no default exists (:412); never reconciled afterwards"
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/accounts/store.ts",
+    "line": 60,
+    "note": "AccountSlot (:60-72) already has a credential-free shape: a `local` slot without `secretRef` has no secrets entry (:147-154, putLocalSlot comment :433-435) — the shape the official slot reuses"
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/accounts/store.ts",
+    "line": 305,
+    "note": "nextSlotId uses read(), which awaits this.mutations — calling it inside mutate() deadlocks, so the id allocation must be extracted as a pure helper over a slots array"
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/accounts/index.ts",
+    "line": 559,
+    "note": "refreshExpiringCredentials (:559-585) refreshes every OAuth slot copy; :560 returns when context.modelRegistry is undefined; :579 markCooling 5h; :581 notifies raw error.message"
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/accounts/index.ts",
+    "line": 826,
+    "note": "hook reads the slot credential from readSecrets() — the stale copy — and sets the header at :837 (setAuthHeader), records attribution at :840"
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/accounts/index.ts",
+    "line": 898,
+    "note": "message_end: an assistant error with no pending response (prepareRequest threw before any request) returns at :899 without a word; a paired unclassified 400 returns at :934"
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/accounts/index.ts",
+    "line": 962,
+    "note": "session_start: importOfficialCredentials (:965) then refreshExpiringCredentials (:972); turn_start (:959) refreshes again — the warning repeats every turn"
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/accounts/index.ts",
+    "line": 291,
+    "note": "loginAccount: login() at :291, putSlot at :292-301 — the place to snapshot auth.json before the runtime overwrites it and to claim the official flag after"
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/accounts/errors.ts",
+    "line": 2,
+    "note": "QUOTA_TOKENS never matches the version-rejection text, so today it is neither cooled nor explained; classify/classifyProviderFailure/classifyProviderBodyFailure stay untouched"
+   },
+   {
+    "file": "packages/coding-agent/src/core/agent-session.ts",
+    "line": 2880,
+    "note": "only a kpi_account_failover diagnostic triggers the automatic retry; the new diagnostic must not reuse that type"
+   },
+   {
+    "file": "packages/agent/src/agent.ts",
+    "line": 511,
+    "note": "handleRunFailure emits message_start/message_end with errorMessage = error.message (:520, :524) for a thrown prepareRequest error; no automatic retry unless _isRetryableError says so"
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/accounts/balancer.ts",
+    "line": 131,
+    "note": "selectInFamily's healthy filter is the single place a persisted needs-login state must exclude a slot; releaseSlot (:110) clears cooldown and pin"
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/accounts/widget.ts",
+    "line": 51,
+    "note": "per-slot line `${label} ${percent}${window}${cooldown}` — where the needs-login marker is appended"
+   },
+   {
+    "file": "packages/coding-agent/src/utils/paths.ts",
+    "line": 36,
+    "note": "getFileRevision is `${dev}:${ino}:${size}:${mtimeNs}:${ctimeNs}` — nanosecond stamps; no same-millisecond miss exists (and K-π no longer writes auth.json anyway)"
+   },
+   {
+    "file": "test/accounts-commands.test.ts",
+    "line": 276,
+    "note": "`an existing default slot is never overwritten by the official import` encodes the old copy semantics (asserts Bearer access-default after auth.json holds {access:\"official\",refresh:\"r\",expires:0}); not bound in scripts/generate-traceability-map.mjs (grep finds no such title), so it is rewritten"
+   },
+   {
+    "file": "test/accounts-commands.test.ts",
+    "line": 75,
+    "note": "harness context `{ cwd, hasUI: true, mode: \"tui\", ui }` has no modelRegistry — refresh tests must build a context with modelRegistry.getProvider().auth.oauth.refresh as test/accounts.test.ts:327-345 does"
+   },
+   {
+    "file": "test/accounts-commands.test.ts",
+    "line": 235,
+    "note": "existing import test asserts route(\"anthropic\") === \"Bearer official-access-token\" with empty seeded headers; under the official-slot rule the hook leaves the runtime's header, so the test seeds it"
+   },
+   {
+    "file": "packages/ai/test/anthropic-auth-token.test.ts",
+    "line": 164,
+    "note": "`preserves OAuth request shaping for ANTHROPIC_OAUTH_TOKEN` captures constructorOpts.defaultHeaders (:177-178); file is byte-identical to upstream b79e4cc (git diff --stat empty), so editing it requires an UPSTREAM.md register row"
+   },
+   {
+    "file": "docs/PRD.md",
+    "line": 190,
+    "note": "AC-10.2 last sentence: 'Expiring OAuth credentials refresh independently per slot, never by substituting the provider's current auth.json credential' — the contract the fix must amend (NEEDS_HUMAN gate)"
+   },
+   {
+    "file": "docs/spec.md",
+    "line": 649,
+    "note": "'Each OAuth slot refreshes independently before expiry; the provider's single primary auth.json entry is not a substitute for slot refresh' — same contract; Credential injection paragraph at :655"
+   },
+   {
+    "file": "README.md",
+    "line": 310,
+    "note": "§5 closing paragraph (:310-313) restates per-slot refresh at session start; §4 table :164-176 describes auth.json; §20 Troubleshooting starts :890; env-override table :14; install command `npm install -g @korallis/k-pi` at :22"
+   },
+   {
+    "file": "AGENTS.md",
+    "line": 89,
+    "note": "'Stop, do not improvise. A contract conflict opens a NEEDS_HUMAN gate in docs/remediation-plan.md with both citations' (:31 'Do not invent requirements'); :39 lists the only env overrides; :42 requires every patched upstream file in the UPSTREAM.md register"
+   },
+   {
+    "file": "docs/remediation-plan.md",
+    "line": 37,
+    "note": "`## NEEDS_HUMAN gates` table (NH-02 row format at :44: id | status | owner | date | question | decision | docs | RPs)"
+   },
+   {
+    "file": "docs/traceability-map.json",
+    "line": 660,
+    "note": "top-level key is \"entries\", not \"items\""
+   },
+   {
+    "file": "scripts/generate-traceability-map.mjs",
+    "line": 334,
+    "note": "AC-10.8 row (:334-338) — new AC-10.9/AC-10.10 rows follow it; AC-10.2 is bound to test/accounts.test.ts `two Anthropic subscription slots coexist` (:304-308), which survives verbatim"
+   },
+   {
+    "file": "UPSTREAM.md",
+    "line": 127,
+    "note": "§6 register blocks: Dependency refresh block starts :127, its table ends just before the `**Root build system` block (~:145) — the new packages/ai block goes between them"
+   },
+   {
+    "file": "packages/coding-agent/src/config.ts",
+    "line": 522,
+    "note": "export const VERSION — K-π's own version for the rejection notice"
+   }
+  ],
+  "change": [
+   {
+    "file": "packages/ai/src/api/anthropic-messages.ts",
+    "action": "edit",
+    "what": "Apply upstream verbatim: `git fetch upstream && git cherry-pick -x 96317e50b` (one line, :77 `claudeCodeVersion = \"2.1.251\"`; the commit touches nothing else and our file differs from v0.84.4 only by the unrelated onResponse insertion at :581, so it applies cleanly). Ship exactly upstream's constant so the next upstream merge is a no-op; no env override and no runtime adoption of a server-supplied version (cut per critique: unrequested setting, second source of truth, AGENTS.md:39 env list)."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/accounts/errors.ts",
+    "action": "edit",
+    "what": "Add two pure exports; classify/classifyProviderFailure/classifyProviderBodyFailure untouched. `const CLIENT_VERSION_REJECTION = /Claude Code (\\d+\\.\\d+\\.\\d+) does not support this model; version (\\d+\\.\\d+\\.\\d+) or newer is required/u;` `export function parseClientVersionRejection(text: string | undefined): { sent?: string; required?: string } | undefined` — undefined when text is undefined or neither the regex matches nor `claude_code_version_too_old` occurs; otherwise `{ sent: match?.[1], required: match?.[2] }` (verified against the literal body in `issue`: sent 2.1.75, required 2.1.251). `export type RefreshFailure = { kind: \"invalid_grant\" } | { kind: \"http\"; status: number; summary: string } | { kind: \"transport\"; summary: string };` `export function summarizeRefreshFailure(error: unknown): RefreshFailure` — message = error instanceof Error ? error.message : String(error); `/invalid_grant/u` → invalid_grant; else summary = message.split(/; stack=|\\n/u)[0].slice(0, 160); `/status=(\\d{3})/u` → http with Number(status), else transport. A stack frame can never reach a notification."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/accounts/store.ts",
+    "action": "edit",
+    "what": "Schema (AccountSlot :60-72): add `official?: true` (\"this slot's grant is the one auth.json holds; the runtime refreshes it; it has no accounts.secrets.json entry\") and `needsLogin?: string` (persisted reason; unselectable until /accounts login rewrites it). assertAccounts (:115): `official` must be exactly true when present, at most one per pool, never on a `local` slot; `needsLogin` a non-empty string when present. Add module helpers: `function sameGrant(a: Credential | undefined, b: Credential | undefined): boolean` (both oauth → a.refresh === b.refresh || a.access === b.access; both api_key → a.key === b.key; else false) and `function nextSlotIdIn(slots: AccountSlot[]): string` (the body of nextSlotId :305-316; nextSlotId calls it on read()). Add `readOfficialCredential(poolId: PoolId): Promise<Credential | undefined>` = asRoutableCredential((await readJson(this.authPath))?.[poolId]) — readJson on purpose, never AuthStorage.read (that would execute `!command` api_key values). Replace importOfficialCredentials (:393-431, sole caller index.ts:965) with `reconcileOfficialCredentials(now: number): Promise<{ imported: string[]; adopted: string[]; orphaned: string[] }>` inside one mutate(): read auth.json once; for each pool id with a routable credential A: pool = document.pools[id] ?? {strategy:\"quota-first\", slots:[]}; M = first non-local slot whose secret sameGrant(A) (a flagged slot with a matching secret counts); if M: set M.official = true, delete secrets[pool/M.id], clear `official` on siblings, push `pool/M.id` to adopted when it was not already flagged-without-secret; else if a flagged slot O exists with a non-matching secret: clear O.official (its secret is a K-π-owned grant now) and fall through; else if no flagged slot: D = slot `default`; if D exists, D.kind !== \"local\" and (secrets[pool/default] is undefined, or it is oauth with expires <= now): D.official = true, delete its secret, push adopted; else create `{ id: D === undefined ? \"default\" : nextSlotIdIn(pool.slots), kind: A.type === \"oauth\" ? \"oauth\" : \"api_key\", label: id, official: true }` with NO secrets entry and push imported. Then for every pool whose flagged slot has no routable A in auth.json and no needsLogin: set needsLogin = `auth.json no longer holds a ${pool} credential` and push orphaned. Write both files only when something changed. Add `markNeedsLogin(poolId, slotId, reason: string): Promise<void>` (mutate; sets slot.needsLogin). Add `claimOfficial(poolId, slotId, before: Credential | undefined): Promise<{ official: boolean; demoted?: string }>` (mutate): A = auth.json[pool]; if !sameGrant(A, secrets[pool/slotId]) return { official: false }; else delete secrets[pool/slotId], set slot.official = true; for a previously flagged sibling O (id !== slotId): clear O.official; if `before` is defined set secrets[pool/O.id] = before (the grant auth.json held until this login — O is K-π-refreshed from now on) else O.needsLogin = `its auth.json credential was replaced by the login of ${slotId}`; return { official: true, demoted: O?.id }. putSlot (:318-338): the merged slot drops `needsLogin` (a re-login heals it) and keeps `official` as stored (claimOfficial settles it). removeSlot (:475) unchanged (an official slot has no secret to delete)."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/accounts/index.ts",
+    "action": "edit",
+    "what": "(1) Import `VERSION` from ../../../config.ts, and `parseClientVersionRejection`, `summarizeRefreshFailure` from ./errors.ts. (2) loginAccount (:245): before `login()` at :291 take `const before = await store.readOfficialCredential(providerName)`; after putSlot call `const claim = await store.claimOfficial(providerName, slotId, before)`; when claim.demoted is defined append ` (${providerName}/${claim.demoted} keeps its previous grant)` to the `Added account` notice. Rationale: the runtime writes auth.json during login (model-runtime.ts:673-677), so the previous official grant is saved from the live file at that instant — no copy can be stale. (3) refreshExpiringCredentials (:559-585): `continue` for slots with `official === true` or `needsLogin !== undefined`; on failure `const failure = summarizeRefreshFailure(error)`: invalid_grant → `await resolved.store.markNeedsLogin(poolName, slot.id, `${providerLabel} rejected its refresh token (invalid_grant)`)` (providerLabel = context.modelRegistry.getProvider(poolName)?.name ?? poolName), `balancer.releaseSlot(poolName, slot.id)`, `announceLoginNeeded(poolName, slot.id, reason, context)`; http/transport → keep `balancer.markCooling(poolName, slot.id, nowMs() + DEFAULT_COOLDOWN_MS)` and notify `K-π accounts: could not refresh ${poolName}/${slot.id}: ${failure.summary}; cooling ${Math.round(DEFAULT_COOLDOWN_MS / 60_000)}m` (warning) — never error.message. (4) Session-scoped `const announcedLoginNeeds = new Set<string>()` and `const announceLoginNeeded = (pool, slotId, reason, ctx) => { key = `${pool}/${slotId}`; if (announcedLoginNeeds.has(key)) return; add; ctx.ui.notify(`K-π accounts: ${pool}/${slotId} needs a new login: ${reason}. Run /accounts login ${pool} ${slotId}`, \"error\"); }`. (5) before_provider_headers (:777): after the local-pool branch, `if (active.slot.official === true) { recordRequestSlot(event.requestId, active); return; }` — the runtime already built this request's auth header from auth.json (model-runtime.ts:583), which is by definition this slot's grant, so K-π neither reads auth.json nor rewrites the header; attribution is recorded so after_provider_response/usage keep working. Non-official slots unchanged (:825-841). (6) message_end (:890): after the error/stopReason checks and before takeErroredResponse, `const rejection = parseClientVersionRejection(message.errorMessage)`; when defined: `const paired = takeErroredResponse()` (drop the paired 400; ignore ambiguity), never applyFailure; notify once per session per key `${rejection.sent}->${rejection.required}` at level \"error\": `K-π ${VERSION} identifies to Anthropic as Claude Code ${rejection.sent ?? \"an older version\"}; Anthropic requires ${rejection.required ?? \"a newer version\"} or newer for ${context.model?.id ?? \"this model\"}. Update K-π: npm install -g @korallis/k-pi@latest`; return the message with diagnostic `{ type: \"kpi_client_version_rejected\", timestamp: nowMs(), details: { sent, required, slot: \"response\" in paired ? slotName(paired.response) : undefined } }` (not kpi_account_failover — agent-session.ts:2880 would retry). Then in the existing `taken.ambiguous.length === 0` branch (:899, no request reached the provider, i.e. prepareRequest threw): `const failure = summarizeRefreshFailure(message.errorMessage ?? \"\"); if (failure.kind !== \"invalid_grant\") return;` pool = poolIdForProvider(context.model?.provider); official = (await resolved.store.read()).pools[pool]?.slots.find(s => s.official === true && s.needsLogin === undefined); if none return; markNeedsLogin(pool, official.id, `${providerLabel} rejected the refresh token held in auth.json (invalid_grant)`); balancer.releaseSlot; announceLoginNeeded; publishWidget; return. No promotion of a sibling and no auth.json write (cut per critique — a product decision; the bound is one named re-login). (7) session_start (:962-975): `try { const result = await resolved.store.reconcileOfficialCredentials(nowMs()); notify `Imported official credentials as ${imported.join(\", \")}` (info, unchanged text) when imported non-empty; notify `K-π accounts: ${adopted.join(\", \")} now reads its credential from auth.json` (info) when adopted non-empty; for orphaned call announceLoginNeeded(pool, slot, \"auth.json no longer holds its credential\") } catch (error) { context.ui.notify(`K-π accounts: could not reconcile auth.json with accounts.json: ${error instanceof Error ? error.message : String(error)}`, \"error\") }` — startup continues; then for every slot with needsLogin (any pool) announceLoginNeeded(pool, slot.id, slot.needsLogin) (one reminder per slot per session); then refreshExpiringCredentials, usage.refreshAll, publishWidget as today. Replace the :966-971 comment with the single-grant rule. (8) turn_start (:959) unchanged — there is no copy left to reconcile."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/accounts/balancer.ts",
+    "action": "edit",
+    "what": "selectInFamily (:131): `const healthy = pool.slots.filter((slot) => slot.needsLogin === undefined && this.isHealthy(poolId, slot.id));` — a slot needing a login is never selected. Nothing else."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/accounts/widget.ts",
+    "action": "edit",
+    "what": "Per-slot line (:51): append ` needs login` after the cooldown suffix when `slot.needsLogin !== undefined`."
+   },
+   {
+    "file": "packages/ai/test/anthropic-auth-token.test.ts",
+    "action": "edit",
+    "what": "In describe \"Anthropic-compatible user agents\" add `it(\"identifies OAuth requests as a Claude Code build Anthropic accepts\")`: same createModels/authContext as :164-171 (ANTHROPIC_OAUTH_TOKEN=sk-ant-oat-test), streamSimple, then `const ua = headers[\"user-agent\"]; expect(ua).toMatch(/^claude-cli\\/\\d+\\.\\d+\\.\\d+$/u)` and compare the parsed triple numerically against the floor [2,1,251] (>=), plus anthropic-beta contains claude-code-20250219 and oauth-2025-04-20. Asserting a floor, not equality, keeps the test green across future upstream bumps. Register the edit in UPSTREAM.md."
+   },
+   {
+    "file": "test/accounts-errors.test.ts",
+    "action": "create",
+    "what": "node:test unit tests for parseClientVersionRejection (the literal body from `issue` → {sent:\"2.1.75\", required:\"2.1.251\"}; `{\"details\":{\"error_code\":\"claude_code_version_too_old\"}}` alone → defined with both undefined; a quota body → undefined; undefined → undefined) and summarizeRefreshFailure (an Error whose message is `Anthropic token refresh request failed. url=https://…; details=Error: HTTP request failed. status=400; url=…; body={\"error\":\"invalid_grant\",\"error_description\":\"…\"}; stack=Error: HTTP request failed\\n    at postJson (…)` → {kind:\"invalid_grant\"}; the same with status=503 and a non-grant body → {kind:\"http\", status:503} with summary free of `stack=` and of `\\n    at`, length <= 160; a plain `fetch failed` Error → transport)."
+   },
+   {
+    "file": "test/accounts-commands.test.ts",
+    "action": "edit",
+    "what": "Harness: `harness(confirm = true, login?: AccountsDependencies[\"login\"])` so a test can inject a login that writes store.authPath itself (standing in for model-runtime.ts:673-677); `route(provider = \"anthropic\", seeded: Record<string, string> = {})` starts from the seeded headers. Existing test :235 `a temporary auth.json imports one default slot without exposing its secret`: call `route(\"anthropic\", { authorization: \"Bearer official-access-token\" })` and assert it is left in place, plus `default.official === true` and no `anthropic/default` key in accounts.secrets.json (accounts.json still never contains the token). Rewrite :276 as `an existing default slot with a live grant of its own is never overwritten by the official import` (putSlot default with expires FIXED_TIME + 3_600_000 before writing auth.json; assert default keeps refresh-default, a second slot is official with no secret, notes contain `Imported official credentials as anthropic/slot-2`). Add the tests listed under tests; refresh tests build `{ ...subject.context, modelRegistry: { getAvailable: () => [], getProvider: () => ({ name: \"Anthropic\", auth: { oauth: { refresh } } }) } }`."
+   },
+   {
+    "file": "test/accounts.test.ts",
+    "action": "edit",
+    "what": "Add the client-version test listed under tests using routingHarness (before_provider_headers → after_provider_response 400 → message_end with the literal errorMessage from `issue`)."
+   },
+   {
+    "file": "test/accounts-routing.test.ts",
+    "action": "edit",
+    "what": "Add a renderAccountsWidget test for the ` needs login` marker (document with slot work.needsLogin set, sibling default without)."
+   },
+   {
+    "file": "scripts/generate-traceability-map.mjs",
+    "action": "edit",
+    "what": "After the AC-10.8 row (:334-338) add `\"AC-10.9\": [\"test/accounts.test.ts\", \"a Claude Code version rejection is surfaced once and never cools or fails over\", \"claude_code_version_too_old is explained once with sent/required versions and the update remedy; no cooldown, no failover\"]` and `\"AC-10.10\": [\"test/accounts-commands.test.ts\", \"the official slot is served from auth.json and never refreshed by K-π\", \"one grant per slot: the official slot has no secrets copy and is never refreshed by K-π; invalid_grant marks needs-login, never a cooldown or a stack trace\"]`. Run `node scripts/generate-traceability-map.mjs`."
+   },
+   {
+    "file": "docs/traceability-map.json",
+    "action": "edit",
+    "what": "Regenerated output only (never hand-edited)."
+   },
+   {
+    "file": "docs/remediation-plan.md",
+    "action": "edit",
+    "what": "`## NEEDS_HUMAN gates` table (:37, format of NH-02 at :44): add row NH-03 | OPEN | korallis | 2026-09-03 | question: may AC-10.2 (docs/PRD.md:190) and docs/spec.md:649 be amended so that each pool's official slot is the grant ~/.kpi/agent/auth.json holds, refreshed only by the base runtime (model-runtime.ts:583, resolve.ts:139-155), with K-π refreshing only non-official slots? | decision: (blank until answered; recommended: yes — Anthropic rotates refresh tokens, so two refreshers on one grant cannot both stay valid, and the runtime refreshes auth.json on every request) | docs: PRD AC-10.2/10.9/10.10, spec §13, README §4/§5/§20, uat UAT-10 | RP-06, RP-07. The rest of this change lands only once NH-03 is CLOSED."
+   },
+   {
+    "file": "UPSTREAM.md",
+    "action": "edit",
+    "what": "New block after the dependency-refresh table (:127 block, before `**Root build system`) titled `**Anthropic OAuth client identity — `packages/ai/` (§6: one narrow upstream fix, cherry-picked)**` with rows: `src/api/anthropic-messages.ts` | `96317e50b` cherry-picked with `-x`: claudeCodeVersion 2.1.75 → 2.1.251 (Anthropic rejects OAuth requests below that floor with claude_code_version_too_old); drops out on the next upstream merge. Also the pre-existing K-π insertion at :581, `onResponse: (failed) => options?.onResponse?.(failed, model)`, which forwards failed-response metadata to the accounts extension's after_provider_response hook. | `test/anthropic-auth-token.test.ts` | Adds one OAuth case asserting the claude-cli user-agent shape and the 2.1.251 floor."
+   }
+  ],
+  "event_or_data_contracts": [
+   "accounts.json schema (version stays 1): AccountSlot gains `official?: true` — exactly one per pool at most, never on a `local` slot; the slot's grant is the one ~/.kpi/agent/auth.json holds, the base runtime is its only refresher, and it has NO accounts.secrets.json entry — and `needsLogin?: string` — a persisted reason; the slot is unselectable (balancer.selectInFamily) until `/accounts login <pool> <slot>` rewrites its credential (putSlot clears it).",
+   "AccountsStore API: `reconcileOfficialCredentials(now: number): Promise<{ imported: string[]; adopted: string[]; orphaned: string[] }>` replaces `importOfficialCredentials()` (removed, no alias); `readOfficialCredential(poolId): Promise<Credential | undefined>`; `claimOfficial(poolId, slotId, before: Credential | undefined): Promise<{ official: boolean; demoted?: string }>`; `markNeedsLogin(poolId, slotId, reason: string): Promise<void>`. K-π never writes auth.json; only the runtime's login does.",
+   "errors.ts exports: `parseClientVersionRejection(text: string | undefined): { sent?: string; required?: string } | undefined`; `type RefreshFailure = { kind: \"invalid_grant\" } | { kind: \"http\"; status: number; summary: string } | { kind: \"transport\"; summary: string }`; `summarizeRefreshFailure(error: unknown): RefreshFailure` (summary never contains `stack=` or a frame, <= 160 chars).",
+   "Assistant message diagnostic `kpi_client_version_rejected` with details `{ sent?: string; required?: string; slot?: \"<pool>/<slot>\" }`; it never triggers the agent-session retry (only `kpi_account_failover` does).",
+   "before_provider_headers contract: for a slot with `official: true` K-π leaves the runtime's auth header untouched (it is that slot's grant) and only records request attribution; non-official slots keep having their header set from accounts.secrets.json.",
+   "Exact notifications, each at most once per session per key: `K-π accounts: ${pool}/${slot} needs a new login: ${reason}. Run /accounts login ${pool} ${slot}` (error); `K-π ${VERSION} identifies to Anthropic as Claude Code ${sent}; Anthropic requires ${required} or newer for ${model}. Update K-π: npm install -g @korallis/k-pi@latest` (error, key `${sent}->${required}`); `K-π accounts: ${list} now reads its credential from auth.json` (info); `K-π accounts: could not refresh ${pool}/${slot}: ${summary}; cooling ${n}m` (warning); `K-π accounts: could not reconcile auth.json with accounts.json: ${message}` (error); `Added account ${pool}/${slot} (${pool}/${previous} keeps its previous grant)` (info) when a login demotes the previous official slot.",
+   "Widget: a slot with needsLogin renders `<label> <pct>%… needs login`.",
+   "Normative sync rule (docs/spec.md §13, pending NH-03): per pool at most one official slot; auth.json[pool] ≡ that slot's grant; it has no secrets entry; K-π never calls oauth.refresh on it; non-official slots exist only in accounts.secrets.json and are refreshed by K-π; a pooled OAuth login the runtime persisted into auth.json becomes the official slot and the previous official slot keeps the grant auth.json held until then as a K-π-refreshed secret; reconciliation runs once per session_start, by content match, then the `default`/expired-copy legacy rule, else a fresh official slot."
+  ],
+  "tests": [
+   {
+    "file": "packages/ai/test/anthropic-auth-token.test.ts",
+    "title": "identifies OAuth requests as a Claude Code build Anthropic accepts",
+    "asserts": "with ANTHROPIC_OAUTH_TOKEN=sk-ant-oat-test the FakeAnthropic constructor receives defaultHeaders[\"user-agent\"] matching /^claude-cli\\/\\d+\\.\\d+\\.\\d+$/ whose triple is >= 2.1.251, and anthropic-beta containing claude-code-20250219 and oauth-2025-04-20"
+   },
+   {
+    "file": "test/accounts-errors.test.ts",
+    "title": "parseClientVersionRejection reads the sent and required versions from the rejection body",
+    "asserts": "the literal 400 body → { sent: \"2.1.75\", required: \"2.1.251\" }; error_code-only body → defined with both undefined; quota body and undefined → undefined"
+   },
+   {
+    "file": "test/accounts-errors.test.ts",
+    "title": "summarizeRefreshFailure never carries a stack trace",
+    "asserts": "invalid_grant body with a multi-line stack → { kind: \"invalid_grant\" }; status=503 → { kind: \"http\", status: 503 } with summary free of `stack=` and `\\n    at`, <= 160 chars; `fetch failed` → transport"
+   },
+   {
+    "file": "test/accounts-commands.test.ts",
+    "title": "the official slot is served from auth.json and never refreshed by K-π",
+    "asserts": "after the import, auth.json is rewritten with rotated tokens (new refresh, later expires); session_start with a context whose oauth.refresh throws if called → no refresh call, accounts.json default.official === true, accounts.secrets.json has no `anthropic/default` key, route(\"anthropic\", { authorization: \"Bearer runtime\" }) === \"Bearer runtime\", no notification matches /stack=|Could not refresh/"
+   },
+   {
+    "file": "test/accounts-commands.test.ts",
+    "title": "an expired legacy default copy binds to the auth.json grant it duplicated",
+    "asserts": "login default (harness credential expires: 0) then auth.json {access:\"official\",refresh:\"r\",expires:0}; session_start → exactly one slot, default.official === true, secrets has no anthropic/default, notes contain `anthropic/default now reads its credential from auth.json`"
+   },
+   {
+    "file": "test/accounts-commands.test.ts",
+    "title": "an existing default slot with a live grant of its own is never overwritten by the official import",
+    "asserts": "default's secret has expires FIXED_TIME+1h; after session_start default's secret still holds refresh-default and official is undefined; a new slot slot-2 has official === true and no secret; notes contain `Imported official credentials as anthropic/slot-2`"
+   },
+   {
+    "file": "test/accounts-commands.test.ts",
+    "title": "a pooled login the runtime persisted becomes the official slot and the previous official slot keeps its grant",
+    "asserts": "import default from auth.json (official); injected login writes auth.json = work's credential then returns it; `/accounts login anthropic work` → work.official === true with no secret, default.official undefined and secrets anthropic/default equals the grant auth.json held before the login, notice ends with `(anthropic/default keeps its previous grant)`; a following session_start creates no third slot"
+   },
+   {
+    "file": "test/accounts-commands.test.ts",
+    "title": "an api-key login that leaves auth.json alone stays a secret-backed slot",
+    "asserts": "injected login returns { type: \"api_key\", key } without writing auth.json; `/accounts login xai work` → work.official undefined, secrets xai/work holds the key"
+   },
+   {
+    "file": "test/accounts-commands.test.ts",
+    "title": "an invalid_grant refresh marks the slot as needing login, once, without a stack trace",
+    "asserts": "non-official slot work expired; refresh throws the anthropic.ts-shaped message with a multi-line stack → exactly one notification equal to `K-π accounts: anthropic/work needs a new login: Anthropic rejected its refresh token (invalid_grant). Run /accounts login anthropic work`; no notification matches /stack=|\\n\\s+at /; accounts.json work.needsLogin set; a second turn_start makes no refresh call and no new notification; route() never selects work; `/accounts login anthropic work` clears needsLogin; widget shows `work ?% needs login`"
+   },
+   {
+    "file": "test/accounts-commands.test.ts",
+    "title": "a transient refresh failure cools the slot with a plain reason and no login demand",
+    "asserts": "refresh throws a status=503 message with a stack → work.needsLogin undefined, cooldownUntil set, exactly one warning `K-π accounts: could not refresh anthropic/work: … ; cooling 300m` with no `stack=`"
+   },
+   {
+    "file": "test/accounts-commands.test.ts",
+    "title": "a dead auth.json grant marks the official slot as needing login without touching auth.json",
+    "asserts": "default official; message_end (no pending response) with errorMessage `OAuth refresh failed for anthropic: Anthropic token refresh request failed. url=…; details=Error: HTTP request failed. status=400; url=…; body={\"error\":\"invalid_grant\"}; stack=…` → default.needsLogin set, auth.json bytes unchanged, one notification naming anthropic/default and `/accounts login anthropic default`; the same message with status=503 and no invalid_grant → nothing marked, no notification"
+   },
+   {
+    "file": "test/accounts-commands.test.ts",
+    "title": "an official slot whose auth.json entry vanished is reported once at session start",
+    "asserts": "default official; delete auth.json; session_start → default.needsLogin === `auth.json no longer holds a anthropic credential`, one notification naming `/accounts login anthropic default`; a second session_start adds no notification (new session object → one again)"
+   },
+   {
+    "file": "test/accounts.test.ts",
+    "title": "a Claude Code version rejection is surfaced once and never cools or fails over",
+    "asserts": "headers hook (request-1), after_provider_response 400, message_end with the literal errorMessage → returned diagnostics end with type kpi_client_version_rejected details {sent:\"2.1.75\", required:\"2.1.251\", slot:\"anthropic/home\"}; no kpi_account_failover; setModelCalls []; exactly one notification containing \"Claude Code 2.1.75\", \"2.1.251\", \"@korallis/k-pi\"; the next before_provider_headers on the same slot still sets its Bearer (not cooled); repeating the error adds no notification"
+   },
+   {
+    "file": "test/accounts-routing.test.ts",
+    "title": "the widget marks a slot that needs a login",
+    "asserts": "renderAccountsWidget on a document whose slot work has needsLogin matches /work \\?% needs login/u and the default line does not contain `needs login`"
+   }
+  ],
+  "docs": [
+   {
+    "file": "docs/remediation-plan.md",
+    "section": "## NEEDS_HUMAN gates (line 37)",
+    "what": "Add NH-03 (OPEN) as described in change: both citations (docs/PRD.md:190, docs/spec.md:649), the question, the recommended decision and why the sentence cannot be implemented as written (model-runtime.ts:583 refreshes auth.json on every request; Anthropic rotates refresh tokens)."
+   },
+   {
+    "file": "docs/PRD.md",
+    "section": "US-10 AC-10.2 (line 190) and new AC-10.9, AC-10.10 — applied once NH-03 closes",
+    "what": "Amend AC-10.2's last sentence: 'Each pool has at most one official slot, whose grant is the one auth.json holds and which the base runtime refreshes; every other slot refreshes independently in K-π; no grant is ever held by two refreshers, and a slot's credential is never substituted by another slot's.' Add AC-10.9: a claude_code_version_too_old refusal is explained once per session (K-π version, the Claude Code version sent, the required floor, the update command) and never cools a slot or changes route. Add AC-10.10: an invalid_grant refresh — K-π's own or the runtime's on the official grant — marks that slot `needs login` (persisted, unselectable, shown in the widget) with one plain-language notification naming `/accounts login <pool> <slot>`; never a cooldown, never a stack trace; a transient refresh failure cools with a plain reason."
+   },
+   {
+    "file": "docs/spec.md",
+    "section": "§13 Accounts and providers — Store paragraph (line 649), schema block (line 612-632), Credential injection (line 655)",
+    "what": "Replace the line-649 sentence with the single-grant rule from event_or_data_contracts (official slot ≡ auth.json, no secrets entry, runtime refreshes it, K-π refreshes only non-official slots, reconcile once per session_start by content match then the legacy default/expired rule, pooled login persisted by the runtime becomes official and the previous official slot keeps the grant auth.json held). Document `official` and `needsLogin` in the schema block. Under Credential injection add: for the official slot the runtime's own header is left in place and only attribution is recorded; Anthropic OAuth requests identify as Claude Code (`user-agent: claude-cli/<v>`, upstream constant, cherry-picked pin); a claude_code_version_too_old refusal is a client-identity failure — notified once, no cooldown, no failover, diagnostic kpi_client_version_rejected."
+   },
+   {
+    "file": "docs/uat.md",
+    "section": "UAT-10 (line 92)",
+    "what": "Add to Action/Pass evidence: rotate the auth.json grant out from under the slot and start a session — no `Could not refresh` warning, accounts.json shows `official: true`, accounts.secrets.json has no `anthropic/default`; break a non-official slot's refresh token — one notification names the slot and `/accounts login anthropic <slot>`, the widget shows `needs login`, no stack trace; send a request with a below-floor Claude Code identity — one explanatory notification, the slot is not cooled. ACs: AC-10.1–10.10."
+   },
+   {
+    "file": "README.md",
+    "section": "§4 config directory table (164-176), §5 closing paragraph (310-313), §20 Troubleshooting (after line 890)",
+    "what": "§4: `auth.json` row — 'the base harness's credential per provider; for a K-π pool this is the official slot's grant'. §5: replace the closing paragraph with the official-slot rule (the runtime refreshes the official slot, K-π the others; a pooled login makes the new slot official and the previous one keeps its grant). §20: add `Claude Code 2.1.x does not support this model; version … or newer is required` (K-π identifies as Claude Code for subscription OAuth; update with `npm install -g @korallis/k-pi@latest`; nothing is cooled) and `K-π accounts: anthropic/<slot> needs a new login` (why a refresh token dies when two copies refresh it, run `/accounts login anthropic <slot>`, the widget marker; a dead official grant blocks the pool until that login — resend the prompt afterwards, there is no automatic retry)."
+   },
+   {
+    "file": "UPSTREAM.md",
+    "section": "§6 Patched upstream files — new 'Anthropic OAuth client identity — packages/ai/' block",
+    "what": "Record the 96317e50b cherry-pick, the pre-existing :581 onResponse patch, and the anthropic-auth-token.test.ts addition as described in change."
+   },
+   {
+    "file": "docs/traceability-map.json",
+    "section": "AC-10.9, AC-10.10",
+    "what": "Regenerated by node scripts/generate-traceability-map.mjs; not hand-edited."
+   }
+  ],
+  "verification": [
+   "git fetch upstream && git cherry-pick -x 96317e50b && grep -n 'claudeCodeVersion = ' packages/ai/src/api/anthropic-messages.ts   # expect 2.1.251 at :77 and no other hunk",
+   "cd packages/ai && npx vitest --run test/anthropic-auth-token.test.ts test/anthropic-oauth.test.ts",
+   "node --test --experimental-strip-types test/accounts-errors.test.ts test/accounts.test.ts test/accounts-commands.test.ts test/accounts-routing.test.ts test/milestone.test.ts",
+   "node scripts/generate-traceability-map.mjs && git diff --stat docs/traceability-map.json && node -e \"const m=require('./docs/traceability-map.json');for(const id of ['AC-10.2','AC-10.9','AC-10.10']){const e=m.entries.find(x=>x.id===id);console.log(id, e?JSON.stringify(e).slice(0,200):'MISSING')}\"",
+   "npm run check",
+   "npm run test:kpi",
+   "npm test",
+   "npm run build:offline",
+   "npm run verify:built",
+   "cp ~/.kpi/agent/accounts.json ~/.kpi/agent/accounts.json.bak && cp ~/.kpi/agent/accounts.secrets.json ~/.kpi/agent/accounts.secrets.json.bak && cp ~/.kpi/agent/auth.json ~/.kpi/agent/auth.json.bak",
+   "node packages/coding-agent/dist/bundle/cli.js -p 'reply with the single word ok'   # before the fix: 400 claude_code_version_too_old and the Could-not-refresh stack; after: ok with neither",
+   "python3 -c \"import json,os;h=os.path.expanduser('~/.kpi/agent/');a=json.load(open(h+'auth.json'))['anthropic'];s=json.load(open(h+'accounts.secrets.json'));d=json.load(open(h+'accounts.json'))['pools']['anthropic']['slots'];print('official', [(x['id'], x.get('official'), x.get('needsLogin')) for x in d]);print('official slot has no secret copy', all(('anthropic/'+x['id']) not in s for x in d if x.get('official')));print('auth.json still routable', a['type']=='oauth' and bool(a['access']))\"",
+   "node packages/coding-agent/dist/bundle/cli.js   # TUI: /accounts login anthropic work, then /accounts — accounts.json marks work official:true with no secrets entry, default keeps a secret equal to the grant auth.json held before; send one prompt on each slot via /accounts pin; then git checkout -- ~/.kpi backups are restored with the three .bak files if the operator wants the prior state"
+  ],
+  "risks": [
+   "Legacy stores carry no `official` flag; reconcile binds by content match, then binds `default` only when its secret is absent or an expired OAuth copy, else creates a fresh official slot (slot-2). A legacy `default` holding an alive access token from the same account but a rotated-away refresh token is therefore not bound; it later dies with invalid_grant and is named once as needing login (`/accounts login anthropic default`), and the operator may then `/accounts logout anthropic default`. Visible and bounded, never silent.",
+   "A legacy split where K-π's copy is the live lineage and auth.json's refresh token is the dead one is not repaired by publishing K-π's copy (K-π never writes auth.json): the base's refresh fails at prepareRequest, the official slot is marked needs-login once, and the pool is unavailable until `/accounts login anthropic <official>` — one command, then resend the prompt (no automatic retry; agent-session.ts:2880 retries only kpi_account_failover). Automatic promotion of a live sibling into auth.json was cut as an unrequested account substitution.",
+   "Transient refresh failures (network, 5xx, timeout) keep the existing 5-hour cooldown bound on non-official slots; only the wording changed. A successful refresh on a later turn_start does not clear that cooldown (existing behaviour, unchanged).",
+   "Base `/logout anthropic` mid-session removes auth.json's entry while the official slot stays selectable until the next session_start marks it orphaned; in between, prepareRequest fails with `Provider is not configured` (or the runtime's env fallback serves an env token). Existing exposure, now reported at the next session start.",
+   "`/accounts logout` of the official slot removes the slot but leaves auth.json's grant; the next session_start re-imports it as an official slot (`default` or next id) — existing re-import behaviour, unchanged.",
+   "reconcileOfficialCredentials runs inside session_start under try/catch; a malformed accounts.json still fails loudly there (assertAccounts), as today, and startup continues without a pool.",
+   "The cherry-pick lands one commit on this branch that upstream will also contain; the next upstream merge resolves it as already-applied. UPSTREAM.md records it.",
+   "rejected: the correctness critique's claim that accounts/index.ts citations drift by 3-5 lines (:563/:829/:841/:926) — re-verified: refreshExpiringCredentials is defined at :559, the hook's readSecrets at :826, setAuthHeader at :837, classifyProviderBodyFailure at :930; the original citations stand and are kept.",
+   "rejected: the correctness critique's 'call reconcileOfficialCredentials at the top of loginAccount' — superseded rather than adopted: with no secrets copy for the official slot there is nothing to reconcile; loginAccount snapshots auth.json immediately before login() and claimOfficial hands that snapshot to the demoted slot, which closes the rotation window the critique describes.",
+   "rejected: for a runtime refresh failure that is not invalid_grant (503, timeout) the critique asked for an extra warning; none is added — the runtime's own error is already the assistant error the operator sees and isRetryableAssistantError may retry it; K-π only intervenes on the one failure it can name and bound (invalid_grant → needs login).",
+   "rejected: emitting `accounts.failover` for a route move on promotion — moot, promotion is cut."
+  ],
+  "open_questions": [
+   "NH-03 (docs/remediation-plan.md): docs/PRD.md:190 AC-10.2 and docs/spec.md:649 say slot refresh is 'independent per slot, never by substituting the provider's current auth.json credential' / 'auth.json is not a substitute for slot refresh'. The base runtime refreshes auth.json on every request (model-runtime.ts:583, resolve.ts:139-155) and Anthropic rotates refresh tokens, so an official grant refreshed by both sides cannot stay valid. May the ACs be amended so the official slot's grant is auth.json's and the runtime is its only refresher (recommended; this design)? The only alternative that keeps the sentence literally true is patching the upstream file model-runtime.ts so prepareRequest skips getAuth for K-π pools — a larger upstream patch this design does not take."
+  ],
+  "size": "M"
+ },
+ "critiques": [
+  {
+   "lens": "correctness",
+   "verdict": "needs-revision",
+   "problems": [
+    {
+     "severity": "major",
+     "claim": "An existing test encodes the opposite contract and would fail under the new reconcile rule, but the design neither changes nor removes it.",
+     "evidence": "test/accounts-commands.test.ts:276-292 `an existing default slot is never overwritten by the official import`: logs in `anthropic default` (harness login returns expires: 0, line 61), writes auth.json {access:\"official\", refresh:\"r\", expires:0}, runs session_start and asserts route() === \"Bearer access-default\" (\"the operator's own slot wins\"). Under reconcileOfficialCredentials: no `official` flag, no refresh/access match, fallback to slot `default`; secrets expires 0 is not later than auth.json expires 0, so the auth.json copy is adopted into secrets and credentialFor reads auth.json live → \"Bearer official\". `npm run test:kpi` fails as specified; the design's test list and docs edits do not mention this test or the sentence in docs/spec.md:649 it encodes."
+    },
+    {
+     "severity": "major",
+     "claim": "The `OAuth refresh failed for <pool>` message_end path treats every base-runtime refresh failure as a dead grant, so a transient network/5xx/timeout during the base refresh marks the official slot needs-login and overwrites auth.json with a sibling's grant.",
+     "evidence": "packages/ai/src/auth/resolve.ts:150-153 wraps any oauth.refresh failure (including AbortSignal.timeout at :148-151, DNS errors, 503s from packages/ai/src/auth/oauth/anthropic.ts:184) as ModelsError(\"OAuth refresh failed for <provider>\", {cause}); resolve.ts:30/37-42 withCauseDetail appends the cause message, so errorMessage is `OAuth refresh failed for anthropic: Anthropic token refresh request failed. url=…; details=…` for both invalid_grant and transport failures. The design's step (6) regexes only the prefix and unconditionally markNeedsLogin + promoteOfficial (writing the sibling's tokens into auth.json via AuthStorage.modify), displacing a still-valid official grant on a blip. summarizeRefreshFailure is available (the cause text with `status=`/`invalid_grant` is inside errorMessage) but is not applied here."
+    },
+    {
+     "severity": "major",
+     "claim": "A pooled login can still orphan the previous official slot's grant: the runtime writes auth.json during `/accounts login` before K-π has adopted any rotation the base made since the last turn_start reconcile.",
+     "evidence": "packages/coding-agent/src/core/model-runtime.ts:583-591 refreshes auth.json on every request (mid-turn), K-π reconciles only on session_start/turn_start (design steps 7-8). loginAccount (accounts/index.ts:297) → context.modelRegistry.login → model-runtime.ts:673-677 → packages/ai/src/models.ts:581-589 credentials.modify replaces auth.json[pool] with the new slot's grant. claimOfficial then clears `official` from the previous slot, whose secrets copy still holds the pre-rotation refresh token (rotated away by the base during the turn) → K-π refreshes it later → invalid_grant → needs-login on a slot that was healthy. reconcileOfficialCredentials must run at the top of loginAccount before `login()`."
+    },
+    {
+     "severity": "minor",
+     "claim": "The accounts-commands tests as specified cannot exercise refresh at all: the harness context has no modelRegistry, so refreshExpiringCredentials returns before any refresh.",
+     "evidence": "test/accounts-commands.test.ts:75 `const context = { cwd, hasUI: true, mode: \"tui\", ui }` — no modelRegistry; accounts/index.ts:564 `if (context.modelRegistry === undefined) return;`. The design's \"session_start with an injected oauth.refresh that throws if called → no refresh call\" is vacuous with subject.context, and \"an invalid_grant refresh marks the slot…\" needs a context carrying modelRegistry.getProvider(pool).auth.oauth.refresh (as test/accounts.test.ts:327-345 builds). The design says \"using the existing harness\" without saying the context must be extended."
+    },
+    {
+     "severity": "minor",
+     "claim": "Legacy-store heuristic discards a live grant: when no slot content-matches auth.json, the design binds slot `default` and adopts the auth.json copy over `default`'s own secret even when that secret is a distinct, valid, K-π-refreshed grant.",
+     "evidence": "store.ts:393-431 today never touches an existing `default`; on a legacy store where the last old-version pooled login was a non-default slot, auth.json mirrors that slot's lineage (models.ts:581), `default`'s secret holds a different, alive grant, and the fallback rule overwrites it (expires comparison decides, not lineage). The risks section admits the shared-grant outcome but not that the previous default grant is thrown away; prefer binding `default` only when its secret is missing/expired or shares lineage, otherwise import as a fresh official slot id."
+    },
+    {
+     "severity": "minor",
+     "claim": "Tests reference \"the operator's exact 400 body/errorMessage\" that appears nowhere in the design, so the parse regex is unverifiable and the test authors have no literal to embed.",
+     "evidence": "fixes.md and docs/*.md contain no `claude_code_version_too_old`, `does not support this model`, or `2.1.251` text (grep returned nothing). The regex /Claude Code (\\d+\\.\\d+\\.\\d+) does not support this model; version (\\d+\\.\\d+\\.\\d+) or newer is required/u must be checked against the real body; supply it verbatim in the design."
+    },
+    {
+     "severity": "minor",
+     "claim": "Verification step 4 reads the wrong key of the traceability map.",
+     "evidence": "docs/traceability-map.json:660 uses `\"entries\"`, not `items`; `m.items?.find?.(...)` is undefined so the fallback prints the whole map for each id — the check passes without checking anything."
+    },
+    {
+     "severity": "minor",
+     "claim": "Cited line numbers in accounts/index.ts drift by 3-5 lines and the mergeHeaders citation names the wrong function.",
+     "evidence": "refreshExpiringCredentials starts at index.ts:563 (cited :559); readSecrets in the hook is :829-830 (cited :826); setAuthHeader :841 (cited :837); classifyProviderBodyFailure :926-929 (cited :930-934). The OAuth default headers are merged by mergeClientHeaders at anthropic-messages.ts:284-285, which prepends `\"User-Agent\": getPiUserAgent()` before the lowercase `user-agent` claude-cli key; both keys survive Object.assign and the SDK's case-insensitive header build lets the later lowercase one win — this is what upstream relies on today, so the hook override works, but the evidence should cite :284 and state the dual-key reliance."
+    },
+    {
+     "severity": "minor",
+     "claim": "Risk statement about auth.json change detection is inaccurate.",
+     "evidence": "packages/coding-agent/src/utils/paths.ts:36-39 getFileRevision is `${dev}:${ino}:${size}:${mtimeNs}:${ctimeNs}` — nanosecond timestamps plus inode, so the \"same-millisecond write with identical size\" miss does not exist. Harmless, but the risk should be dropped or corrected."
+    },
+    {
+     "severity": "minor",
+     "claim": "After promoteOfficial on a prepareRequest failure the turn is not retried and this is undocumented.",
+     "evidence": "agent.ts:511-526 emits message_end/turn_end/agent_end for the thrown prepareRequest error; agent-session.ts:2880 retries only on `kpi_account_failover`, which the design deliberately does not attach. The operator must resend the prompt; the notification text and README §20 entry should say so."
+    }
+   ],
+   "required_changes": [
+    "Rewrite or delete test/accounts-commands.test.ts:276-292 (`an existing default slot is never overwritten by the official import`) to the new contract, and update docs/spec.md:649 / README.md:311-314 sentences it encodes (already listed for docs, but the test change must be in the change list).",
+    "In the message_end `OAuth refresh failed for <pool>` branch, run summarizeRefreshFailure on message.errorMessage (the cause text is embedded by withCauseDetail) and only markNeedsLogin/promoteOfficial on kind invalid_grant; for http/transport notify a warning and leave the official slot and auth.json untouched. Add a test: `OAuth refresh failed for anthropic: … status=503 …` neither marks needs-login nor rewrites auth.json.",
+    "Call reconcileOfficialCredentials at the start of loginAccount (before `login()`), so the previous official slot's secret adopts any base rotation before the runtime overwrites auth.json; add a test where auth.json rotated after the last turn_start, then `/accounts login anthropic work` → the old official slot's secret holds the rotated refresh token.",
+    "State that the accounts-commands reconcile/needs-login tests build a hook context with `modelRegistry: { getProvider: () => ({ name, auth: { oauth: { refresh } } }) }` (the harness's subject.context has none), or extend the harness to accept one.",
+    "Refine the legacy fallback: bind `default` as official only when its secret is absent, non-oauth, expired, or shares refresh/access lineage with auth.json; otherwise create the official slot under a new id rather than overwriting a live grant.",
+    "Embed the literal Anthropic 400 body/errorMessage (with `claude_code_version_too_old`) in the design so parseClientVersionRejection's regex and the test fixture are verifiable.",
+    "Fix verification step 4 to use `m.entries.find(...)` (docs/traceability-map.json:660).",
+    "Correct the evidence citations (index.ts :563/:829/:841/:926; anthropic-messages.ts :284 mergeClientHeaders with the User-Agent/user-agent dual-key note) and drop or correct the getFileRevision same-millisecond risk.",
+    "Document (notification text + README §20) that after a dead official grant is replaced by a sibling the prompt must be resent — no automatic retry."
+   ],
+   "file_conflicts_seen": [
+    "packages/coding-agent/src/kpi/extensions/accounts/index.ts (onboarding)",
+    "scripts/generate-traceability-map.mjs (board-live, plan-gate, agents-visibility, onboarding)",
+    "docs/traceability-map.json (plan-gate, agents-visibility)",
+    "docs/PRD.md (board-live)",
+    "docs/spec.md (board-live)",
+    "docs/uat.md (board-live)",
+    "README.md (board-live)"
+   ]
+  },
+  {
+   "lens": "minimalism-and-contract",
+   "verdict": "needs-revision",
+   "problems": [
+    {
+     "severity": "major",
+     "claim": "The design silently inverts a product requirement: docs/PRD.md AC-10.2 says expiring OAuth credentials refresh 'independently per slot, never by substituting the provider's current auth.json credential', and docs/spec.md §13 line 649 says 'the provider's single primary auth.json entry is not a substitute for slot refresh'. The design rewrites both to the opposite rule (official slot ≡ auth.json, base runtime is its only refresher, K-π never refreshes it) and lists no open question. AGENTS.md 'Stop, do not improvise' and 'Do not invent requirements' route a contract conflict to NEEDS_HUMAN, not to a rewrite inside the fix.",
+     "evidence": "docs/PRD.md:190 (AC-10.2 last sentence); docs/spec.md:649; AGENTS.md 'How to work' §7; design docs[0] 'Rewrite AC-10.2's last sentence', docs[1] 'Replace the sentence …', open_questions: []"
+    },
+    {
+     "severity": "major",
+     "claim": "The stated invariant 'one grant per slot' is not achieved by construction: the official slot keeps a second copy of the grant in accounts.secrets.json, a bidirectional reconcile (adopt/publish by later `expires`, or auth.json wins when kinds differ) runs on every session_start AND every turn_start, and credentialFor falls back to that copy. Since credentialFor reads auth.json live and K-π never refreshes the official slot, the per-turn reconcile and the secrets copy have no remaining purpose except as a fallback the design's own risk list says is unreachable (prepareRequest fails first with 'Provider is not configured'). This is a duplicate code path and a heuristic where a shape already in the store (a slot with no secrets entry, like `local` without `secretRef`) would make the invariant structural.",
+     "evidence": "store.ts:60-72 (local slot already has 'no secrets file entry' semantics, comment at :433-435); design change[2] reconcile/credentialFor, change[3] item (8) turn_start reconcile, risks[4]-[5] admit the auth.json-missing case fails earlier"
+    },
+    {
+     "severity": "major",
+     "claim": "KPI_CLAUDE_CODE_VERSION plus in-session adoption of the server's demanded floor is a new setting and a product decision the issue did not ask for (the issue asks for the bump and a surfaced refusal). It creates a second source of truth for the Claude Code identity next to upstream's pinned constant, spoofs a version at runtime from an untrusted server string, and is not added to the env-override tables in AGENTS.md ('Env overrides are KPI_CODING_AGENT_DIR and KPI_CODING_AGENT_SESSION_DIR') or README.md line 14. YAGNI is rung 1 of docs/minimalist.md; if kept, it belongs in open_questions.",
+     "evidence": "AGENTS.md Hard rules bullet 1; README.md:14; anthropic-messages.ts:77,938 (single upstream constant); design change[3] items (5)-(6), event_or_data_contracts[3], risks[3]"
+    },
+    {
+     "severity": "major",
+     "claim": "'A dead official grant hands the pool to a live sibling' writes a different account's tokens into auth.json (promoteOfficial) — changing which account the base runtime and every upstream code path authenticates as — triggered by string-matching a base-runtime error message (`^OAuth refresh failed for`). That is an unrequested product behaviour (account substitution the operator never chose) resting on a hidden contract with packages/ai/src/auth/resolve.ts:155 wording, and the route move is not recorded as an `accounts.failover` append-log event although the pool's serving slot changed. It is not in open_questions.",
+     "evidence": "resolve.ts:155 message text; agent.ts:520 passes error.message verbatim; append-log.ts:89 accounts.failover exists and is emitted only from index.ts:674 applyFailure; design change[3] item (6) 'dead' branch; test 'a dead official grant hands the pool to a live sibling'"
+    },
+    {
+     "severity": "minor",
+     "claim": "turn_start's reconcileOfficialCredentials has no named failure path. The design says only that session_start 'catches and notifies'; a stale proper-lockfile `.lock` or an unreadable auth.json would throw from the turn_start hook every turn, and the hook runner only appends to an `errors` array. Silence-or-crash is a defect under minimalist.md's 'a swallowed failure is a defect'.",
+     "evidence": "packages/coding-agent/src/core/extensions/runner.ts:215-230 (hook exceptions collected into errors); design risks[6] mentions session_start only; change[3] item (8) has no catch"
+    },
+    {
+     "severity": "minor",
+     "claim": "UPSTREAM.md register is incomplete for the files this change touches: packages/ai/test/anthropic-auth-token.test.ts is an upstream-owned test file the design edits without registering it, and packages/ai/src/api/anthropic-messages.ts already carries an unregistered K-π patch (the `onResponse: (failed) => …` insertion at :581) that the new block should record while the file is being touched. The new vitest also hard-codes the literal '2.1.251', a second copy of the upstream constant that goes stale on every upstream bump — the opposite of the design's own 'byte-identical to upstream' rationale.",
+     "evidence": "git diff b79e4cc -- packages/ai/src/api/anthropic-messages.ts shows one K-π insertion at :581; grep 'anthropic-messages' UPSTREAM.md returns nothing; AGENTS.md 'every upstream file you must patch goes in the UPSTREAM.md patched-file register'"
+    },
+    {
+     "severity": "minor",
+     "claim": "claimOfficial after a pooled login can bind the previous official slot to a stale copy: the base refreshes auth.json on any request with <5 min left (model-runtime.ts:583, resolve.ts:131), so a rotation between the last reconcile and `/accounts login` leaves the former official slot's secrets copy holding a revoked refresh token; it then becomes non-official, K-π refreshes it, and it dies with invalid_grant. Either reconcile before login or (better, per the second major) stop keeping the copy.",
+     "evidence": "model-runtime.ts:583-591; resolve.ts:139-160; design change[3] item (2); risks[0] admits a variant of this"
+    }
+   ],
+   "required_changes": [
+    "Add open_questions for the two product decisions the design makes: (a) reversing AC-10.2/spec §13 so the base runtime owns and refreshes the official grant (raise NEEDS_HUMAN with both citations rather than rewriting the AC inside the fix); (b) whether K-π may rewrite auth.json with a sibling account's tokens when the official grant dies (promoteOfficial), and whether the runtime should spoof a Claude Code version learned from the server (KPI_CLAUDE_CODE_VERSION + adoption).",
+    "Cut the change to the issue: cherry-pick 96317e50b, classify claude_code_version_too_old once in message_end (no cooldown, no failover, diagnostic kpi_client_version_rejected, update remedy), and stop refreshing/cooling the official slot. Drop the env override, in-session floor adoption, promoteOfficial, and the `^OAuth refresh failed for` message-matching branch unless the open questions come back approved.",
+    "Make 'one grant per slot' structural instead of reconciled: the official slot holds no accounts.secrets.json entry (reuse the existing no-secret slot shape from `local`/`secretRef`), credentialFor reads auth.json only with no fallback, reconcile becomes a one-time migration on session_start (publish the secrets copy if it is newer, then delete it), and the turn_start reconcile is removed.",
+    "Name the failure path for every reconcile/AuthStorage.modify call site (session_start and any other) — catch, notify once with a plain reason, and leave the slot unselectable; no hook may throw per turn.",
+    "Register every upstream-owned file touched in UPSTREAM.md §6: the cherry-pick, the edit to packages/ai/test/anthropic-auth-token.test.ts, and the pre-existing unregistered onResponse patch in anthropic-messages.ts:581; assert the user-agent shape/floor in the test rather than duplicating the literal constant.",
+    "If any env override survives review, add it to the AGENTS.md hard-rules env list and README.md line 14 table in the same change; if promoteOfficial survives, emit the existing accounts.failover append-log event for the route move.",
+    "Reconcile (or drop the copy) before a pooled login so claimOfficial cannot leave the former official slot on a revoked refresh token."
+   ],
+   "file_conflicts_seen": [
+    "packages/coding-agent/src/kpi/extensions/accounts/index.ts (onboarding)",
+    "scripts/generate-traceability-map.mjs (board-live, plan-gate, agents-visibility, onboarding)",
+    "docs/traceability-map.json (plan-gate, agents-visibility)",
+    "docs/PRD.md (board-live)",
+    "docs/spec.md (board-live)",
+    "docs/uat.md (board-live)",
+    "README.md (board-live)"
+   ]
+  }
+ ]
+}

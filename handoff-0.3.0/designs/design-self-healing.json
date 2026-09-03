@@ -1,0 +1,929 @@
+{
+ "key": "self-healing",
+ "design": {
+  "issue": "The gated job 20260903-fix-claude-model-requests-failin-42986cfa ended \"EXHAUSTED: graph exhausted maxCostUsd 5 at 7.69\" at superstep 3 with `implement` never started (graph/checkpoint-000004.json: status \"exhausted\", nodes.implement.status \"exhausted\", runs 0). `/kpi <job>` cannot revive it: GraphEngine.restore keeps it exhausted because the cap still binds (engine.ts L680-682) and resumeLoop throws \"Cannot resume graph in exhausted state\" (gated-loop.ts L1899-1900). More generally the engine ends runs on its own initiative from counters and clocks (maxCostUsd, timeoutMs, maxSteps, maxNodeRuns, maxRounds, maxTransientRetries) and turns repeated review output into a death (NO_PROGRESS), contradicting the owner's decision (R1-R6): no cap, transient failures retry with visible capped backoff for as long as it takes, no-progress re-plans with feedback before it ever waits for the operator, and the only stop is the operator's.",
+  "root_cause": "Run termination is designed as a budget: packages/coding-agent/src/kpi/extensions/graph/budget.ts L102-125 (findExhaustedRunLimit: maxSteps, timeoutMs, maxCostUsd) and L135-149 (findExhaustedNodeLimit: maxRounds/maxNodeRuns) are consulted by engine.ts L1280-1283, L1293-1298 and L1327-1332 and become `exhaust()` (engine.ts L1211-1228, status \"exhausted\", one loop.terminal EXHAUSTED); transient retries are capped at MAX_TRANSIENT_RETRIES=2 (stop.ts L6, engine.ts L1163-1166, L1372-1375); the stop reducer turns a repeated fingerprint/failing-AC set into NO_PROGRESS and `round >= maxRounds` into EXHAUSTED (stop.ts L299-306) which the driver returns as a terminal (gated-loop.ts L1493-1533); every such status is a product terminal in run-store.ts L391, and a restored exhausted run stays exhausted while the cap binds (engine.ts L650-690, rearmIfAffordable). The fixture was killed by the maxCostUsd branch (budget.ts L118-123) with cost 7.69 against the graph default 5 (coding-loop.gated.json L403-409).",
+  "evidence": [
+   {
+    "file": "/Users/leebarry/K-pi/.kpi/runs/20260903-fix-claude-model-requests-failin-42986cfa/state.json",
+    "line": 14,
+    "note": "status EXHAUSTED, reason \"graph exhausted maxCostUsd 5 at 7.691661999999999\", exhausted_limit maxCostUsd, graph_status exhausted, round 0"
+   },
+   {
+    "file": "/Users/leebarry/K-pi/.kpi/runs/20260903-fix-claude-model-requests-failin-42986cfa/graph/checkpoint-000004.json",
+    "line": 1,
+    "note": "status exhausted, active [implement], nodes.implement {status exhausted, runs 0}; budget.limits keys in order maxSteps, maxNodeRuns, maxConcurrency, maxCostUsd, timeoutMs, maxRounds, maxTransientRetries; values keys policy, plan, test, bounds, fingerprints, ship. The run directory also holds research.json, research.md, stack.json, baseline.json, previous-head.txt, events.jsonl, context.md, agents/; task.json carries no `limits` key and current_module_id \"ai\""
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/graph/budget.ts",
+    "line": 118,
+    "note": "findExhaustedRunLimit returns {limit: maxCostUsd} when costUsd >= limits.maxCostUsd; L106-117 maxSteps/timeoutMs; L135-149 findExhaustedNodeLimit; L12 OVERRIDABLE_LIMITS; L27 PERSISTED_LIMIT_NAMES; L85-95 isBudgetState"
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/graph/engine.ts",
+    "line": 1280,
+    "note": "runSuperstep consults findExhaustedRunLimit before work (L1280-1283), per node (L1293-1298) and per batch (L1327-1332) and exhaust()s; L1272-1275 throws when status is interrupted; L1276-1278 returns immediately for any other non-running status"
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/graph/engine.ts",
+    "line": 1143,
+    "note": "executeWithRetries: L1163-1166 throws TransientRetriesExhaustedError at maxTransientRetries; L1167 delay = base * 2**spent with no ceiling; L1170-1171 checkpoint then sleep (kept as the checkpoint-before-wait); L110-114 defaultSleep"
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/graph/engine.ts",
+    "line": 1372,
+    "note": "batch rejection: TransientRetriesExhaustedError -> exhaust({limit: maxTransientRetries}); other errors -> fail(); GraphNodeProviderError reaches the driver (gated-loop.ts L1419-1427)"
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/graph/engine.ts",
+    "line": 650,
+    "note": "rearmIfAffordable: a restored exhausted run stays exhausted while the cap still binds (L680-682); failed/terminated runs are never re-armed"
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/graph/engine.ts",
+    "line": 1211,
+    "note": "exhaust() L1211-1228 and terminate() L1236-1252 both write one checkpoint and one loop.terminal via emitTerminal (option L98)"
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/graph/engine.ts",
+    "line": 1428,
+    "note": "refreshFacts merges resolveFacts() into values before route() (L1434-1436 in submitHuman; same order in runSuperstep) — facts are what edges test"
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/graph/engine.ts",
+    "line": 798,
+    "note": "route(): every firing edge adds a target; a terminal target wins (L813-815); edges from one node must be mutually exclusive or two targets are scheduled"
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/graph/engine.ts",
+    "line": 1533,
+    "note": "static restore reads the latest checkpoint privately and hands it to the constructor; nothing outside the engine sees the raw budget.limits keys"
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/graph/engine.ts",
+    "line": 500,
+    "note": "resolveActiveWriteAllow keys off readLiveJob: a live job's write_allow bounds every graph session"
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/graph/stop.ts",
+    "line": 11,
+    "note": "TerminalStatus = DONE|BLOCKED|EXHAUSTED|NO_PROGRESS|UNSAFE|NEEDS_HUMAN; StopState L15-27 carries status/maxRounds/retries; L3 DEFAULT_MAX_ROUNDS; L6 MAX_TRANSIENT_RETRIES"
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/graph/stop.ts",
+    "line": 216,
+    "note": "classifyTransientFailure treats only status 429 as http-transient; 5xx/408 fall through as non-transient; L205-213 timeout/abort handling"
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/graph/stop.ts",
+    "line": 270,
+    "note": "transitionStopState: L275-277 repeat detection (outputFingerprints / failingAcSets), L299-306 NO_PROGRESS / DONE / EXHAUSTED; planRetry L256, retryTransient L330 are a second retry model the driver never invokes"
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/graph/schema.ts",
+    "line": 85,
+    "note": "GraphRoutedTerminal L85-92, TerminalGraphNode L99-104, GraphLimits L118-124, GraphRunStatus L181, GraphNodeRunStatus L183, GraphNodeRunState L185-204, GraphBudgetState L215-228, GraphTerminalState L234-243, GraphRunState L245-257"
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/graphs/coding-loop.gated.json",
+    "line": 403,
+    "note": "limits {maxSteps 24, maxNodeRuns 16, maxConcurrency 2, maxCostUsd 5, timeoutMs 1800000}; nodes ac-compiler, specify, plan, plan-check, plan-approval, implement, test, review, human, ship, unsafe(terminal), needs-human(terminal); edges: ac-compiler->plan-check when plan.provided=true (plan bypassed for --plan jobs); test->implement on [bounds.held=true,test.passed=false]; review->implement on [bounds.held=true, review.approved=false, review.status=REVISE]; review->needs-human on BLOCKED / approved+red / approved+stale; human->__end__ on [release.approved=false, policy.onHumanDeny=end]"
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/graphs/coding-loop.auto.json",
+    "line": 364,
+    "note": "same limits block and the same test/review edges; review->release.set on approved+passed+bounds+fresh; plan->implement (no plan-approval)"
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/graphs/spec-first.json",
+    "line": 27,
+    "note": "limits {maxSteps 4, maxNodeRuns 2, maxConcurrency 1, maxCostUsd 2, timeoutMs 900000}"
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/gated-loop.ts",
+    "line": 134,
+    "note": "--max-cost-usd / --timeout-ms / --max-rounds parsing loop L134-166 strips the flags anywhere in the input; L215-217 'Unknown /kpi option' fires only when the remaining input starts with --; L224-232 bare-flag errors; LoopInvocation.limits L94-98; task.limits frozen at runLoop"
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/gated-loop.ts",
+    "line": 109,
+    "note": "LoopRecovery = provider | delivery | approval; recoveryReason L686-695; OperatorStop L1573 and the unattended gate NEEDS_HUMAN/approval L1677-1683 must survive"
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/gated-loop.ts",
+    "line": 449,
+    "note": "stateDocument writes maxRounds (L459), limits (L487), exhausted_limit (L493), retries/retry_delays_ms (L498-499); restoreStopState(document, maxRounds) L550 clamps retries to MAX_TRANSIENT_RETRIES (L560)"
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/gated-loop.ts",
+    "line": 697,
+    "note": "shipFailure: ShipDeliveryError -> NEEDS_HUMAN/delivery; ShipIntegrityError and unexpected -> BLOCKED"
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/gated-loop.ts",
+    "line": 1236,
+    "note": "LoopFacts {resolve, boundsReason}; loopFacts L1248-1305 returns plan.provided, test.passed, bounds.held, fingerprints.fresh, ship.shipped; resolve reads evidence.json and the worktree, nothing about review"
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/gated-loop.ts",
+    "line": 1347,
+    "note": "before implement runs the driver calls assertResearchFresh (research/gate.ts L244-250 reads research.json + research.md) and freezeCurrentSlice (stack.ts L495-497 reads stack.json) — a fixture-based resume test must copy those files"
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/gated-loop.ts",
+    "line": 1408,
+    "note": "driver terminals today: research shortfall NEEDS_HUMAN L1341, stack UNSAFE L1366, branch switch BLOCKED L1408-1416, provider NEEDS_HUMAN L1419-1427, plan stack UNSAFE L1457-1463, exhausted L1466-1476, terminated L1478-1492, missing review fingerprint BLOCKED L1493-1501"
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/gated-loop.ts",
+    "line": 1493,
+    "note": "the no-progress witness is recorded only when completedNodes includes review (L1493-1533), after runSuperstep has already routed — a graph-routed re-plan therefore needs the witness as a fact resolved before route()"
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/gated-loop.ts",
+    "line": 1809,
+    "note": "resumeLoop already returns early on DONE; L1826 passes limits: task.limits; L1836 restoreStopState(stateDocument, engine.limits.maxRounds); L1899-1900 throws for any non-completed engine state after the drive; L1904-1914 'graph completed without release approval' -> BLOCKED (first run L2151-2160)"
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/gated-loop.ts",
+    "line": 2008,
+    "note": "forced autopilot with non-executable AC writes ac.refused and state.json NEEDS_HUMAN with maxRounds (L2026) and graph_status not_started (R6 gate, stays)"
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/control-plane.ts",
+    "line": 384,
+    "note": "stopJob writes loop.terminal BLOCKED 'operator stop' and state.json BLOCKED; it never interrupts an in-process loop; handleKpiCommand L484-492 awaits runLoop/resumeLoop inside the command handler; L498-509 provider recovery confirm; L523 description advertises the budget flags; buildBoardModel L226 maxRounds"
+   },
+   {
+    "file": "packages/coding-agent/src/modes/interactive/interactive-mode.ts",
+    "line": 1188,
+    "note": "the main loop awaits session.prompt(userInput); a second submission while a command handler runs goes to pendingUserInputs (L3176-3179) and is read by getUserInput (L3906-3910) only after the handler returns; Escape aborts only while session.isStreaming (L2879-2880); Ctrl+C exits the process (L3973-3989). So `/kpi stop` typed in the same TUI session cannot reach a running loop"
+   },
+   {
+    "file": "packages/coding-agent/src/core/agent-session.ts",
+    "line": 1357,
+    "note": "_tryExecuteExtensionCommand awaits command.handler(args, ctx) — the /kpi handler holds the session for the whole loop"
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/run-store.ts",
+    "line": 391,
+    "note": "TERMINAL_RUN_STATUSES = DONE|BLOCKED|EXHAUSTED|NO_PROGRESS|UNSAFE|NEEDS_HUMAN; isFinishedRunStatus L393; isLiveJob L398; readLiveJob L439; L9-10 import validateBudgetOverrides/GraphBudgetOverrides, L68 Task.limits, L222 and L318 call validateBudgetOverrides"
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/policy.ts",
+    "line": 582,
+    "note": "resolveActivePolicyState keys the policy mode and write_allow of every operator tool call off readLiveJob; L958 recordToolRequest appends tool.request to the live job — a paused job that counted as live would bound and log the operator's own edits (the 'dead UNSAFE job haunted a session' regression run-store.ts L406-410 names)"
+   },
+   {
+    "file": "docs/PRD.md",
+    "line": 344,
+    "note": "AC-24.3: a finished run (DONE, BLOCKED, EXHAUSTED, NO_PROGRESS, UNSAFE, NEEDS_HUMAN) owns no follow-up and is not drawn as live; bound by test/runtime-milestone.test.ts L185-195 through generator L732-736"
+   },
+   {
+    "file": "packages/coding-agent/src/core/sdk.ts",
+    "line": 344,
+    "note": "every provider request carries timeoutMs = options.timeoutMs ?? providerRetrySettings.timeoutMs ?? effectiveTimeoutMs where httpIdleTimeoutMs 0 becomes 2147483647 (L346-348): a hung provider becomes a timeout only while httpIdleTimeoutMs is non-zero (default 300000, core/http-dispatcher.ts L4)"
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/accounts/index.ts",
+    "line": 691,
+    "note": "applyFailure marks the served slot cooling and plans failover; invoked from after_provider_response L942-946 and message_end L1048; errors.ts L104 classifies 429/402/quota-shaped; graph node sessions select a slot per request, so an engine retry lands on the failed-over slot"
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/board.ts",
+    "line": 28,
+    "note": "StopDisplay/STOP_VOCABULARY seven tokens; normalizeStop L40-47; ROUND n/m at L361 and L483; STOP STATES cells DONE/BLOCKED/APPROVAL L420-424"
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/status-line/index.ts",
+    "line": 94,
+    "note": "maxRounds derivation L94-99; segments.ts formatKpiJob renders r${round}/${maxRounds}"
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/schemas/event.schema.json",
+    "line": 730,
+    "note": "loop.terminal status enum DONE|BLOCKED|EXHAUSTED|NO_PROGRESS|UNSAFE|NEEDS_HUMAN, additionalProperties false; task.schema.json L94 taskLimits definition"
+   },
+   {
+    "file": "scripts/pty-rows/uat-16.mjs",
+    "line": 136,
+    "note": "header check is `[..., `ROUND ${round}/${maxRounds}`].every(cell => amberRun.raw.includes(bytesOf(cell)))` over raw ANSI bytes; uat-25.mjs L112 `board.includes(`ROUND ${round}/${maxRounds}`)`; uat-06 L32/L43 and uat-15 L176 fixtures carry maxRounds"
+   },
+   {
+    "file": "scripts/metric-runs.mjs",
+    "line": 379,
+    "note": "terminal regex (DONE|UNSAFE|BLOCKED|EXHAUSTED|NEEDS_HUMAN|NO_PROGRESS); M-04 checks L826-852 expect state.status UNSAFE and one loop.terminal UNSAFE"
+   },
+   {
+    "file": "scripts/generate-traceability-map.mjs",
+    "line": 169,
+    "note": "AC-05.1..05.6 rows L169-198; AC-02.7 L108; AC-04.6 L162; AC-24.3 L732; AC-29.4 L902; AC-30.2 L929; M-04 L998; RP-03 L1042; RP-04 L1047; GRAPH-01..06 L1367-1396; REQ-GE rows L1631-1633"
+   },
+   {
+    "file": "test/research-control-plane.test.ts",
+    "line": 805,
+    "note": "'/kpi budget flags parse and freeze onto invocation.limits' parses the three flags (L805-825)"
+   },
+   {
+    "file": "test/graph-routing.test.ts",
+    "line": 382,
+    "note": "inline `type: 'terminal', status: 'UNSAFE'`, five-key limits L389, asserts terminated/terminal.status UNSAFE L419-421; test/reviewer-session.test.ts L68-71 and test/gated-loop.test.ts L856-861 inline five-key limits; test/policy.test.ts L1260-1278 appends loop.terminal UNSAFE (tsc --noEmit covers test/** per tsconfig.json L39); test/milestone.test.ts L123 loop.terminal BLOCKED; test/autopilot.test.ts L52, L550, L662 assert BLOCKED; test/control-plane.test.ts L123-124 and L273-283; test/run-store.test.ts L244-250"
+   },
+   {
+    "file": "test/gated-loop.test.ts",
+    "line": 1412,
+    "note": "existing assertion 'revisions are unbounded; the operator is the bound' — the plan gate already states the product principle this design generalises"
+   },
+   {
+    "file": "docs/spec.md",
+    "line": 140,
+    "note": "budget flag rows L140-142; /kpi stop 'Write BLOCKED' L144; §6 stop table L319-326, caps L328, retry L330; §7 node types L334 and conditional list L347-355; §8 L396-407; footer r2/3 L498; L754 'bounds-violation … → UNSAFE'; SCH-task (L191-225) never carried limits"
+   },
+   {
+    "file": "docs/PRD.md",
+    "line": 136,
+    "note": "US-05 L136-145; AC-02.7 'ROUND n/max' L114; AC-04.6 'NEEDS_HUMAN or UNSAFE' L133; AC-29.4 L401; AC-30.2 L411; M-04 row L499; US-04 L125-134 kept"
+   },
+   {
+    "file": "docs/uat.md",
+    "line": 62,
+    "note": "UAT-05 L62-66; UAT-02 'ROUND n/max' L47; UAT-04 L59 'NEEDS_HUMAN or UNSAFE'; UAT-30 L215 'reaches UNSAFE'; M-04 row L229"
+   },
+   {
+    "file": "docs/visual-targets.md",
+    "line": 173,
+    "note": "stop box vocabulary L173 and L190; 'ROUND n / max' L162; footer r2/3 L81; Board B stop box DONE / BLOCKED / APPROVAL L199"
+   },
+   {
+    "file": "README.md",
+    "line": 444,
+    "note": "Budget flags L444-469; ROUND 0/3 L484/L491/L823; round/maxRounds L501; STOP list L507-508; STOP STATES L517; /kpi stop BLOCKED L581-592; state.json maxRounds L646; troubleshooting L924-931"
+   },
+   {
+    "file": "docs/remediation-plan.md",
+    "line": 29,
+    "note": "'Persisted stop states remain DONE | BLOCKED | EXHAUSTED | …'; RP-03 Change/Tests L282-293 assert enforced caps and persisted EXHAUSTED; RP-04 L322-334 assert at most two retries and NO_PROGRESS; Ordering L7 says no incomplete package remains; AGENTS.md L3 names this file the only work queue"
+   },
+   {
+    "file": "docs/dune-architecture.md",
+    "line": 57,
+    "note": "L57, L81, L88 say an out-of-module claim / missing stack 'is UNSAFE'; docs/agents-bus.md L47 'A claim outside … is UNSAFE'; docs/kstack.md L217 'loop with maxRounds'"
+   },
+   {
+    "file": "AGENTS.md",
+    "line": 119,
+    "note": "Best-practices row cites 'carry stopping conditions such as a maximum iteration count'; L31 and L89 keep NEEDS_HUMAN as the human-gate name"
+   }
+  ],
+  "change": [
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/graph/budget.ts",
+    "action": "edit",
+    "what": "Delete OVERRIDABLE_LIMITS, PERSISTED_LIMIT_NAMES, BudgetExhaustion, RunBudgetReading, validateBudgetOverrides, resolveGraphBudgetLimits, findExhaustedRunLimit, findExhaustedNodeLimit and their imports. Keep `batchReadyNodes`. `isBudgetState(value)` requires only numeric startedAtMs/elapsedMs/costUsd/round/batches and `limits.maxConcurrency` (a checkpoint carrying extra retired keys still passes). No helper for retired keys: the engine exposes them (see engine)."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/graph/schema.ts",
+    "action": "edit",
+    "what": "GraphLimits = { maxConcurrency: number }; delete GraphBudgetLimits, GraphBudgetOverrides, BUDGET_LIMIT_NAMES, BudgetLimitName. Replace GraphRoutedTerminal/GRAPH_ROUTED_TERMINALS/TerminalGraphNode with `PauseGraphNode { id; type: \"pause\"; recovery: LoopRecovery; reason: string; resume: string[] }` importing `LoopRecovery` from ../run-store.ts (engine.ts already imports run-store at L19; no cycle). GraphNode union swaps TerminalGraphNode for PauseGraphNode. GraphRunStatus = \"running\" | \"interrupted\" | \"completed\" | \"paused\". GraphNodeRunStatus drops \"exhausted\". GraphNodeRunState keeps transientRetries/retryRun/retryDelaysMs and adds `retryReason?: TransientReason` and `retryAtMs?: number`. GraphBudgetState.limits: GraphLimits. Replace GraphTerminalState with `GraphPauseState { recovery: LoopRecovery; reason: string; round: number; superstep: number; nodes: string[]; resume: string[] }`; GraphRunState.terminal -> `pause?: GraphPauseState`."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/graph/stop.ts",
+    "action": "edit",
+    "what": "Delete DEFAULT_MAX_ROUNDS, MAX_TRANSIENT_RETRIES, TerminalStatus, StopStatus, StopState.status/maxRounds/retries/retryDelaysMs, RetryEvent, StopEvent, RetryPlan, planRetry, retryTransient, transitionStopState. Keep DEFAULT_RETRY_BASE_MS, Sleeper, canonicalFingerprint/stopFingerprint/failingAcSetKey, VerifierEvent, TransientReason, classifyTransientFailure. Add `RETRY_MAX_DELAY_MS = 60_000` and `retryDelayMs(spent, baseMs = DEFAULT_RETRY_BASE_MS) = Math.min(RETRY_MAX_DELAY_MS, baseMs * 2 ** spent)`. StopState = { round; evidenceFingerprints; outputFingerprints; failingAcSets; repaired: readonly string[]; repair?: PlanRepair } with `PlanRepair { round: number; reason: string; failing_ac: string[]; evidence_ref: \"verdict.json\"; witness: string; guidance?: string }`. createStopState() takes no argument. `repeatedWitness(state, event): string | undefined` returns the canonical output fingerprint when it is already in outputFingerprints, else the failing-set key when already in failingAcSets, else undefined (the L275-277 predicates). `recordVerifier(state, event): StopState` = the L286-316 bookkeeping without status (round+1, witness sets deduplicated). classifyTransientFailure: status 408, 429 or 500-599 on the error or its cause -> \"http\"."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/graph/engine.ts",
+    "action": "edit",
+    "what": "(1) validateLimits (L307) requires only maxConcurrency; validateNode accepts type \"pause\" with `recovery` a string, non-empty `reason`, `resume` a non-empty array of existing non-pause node ids (replaces the terminal validation L205-215). (2) Constructor: budget.limits = { maxConcurrency: graph.limits.maxConcurrency }; drop options.limits; `readonly retiredLimits: string[]` = keys of initialState.budget.limits other than maxConcurrency (empty for a new run). On restore, when initialState.status is anything other than running/interrupted/completed (paused, or legacy exhausted/failed/terminated) call `this.rearm()`: status running, active = pause?.resume ?? active, every active node not in status \"running\" becomes \"pending\" (a node left \"running\" continues its own run and keeps transientRetries/retryAtMs), delete pause and legacy terminal. `rearm()` is public. Delete rearmIfAffordable, TransientRetriesExhaustedError, exhaust(), `get limits`. (3) terminate() becomes `pause(state: GraphPauseState)`: status paused, active unchanged, superstep+1, checkpoint, one emitTerminal(pause) (option type becomes GraphPauseState; the default sink appends loop.terminal {status NEEDS_HUMAN, reason, recovery}). fail(message, nodeIds, cause) marks the nodes failed with the error text and returns `pause({ recovery: \"contract\", reason: message, round, superstep, nodes, resume: nodes })` instead of throwing; the batch-rejection branch (L1372-1380) re-throws GraphNodeProviderError and the new OperatorStopError before any fail(). (4) runSuperstep: delete the three cap checks (L1280-1283, L1293-1298, L1327-1332); route() treats a pause-node target exactly as a terminal target today (wins, L813-815) and calls pause({recovery: node.recovery, reason: node.reason, nodes: [node.id], resume: node.resume}). (5) executeWithRetries: unbounded loop. On a transient failure: spent = transientRetries ?? 0; delay = retryDelayMs(spent, retryBaseDelayMs); set transientRetries = spent+1, retryReason, retryAtMs = now()+delay, push retryDelaysMs, error text; writeCheckpoint; `await this.options.onRetry?.({ nodeId, attempt: spent+1, reason, status, delayMs: delay, message })`; `await this.sleep(delay)`; then `if (await this.options.stopRequested?.()) throw new OperatorStopError()`; delete retryAtMs before the next attempt. Before the first attempt of a run whose nodeState.retryAtMs > now() (resumed mid-backoff) sleep the remainder first and apply the same stop check. Export `class OperatorStopError extends Error` (message \"operator stop\"). (6) GraphEngineOptions: delete `limits`; add `onRetry?: (retry: NodeRetry) => Promise<void>` and `stopRequested?: () => Promise<boolean>`. (7) countRound/readBudget unchanged: elapsedMs and costUsd stay report-only counters."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/graphs/coding-loop.gated.json",
+    "action": "edit",
+    "what": "limits -> { \"maxConcurrency\": 2 }. Nodes: unsafe {type pause, recovery \"bounds\", reason unchanged, resume [\"test\"]}, needs-human {type pause, recovery \"review\", reason unchanged, resume [\"implement\"]}, new no-progress {type pause, recovery \"no_progress\", reason \"review repeated the same output or failing criteria after a re-plan\", resume [\"plan\"]}. Replace the single `review -> implement` REVISE edge with four mutually exclusive edges, each carrying [bounds.held=true, review.approved=false, review.status=REVISE] plus: (a) progress.repeated=false -> implement; (b) progress.repeated=true, plan.repair_tried=false, plan.provided=false -> plan; (c) progress.repeated=true, plan.repair_tried=true -> no-progress; (d) progress.repeated=true, plan.repair_tried=false, plan.provided=true -> no-progress. Every other edge, including test -> implement, unchanged. Plan node prompt appends: \"If repair.json exists in the run directory, the previous plan did not deliver: it names the round, the failing acceptance criteria, the verdict and any operator guidance. Produce a materially different stack.json and plan that addresses them.\""
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/graphs/coding-loop.auto.json",
+    "action": "edit",
+    "what": "Same limits, pause nodes, four-way REVISE split and plan prompt sentence as the gated graph; release.set path unchanged."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/graphs/spec-first.json",
+    "action": "edit",
+    "what": "limits -> { \"maxConcurrency\": 1 }."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/prompts/plan.md",
+    "action": "edit",
+    "what": "Add one line: when `repair.json` exists in the run directory, read it first and produce a materially different plan that addresses the named failing criteria and any operator guidance."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/schemas/task.schema.json",
+    "action": "edit",
+    "what": "Delete the taskLimits definition (L94) and the `limits` property; a legacy task.json carrying `limits` is read leniently by resumeLoop (the key is ignored and noted), never validated by createJob."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/schemas/event.schema.json",
+    "action": "edit",
+    "what": "loop.terminal.status enum -> [\"DONE\",\"NEEDS_HUMAN\",\"STOPPED\"]; add optional `recovery` (enum of LoopRecovery values). Add a `node.retry` record: required ts/type/job_id/round/node/prev_hash/record_hash/attempt (integer >= 1)/reason (enum http|timeout|transport)/delay_ms (integer >= 0); optional status (integer), message (string); additionalProperties false."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/append-log.ts",
+    "action": "edit",
+    "what": "EVENT_TYPES gains \"node.retry\"; EventInput gains `Event<\"node.retry\", { attempt: number; reason: TransientReason; delay_ms: number; status?: number; message?: string }>`; loop.terminal becomes `Event<\"loop.terminal\", { status: Exclude<RunStatus, \"RUNNING\">; reason?: string; recovery?: LoopRecovery }>` importing both types from run-store.ts."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/run-store.ts",
+    "action": "edit",
+    "what": "Delete the budget imports (L9-10), Task.limits (L68) and both validateBudgetOverrides calls (L222, L318). Export `RUN_STATUSES = [\"RUNNING\",\"NEEDS_HUMAN\",\"DONE\",\"STOPPED\"] as const`, `type RunStatus`, `type LoopRecovery = \"approval\" | \"provider\" | \"delivery\" | \"ship\" | \"bounds\" | \"review\" | \"no_progress\" | \"research\" | \"stack\" | \"contract\" | \"ac_quality\"` (moved from gated-loop.ts L109 and widened), and `runStatus(raw: unknown): RunStatus | undefined` mapping the four tokens to themselves, legacy BLOCKED/EXHAUSTED/NO_PROGRESS/UNSAFE -> NEEDS_HUMAN, anything else undefined. TERMINAL_RUN_STATUSES = {NEEDS_HUMAN, DONE, STOPPED}; `isFinishedRunStatus(status)` = TERMINAL_RUN_STATUSES.has(runStatus(status)) so legacy on-disk runs stay finished. isLiveJob and readLiveJob unchanged (AC-24.3)."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/gated-loop.ts",
+    "action": "edit",
+    "what": "(1) Delete LoopInvocation.limits, the flag loop L143-166 and the bare-flag errors L224-232; add one guard at the top of parseLoopInvocation: `const retired = /(?:^|\\s)--(max-cost-usd|timeout-ms|max-rounds)(?=\\s|$)/u.exec(input); if (retired) throw new Error(`/kpi --${retired[1]} was removed: K-π runs have no caps; cost and elapsed time are reported on the board`)`. Task gets no `limits`. (2) LoopOutcome.status: RunStatus; import LoopRecovery from run-store. (3) stateDocument: drop maxRounds, exhausted_limit, retries, retry_delays_ms; keep limits ({maxConcurrency}), cost_usd, elapsed_ms, graph_round, batches; add `repaired: string[]`, `plan_repair?: PlanRepair`, and `retry?: { node, attempt, reason, delay_ms, until_ms }` derived from the first active node carrying retryAtMs; status: terminalStatus ?? (paused -> \"NEEDS_HUMAN\", completed -> \"DONE\", else \"RUNNING\"). (4) restoreStopState(document): no maxRounds; restores round, fingerprints, failing sets, repaired (string array), repair (validated PlanRepair or undefined). (5) LoopFacts gains `observe(stop: StopState)` (the driver calls it before every runSuperstep) and resolve() adds `progress.repeated` and `plan.repair_tried`: read verdict.json output_fingerprint (reviewFingerprint's source) and evidence.json failing ids; witness = repeatedWitness(observedStop, {type verifier, passed, evidenceFingerprint, outputFingerprint, failingAcIds}); progress.repeated = witness !== undefined; plan.repair_tried = witness !== undefined && observedStop.repaired.includes(witness); both false when verdict.json is absent. Keep the existing five facts. (6) driveUntilPause: before each runSuperstep `if (await stopRequested(jobDirectory)) return { state, stopState, terminalStatus: \"STOPPED\", reason: \"operator stop\", terminalEmitted: true }` where stopRequested = stat(join(jobDirectory, \"stop.json\")) exists; catch OperatorStopError from runSuperstep the same way. After runSuperstep, when completedNodes includes review (L1493-1512 kept, transitionStopState -> recordVerifier), and if the routed `state.active` includes \"plan\" and the witness repeated: `currentStopState = { ...currentStopState, repaired: [...repaired, witness], repair: { round, reason: \"no progress: review repeated \" + (output|failing criteria), failing_ac, evidence_ref: \"verdict.json\", witness } }`, write `<run>/repair.json`, rewrite task.json without current_module_id, append event checkpoint {detail: \"re-plan for witness <w>\"}, notify \"K-π <job> re-planning: <reason>\". Delete the exhausted branch (L1466-1476) and the NO_PROGRESS/EXHAUSTED branch (L1513-1533). `state.status === \"paused\"` -> { terminalStatus: \"NEEDS_HUMAN\", recovery: state.pause.recovery, reason: recovery bounds ? facts.boundsReason() ?? pause.reason : pause.reason, terminalEmitted: true }. Remaining driver returns become NEEDS_HUMAN with a recovery: research (L1341), stack (L1366 and the plan stack refusal L1457-1463), ship (branch switch L1408-1416), contract (missing review fingerprint L1493-1501), provider unchanged. Every NEEDS_HUMAN reason ends with the resume command via recoveryReason (extend its advice table per recovery). (7) shipFailure: delivery unchanged; ShipIntegrityError and unexpected -> NEEDS_HUMAN/ship. (8) 'graph completed without release approval' (L1904-1914, L2151-2160): release.approved === false -> STOPPED reason \"release denied by the operator (final: the graph completed)\"; otherwise NEEDS_HUMAN/contract. (9) New `settleNoProgress(ctx, engine, stopState, jobDirectory, task)` used when a drive result is NEEDS_HUMAN/no_progress and ctx.hasUI: `ctx.ui.select(\"K-π: no progress after a re-plan\", [\"Give guidance\",\"Keep going\",\"Stop\"])`; Give guidance -> `ctx.ui.editor(\"Guidance for the planner\", repair.guidance)`, set repair.guidance, rewrite repair.json, engine.rearm(), drive again; Keep going -> engine.rearm(), drive again (the pause node resumes at plan); Stop or dismissed -> writeTerminalState STOPPED. No counter is reset: the witness stays in `repaired`, so the next repeat of the same witness pauses again. Unattended (!ctx.hasUI or autopilot print/RPC): the NEEDS_HUMAN/no_progress state stands with the resume command. (10) resumeLoop: delete `<run>/stop.json` first; drop `limits: task.limits`; pass onRetry and stopRequested to GraphEngine (onRetry appends node.retry, writes state.json with the retry row, notifies `K-π <job> retry <attempt> on <node>: <reason>; next in <s>s (Ctrl+C stops; /kpi <job> resumes)`, calls onStateChange); after restore, if engine.retiredLimits or Object.keys(task.limits ?? {}) is non-empty append event checkpoint {detail: `retired caps ignored: ${keys.join(\", \")}`} (checkpoint key order) and notify once; when state.json recovery is no_progress and ctx.hasUI run settleNoProgress before driving; STOPPED resumes like any other non-DONE status. (11) runLoop: same engine options; the ac.refused document drops maxRounds and gains recovery \"ac_quality\"."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/control-plane.ts",
+    "action": "edit",
+    "what": "stopJob: write `<run>/stop.json` { reason: \"operator stop\", at: ISO } via atomicWrite, append loop.terminal {status: STOPPED, reason: \"operator stop\"}, write state.json status STOPPED, notify `K-π job <id> STOPPED (resume with /kpi <id>)`. The in-process driver honours the marker at its next superstep or after its current backoff wait. handleKpiCommand unchanged in shape; the outcome notify tone: DONE info, STOPPED info, NEEDS_HUMAN warning. buildBoardModel: drop maxRounds (L226); add `retry` from state.retry and `recovery` from state.recovery. Provider recovery confirm (L498-509) unchanged. Command description: \"Control the K-π coding loop: <goal>, status, stop, verify, auto|always|off routing\"."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/board.ts",
+    "action": "edit",
+    "what": "StopDisplay = RunStatus; STOP_VOCABULARY from RUN_STATUSES; normalizeStop: APPROVAL/INTERRUPTED -> RUNNING, COMPLETED -> DONE, else runStatus(raw) ?? RUNNING. stopTone: NEEDS_HUMAN accent, STOPPED error, DONE success, RUNNING warning. BoardModel: delete maxRounds; add `retry?: { node; attempt; reason; delayMs }` and `recovery?: LoopRecovery`. iterationRegion: `ROUND ${round}` (L361) plus a `RETRY <attempt> · <reason> · next <s>s` row while retry is set; headerRegion `ROUND ${round}` (L483); stop box `STOP NEEDS_HUMAN <recovery>` when recovery is set; stopStatesRegion cells DONE / STOPPED / APPROVAL."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/status-line/segments.ts",
+    "action": "edit",
+    "what": "KpiJobFields drops maxRounds; formatKpiJob renders `r${round}`."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/status-line/index.ts",
+    "action": "edit",
+    "what": "Delete the maxRounds derivation (L94-99) and its equality check; job fields carry round only."
+   },
+   {
+    "file": "scripts/pty-rows/uat-16.mjs",
+    "action": "edit",
+    "what": "Fixtures (L76, L88) drop maxRounds. Header check: the `.every` list uses `ROUND ${RUNNING.round}` as the raw-bytes cell, and a new sibling check `header-round-unbounded` asserts `new RegExp(`ROUND ${RUNNING.round}(?![\\\\d/])`).test(amberRun.text.replace(/\\r/gu, \"\"))` — the raw-bytes includes proves the cell is painted, the text lookahead proves no `/max` follows it."
+   },
+   {
+    "file": "scripts/pty-rows/uat-25.mjs",
+    "action": "edit",
+    "what": "L112: `round: new RegExp(`ROUND ${RUNNING.round}(?![\\\\d/])`).test(board)`; fixture L36 drops maxRounds."
+   },
+   {
+    "file": "scripts/pty-rows/uat-06.mjs",
+    "action": "edit",
+    "what": "Fixture states drop maxRounds (L32, L43)."
+   },
+   {
+    "file": "scripts/pty-rows/uat-15.mjs",
+    "action": "edit",
+    "what": "Fixture state drops maxRounds (L176)."
+   },
+   {
+    "file": "scripts/metric-runs.mjs",
+    "action": "edit",
+    "what": "L379 regex -> /K-π job .+ (DONE|NEEDS_HUMAN|STOPPED)\\b/; M-04 checks (L826-852) expect state.status NEEDS_HUMAN with recovery \"bounds\", one loop.terminal NEEDS_HUMAN, still no commit; okDetail 'a write outside the declared bounds paused the run NEEDS_HUMAN (bounds) with no commit'."
+   },
+   {
+    "file": "scripts/generate-traceability-map.mjs",
+    "action": "edit",
+    "what": "AC-05.1 -> test/run-store.test.ts \"the run vocabulary is exactly RUNNING, NEEDS_HUMAN, DONE, and STOPPED\". AC-05.2 -> test/gated-loop.test.ts \"a review round with no progress re-plans with the failing criteria as feedback\". AC-05.3 -> test/gated-loop.test.ts \"no progress after a re-plan pauses NEEDS_HUMAN offering guidance, keep going, or stop\". AC-05.4 and M-04 -> test/autopilot.test.ts \"an autopilot write outside bounds pauses NEEDS_HUMAN without a commit\". AC-05.5 unchanged. AC-05.6 and GRAPH-04 -> test/graph-engine.test.ts \"a transient 429 retry does not increment the round\". Add AC-05.7 -> test/graph-engine.test.ts \"transient failures retry for as long as it takes with a capped backoff and a node.retry event each time\"; AC-05.8 -> test/resume.test.ts \"a checkpoint that ended EXHAUSTED under a retired cap resumes and keeps its recorded spend\"; AC-05.9 -> test/control-plane.test.ts \"kpi stop appends a terminal STOPPED event\". RP-03 and GRAPH-06 -> test/graph-engine.test.ts \"no counter or clock ends a run: cost, elapsed time, steps, and node runs only report\". RP-04 and GRAPH-02 -> the AC-05.2 title. GRAPH-01 -> the AC-05.1 title. GRAPH-03 -> the AC-05.3 title. GRAPH-05 unchanged. AC-04.6, AC-29.4, AC-30.2, AC-24.3 rows keep their titles; their observable text says NEEDS_HUMAN (bounds/stack) instead of UNSAFE and lists DONE/NEEDS_HUMAN/STOPPED as finished. Add RP-20 rows binding AC-05.7/05.8/05.9 titles and owner mapping AC-05.x -> RP-20. Regenerate docs/traceability-map.json."
+   },
+   {
+    "file": "docs/traceability-map.json",
+    "action": "edit",
+    "what": "Regenerated only (node scripts/generate-traceability-map.mjs)."
+   },
+   {
+    "file": "test/fixtures/retired-cap-resume/",
+    "action": "create",
+    "what": "Committed copy of the real run directory minus agents/ and context.md: task.json, state.json, baseline.json, previous-head.txt, events.jsonl, research.json, research.md, stack.json, graph/checkpoint-000004.json (scrubbed of any absolute paths). The resume test copies it into a temp repo initialised at the recorded previous-head shape (baseline paths present)."
+   },
+   {
+    "file": "test/stop.test.ts",
+    "action": "edit",
+    "what": "Delete: \"a repeated output fingerprint stops with NO_PROGRESS\", \"a repeated output stops even without new verifier evidence\", \"the third failed round stops with EXHAUSTED by default\", \"a transient 429 retry does not increment the round\" (moved to graph-engine), \"a custom task maxRounds overrides the default before EXHAUSTED\", \"the default maxRounds still governs a job with no cap overrides\", \"two transient failures retry with increasing backoff and the third stops\", \"a new round restores the retry budget\", \"repeated evidence with changing output still ends at maxRounds\", \"a terminal state is final: further verifier events cannot revive it\". Retitle \"the same failing acceptance set twice stops even when the prose changes\" -> \"the same failing acceptance set twice is a repeated witness even when the prose changes\" and \"transient classification retries only transport, 429, and timeout\" -> \"transient classification retries transport, http 408/429/5xx, and timeout\". Keep the remaining titles (\"a changed failing acceptance set continues\", canonical fingerprint tests, \"the transition path canonicalizes…\" retargeted to recordVerifier). Add the reducer tests listed under tests."
+   },
+   {
+    "file": "test/graph-engine.test.ts",
+    "action": "edit",
+    "what": "Delete \"an injected cost source crosses maxCostUsd without sleeps\", \"session getSessionStats cost crosses maxCostUsd without a fabricated floor\", \"an injected clock crosses timeoutMs without sleeps\", \"every configured cap persists EXHAUSTED and exactly one terminal event\", \"custom task limits override graph and default caps\", \"a third transient failure ends the run as EXHAUSTED without a third sleep\". Keep \"two transient failures retry twice with increasing delays and still finish\" and \"a non-transient failure is never retried\" (body: the run pauses with recovery contract instead of rejecting). Inline graph definitions drop to { maxConcurrency }. Add the engine tests under tests."
+   },
+   {
+    "file": "test/resume.test.ts",
+    "action": "edit",
+    "what": "Delete \"restored maxCostUsd exhaustion keeps checkpoint spend without an injected meter\", \"a non-default maxRounds and the budget counters survive an engine restore\", \"retry exhaustion resumed at the same cap stays exhausted\", \"a raised transient-retry cap re-arms the same run with the spent count intact\". Retitle \"a kill during a transient backoff resumes with the allowance already spent\" -> \"a kill during a transient backoff resumes by finishing the wait, not restarting the node\" and \"a sibling that finished is committed once and never reruns after a raised-cap resume\" -> \"a sibling that finished is committed once and never reruns after a paused resume\". Keep \"a resumed run restores every stop, retry, cost, and time field\" and \"every stop-safety field survives a state document round trip\" verbatim with bodies on the new fields (repaired, plan_repair, retryReason, retryAtMs; no maxRounds/retries). Add the fixture-based and paused-resume tests."
+   },
+   {
+    "file": "test/autopilot.test.ts",
+    "action": "edit",
+    "what": "Retitle \"an autopilot write outside bounds stops UNSAFE without a commit\" -> \"an autopilot write outside bounds pauses NEEDS_HUMAN without a commit\" (assert recovery bounds, isFinishedRunStatus true, no commit, checkpoint pause.resume [test]); keep \"an untestable reviewer issue stops autopilot at NEEDS_HUMAN\" and assert recovery review. Fixture L52 and assertions L550/L662 (ship integrity) become NEEDS_HUMAN with recovery ship."
+   },
+   {
+    "file": "test/gated-loop.test.ts",
+    "action": "edit",
+    "what": "Retitle \"an invalid or missing stack stops implement UNSAFE before any write\" -> \"an invalid or missing stack pauses implement NEEDS_HUMAN before any write\" (assert recovery stack); L1205/L1269/L1323 assert NEEDS_HUMAN/stack instead of UNSAFE; inline limits L856-861 -> { maxConcurrency: 1 }; keep \"a stale stack stops implement, and re-freezing it lets the round proceed\" verbatim. Add the re-plan, no-progress select, stop-marker and denied-release tests."
+   },
+   {
+    "file": "test/graph-routing.test.ts",
+    "action": "edit",
+    "what": "\"a routed terminal stops the run with one terminal event and a durable record\" -> retitle \"a routed pause parks the run with one terminal event and a durable record\": node {id stop, type pause, recovery bounds, reason, resume [\"work\"]}, limits { maxConcurrency: 1 }, assert status paused, pause.recovery bounds, pause.resume [work], terminals.length 1, next never ran. Extend the supplied-facts test (L376-389) with progress.repeated and plan.repair_tried. Add the shipped-graph shape test."
+   },
+   {
+    "file": "test/reviewer-session.test.ts",
+    "action": "edit",
+    "what": "Inline limits L68-71 -> { maxConcurrency: 1 }."
+   },
+   {
+    "file": "test/policy.test.ts",
+    "action": "edit",
+    "what": "The loop.terminal fixture L1260-1278 uses status NEEDS_HUMAN with recovery stack (same reason text); the expected sequence becomes tool.request:allow, loop.terminal:NEEDS_HUMAN, tool.request:deny."
+   },
+   {
+    "file": "test/milestone.test.ts",
+    "action": "edit",
+    "what": "loop.terminal fixture L123 status STOPPED."
+   },
+   {
+    "file": "test/research-control-plane.test.ts",
+    "action": "edit",
+    "what": "Replace \"/kpi budget flags parse and freeze onto invocation.limits\" with \"retired budget flags are refused wherever they appear in the input\": parseLoopInvocation(\"--max-cost-usd 1.25 ship it\"), (\"fix the bug --timeout-ms 5000\"), (\"--no-network goal --max-rounds 3\") each throw /was removed/u; \"--no-network add a healthcheck\" still parses."
+   },
+   {
+    "file": "test/control-plane.test.ts",
+    "action": "edit",
+    "what": "Retitle \"kpi stop appends a terminal BLOCKED event\" -> \"kpi stop appends a terminal STOPPED event\"; fixture L86 drops maxRounds; the 'last job UNSAFE' fixture (L273-283) becomes a STOPPED job and the notification reads 'no active job — last job 2026-08-31-status STOPPED'."
+   },
+   {
+    "file": "test/run-store.test.ts",
+    "action": "edit",
+    "what": "\"the live job skips finished runs and is absent when every run has ended\" body: finished = DONE, STOPPED, NEEDS_HUMAN and the legacy tokens; RUNNING is live. Add the vocabulary test."
+   },
+   {
+    "file": "test/operator-ui.test.ts",
+    "action": "edit",
+    "what": "REQUIRED_FIELDS \"ROUND 2/3\" -> \"ROUND 2\"; fixtures drop maxRounds; existing board tests gain the retry-row / STOP NEEDS_HUMAN <recovery> / DONE-STOPPED-APPROVAL assertions (titles unchanged)."
+   },
+   {
+    "file": "test/status-line.test.ts",
+    "action": "edit",
+    "what": "Expected strings r2/3 / r0/3 -> r2 / r0; fixtures drop maxRounds; bound titles unchanged."
+   },
+   {
+    "file": "test/schema-conformance.test.ts",
+    "action": "edit",
+    "what": "Task fixture drops `limits` (L45); L77 becomes assertInvalid({ ...task, limits: { maxRounds: 0 } }) 'a task with limits is rejected'; add node.retry and loop.terminal STOPPED/recovery to the accepted event payloads and EXHAUSTED to the rejected ones."
+   },
+   {
+    "file": "docs/PRD.md",
+    "action": "edit",
+    "what": "See docs."
+   },
+   {
+    "file": "docs/spec.md",
+    "action": "edit",
+    "what": "See docs."
+   },
+   {
+    "file": "docs/uat.md",
+    "action": "edit",
+    "what": "See docs."
+   },
+   {
+    "file": "docs/visual-targets.md",
+    "action": "edit",
+    "what": "See docs."
+   },
+   {
+    "file": "README.md",
+    "action": "edit",
+    "what": "See docs."
+   },
+   {
+    "file": "AGENTS.md",
+    "action": "edit",
+    "what": "See docs."
+   },
+   {
+    "file": "docs/remediation-plan.md",
+    "action": "edit",
+    "what": "See docs."
+   },
+   {
+    "file": "docs/dune-architecture.md",
+    "action": "edit",
+    "what": "See docs."
+   },
+   {
+    "file": "docs/agents-bus.md",
+    "action": "edit",
+    "what": "See docs."
+   },
+   {
+    "file": "docs/kstack.md",
+    "action": "edit",
+    "what": "See docs."
+   }
+  ],
+  "event_or_data_contracts": [
+   "Run status vocabulary (run-store.ts): `RUN_STATUSES = [\"RUNNING\",\"NEEDS_HUMAN\",\"DONE\",\"STOPPED\"] as const`; `type RunStatus`; `runStatus(raw)` maps legacy BLOCKED|EXHAUSTED|NO_PROGRESS|UNSAFE -> NEEDS_HUMAN; TERMINAL_RUN_STATUSES = {NEEDS_HUMAN, DONE, STOPPED}; isLiveJob/readLiveJob semantics unchanged (only RUNNING is live, per PRD AC-24.3). NEEDS_HUMAN and STOPPED are finished-but-resumable: `/kpi <job>` resumes anything but DONE.",
+   "`type LoopRecovery = \"approval\" | \"provider\" | \"delivery\" | \"ship\" | \"bounds\" | \"review\" | \"no_progress\" | \"research\" | \"stack\" | \"contract\" | \"ac_quality\"` defined once in run-store.ts and used by gated-loop, the pause graph node, GraphPauseState, the board and the event schema. Every NEEDS_HUMAN carries exactly one; every NEEDS_HUMAN reason ends with `resume with /kpi <job>`.",
+   "Producer map for removed statuses: EXHAUSTED (engine exhaust, driver L1466, reducer L1513) -> deleted; NO_PROGRESS (reducer, driver L1526) -> graph edge to pause node `no-progress` => NEEDS_HUMAN/no_progress, reached only after a re-plan for the same witness (or on a --plan job); UNSAFE (pause node unsafe -> NEEDS_HUMAN/bounds; driver stack L1366 and plan stack refusal L1457 -> NEEDS_HUMAN/stack); BLOCKED (branch switch L1408 -> NEEDS_HUMAN/ship; missing review fingerprint L1493 -> NEEDS_HUMAN/contract; no release approval L1904/L2151 -> STOPPED when the operator denied with policy end, else NEEDS_HUMAN/contract; ShipIntegrityError/unexpected ship failure -> NEEDS_HUMAN/ship; control-plane stop -> STOPPED); review.status BLOCKED verdict -> pause node needs-human => NEEDS_HUMAN/review; engine fail() (contract defects) -> NEEDS_HUMAN/contract; research shortfall -> NEEDS_HUMAN/research; provider refusal that cannot fail over -> NEEDS_HUMAN/provider; unattended human gate -> NEEDS_HUMAN/approval (unchanged); ac.refused -> NEEDS_HUMAN/ac_quality with graph_status not_started (R6).",
+   "STOPPED producers: `/kpi stop` (marker + event + state), the no-progress select answer \"Stop\", and an operator release denial with policy.onHumanDeny=end. The first two resume from their checkpoint; the third is final because the graph completed (`human -> __end__`), and its reason says so.",
+   "Operator stop mechanism: `<run>/stop.json` { reason: \"operator stop\", at: ISO } written by stopJob; the driver checks it before every superstep and the engine checks `stopRequested()` after every backoff wait; a hit unwinds as `OperatorStopError` and the loop returns STOPPED without a second loop.terminal. In the same TUI session a running loop holds the input queue, so the in-flight stops are Ctrl+C (process exit; the checkpoint written before every wait makes `/kpi <job>` continue the wait) and the gate choices; `/kpi stop` from a second session in the same repository stops at the next checkpoint. resumeLoop deletes stop.json.",
+   "GraphRunStatus = \"running\" | \"interrupted\" | \"completed\" | \"paused\"; GraphRunState.pause?: GraphPauseState { recovery: LoopRecovery; reason; round; superstep; nodes: string[]; resume: string[] }; `terminal` deleted; legacy exhausted/failed/terminated checkpoints re-arm on restore. `GraphEngine.rearm()` public; `GraphEngine.retiredLimits: string[]` (checkpoint limit keys other than maxConcurrency, in checkpoint order).",
+   "Graph JSON schema v2 node type \"pause\": { id, type: \"pause\", recovery: LoopRecovery, reason: string, resume: string[] } replaces \"terminal\". GraphLimits = { maxConcurrency: number }; shipped graphs carry only that key.",
+   "GraphNodeRunState additions: retryReason?: \"http\"|\"timeout\"|\"transport\"; retryAtMs?: number (epoch ms the current backoff ends; a resume sleeps the remainder). GraphNodeRunStatus drops \"exhausted\". transientRetries is unbounded and persists across a kill.",
+   "GraphEngineOptions: delete `limits`; add `onRetry?: (retry: { nodeId; attempt: number; reason: TransientReason; status?: number; delayMs: number; message: string }) => Promise<void>` and `stopRequested?: () => Promise<boolean>`; emitTerminal receives GraphPauseState. Exported `OperatorStopError`.",
+   "stop.ts exports: DEFAULT_RETRY_BASE_MS (1_000), RETRY_MAX_DELAY_MS (60_000), retryDelayMs(spent, base) = min(60_000, base * 2**spent), no jitter; StopState { round; evidenceFingerprints; outputFingerprints; failingAcSets; repaired: string[]; repair?: PlanRepair }; PlanRepair { round; reason; failing_ac: string[]; evidence_ref: \"verdict.json\"; witness: string; guidance?: string }; createStopState(); recordVerifier(state, event); repeatedWitness(state, event): string | undefined; classifyTransientFailure treats http 408/429/5xx as transient. Deleted: DEFAULT_MAX_ROUNDS, MAX_TRANSIENT_RETRIES, TerminalStatus, StopStatus, RetryEvent, planRetry, retryTransient, transitionStopState. maxTransientRetries is deleted outright rather than kept as an escalation threshold: a threshold would add a persisted escalation flag, a second select and a resume branch, while the per-retry notify, board RETRY row and node.retry event already give the operator the visibility the threshold would buy.",
+   "Facts merged before routing (loopFacts.resolve, after facts.observe(stopState)): `progress.repeated: boolean` (the review verdict on disk repeats a recorded output fingerprint or failing-AC set), `plan.repair_tried: boolean` (that witness is already in stop.repaired). Witnesses are recorded only from review verdicts, as today; a failed `test` round is not a round and not a witness.",
+   "Run file `repair.json` (PlanRepair shape) written by the driver before the plan node re-runs; task.json `current_module_id` removed at that moment so freezeCurrentSlice re-freezes from the new stack.json (stack.ts L504-518). In gated mode a re-plan passes plan-approval before implement; in autopilot it does not.",
+   "state.json: removed maxRounds, exhausted_limit, retries, retry_delays_ms; `status` ∈ RunStatus; `recovery` ∈ LoopRecovery on NEEDS_HUMAN; added `repaired: string[]`, `plan_repair?: PlanRepair`, `retry?: { node; attempt; reason; delay_ms; until_ms }`; `limits` is { maxConcurrency }; cost_usd, elapsed_ms, graph_round, batches stay report-only.",
+   "task.json: `limits` deleted from the schema and LoopInvocation; `/kpi` refuses --max-cost-usd, --timeout-ms, --max-rounds anywhere in the input with `/kpi --<flag> was removed: K-π runs have no caps…`. A legacy task.json/checkpoint carrying limits loads; resumeLoop appends event `checkpoint` { detail: \"retired caps ignored: <keys in checkpoint order>\" } once and notifies.",
+   "Events: `loop.terminal` status enum DONE | NEEDS_HUMAN | STOPPED with optional `recovery`; new `node.retry` { attempt (1-based), reason, delay_ms, status?, message? } appended on every retry before the wait; `checkpoint` reused with details \"re-plan for witness <w>\" and \"retired caps ignored: …\".",
+   "Board/footer: `ROUND n` (no /max) in header and iteration rows; iteration region gains `RETRY <attempt> · <reason> · next <s>s` while state.retry is set; STOP box RUNNING | NEEDS_HUMAN <recovery> | DONE | STOPPED; Board B cells DONE / STOPPED / APPROVAL; footer `K-π LOOP <mode> r<n> STAGE … GATE …`. Graders search `ROUND <n>` with a negative lookahead for a following digit or `/`.",
+   "Unattended runs (autopilot, print, RPC, !ctx.hasUI): transient failures retry forever with the persisted attempt count and node.retry events; no-progress after a re-plan writes NEEDS_HUMAN/no_progress with the resume command; `/kpi <job>` from a TUI then offers Give guidance / Keep going / Stop."
+  ],
+  "tests": [
+   {
+    "file": "test/graph-engine.test.ts",
+    "title": "transient failures retry for as long as it takes with a capped backoff and a node.retry event each time",
+    "asserts": "a factory failing 9 times with alternating timeout/transport/HTTP 503 errors then succeeding, base 10_000: state completed, attempts 10, injected sleeps [10000,20000,40000,60000,60000,60000,60000,60000,60000], onRetry called 9 times with attempt 1..9 and those delays, nodes.implement.runs 1, budget.round 1, no pause, zero loop.terminal events; checkpoint before each wait carries transientRetries and retryAtMs"
+   },
+   {
+    "file": "test/graph-engine.test.ts",
+    "title": "a transient 429 retry does not increment the round",
+    "asserts": "a node failing once with status 429 then succeeding: budget.round 1, runs 1, transientRetries 1, one onRetry with reason http status 429 (moved from stop.test.ts)"
+   },
+   {
+    "file": "test/graph-engine.test.ts",
+    "title": "no counter or clock ends a run: cost, elapsed time, steps, and node runs only report",
+    "asserts": "injected cost source 99 USD, clock 10 hours ahead, a loop graph rerunning implement 40 times before test passes: completed, budget.costUsd 99, elapsedMs recorded, nodes.implement.runs 40, no pause, zero loop.terminal; a graph file carrying maxSteps/maxCostUsd/timeoutMs keys is rejected by validateGraphDefinition"
+   },
+   {
+    "file": "test/graph-engine.test.ts",
+    "title": "a pause node parks the run with its resume targets and a rearm continues there",
+    "asserts": "graph routing test -> pause{recovery bounds, resume [test]}: status paused, pause.recovery bounds, pause.resume [test], one loop.terminal NEEDS_HUMAN with recovery bounds; engine.rearm() -> running, active [test], test pending, pause undefined; runUntilPause proceeds"
+   },
+   {
+    "file": "test/graph-engine.test.ts",
+    "title": "a contract failure pauses with recovery contract instead of failing the run",
+    "asserts": "a read-only node registering bash: status paused, pause.recovery contract, node status failed with the error text, pause.resume [node]; GraphEngine.restore re-arms and reruns the node"
+   },
+   {
+    "file": "test/graph-engine.test.ts",
+    "title": "an operator stop lands after the current backoff and leaves the node resumable",
+    "asserts": "stopRequested returns true after the first injected sleep: runUntilPause rejects with OperatorStopError, attempts 1, the checkpoint written before the wait carries transientRetries 1; a restore with stopRequested false finishes the remaining wait then attempts once"
+   },
+   {
+    "file": "test/graph-engine.test.ts",
+    "title": "an http 503 provider error is transient and a 401 is not",
+    "asserts": "classifyTransientFailure returns http for 503/500/408 and undefined for 401/403; the engine retries the 503 and re-throws a 401 GraphNodeProviderError to the caller (the driver's provider path)"
+   },
+   {
+    "file": "test/stop.test.ts",
+    "title": "a repeated output fingerprint is a repeated witness and a fresh one is not",
+    "asserts": "repeatedWitness undefined on the first event, equals the canonical fingerprint when it recurs; recordVerifier increments round and stores each witness once"
+   },
+   {
+    "file": "test/stop.test.ts",
+    "title": "the same failing acceptance set twice is a repeated witness even when the prose changes",
+    "asserts": "repeatedWitness returns the failing-set key with reordered/duplicated ids and a different output fingerprint"
+   },
+   {
+    "file": "test/stop.test.ts",
+    "title": "rounds are unbounded and a passing verifier is never a stop",
+    "asserts": "recordVerifier 50 times: round 50, no status field on the state, witness sets bounded to distinct entries; a passed event adds no failing set"
+   },
+   {
+    "file": "test/stop.test.ts",
+    "title": "retry delays double from the base and stop growing at the ceiling",
+    "asserts": "retryDelayMs(0..7, 1000) = 1000,2000,4000,8000,16000,32000,60000,60000"
+   },
+   {
+    "file": "test/gated-loop.test.ts",
+    "title": "a review round with no progress re-plans with the failing criteria as feedback",
+    "asserts": "scripted review REVISE with the same output_fingerprint twice: the routed active set is [plan] not [implement]; repair.json has round, reason, failing_ac, evidence_ref verdict.json, witness; state.json repaired contains the witness and plan_repair equals repair.json; task.json current_module_id cleared; the plan session prompt mentions repair.json; a checkpoint event with detail 're-plan for witness …'; a --plan job with the same repeat pauses NEEDS_HUMAN/no_progress instead"
+   },
+   {
+    "file": "test/gated-loop.test.ts",
+    "title": "no progress after a re-plan pauses NEEDS_HUMAN offering guidance, keep going, or stop",
+    "asserts": "the same witness repeating after its re-plan: a TUI ctx (hasUI true) receives select with exactly ['Give guidance','Keep going','Stop']; Give guidance opens the editor, writes repair.guidance to repair.json, re-arms and drives plan again; Stop writes STOPPED; a print-mode ctx gets NEEDS_HUMAN recovery no_progress whose reason ends 'resume with /kpi <job>', state.json NEEDS_HUMAN, isFinishedRunStatus true, checkpoint pause.resume [plan]"
+   },
+   {
+    "file": "test/gated-loop.test.ts",
+    "title": "kpi stop written during a backoff stops the loop at the next wait and leaves a resumable STOPPED job",
+    "asserts": "with a factory that keeps throwing timeouts and an injected sleeper that writes <run>/stop.json on its second call: runLoop returns STOPPED reason 'operator stop', no second loop.terminal, the checkpoint carries transientRetries 2; resumeLoop deletes stop.json, re-arms and (factory now succeeds) reaches the human gate"
+   },
+   {
+    "file": "test/gated-loop.test.ts",
+    "title": "an operator who denies release with policy end stops the job finally",
+    "asserts": "onHumanDeny end + confirm false: outcome STOPPED reason 'release denied by the operator (final: the graph completed)', no commit; a second resumeLoop returns STOPPED again without running a node; onHumanDeny revise still routes to implement"
+   },
+   {
+    "file": "test/gated-loop.test.ts",
+    "title": "a retry is visible on the board and in the event log before the wait starts",
+    "asserts": "onRetry path: node.retry event appended (attempt, reason, delay_ms), state.json retry {node, attempt, reason, delay_ms, until_ms}, ctx.ui.notify called with 'retry 1 on implement: timeout; next in 1s', all before the injected sleeper resolves"
+   },
+   {
+    "file": "test/resume.test.ts",
+    "title": "a checkpoint that ended EXHAUSTED under a retired cap resumes and keeps its recorded spend",
+    "asserts": "test/fixtures/retired-cap-resume copied into a temp repo: resumeLoop does not throw; engine re-armed running with active [implement] pending; budget.costUsd 7.691661999999999 preserved; events.jsonl gains checkpoint 'retired caps ignored: maxSteps, maxNodeRuns, maxCostUsd, timeoutMs, maxRounds, maxTransientRetries'; the stub createAgentSession receives the implement node; state.json status RUNNING without exhausted_limit"
+   },
+   {
+    "file": "test/resume.test.ts",
+    "title": "a kill during a transient backoff resumes by finishing the wait, not restarting the node",
+    "asserts": "checkpoint with implement running, transientRetries 2, retryAtMs = now+700 under the injected clock: restore then runUntilPause sleeps exactly 700 ms first, then attempts once; the next failure continues at transientRetries 3"
+   },
+   {
+    "file": "test/resume.test.ts",
+    "title": "a resumed run restores every stop, retry, cost, and time field",
+    "asserts": "round, evidence/output fingerprints, failing sets, repaired, plan_repair, cost_usd, elapsed_ms, started_at_ms, node transientRetries/retryReason/retryAtMs survive writeState -> restoreStopState -> GraphEngine.restore"
+   },
+   {
+    "file": "test/resume.test.ts",
+    "title": "a paused job resumes at its pause node's resume targets and a legacy checkpoint re-arms its active nodes",
+    "asserts": "status paused with pause.resume [test]: restore -> running, active [test]; legacy status 'failed' without pause and legacy 'terminated' with terminal.status UNSAFE both re-arm their active nodes pending; retiredLimits lists the legacy keys"
+   },
+   {
+    "file": "test/run-store.test.ts",
+    "title": "the run vocabulary is exactly RUNNING, NEEDS_HUMAN, DONE, and STOPPED",
+    "asserts": "RUN_STATUSES deep-equals the four tokens; isFinishedRunStatus true for NEEDS_HUMAN, DONE, STOPPED and the legacy EXHAUSTED/NO_PROGRESS/UNSAFE/BLOCKED, false for RUNNING; runStatus maps legacy tokens to NEEDS_HUMAN; a NEEDS_HUMAN job is not live"
+   },
+   {
+    "file": "test/autopilot.test.ts",
+    "title": "an autopilot write outside bounds pauses NEEDS_HUMAN without a commit",
+    "asserts": "outcome NEEDS_HUMAN recovery bounds, reason names write outside write_allow and the resume command, git log unchanged, state.json status NEEDS_HUMAN recovery bounds, checkpoint pause.resume [test]"
+   },
+   {
+    "file": "test/control-plane.test.ts",
+    "title": "kpi stop appends a terminal STOPPED event",
+    "asserts": "stop.json written, loop.terminal STOPPED reason 'operator stop', state.json STOPPED, notify 'K-π job <id> STOPPED (resume with /kpi <id>)', readLiveJob undefined afterwards"
+   },
+   {
+    "file": "test/operator-ui.test.ts",
+    "title": "the board shows ROUND without a maximum and a retry row while a node backs off",
+    "asserts": "rendered text contains 'ROUND 2' and not 'ROUND 2/'; with state.retry set the iteration region contains 'RETRY 3 · timeout · next 8s'; STOP box reads 'STOP NEEDS_HUMAN bounds' for a bounds pause and 'STOP STOPPED' for an operator stop; Board B cells DONE/STOPPED/APPROVAL"
+   },
+   {
+    "file": "test/status-line.test.ts",
+    "title": "formatKpiJob is the documented second line shape",
+    "asserts": "(existing bound title, body updated) 'K-π LOOP gated r2 STAGE implement GATE human AC 4/5 ROUTE anthropic/home'"
+   },
+   {
+    "file": "test/schema-conformance.test.ts",
+    "title": "event schema accepts node.retry and the three-word loop.terminal vocabulary",
+    "asserts": "node.retry with attempt/reason/delay_ms validates; loop.terminal STOPPED and NEEDS_HUMAN+recovery validate; EXHAUSTED is rejected; a task.json with limits is rejected"
+   },
+   {
+    "file": "test/graph-routing.test.ts",
+    "title": "the shipped graphs carry only maxConcurrency and route no-progress through plan before pausing",
+    "asserts": "coding-loop.gated/auto/spec-first limits keys equal ['maxConcurrency']; both loops contain pause nodes unsafe/needs-human/no-progress with resume [test]/[implement]/[plan]; over every combination of progress.repeated × plan.repair_tried × plan.provided exactly one REVISE edge from review fires; a --plan job never routes to plan"
+   },
+   {
+    "file": "test/research-control-plane.test.ts",
+    "title": "retired budget flags are refused wherever they appear in the input",
+    "asserts": "--max-cost-usd, --timeout-ms, --max-rounds leading, trailing or between words throw /was removed/u; --no-network still parses"
+   }
+  ],
+  "docs": [
+   {
+    "file": "docs/PRD.md",
+    "section": "US-05 (L136-145), AC-02.7 (L114), AC-04.6 (L133), AC-24.3 (L344), AC-29.4 (L401), AC-30.2 (L411), M-04 row (L499)",
+    "what": "Retitle 'US-05 — Self-healing loop and the operator stop'. Story: 'As an operator, I need the loop to keep delivering my intent — retrying, re-planning — and to wait for me rather than end on its own; only I stop it.' ACs: AC-05.1 Run states are exactly RUNNING, NEEDS_HUMAN, DONE, STOPPED; NEEDS_HUMAN carries a recovery reason and the resume command; NEEDS_HUMAN and STOPPED resume with /kpi <job>. AC-05.2 A review that repeats an output_fingerprint or failing AC set routes back to plan with repair.json (round, reason, failing_ac, evidence_ref, witness) as feedback. AC-05.3 Rounds are unbounded; the same witness repeating after its re-plan pauses NEEDS_HUMAN (no_progress) offering Give guidance / Keep going / Stop in the TUI and the resume command unattended. AC-05.4 Write outside write_allow pauses NEEDS_HUMAN (bounds) without a commit. AC-05.5 Untestable reviewer issue pauses NEEDS_HUMAN (review). AC-05.6 A transient 429 retry is not a new round; a provider refusal that cannot fail over pauses NEEDS_HUMAN (provider) with the real reason and the resume command. AC-05.7 Transient failures (http 408/429/5xx, timeout, transport) retry for as long as it takes with 1 s doubling backoff capped at 60 s, one node.retry event and one notification per retry, checkpoint before each wait. AC-05.8 No spend cap, clock, step, node-run or round counter ends a run; cost and elapsed time are reported only; a checkpoint written under a retired cap resumes. AC-05.9 /kpi stop writes STOPPED and stops a running loop at its next checkpoint; Ctrl+C mid-wait resumes into the same wait. AC-02.7: 'ROUND n'. AC-04.6: 'shows NEEDS_HUMAN (with its recovery) and did not execute'. AC-24.3: finished list becomes (DONE, NEEDS_HUMAN, STOPPED). AC-29.4 / AC-30.2: 'pauses implement NEEDS_HUMAN (research / stack)'. M-04 row: 'Bounds-violation fixture pauses NEEDS_HUMAN (bounds)'. Traceability table: US-05 -> RP-20."
+   },
+   {
+    "file": "docs/spec.md",
+    "section": "§4 Entry points (L140-144)",
+    "what": "Delete the three budget-flag rows; `/kpi stop` row reads 'Write stop.json and STOPPED; a running loop stops at its next checkpoint; resumable with /kpi <job>'."
+   },
+   {
+    "file": "docs/spec.md",
+    "section": "§5 SCH-event (L283-297)",
+    "what": "Add node.retry to the EVT type list; loop.terminal status set DONE | NEEDS_HUMAN | STOPPED plus recovery. (SCH-task carries no limits today; nothing to remove.)"
+   },
+   {
+    "file": "docs/spec.md",
+    "section": "§6 Modes and stop states (L307-330)",
+    "what": "Replace the table with the four run states and a recovery table (approval, provider, delivery, ship, bounds, review, no_progress, research, stack, contract, ac_quality) stating what the operator does and that /kpi <job> resumes. Replace 'Default caps…' with 'No caps: cost and elapsed time are reported (state.json cost_usd, elapsed_ms) and never enforced; maxConcurrency is the only graph limit.' Replace the retry line with 'Retry ≠ round. Transient http 408/429/5xx, timeout, transport: same round, unbounded retries, backoff 1 s doubling to a 60 s ceiling, node.retry event and notification each time, checkpoint before the wait. A hung provider becomes a timeout through the per-request idle timeout (httpIdleTimeoutMs, default 300000); httpIdleTimeoutMs: 0 disables that timeout and a hung request is then never retried.' Add 'No progress: a review that repeats an output fingerprint or failing AC set routes to plan with repair.json; the same witness repeating after its re-plan pauses NEEDS_HUMAN/no_progress. The operator stop: /kpi stop or Ctrl+C; both resume.'"
+   },
+   {
+    "file": "docs/spec.md",
+    "section": "§7 Graphs (L332-365)",
+    "what": "Node types `agent | set | human | pause`; conditional list: 'bounds.held == false → pause bounds (resume test)', 'review untestable → pause review (resume implement)', 'REVISE and progress.repeated and not plan.repair_tried and not plan.provided → plan', 'REVISE and progress.repeated and (plan.repair_tried or plan.provided) → pause no_progress (resume plan)'; document the facts progress.repeated and plan.repair_tried."
+   },
+   {
+    "file": "docs/spec.md",
+    "section": "§8 Graph engine (L394-407) and §11 footer (L498) and L754",
+    "what": "§8 add: 'Paused runs re-arm at their resume targets on restore; the engine never ends a run from a counter or clock; retries are unbounded and checkpointed; the operator stop is a run-directory marker honoured at every checkpoint and after every backoff.' §11 example `K-π  LOOP gated r2  STAGE implement  GATE human  AC 4/5`. L754: 'bounds-violation — implementer tries to edit outside allow → NEEDS_HUMAN (bounds)'."
+   },
+   {
+    "file": "docs/uat.md",
+    "section": "UAT-02 (L47), UAT-04 (L59), UAT-05 (L62-66), UAT-30 (L215), M-04 row (L229)",
+    "what": "UAT-02 'ROUND n'. UAT-04 'shows NEEDS_HUMAN and did not execute'. UAT-05 retitled 'Self-healing loop and the operator stop'; question 'When it cannot succeed yet, does it keep trying and re-plan, and wait for me instead of dying?'; action: identical review output twice; the same witness again after the re-plan; fixtures/bounds-violation/; a reviewer issue with no test; a stub provider answering 429, 503, then hanging; /kpi stop from a second session mid-backoff, then /kpi <job>. Pass evidence: repair.json and a plan re-run, then NEEDS_HUMAN no_progress with the select; NEEDS_HUMAN bounds / review with the resume command; node.retry events with growing delays capped at 60 s and no loop.terminal; STOPPED then a resumed run continuing the same node; no other vocabulary; the retried 429 did not increment the round. ACs AC-05.1–05.9 · Owner RP-20. UAT-30 'reaches NEEDS_HUMAN (stack) before the first write'. M-04 row 'NEEDS_HUMAN (bounds), zero commits'."
+   },
+   {
+    "file": "docs/visual-targets.md",
+    "section": "§1 footer (L81), §2 Board A/B (L162, L173, L190, L199)",
+    "what": "Footer `r2`; iteration loop 'ROUND n · RETRY k reason next s (while backing off) · fingerprint · PASS/FAIL'; stop box 'One of RUNNING | NEEDS_HUMAN <recovery> | DONE | STOPPED' at both mentions; Board B stop box 'DONE / STOPPED / APPROVAL'."
+   },
+   {
+    "file": "README.md",
+    "section": "§8 Budget flags (L444-469), §9 board (L484-517), §12 /kpi stop (L581-592), §13 state.json (L643-660), §19 (L823), §20 troubleshooting (L924-931)",
+    "what": "Replace 'Budget flags' with 'No caps': cost_usd/elapsed_ms are reported, never enforced; retries and re-plans continue until the operator stops; the three flags are refused. Board examples `ROUND 0`, STOP list RUNNING/NEEDS_HUMAN <recovery>/DONE/STOPPED, the RETRY row, STOP STATES DONE/STOPPED/APPROVAL. /kpi stop: `K-π job <id> STOPPED (resume with /kpi <id>)`, event loop.terminal STOPPED, stop.json, and that a loop in the same TUI session stops at its next checkpoint after Ctrl+C or a second-session /kpi stop. state.json example without maxRounds, with repaired/plan_repair/retry. Troubleshooting: 'A job is NEEDS_HUMAN' per recovery, 'the loop keeps retrying' (read node.retry, fix the provider, or stop), delete the EXHAUSTED/UNSAFE/NO_PROGRESS entries."
+   },
+   {
+    "file": "AGENTS.md",
+    "section": "Best practices row (L119) and Product paragraph (L35)",
+    "what": "Replace 'carry stopping conditions such as a maximum iteration count' with 'pause at checkpoints for the human; K-π deliberately departs from the iteration cap: the loop retries and re-plans until the operator stops it, and every wait is visible and checkpointed'. Product paragraph adds: 'Graphs never fail on their own: transient faults retry, no-progress re-plans, and the only stop is the operator.'"
+   },
+   {
+    "file": "docs/remediation-plan.md",
+    "section": "Ordering (L7), Execution rules (L29), RP-03 (L282-293), RP-04 (L322-334)",
+    "what": "Ordering: 'RP-20 is the current package'. L29: 'Persisted run states are RUNNING | NEEDS_HUMAN | DONE | STOPPED; APPROVAL stays a derived lamp.' RP-03/RP-04: prefix each with 'Superseded by RP-20 for caps, EXHAUSTED, NO_PROGRESS and the retry bound; concurrency batching, persistence and resume remain as written' and strike the cap/EXHAUSTED/third-retry bullets. Add RP-20 'Self-healing stop model' with Read first (PRD US-05, spec §6-§8), Change (this design's change list), Tests (the titles above), Verification (this design's verification block), DoD (every AC-05.x bound in the map, the fixture resumes on the real artifact)."
+   },
+   {
+    "file": "docs/dune-architecture.md",
+    "section": "L57, L81, L88",
+    "what": "'is UNSAFE' -> 'is refused as an UNSAFE claim and the run pauses NEEDS_HUMAN (stack)'; the claim wording stays because stack.ts L664-712 error text and the bus/stack tests bind it."
+   },
+   {
+    "file": "docs/agents-bus.md",
+    "section": "L47",
+    "what": "'A claim outside … is UNSAFE' -> 'is refused as an UNSAFE claim; the run pauses NEEDS_HUMAN (stack)'."
+   },
+   {
+    "file": "docs/kstack.md",
+    "section": "L217 hillclimb row",
+    "what": "'loop with maxRounds' -> 'loop without a round cap; each accepted win is one commit'."
+   }
+  ],
+  "verification": [
+   "Reproduce on the real artifact before the fix: `cd /Users/leebarry/K-pi && npm run build && node packages/coding-agent/dist/bundle/cli.js`, then `/kpi 20260903-fix-claude-model-requests-failin-42986cfa` → today notifies `K-π loop failed: Cannot resume graph in exhausted state` (gated-loop.ts L1899-1900); `head -20 .kpi/runs/20260903-fix-claude-model-requests-failin-42986cfa/state.json` shows status EXHAUSTED, exhausted_limit maxCostUsd",
+   "Reproduce as a test first: `node --test --experimental-strip-types --test-name-pattern '^a checkpoint that ended EXHAUSTED under a retired cap resumes and keeps its recorded spend$' test/resume.test.ts` fails before, passes after",
+   "`grep -rnE 'maxCostUsd|maxTransientRetries|maxSteps|maxNodeRuns|maxRounds|EXHAUSTED|NO_PROGRESS' packages/coding-agent/src/kpi docs README.md AGENTS.md scripts test --exclude=traceability-map.json --exclude=implementation-plan.md --exclude=remediation-research.md --exclude=roadmap.md` → only run-store.ts runStatus (legacy mapping), the retired-flag error text in gated-loop.ts, and the remediation-plan 'Superseded' lines remain; `grep -rnE '\\bUNSAFE\\b|\\bBLOCKED\\b' packages/coding-agent/src/kpi docs README.md AGENTS.md scripts test --exclude=traceability-map.json` → only stack.ts claim messages and their bound tests, review.status BLOCKED (verdict vocabulary), and run-store.ts runStatus",
+   "`npm run build` (test/harness.test.ts compares src/kpi graphs/schemas/prompts byte-for-byte with dist/kpi)",
+   "`node scripts/generate-traceability-map.mjs && git diff --stat docs/traceability-map.json && node --test --experimental-strip-types test/traceability.test.ts`",
+   "`npm run test:kpi` — every deleted title is gone, every kept bound title passes verbatim (including test/runtime-milestone.test.ts 'a live job owns bare follow-ups and kpi_start_job refuses to start a second one', untouched)",
+   "`npm run check` (tsc --noEmit covers test/**: policy.test.ts, milestone.test.ts, graph-routing.test.ts, reviewer-session.test.ts, gated-loop.test.ts inline limits all compile against the narrowed types) and `npm test`",
+   "`node scripts/pty-rows/uat-16.mjs && node scripts/pty-rows/uat-25.mjs && node scripts/pty-rows/uat-06.mjs` → round:ok at every width with the `ROUND <n>(?![\\d/])` graders",
+   "Real artifact, transient path: in a scratch repo start the pty-rows stub (scripts/pty-rows/lib.mjs startStub) with a screenplay whose first three implement turns answer HTTP 503, 429 and then hang; set `httpIdleTimeoutMs: 5000` in ~/.kpi/agent/settings.json; run `kpi` and `/kpi --mode gated add a healthcheck` → board shows `RETRY 1 · http · next 1s`, `RETRY 2 · http · next 2s`, `RETRY 3 · timeout · next 4s`; `tail .kpi/runs/<job>/events.jsonl` shows three node.retry records and no loop.terminal; from a second terminal `kpi` in the same repo, `/kpi stop` → the first session notifies `K-π job <id> STOPPED` after the current wait; `/kpi <id>` → STOP RUNNING, implement continues with attempt 4",
+   "Real artifact, Ctrl+C mid-backoff: with the same stub, Ctrl+C during `RETRY 2 · next 2s`; relaunch `kpi` and `/kpi <id>` → the board shows the same RETRY row finishing its wait, then implement attempts again; graph/checkpoint carries transientRetries 2 before and after",
+   "Real artifact, resume of the fixture after the fix: `/kpi 20260903-fix-claude-model-requests-failin-42986cfa` → board STOP RUNNING, ROUND 0, NODE implement; events.jsonl gains `checkpoint` with detail 'retired caps ignored: maxSteps, maxNodeRuns, maxCostUsd, timeoutMs, maxRounds, maxTransientRetries'; state.json status RUNNING with cost_usd 7.69 preserved and no exhausted_limit",
+   "Real artifact, re-plan: with a stub reviewer that returns REVISE with a fixed output_fingerprint twice → repair.json appears, the plan-approval gate opens with the new plan, ROUND 2; the third identical verdict → `K-π: no progress after a re-plan` select with Give guidance / Keep going / Stop",
+   "`grep -c '\"node.retry\"' packages/coding-agent/src/kpi/schemas/event.schema.json` → 1; `grep -n '\"limits\"' -A1 packages/coding-agent/src/kpi/graphs/*.json` → only maxConcurrency"
+  ],
+  "risks": [
+   "Removing every bound means an unattended job can run indefinitely (provider down for a weekend, a plan that never converges): metered spend keeps accruing and the only stops are the operator's; the board RETRY row, node.retry events, the re-plan notifications and the reported cost_usd are the mitigation. The owner accepted this explicitly (R1-R3).",
+   "In the same TUI session `/kpi stop` cannot reach a running loop because the command handler holds the input queue (interactive-mode.ts L1188-1191, L3176-3179; agent-session.ts L1357): the in-flight stops are Ctrl+C (process exit, resumable because every wait is preceded by a checkpoint), a gate choice, or `/kpi stop` from a second session. The stop marker lands only at the next superstep or after the current backoff (up to 60 s) and a node mid-prompt finishes its prompt first. rejected: critique-1's alternative of detaching the loop from the command handler — the loop drives ctx.ui gates (confirm/select/editor) from inside the handler and the parent session would start accepting prompts mid-loop; that is a larger, riskier change than a durable marker, and it is recorded here as an open question for the owner.",
+   "NEEDS_HUMAN and STOPPED stay finished-but-resumable rather than live, keeping PRD AC-24.3 and its bound test, and keeping policy.ts L582/L958 and engine.ts L500 from bounding the operator's own edits against a paused job. This narrows R4's 'must count as live/resumable' to 'resumable'; the eight legacy UNSAFE/EXHAUSTED runs on disk stay finished and resume only when named. If the owner wants paused jobs live, AC-24.3 must be amended in the same change (contract conflict per AGENTS.md rule 7).",
+   "Witnesses stay on review verdicts only (gated-loop.ts L1493-1512), so an implement↔test inner loop that never reaches review has no progress detection now that maxNodeRuns is gone; it is visible on the board (NODE alternating, evidence lamp) but silent in events. rejected: critique-2's optional evidence-fingerprint inner-loop witness is not added — it would either change ROUND semantics or need a second witness set; listed as an open question.",
+   "Edge exclusivity: route() (engine.ts L798-820) unions every firing edge, so the four REVISE edges must be exactly exclusive over progress.repeated × plan.repair_tried × plan.provided or a superstep schedules implement and plan together. The graph-routing test enumerates all eight combinations.",
+   "Resuming a no_progress pause (Keep going / Give guidance / unattended /kpi <job>) re-runs the plan node even for a --plan job: the automatic path never re-plans a provided plan, but the operator-initiated resume revises it (gated mode gates the revision at plan-approval; autopilot does not). rejected: critique-1's suggestion to route a --plan job's repeat to plan-check/pass-through — that would leave the operator no way to give guidance, and the re-plan there is the operator's own choice.",
+   "progress.repeated is computed from verdict.json on every superstep, so after the driver records a verdict the next supersteps also see repeated=true; only edges from review read it, and a future graph reading it elsewhere would see a stale witness. Documented in spec §7.",
+   "A re-plan clears task.current_module_id and rewrites stack.json; freezeCurrentSlice (stack.ts L504-518) re-freezes from the new stack. A plan whose stack fails validation after a re-plan pauses NEEDS_HUMAN/stack — the operator sees a stack pause, not a no-progress one.",
+   "The fixture-based resume test depends on research.json task_hash and stack.json freshness matching the copied task.json (research/gate.ts L244-250, stack.ts L495-518); the fixture is committed under test/fixtures/retired-cap-resume so those hashes are frozen together, and mtimes are restored by writing task.json before stack.json.",
+   "Backoff ceiling 60 s without jitter means concurrent nodes (maxConcurrency 2) retry in lockstep against a rate-limited provider; the accounts balancer's cooling/failover (accounts/index.ts L691-720) spreads load, not the engine.",
+   "httpIdleTimeoutMs: 0 disables the per-request timeout (sdk.ts L346-348), and a hung provider is then never retried; spec §6 names this.",
+   "Event and grader vocabulary change (loop.terminal, metric-runs regex, pty rows); anything outside the repo grepping for EXHAUSTED/UNSAFE breaks. In-repo readers are all in the change list; docs/implementation-plan.md and docs/remediation-research.md keep the old words as archives (AGENTS.md L5)."
+  ],
+  "open_questions": [
+   "Same-session stop: is 'Ctrl+C, a gate choice, or /kpi stop from a second session' acceptable for a loop running in the same TUI, or should a later package detach the loop from the /kpi command handler so `/kpi stop` works from the same prompt (interactive-mode.ts L1188-1191)?",
+   "NEEDS_HUMAN liveness: this design keeps PRD AC-24.3 (a paused job is finished-but-resumable, not live). R4 said 'live/resumable'. If the owner wants paused jobs to own bare follow-ups and bound tool calls, AC-24.3, its generator row and test/runtime-milestone.test.ts L185 must change together — confirm which.",
+   "Inner loop: should identical evidence.json fingerprints across consecutive failed test rounds become a witness (routing test -> plan) even though review never ran, or is board visibility enough for the implement↔test loop?",
+   "Backoff: 1 s doubling to a 60 s ceiling with no jitter — confirm the ceiling and that jitter is not wanted.",
+   "Should a node that is mid-prompt when the stop marker lands be aborted immediately (would need GraphAgentSession.abort plumbing) or, as designed, finish its prompt and stop at the next checkpoint?",
+   "Operator release denial with policy end is STOPPED and final (the graph completed). Is that right, or should deny-end route to a pause node so the job can be resumed at implement?",
+   "RP-20 is added to docs/remediation-plan.md as the current package because AGENTS.md L3 names that file the only work queue; confirm that is wanted rather than a PRD/spec/uat-only amendment.",
+   "Keeping the event name `loop.terminal` for a NEEDS_HUMAN pause (with a recovery field) avoids touching every reader; is a rename wanted despite the churn?"
+  ],
+  "size": "L"
+ },
+ "critiques": [
+  {
+   "lens": "correctness",
+   "verdict": "needs-revision",
+   "problems": [
+    {
+     "severity": "major",
+     "claim": "`/kpi stop` cannot abort an in-process loop the way the design's control-plane contract, the abort tests and the real-artifact verification step assume; with unbounded retries the operator's only real stop is killing the process.",
+     "evidence": "packages/coding-agent/src/modes/interactive/interactive-mode.ts L1188-1191: the main loop does `await this.session.prompt(userInput)`; packages/coding-agent/src/core/agent-session.ts L1357 `_tryExecuteExtensionCommand` does `await command.handler(args, ctx)`, so `handleKpiCommand` (control-plane.ts L490-492 awaits runLoop/resumeLoop) holds the loop. A second submission while it runs takes the non-streaming branch at interactive-mode.ts L3176-3179 (`onInputCallback` is undefined, text goes to `pendingUserInputs`) and is only read by `getUserInput()` (L3906-3917) after the handler returns. The design's own evidence note on control-plane.ts L384 already records that stopJob 'does not interrupt a loop running in-process'; a module-level AbortController does not change when stopJob gets to run. The verification bullet '`/kpi stop` → `K-π job <id> STOPPED`' while the board shows RETRY rows therefore cannot happen in the TUI; only Ctrl+C (kill) can, and the design does not say that."
+    },
+    {
+     "severity": "major",
+     "claim": "Making NEEDS_HUMAN (and legacy UNSAFE/EXHAUSTED/NO_PROGRESS/BLOCKED) jobs `live` re-introduces the 'dead job haunts the session' regression through the policy hook and the graph-agent write-allow resolver, not just the board and bare follow-ups the risk list mentions.",
+     "evidence": "run-store.ts L406-410 explains isLiveJob exists because a finished job 'sets no policy mode, and receives no tool.request records - drawing it above the editor as if it were live is exactly how a dead UNSAFE job haunted a whole session'. Callers: policy.ts L582 `resolveActivePolicyState` (mode + write_allow enforced on every operator tool call), policy.ts L958 `recordToolRequest` (appends tool.request to that job's events.jsonl), engine.ts L492 `resolveActiveWriteAllow`, routing.ts L96/L134, status-line/index.ts L89, bus/sessions-command.ts L102. Under the proposed `isLiveJob = !finished && graph_status !== 'not_started'`, a job paused NEEDS_HUMAN/bounds (or any of the eight legacy runs) keeps bounding and logging the operator's own edits indefinitely until `/kpi stop`. test/runtime-milestone.test.ts L185-195 asserts the opposite for exactly these statuses and is not in the change list."
+    },
+    {
+     "severity": "major",
+     "claim": "Producers and tests of the removed symbols/statuses that the change list omits would make `npm run check` and `npm run test:kpi` fail after the listed edits.",
+     "evidence": "run-store.ts L9-10 import `validateBudgetOverrides`/`GraphBudgetOverrides` (deleted by the budget.ts/schema.ts edits) and call it at L222 (createJob) and L318 (readJob), L68 `Task.limits`; test/research-control-plane.test.ts L805-825 '/kpi budget flags parse and freeze onto invocation.limits' parses --max-cost-usd/--timeout-ms/--max-rounds; test/graph-routing.test.ts L382 inline `type: 'terminal', status: 'UNSAFE'`, L389/L449 five-key limits, L419-420 asserts `terminated`/`terminal.status UNSAFE` (validateGraphDefinition would reject the graph); test/reviewer-session.test.ts L68-71 inline maxSteps/maxNodeRuns/maxCostUsd limits; test/policy.test.ts L1260-1278 appends loop.terminal `status: 'UNSAFE'` (tsconfig.json includes test/**/*.ts and `check` runs `tsc --noEmit`, so the narrowed EventInput type fails typecheck); test/runtime-milestone.test.ts L185. The verification grep deliberately excludes run-store.ts and these test files, so it would not surface them."
+    },
+    {
+     "severity": "major",
+     "claim": "The fixture-based resume test as specified would not reach 'implement session created': the copied file set is missing the artifacts driveUntilPause requires before implement runs.",
+     "evidence": "gated-loop.ts L1349-1361: when `state.active` includes implement the driver calls `assertResearchFresh(jobDirectory, task)` (research/gate.ts L244-250 reads research.json and research.md) and, because the fixture task.json has `current_module_id: 'ai'` and no NO_STACK playbook (stack.ts L362-365), `freezeCurrentSlice` (stack.ts L495-497 reads stack.json). The fixture directory holds research.json, research.md and stack.json, but the test copies only task.json, state.json, baseline.json, previous-head.txt, events.jsonl and checkpoint-000004.json, so the resume returns NEEDS_HUMAN/stack instead of creating the implement session. Also the fixture task.json carries no `limits` key (verified), so the 'task.json limits stripped in a second variant' is identical to the first."
+    },
+    {
+     "severity": "minor",
+     "claim": "`plan.repair_tried = repairs >= 1` is not keyed to the repeated fingerprint, so a later distinct repeat pauses NEEDS_HUMAN/no_progress without a re-plan for that witness, contrary to R3's 'only when a re-plan has already been tried for the same fingerprint'.",
+     "evidence": "Design facts contract: `plan.repair_tried` (stop.repairs >= 1) and the three-way edge split; PlanRepair records `witness` but nothing compares it. Sequence A,A (re-plan, repairs=1), B, B → `progress.repeated=true, plan.repair_tried=true` → no-progress pause though B was never re-planned. Listed only as an open question."
+    },
+    {
+     "severity": "minor",
+     "claim": "Re-plan routing targets the `plan` node even for operator-provided plans, which the shipped graphs never run for such jobs.",
+     "evidence": "coding-loop.gated.json / auto.json edges: `ac-compiler -> plan-check` when `plan.provided == true` (plan is bypassed; gated-loop.ts L1223 planProvided from planWasProvided). The new `test -> plan` / `review -> plan` edges fire regardless of `plan.provided`, so a `--plan <file>` job ('Implement frozen plan from …') would have the model rewrite stack.json and the plan the operator froze."
+    },
+    {
+     "severity": "minor",
+     "claim": "Two spec/test inconsistencies: the 401 test contradicts change (3), and resumeLoop cannot read the retired limit keys the way the change is ordered.",
+     "evidence": "Change (3) says GraphNodeProviderError 'is re-thrown before pausing so the driver keeps its provider path' (driver L1398-1406 → NEEDS_HUMAN/provider), but the test 'an http 503 provider error is transient and a 401 is not' asserts the engine 'pauses (contract) on the 401'. Change (2) makes the constructor set `limits = { maxConcurrency }` on restore while `GraphEngine.restore` (engine.ts L1509-1518) reads the checkpoint privately, so `retiredLimitKeys(checkpoint.budget.limits)` in resumeLoop has no source unless resumeLoop re-reads the checkpoint or the engine preserves the raw keys."
+    },
+    {
+     "severity": "minor",
+     "claim": "Removing the --max-* parsers does not make the flags 'fail as Unknown /kpi option' unless they lead the input.",
+     "evidence": "gated-loop.ts L215-217: `Unknown /kpi option` is thrown only when `input.startsWith('--')`; the loop at L134-166 is what today strips a flag placed after the goal. After deletion, `/kpi fix the bug --max-cost-usd 5` silently becomes the goal text 'fix the bug --max-cost-usd 5'."
+    },
+    {
+     "severity": "minor",
+     "claim": "The pty grader change is under-specified for uat-16's raw-bytes header check.",
+     "evidence": "scripts/pty-rows/uat-16.mjs L136-141 checks `ROUND n/m` via `amberRun.raw.includes(bytesOf(cell))` over raw ANSI bytes as part of an `.every()` over cells; the design describes only the L139 header token as a lookahead RegExp on `board`. The raw-bytes check needs its own treatment (regex over raw with the lookahead, or the cell moved out of the `.every`)."
+    }
+   ],
+   "required_changes": [
+    "Decide and state how an in-process run is actually stopped: either run the loop detached from the `/kpi` command handler (handler returns after starting it, keeps the `{jobId, controller}` handle, stop dispatches through it) or document that in the TUI the stop is Ctrl+C/process kill with checkpoint-before-wait as the resume mechanism, and rewrite the '`/kpi stop` mid-backoff' verification step and the control-plane contract accordingly (interactive-mode.ts L1188-1191, agent-session.ts L1357).",
+    "Split 'resumable' from 'live': keep `isLiveJob` true only for RUNNING (policy.ts L582/L958, engine.ts L492, routing.ts, status-line, bus sessions-command all key off it) and add a separate `isResumableJob`/board notion for NEEDS_HUMAN and STOPPED; update test/runtime-milestone.test.ts L185 and the run-store test accordingly, and restate the legacy-runs risk.",
+    "Add the omitted producers to the change list: run-store.ts L9-10/L68/L222/L318 (drop validateBudgetOverrides and Task.limits), test/research-control-plane.test.ts L805-825 (delete or invert the budget-flag test), test/graph-routing.test.ts L376-449 (pause nodes, maxConcurrency-only limits, paused/pause.recovery assertions), test/reviewer-session.test.ts L68-71, test/policy.test.ts L1260-1278 (use NEEDS_HUMAN or STOPPED), test/milestone.test.ts L123; extend the verification grep to run-store.ts and test/.",
+    "Fix the fixture resume test: copy research.json, research.md and stack.json (or the whole run directory minus agents/) so implement's research/stack preconditions hold, and drop the identical 'limits stripped' variant (the fixture task.json has no limits key).",
+    "Key `plan.repair_tried` to the repeated witness (compare the stored PlanRepair.witness to the witness that repeated) so a re-plan is tried once per fingerprint before pausing, per R3; or get explicit owner sign-off on 'one re-plan per operator touch'.",
+    "Handle `plan.provided === true` in the re-plan edges (route to plan-check/pause, or pass the frozen plan through) so a `--plan` job is never re-planned by the model.",
+    "Reconcile the 401 test with change (3) (driver NEEDS_HUMAN/provider, not an engine contract pause) and specify where resumeLoop reads the retired limit keys (re-read the latest checkpoint before restore, or have the engine expose `retiredLimits`).",
+    "Strip or reject `--max-cost-usd/--timeout-ms/--max-rounds` anywhere in the input (keep a rejecting parser), not only when they lead the string.",
+    "Specify the uat-16.mjs L136-141 raw-bytes header check change alongside the L139 board check."
+   ]
+  },
+  {
+   "lens": "minimalism-and-contract",
+   "verdict": "needs-revision",
+   "problems": [
+    {
+     "severity": "major",
+     "claim": "The re-plan escalation keeps a counter under another name: `plan.repair_tried = stop.repairs >= 1` is a global 'one automatic re-plan per operator touch' cap, not R3's 'a re-plan has already been tried for the same fingerprint'. After one re-plan, any later repeat — a different failing set, a different output fingerprint, many rounds later — skips the re-plan and pauses NEEDS_HUMAN.",
+     "evidence": "Design 'event_or_data_contracts': `plan.repair_tried: boolean` (stop.repairs >= 1) and 'repairs reset to 0' only on Give guidance / Keep going. R3 text: 'only when a re-plan has already been tried for the same fingerprint does the job pause'. The design's own open question 1 ('Automatic re-plan budget … exactly one automatic re-plan per operator touch') admits it is a budget."
+    },
+    {
+     "severity": "major",
+     "claim": "Making every failed `test` node a verifier event with the failing-AC set as witness turns the loop into implement ×2 → plan → implement ×1 → NEEDS_HUMAN for any stubborn AC, which is tighter than today's maxRounds 3 / maxNodeRuns 16. The same AC id still failing after one implement attempt is the normal shape of incremental progress, not 'no progress'; the owner asked for the existing detection, which runs on review rounds only.",
+     "evidence": "Today transitionStopState is fed only from the review branch: packages/coding-agent/src/kpi/extensions/gated-loop.ts L1472-1489 (`if (completedNodes.includes(\"review\"))`). Design gated-loop change (5): resolve() builds a VerifierEvent when active included \"test\" and test.passed=false with failingAcIds; graph edge `progress.repeated=true, plan.repair_tried=false -> plan`. Combined with the global repairs counter above, the bound is ~3 implement runs per plan. Risk 2 and open question 2 flag it but the change ships it."
+    },
+    {
+     "severity": "major",
+     "claim": "Flipping NEEDS_HUMAN to a live job contradicts a product AC the design never amends: PRD AC-24.3 says a finished run including `NEEDS_HUMAN` 'owns no follow-up and is not drawn as live', and the bound test for AC-24.3 asserts exactly that. R4 only requires NEEDS_HUMAN to be 'live/resumable'; resumable already holds today (resumeLoop refuses only non-completed engine states; the provider NEEDS_HUMAN path tells the operator to run `/kpi <job>`). The smaller change leaves isLiveJob/TERMINAL_RUN_STATUSES alone, drops the new `graph_status !== \"not_started\"` special case, and does not turn the eight legacy UNSAFE/EXHAUSTED runs on disk into live jobs that own bare follow-ups and block kpi_start_job.",
+     "evidence": "docs/PRD.md L344 (AC-24.3); test/runtime-milestone.test.ts L185 iterates [\"DONE\",\"UNSAFE\",\"NEEDS_HUMAN\",\"EXHAUSTED\",\"NO_PROGRESS\",\"BLOCKED\"] as finished (title bound in scripts/generate-traceability-map.mjs L732-736); neither file is in the design's change list. control-plane.ts L498-509 already resumes a NEEDS_HUMAN provider job via `/kpi <job>`. .kpi/runs: 7 UNSAFE + 1 EXHAUSTED state.json files become live under the design (risk 3 concedes it). AGENTS.md 'How to work' 7: a contract conflict opens a NEEDS_HUMAN gate in docs/remediation-plan.md — 'Do not pick a winner'."
+    },
+    {
+     "severity": "major",
+     "claim": "Not every document stating the old principle is amended in the same change; the grep verification scans only six docs so it cannot catch the rest. docs/remediation-plan.md — which AGENTS.md names the only completion authority — keeps RP-03/RP-04 Change/Tests/DoD text asserting 'Every configured cap is enforced', 'Each cap produces persisted EXHAUSTED', 'at most two transient retries … the third stops', and L29 'Persisted stop states remain DONE | BLOCKED | EXHAUSTED | …'; the design leaves that as an open question.",
+     "evidence": "Unamended mentions found by grep: docs/PRD.md L133 AC-04.6 ('NEEDS_HUMAN or UNSAFE'), L344 AC-24.3, L401 AC-29.4 ('Implement is UNSAFE'), L411 AC-30.2, L499 M-04 row; docs/uat.md L59 (UAT-04), L215 (UAT-30 'reaches UNSAFE'), L229 (M-04 'UNSAFE'); docs/spec.md L754 ('bounds-violation … → UNSAFE'); docs/dune-architecture.md L57, L81, L88; docs/agents-bus.md L47; docs/kstack.md L217 ('loop with maxRounds'); docs/remediation-plan.md L29, L284-293, L324-334. Design 'verification' grep list: only graph/, graphs/, gated-loop.ts, board.ts, status-line, PRD, spec, uat, visual-targets, README."
+    },
+    {
+     "severity": "minor",
+     "claim": "Invented overlapping vocabulary: a graph-level `PauseRecovery` (bounds|review|no_progress) plus `GraphPauseState.recovery: PauseRecovery | \"contract\"` plus an 11-value `LoopRecovery` are three spellings of one concept, and 'contract' leaks loop vocabulary into the engine. A single reason type in run-store.ts, reused by the pause node, is smaller. Likewise `retiredLimitKeys()` is a helper with one caller for a one-liner.",
+     "evidence": "Design schema.ts change: `PauseRecovery`, `GRAPH_PAUSE_RECOVERIES`, `GraphPauseState { recovery: PauseRecovery | \"contract\" … }`; run-store.ts change: `LoopRecovery = \"bounds\" | \"review\" | \"no_progress\" | \"provider\" | \"delivery\" | \"research\" | \"stack\" | \"branch\" | \"contract\" | \"ship\" | \"ac_quality\"`; budget.ts change: `retiredLimitKeys(limits)`. docs/minimalist.md ladder rung 6 'Prefer one line over a helper'; gate 'No utility module before a second caller exists'."
+    },
+    {
+     "severity": "minor",
+     "claim": "R2 asks the design to pick delete-vs-threshold for maxTransientRetries 'and justify by minimalism'; the design picks delete without stating the justification. Also the hung-provider claim holds only while `httpIdleTimeoutMs` is non-zero: sdk.ts maps 0 to max int32 ('effectively disable the timeout'), so a hung provider under that setting never becomes a timeout and R2's retry never fires — the spec §6 wording should name that.",
+     "evidence": "packages/coding-agent/src/core/sdk.ts L344-348: `const effectiveTimeoutMs = httpIdleTimeoutMs === 0 ? 2147483647 : httpIdleTimeoutMs; const timeoutMs = options?.timeoutMs ?? providerRetrySettings.timeoutMs ?? effectiveTimeoutMs`. Design spec §6 doc text names only the 300000 default."
+    },
+    {
+     "severity": "minor",
+     "claim": "The fixture-based resume test is mis-specified: the fixture's task.json carries no `limits` at all, so the 'second variant with limits stripped' is the only variant, and the asserted detail string order does not match the checkpoint's key order.",
+     "evidence": ".kpi/runs/20260903-fix-claude-model-requests-failin-42986cfa/task.json has no `limits` key (checked); graph/checkpoint-000004.json budget.limits key order is maxSteps, maxNodeRuns, maxConcurrency, maxCostUsd, timeoutMs, maxRounds, maxTransientRetries, while the test asserts 'retired caps ignored: maxCostUsd, timeoutMs, maxSteps, maxNodeRuns, maxRounds, maxTransientRetries'."
+    },
+    {
+     "severity": "minor",
+     "claim": "'STOPPED is resumable' is false for one of its own producers: an operator deny with policy `end` completes the graph (`human -> __end__`), so `/kpi <job>` on that STOPPED job restores a completed checkpoint and immediately re-emits STOPPED 'release denied'. The design should say that producer is final (or route deny-end to a pause node) rather than claim uniform resumability.",
+     "evidence": "coding-loop.gated.json edge `human -> __end__ when release.approved=false, policy.onHumanDeny=end`; design gated-loop change (8) maps it to STOPPED; change (10) 'resumeLoop: return early on DONE' only; contract line 'a STOPPED job … /kpi <job> resumes it from its checkpoint (resumeLoop refuses only DONE)'."
+    },
+    {
+     "severity": "minor",
+     "claim": "spec §5 SCH-task edit 'Remove task.limits' is a no-op — the schema block never carried limits — which shows the doc list was compiled from memory rather than a repo-wide search (see the major docs finding).",
+     "evidence": "docs/spec.md L191-225 SCH-task has no `limits`; `grep -n limits docs/spec.md` hits only the command table L140-142."
+    }
+   ],
+   "required_changes": [
+    "Key the repair escalation to the witness, not a counter: drop `repairs` and `plan.repair_tried = repairs >= 1`; record the witness that triggered each re-plan (e.g. `repairedWitnesses: string[]` in StopState, persisted in state.json) and define `plan.repair_tried` as 'the currently repeated witness already had a re-plan'. Remove the 'reset repairs to 0' mechanics from Give guidance / Keep going (guidance simply attaches to plan.repair).",
+    "Keep the no-progress witness on review verifier rounds as it is today (gated-loop.ts L1472-1489); do not make every failed `test` node a verifier event with the failing-AC set as witness. If an implement↔test inner-loop witness is wanted, use only an identical evidence fingerprint and answer open question 2 before shipping it.",
+    "Do not change isLiveJob/TERMINAL_RUN_STATUSES semantics for NEEDS_HUMAN: keep it finished-but-resumable (already true today), drop the `graph_status !== \"not_started\"` special case, and leave legacy on-disk UNSAFE/EXHAUSTED runs finished (legacyRunStatus only needs to feed the board and resumeLoop). If the owner does want NEEDS_HUMAN live, open the AC-24.3 conflict as a NEEDS_HUMAN gate in docs/remediation-plan.md per AGENTS.md rule 7 and amend PRD AC-24.3, the generator row, and test/runtime-milestone.test.ts L185 in the same change.",
+    "Amend every remaining document that states the old principle, and widen the grep verification to the whole repo (docs/, README.md, AGENTS.md, scripts/, test/): PRD AC-04.6, AC-24.3, AC-29.4, AC-30.2, M-04 row; uat UAT-04, UAT-30, M-04; spec L754 fixtures; dune-architecture.md L57/L81/L88; agents-bus.md L47; kstack.md L217; remediation-plan.md L29 and the RP-03/RP-04 Change/Tests/DoD text (either add RP-20 with this design's Verification block or rewrite RP-03/RP-04 so their DoD no longer asserts enforced caps and a third-retry stop).",
+    "Collapse the recovery vocabulary to one type: define the reason enum once in run-store.ts and have the pause node's `recovery` and GraphPauseState use it; drop `PauseRecovery`/`GRAPH_PAUSE_RECOVERIES` and the `| \"contract\"` union. Replace `retiredLimitKeys()` with the inline filter at its single call site.",
+    "State the minimalism justification for deleting maxTransientRetries outright (no threshold), and note in spec §6 that `httpIdleTimeoutMs: 0` disables the per-request timeout so a hung provider is then never retried.",
+    "Fix the fixture resume test: the fixture task.json has no `limits`, so test the checkpoint-carried limits only, and assert the retired-cap note in checkpoint key order (maxSteps, maxNodeRuns, maxCostUsd, timeoutMs, maxRounds, maxTransientRetries).",
+    "State that STOPPED from an operator deny with policy `end` is final (completed checkpoint), or route it to a pause node, instead of claiming every STOPPED job resumes from its checkpoint."
+   ]
+  }
+ ]
+}

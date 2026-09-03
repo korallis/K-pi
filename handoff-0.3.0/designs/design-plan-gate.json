@@ -1,0 +1,565 @@
+{
+ "key": "plan-gate",
+ "design": {
+  "issue": "ISSUE C: the gated graph has no operator gate after planning. `plan` returns stack.json and `implement` starts with no notification, no approval, and no way to request changes; the only human node is the release gate. The engine models a human answer as a bare boolean with a static question, so a plan gate cannot show the frozen plan or carry feedback back to the planner. In any non-TUI mode (print / no dialog UI) a human gate is answered by the harness stub (confirm → false) instead of stopping NEEDS_HUMAN with a resume command.",
+  "root_cause": "Three gaps, one per layer. (1) Topology: packages/coding-agent/src/kpi/graphs/coding-loop.gated.json edge L192-195 is `plan → implement` unconditional; the single human node (L139-144) sits after review. (2) Engine: `HumanGraphNode` (graph/schema.ts L49-55) is `{title, question, statePath}` only; `submitHuman(approved: boolean)` (graph/engine.ts L1459-1492) writes one boolean at statePath and nothing else; `nodePrompt` (L697-713) substitutes only `{{job_id}}`, so a re-run planner (isolated session, no memory) can never see operator feedback. (3) Driver: gated-loop.ts answers every pending human with `ctx.ui.confirm(pending.title, pending.question)` in two duplicated loops (L1690-1726 resume path, L1932-1975 first run) and never checks `ctx.hasUI`; the no-UI stub (core/extensions/runner.ts L236-239) returns `confirm → false`, `select → undefined`, so a gate in print mode is silently denied and routed by `policy.onHumanDeny` rather than stopping for the operator. No bell/attention API exists in packages/tui/src (every `\\x07` hit is OSC parsing), so \"notify\" today is only the board turning protocol-blue via `pending_question` (gated-loop.ts L464 → control-plane.ts L232 → board.ts L407-418).",
+  "evidence": [
+   {
+    "file": "packages/coding-agent/src/kpi/graphs/coding-loop.gated.json",
+    "line": 193,
+    "note": "edge {from: plan, to: implement} has no `when`; nothing sits between the planner's stack.json and the first write"
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/graphs/coding-loop.gated.json",
+    "line": 139,
+    "note": "the only human node: id human, title Approve gated release, statePath release.approved"
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/graphs/coding-loop.gated.json",
+    "line": 37,
+    "note": "plan node: isolated, read-only, response {path: stack.json, schema: stack.schema.json, retries: 2, state: {}}"
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/graph/schema.ts",
+    "line": 49,
+    "note": "HumanGraphNode = {id,type,title,question,statePath}: no detail, no feedback path"
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/graph/schema.ts",
+    "line": 183,
+    "note": "PendingHumanInput = {nodeId,title,question}; stays unchanged in this design (the summary is rendered by the driver at ask time, not checkpointed)"
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/graph/engine.ts",
+    "line": 109,
+    "note": "GraphHumanUI (L109-111) and resumeWithUI (L1494-1500) have no caller in src or test (grep submitHuman|resumeWithUI|GraphHumanUI: only gated-loop.ts L1702/L1946 and test/graph-engine.test.ts L179 use the engine API): dead code to delete when the signature changes"
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/graph/engine.ts",
+    "line": 218,
+    "note": "validateNode human branch asserts only title/question/statePath"
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/graph/engine.ts",
+    "line": 409,
+    "note": "comment + check: a non-interactive (allowNonInteractive) graph with a human node is refused before the job starts; must stay intact. The gated graph is interactive, so it is not covered by this check"
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/graph/engine.ts",
+    "line": 697,
+    "note": "nodePrompt substitutes {{job_id}} only; no state reaches a node prompt"
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/graph/engine.ts",
+    "line": 1275,
+    "note": "findExhaustedNodeLimit is checked before a node runs with the runs count so far; interrupt (L1281-1299) does nodeState.runs += 1 for the human node too and countRound()"
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/graph/engine.ts",
+    "line": 1408,
+    "note": "refreshFacts merges every resolved fact into values via setStatePath; submitHuman calls it (L1473) before routing, so values.plan always carries `provided` next to `approved`"
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/graph/engine.ts",
+    "line": 1459,
+    "note": "submitHuman(approved: boolean) sets node.statePath and routes; nothing else is written; resume(approved: boolean) at L1489"
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/graph/engine.ts",
+    "line": 639,
+    "note": "`get limits(): Readonly<GraphBudgetLimits>` is public: the driver can read maxRounds/maxNodeRuns for the dialog"
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/graph/budget.ts",
+    "line": 135,
+    "note": "findExhaustedNodeLimit: a node may run at most min(maxRounds, maxNodeRuns) times (default 3) -> the existing bound on plan re-runs, terminal EXHAUSTED with reason 'node plan exhausted maxRounds 3 after 3 runs'"
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/stack.ts",
+    "line": 17,
+    "note": "DuneStack/StackModule types (L8-36), assertDuneStack (L249), readDuneStack(runDirectory) (L434) with worded ENOENT/parse errors: the owner of stack.json reading; renderPlanSummary belongs here"
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/gated-loop.ts",
+    "line": 1937,
+    "note": "first run: `const approved = await ctx.ui.confirm(pending.title, pending.question)` with no hasUI check; approval.result appended with {approved} only"
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/gated-loop.ts",
+    "line": 1693,
+    "note": "resume path duplicates the same ask loop (L1690-1726)"
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/gated-loop.ts",
+    "line": 1272,
+    "note": "facts resolver returns `plan.provided` on every resolve, so state values.plan is {provided, approved?, feedback?}"
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/gated-loop.ts",
+    "line": 1347,
+    "note": "freezeCurrentSlice runs when `implement` becomes active (L1347-1360): a re-planned stack.json is re-read, validated and frozen before the first write with no extra work"
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/gated-loop.ts",
+    "line": 418,
+    "note": "stageFor maps quality-green/plan-check; a plan-approval node would render as an unknown stage"
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/gated-loop.ts",
+    "line": 464,
+    "note": "state.json pending_question is the only pending field; board reads it (control-plane.ts L232, board.ts L407-418 one-row WAITING ON OPERATOR); nothing reads a plan object from state.json"
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/gated-loop.ts",
+    "line": 80,
+    "note": "LoopRecovery docstring (L80-86) enumerates provider|delivery; type at L87; recoveryReason (L664-670) words the resume command"
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/gated-loop.ts",
+    "line": 1524,
+    "note": "writeTerminalState emits one loop.terminal for any terminalStatus (NEEDS_HUMAN included) and writes state.json with recovery; the provider NEEDS_HUMAN path (L1404-1405) already uses it and a later resume appends a second terminal"
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/gated-loop.ts",
+    "line": 1627,
+    "note": "resumeLoop restores the engine from the checkpoint; a restored interrupted engine returns from driveUntilPause immediately and the while(interrupted) loop re-asks, so an unanswered gate is asked again on resume and an answered one (status completed in the checkpoint) is not"
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/control-plane.ts",
+    "line": 494,
+    "note": "the control plane already notifies `K-π job <id> <status>: <reason>` for every outcome and branches on recovery only for \"provider\" (L498); an \"approval\" recovery needs no branch because the reason carries the resume command"
+   },
+   {
+    "file": "packages/coding-agent/src/core/extensions/runner.ts",
+    "line": 236,
+    "note": "noOpUIContext: select -> undefined, confirm -> false, editor -> undefined; hasUI() (L492) is false exactly when this stub is in use"
+   },
+   {
+    "file": "packages/coding-agent/src/core/extensions/types.ts",
+    "line": 145,
+    "note": "ui.select(title, options) -> string|undefined; confirm L148; notify L154; editor(title, prefill) -> string|undefined at L234"
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/append-log.ts",
+    "line": 87,
+    "note": "approval.result payload is {approved: boolean; question?: string}; strings pass redactJson (L262)"
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/schemas/event.schema.json",
+    "line": 303,
+    "note": "approvalResult: additionalProperties false (L344) -> a feedback field needs a schema edit; $defs/text (L108) is an unbounded string"
+   },
+   {
+    "file": "test/gated-loop.test.ts",
+    "line": 171,
+    "note": "loopSessions: plan/plan-check always answer `options.stack ?? healthStack` (one string for every run) and record only node ids into `executed` (L166), never prompts; human nodes never enter `executed`"
+   },
+   {
+    "file": "test/gated-loop.test.ts",
+    "line": 248,
+    "note": "commandHarness (L248-291) fake ui has confirm/notify/setWidget only; hasUI true, mode tui; a select-based gate needs select and editor scripted here"
+   },
+   {
+    "file": "test/gated-loop.test.ts",
+    "line": 293,
+    "note": "latestCheckpoint(directory, jobId) helper reads the newest graph checkpoint: the place to assert values.plan"
+   },
+   {
+    "file": "test/gated-loop.test.ts",
+    "line": 328,
+    "note": "bound title asserts confirmations deepEqual ['Approve gated release'] via ui.confirm titles; plan gate must use ui.select so this stays true; L346-349 assert exactly one loop.terminal with status DONE"
+   },
+   {
+    "file": "test/resume.test.ts",
+    "line": 27,
+    "note": "only an ad-hoc factory and hand-built GraphDefinitions; no fixture, loopSessions or commandHarness — the plan-gate resume test cannot live here"
+   },
+   {
+    "file": "test/graph-routing.test.ts",
+    "line": 347,
+    "note": "supplied-facts allowlist must gain plan.approved or the gated graph fails 'routes on ... which nothing supplies'; gatedCases at L87"
+   },
+   {
+    "file": "test/graph-engine.test.ts",
+    "line": 179,
+    "note": "`restored.resume(true)` is the one engine caller of the boolean form"
+   },
+   {
+    "file": "test/schema-conformance.test.ts",
+    "line": 98,
+    "note": "approval.result sample `{ ...base, approved: true, question: \"Commit?\" }`"
+   },
+   {
+    "file": "scripts/generate-traceability-map.mjs",
+    "line": 1183,
+    "note": "ACs are parsed from docs/PRD.md `- **AC-xx.y**` lines; every new AC needs a curated triple or it is reported UNCOVERED"
+   },
+   {
+    "file": "README.md",
+    "line": 582,
+    "note": "`/kpi verify` table row hard-codes `14 records chained`, as do L669 (`fourteen records`) and L887"
+   },
+   {
+    "file": "docs/PRD.md",
+    "line": 413,
+    "note": "AC-30.4 and AC-30.10 (L419) already call the Dune structural check 'the plan gate'; the operator gate must be named 'plan approval' to avoid the collision"
+   },
+   {
+    "file": "docs/dune-architecture.md",
+    "line": 87,
+    "note": "'Plan writes stack.json. The control plane freezes it before implement.' needs the re-plan/overwrite lifecycle"
+   },
+   {
+    "file": "docs/spec.md",
+    "line": 403,
+    "note": "§8 lists `ctx.ui.confirm / select / input` for the human node; the gate also uses `editor`"
+   }
+  ],
+  "change": [
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/stack.ts",
+    "action": "edit",
+    "what": "Add next to DuneStack (after the type block ending L36): `export const PLAN_SUMMARY_MAX_MODULES = 12;` and `export function renderPlanSummary(stack: DuneStack): string` — pure, no I/O. Lines joined with \\n: `Delivery: <delivery>` (+ ` — <delivery_reason>` when present); `Root: <root>`; `Current slice: <current_module_id>` or `Current slice: (none named — implement will refuse this map)`; `Modules (<n>):`; per module (first PLAN_SUMMARY_MAX_MODULES) `  <i>. <id> — <purpose>` and `     folder <folder> · interface <interface> · <k> allowed path(s) · depends on <a, b|nothing>`; if more, `  … and <n-12> more modules (see stack.json)`. No new module: stack.ts owns DuneStack/assertDuneStack/readDuneStack (L8-36, L249, L434) and is already imported by engine.ts (L20) and gated-loop.ts (L34)."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/graph/schema.ts",
+    "action": "edit",
+    "what": "HumanGraphNode (L49-55) gains `detail?: \"stack.json\"` (the run file whose summary the driver shows with the question; the one file that has a renderer) and `feedbackPath?: string` (state path the operator's change request is written to on denial). AgentGraphNode gains `feedbackPath?: string` (state path whose non-empty string is appended to this node's prompt). Add `export interface HumanAnswer { approved: boolean; feedback?: string }`. PendingHumanInput (L183-187) is unchanged."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/graph/engine.ts",
+    "action": "edit",
+    "what": "(a) validateNode human branch (L218-224): if `value.detail !== undefined` it must equal \"stack.json\" else throw `human node ${id}.detail must be stack.json, the only run file with a summary renderer`; if `feedbackPath` present assertString + assertStatePath. Agent branch (L230+): `feedbackPath` optional, assertString + assertStatePath. (b) nodePrompt(node) (L697-713): after the Run-directory lines, when `node.feedbackPath` is set and `getStatePath(this.runState.values, node.feedbackPath)` is a non-empty string, push `\"\"`, `Operator feedback on your previous response (node run ${this.runState.nodes[node.id].runs}):`, the feedback text, `Address every point, then return the corrected JSON only.` (runs was already incremented for this run at L1330, so the second run reads `node run 2`). (c) `submitHuman(answer: HumanAnswer)` (L1459) replaces the boolean: same pending/node checks; `setStatePath(values, node.statePath, answer.approved)`; if `answer.feedback !== undefined && node.feedbackPath === undefined` throw `human node ${node.id} accepts no feedback`; if `node.feedbackPath !== undefined && !answer.approved`: `const feedback = answer.feedback?.trim() ?? \"\"`, empty → throw `human node ${node.id} was denied without feedback`, else `setStatePath(values, node.feedbackPath, feedback)`. Rest of routing unchanged (refreshFacts, route, terminate/fail, checkpoint). (d) `resume(answer: HumanAnswer)` (L1489). (e) Delete `GraphHumanUI` (L109-111) and `resumeWithUI` (L1494-1500): no callers. interrupt (L1281-1299) is unchanged — the engine does no stack.json I/O."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/graphs/coding-loop.gated.json",
+    "action": "edit",
+    "what": "Plan node (L37-56) gains `\"feedbackPath\": \"plan.feedback\"`. Insert after plan-check a new node `{\"id\":\"plan-approval\",\"type\":\"human\",\"title\":\"Plan approval\",\"question\":\"The plan is frozen as stack.json. Approve it for implementation, or request changes?\",\"statePath\":\"plan.approved\",\"detail\":\"stack.json\",\"feedbackPath\":\"plan.feedback\"}`. Replace edge {plan → implement} (L192-195) with three edges: `{from: plan, to: plan-approval}`; `{from: plan-approval, to: implement, when: {path: plan.approved, equals: true}}`; `{from: plan-approval, to: plan, when: {path: plan.approved, equals: false}}`. `plan-check → implement` stays: on the --plan path the operator authored the frozen plan and plan-check writes no stack.json. The revision bound is the existing per-node cap (budget.ts L135-149, checked at engine.ts L1275 before a node starts): the third change request routes to plan with runs=3 ≥ cap 3 and the run ends EXHAUSTED with `exhausted_limit: maxRounds` and reason `node plan exhausted maxRounds 3 after 3 runs`. coding-loop.auto.json and spec-first.json are untouched."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/gated-loop.ts",
+    "action": "edit",
+    "what": "(a) Docstring L80-86 + `LoopRecovery` (L87) become `\"provider\" | \"delivery\" | \"approval\"` ('… or a human gate that needs an interactive session to answer'); recoveryReason (L664-670) advice for approval: `Answer it in an interactive K-π session`. control-plane.ts adds no branch: its generic notify (L494-497) already prints the reason with the resume command; only `provider` gets an extra confirm. (b) Export `PLAN_GATE_OPTIONS = [\"Approve plan\", \"Request changes\"] as const` and `MAX_HUMAN_FEEDBACK_CHARS = 4000`. No 'View full plan' option: the dialog names the file path instead. (c) New `async function answerPendingHuman(engine, graph, ctx, jobDirectory, eventsPath, task, stopState, onStateChange): Promise<DriveResult | undefined>` replacing the bodies of both duplicated loops (L1690-1726 and L1932-1975; each becomes `while (result.state.status === \"interrupted\") { const stopped = await answerPendingHuman(...); if (stopped !== undefined) { await writeTerminalState(...); [await onStateChange?.()]; return {jobId, status: stopped.terminalStatus, reason, recovery, graphState} } result = await driveUntilPause(...); if (result.terminalStatus !== undefined) {…unchanged…} }`; the first-run `resumed.status === \"completed\"` break is subsumed by the while condition). Behaviour: `pending = engine.state.pendingHuman` (throw the existing 'Interrupted graph has no pending human approval' if absent); `node = graph.nodes.find(n => n.id === pending.nodeId)`, throw `pending human node does not exist: ${id}` unless type human; `ctx.ui.notify(\\`K-π job ${jobId} is waiting on you: ${pending.title}\\`, \"warning\")` (no bell: the TUI exposes none); if `!ctx.hasUI` return `{state: engine.state, stopState, terminalStatus: \"NEEDS_HUMAN\", recovery: \"approval\", reason: recoveryReason(\"approval\", \\`${pending.title} needs an interactive session\\`, jobId)}` — engine stays interrupted with pendingHuman intact, state.json keeps pending_question (board stays protocol-blue), resume re-asks. If `node.feedbackPath === undefined`: `approved = await ctx.ui.confirm(pending.title, pending.question)` exactly as today, answer `{approved}`. Else the gate loop: `summary = node.detail === undefined ? \"\" : await readDuneStack(jobDirectory).then(renderPlanSummary).catch(e => \\`${node.detail} could not be summarised: ${message(e)}\\`)` (recorded in the dialog and as a warning notify; never fatal — the operator can still request changes); `runs = engine.state.nodes[pending.nodeId].runs`, `cap = Math.min(engine.limits.maxRounds, engine.limits.maxNodeRuns)`; `title = [pending.title, pending.question, \"\", summary, \"\", \\`Full plan: .kpi/runs/${jobId}/${node.detail}\\` (only when detail), \\`Revision ${runs} of ${cap}${runs >= cap ? \" — a further change request ends the job EXHAUSTED\" : \"\"}\\`].join(\"\\n\")`; `choice = await ctx.ui.select(title, [...PLAN_GATE_OPTIONS])`; `undefined` → return the NEEDS_HUMAN DriveResult with message `${pending.title} was dismissed`; `Request changes` → `text = await ctx.ui.editor(\\`Request changes to ${node.detail ?? \"the plan\"}\\`, previous ?? \"\")`; undefined → re-ask; trimmed empty → `notify(\"Feedback is required to request plan changes\", \"warning\")` and re-ask; `text.trim().length > MAX_HUMAN_FEEDBACK_CHARS` → `notify(\\`Feedback must be at most ${MAX_HUMAN_FEEDBACK_CHARS} characters (got ${n})\\`, \"warning\")`, keep `previous = text`, re-ask; otherwise answer `{approved: false, feedback: text.trim()}`; `Approve plan` → `{approved: true}`. Then `appendEvent(eventsPath, {ts, type: \"approval.result\", job_id, round: stopState.round, node: pending.nodeId, approved: answer.approved, question: pending.question, ...(answer.feedback === undefined ? {} : {feedback: answer.feedback})})`, `await engine.submitHuman(answer)`, `await writeState(jobDirectory, task, engine.state, stopState)`, `await onStateChange?.()`, return undefined. (d) stageFor (L418-426): `plan-approval` → `plan`. (e) stateDocument (L428-485) is unchanged: nothing reads a plan object or a summary from state.json (board reads pending_question only; resume reads the engine checkpoint, where plan.approved/plan.feedback live exactly like release.approved)."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/append-log.ts",
+    "action": "edit",
+    "what": "L87: `Event<\"approval.result\", { approved: boolean; question?: string; feedback?: string }>`. feedback passes through redactJson like every string."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/schemas/event.schema.json",
+    "action": "edit",
+    "what": "approvalResult (L303-345): add `\"feedback\": {\"$ref\": \"#/$defs/text\"}` under properties; additionalProperties stays false."
+   },
+   {
+    "file": "test/gated-loop.test.ts",
+    "action": "edit",
+    "what": "loopSessions options (L139-152) gain `stacks?: string[]` (shifted once per plan run; when exhausted or absent the plan answers `options.stack ?? healthStack` as today) and `prompts?: string[]` (every prompt is pushed as `${currentNode}\\n${prompt}` so a test can find the second plan prompt). commandHarness (L248-291) gains an options bag `{ selections?: string[]; answers?: string[]; feedbacks?: string[]; executed?: string[] }`: a scripted `select(title, options)` that pushes the first line of `title` into `selections`, pushes the full title into a returned `selectTitles` array, asserts `!executed.includes(\"implement\")` while the title starts with `Plan approval`, and returns `answers.shift() ?? \"Approve plan\"` (a scripted `undefined` entry is returned as is); `editor()` returns `feedbacks.shift()`. `confirm` is unchanged so `confirmations` still equals [\"Approve gated release\"]. The healthcheck test (L297-352) additionally asserts `selections` deepEqual [\"Plan approval\"] and that events.jsonl holds two approval.result records, plan-approval first. Add the five new tests listed under tests (including the dismissed-gate/resume test, which needs fixture(), loopSessions and commandHarness and therefore lives here, not in test/resume.test.ts)."
+   },
+   {
+    "file": "test/graph-engine.test.ts",
+    "action": "edit",
+    "what": "L179: `restored.resume({ approved: true })`. Add the engine test listed under tests (feedback path, denied-without-feedback, invalid detail)."
+   },
+   {
+    "file": "test/graph-routing.test.ts",
+    "action": "edit",
+    "what": "gatedCases (L87): add `plan` → [\"plan-approval\"], `plan-approval` with plan.approved true → [\"implement\"], false → [\"plan\"], `plan-check` → [\"implement\"]. L347 supplied set gains \"plan.approved\". Add the new routing test."
+   },
+   {
+    "file": "test/stack.test.ts",
+    "action": "edit",
+    "what": "Import renderPlanSummary and PLAN_SUMMARY_MAX_MODULES from stack.ts; add the renderPlanSummary test listed under tests."
+   },
+   {
+    "file": "test/schema-conformance.test.ts",
+    "action": "edit",
+    "what": "eventPayload('approval.result') (L98-99) returns `{ ...base, approved: false, question: \"Commit?\", feedback: \"split the module\" }` so the schema branch proves the new field; bound title unchanged."
+   },
+   {
+    "file": "scripts/generate-traceability-map.mjs",
+    "action": "edit",
+    "what": "AC map: add \"AC-02.8\" → [test/gated-loop.test.ts, \"the gated loop asks the operator to approve the plan before implement and records the approval\", \"plan approval with stack.json summary before the first write\"]; \"AC-02.9\" → [test/gated-loop.test.ts, \"request changes re-plans with the operator's feedback and refuses empty feedback\", \"feedback reaches the re-run planner prompt; empty feedback is refused\"]; \"AC-02.10\" → [test/gated-loop.test.ts, \"the third change request ends EXHAUSTED naming the plan node cap\", \"plan revisions bounded by min(maxRounds,maxNodeRuns)\"]; \"AC-02.11\" → [test/gated-loop.test.ts, \"a plan gate without dialog UI stops NEEDS_HUMAN with the resume command and never answers itself\", \"no auto-approve/deny in print mode; resume command recorded\"]. Then `node scripts/generate-traceability-map.mjs` regenerates docs/traceability-map.json."
+   },
+   {
+    "file": "docs/traceability-map.json",
+    "action": "edit",
+    "what": "Regenerated by the script only; never hand-edited."
+   },
+   {
+    "file": "packages/coding-agent/dist",
+    "action": "edit",
+    "what": "Rebuild packages/coding-agent so dist/kpi/graphs/coding-loop.gated.json and dist/kpi/schemas/event.schema.json are byte-for-byte copies (test/harness.test.ts L238-254)."
+   }
+  ],
+  "event_or_data_contracts": [
+   "Graph JSON, human node: optional `detail: \"stack.json\"` (read by the gated-loop driver only; validated to that one value) and optional `feedbackPath: <state path>` (packages/coding-agent/src/kpi/extensions/graph/schema.ts HumanGraphNode).",
+   "Graph JSON, agent node: optional `feedbackPath: <state path>`; when the run state holds a non-empty string there, nodePrompt appends `Operator feedback on your previous response (node run N):` + text + `Address every point, then return the corrected JSON only.`",
+   "Engine API: `export interface HumanAnswer { approved: boolean; feedback?: string }` (schema.ts); `GraphEngine.submitHuman(answer: HumanAnswer)` and `GraphEngine.resume(answer: HumanAnswer)` replace the boolean forms; `GraphHumanUI` and `resumeWithUI` are removed. Denial of a node with feedbackPath without non-empty feedback throws `human node <id> was denied without feedback`; feedback for a node without feedbackPath throws `human node <id> accepts no feedback`.",
+   "Checkpoint / GraphRunState values written by the plan-approval node: `plan.approved: boolean` and `plan.feedback: string` (trimmed, on denial). `values.plan` also carries `plan.provided` from the facts resolver, so its shape is `{ provided: boolean; approved?: boolean; feedback?: string }`. PendingHumanInput is unchanged; no summary is checkpointed.",
+   "state.json (gated-loop stateDocument): no new fields; `recovery` may now be `\"approval\"` (LoopRecovery = provider | delivery | approval); `pending_question` stays the one-line question the board renders.",
+   "Event `approval.result`: payload `{ approved: boolean; question?: string; feedback?: string }`; the plan gate emits one per answer with `node: \"plan-approval\"` (approved:false carries the trimmed feedback, redacted like every event string); event.schema.json approvalResult gains `feedback` ($defs/text).",
+   "Terminal for an unanswerable gate: `NEEDS_HUMAN`, `recovery: \"approval\"`, reason `<title> needs an interactive session|was dismissed. Answer it in an interactive K-π session, then resume with /kpi <job id>`; one loop.terminal event with status NEEDS_HUMAN (as the provider path does today); engine stays `interrupted` with pendingHuman intact so resume re-asks.",
+   "Bound on plan revisions: the existing per-node cap min(maxRounds, maxNodeRuns) (default 3 plan runs = 2 accepted change requests); the third change request ends EXHAUSTED with `exhausted_limit: \"maxRounds\"` and reason `node plan exhausted maxRounds 3 after 3 runs`.",
+   "Exports from gated-loop.ts: `PLAN_GATE_OPTIONS = [\"Approve plan\", \"Request changes\"]`, `MAX_HUMAN_FEEDBACK_CHARS = 4000`.",
+   "Exports from stack.ts: `renderPlanSummary(stack: DuneStack): string`, `PLAN_SUMMARY_MAX_MODULES = 12` — pure; rendered by the driver at ask time from `readDuneStack(jobDirectory)`; a read/validation failure is shown as `stack.json could not be summarised: <reason>` in the dialog and a warning notification.",
+   "Operator notification on every gate: `K-π job <job id> is waiting on you: <title>` at level warning, before the dialog (or before the NEEDS_HUMAN stop when there is no dialog UI)."
+  ],
+  "tests": [
+   {
+    "file": "test/gated-loop.test.ts",
+    "title": "the gated loop asks the operator to approve the plan before implement and records the approval",
+    "asserts": "healthcheck fixture, select answering Approve plan: selections deepEqual [\"Plan approval\"]; the recorded select title contains `Current slice: health`, `1. health —`, `Full plan: .kpi/runs/<jobId>/stack.json` and `Revision 1 of 3`; the scripted select saw `executed` without \"implement\" (asserted inside the harness select); a notification equals `K-π job <id> is waiting on you: Plan approval`; events.jsonl approval.result records are [{node: plan-approval, approved: true, question: <the node question>}, {node: human, approved: true}] in that order; latestCheckpoint values.plan.approved === true and values.plan.feedback === undefined; exactly one loop.terminal with status DONE; verifyChain true; state.json status DONE."
+   },
+   {
+    "file": "test/gated-loop.test.ts",
+    "title": "request changes re-plans with the operator's feedback and refuses empty feedback",
+    "asserts": "loopSessions with stacks [healthStack, healthStackRevised] (same module id `health`, purpose changed to `serve GET /health as api and server`) and prompts capture; select answers [Request changes, Request changes, Approve plan]; editor answers [\"\", \"split health into api and server\"]: a warning notification `Feedback is required to request plan changes`; executed lists plan twice and implement once, plan-approval never; the second prompt starting `plan\\n` contains `Operator feedback on your previous response (node run 2):\\nsplit health into api and server` and the first does not; approval.result events for plan-approval are [{approved:false, feedback:\"split health into api and server\"},{approved:true}]; latestCheckpoint values.plan deepEqual {provided:false, approved:true, feedback:\"split health into api and server\"}; stack.json on disk has modules[0].purpose === the revised purpose (the second plan's output, frozen by freezeCurrentSlice before implement); status DONE."
+   },
+   {
+    "file": "test/gated-loop.test.ts",
+    "title": "the third change request ends EXHAUSTED naming the plan node cap",
+    "asserts": "select answers Request changes ×3 with non-empty feedback: executed counts plan exactly 3 times and implement 0; state.json status EXHAUSTED, exhausted_limit \"maxRounds\", reason matches /node plan exhausted maxRounds 3 after 3 runs/, recovery undefined; exactly one loop.terminal event with status EXHAUSTED; three approval.result records for plan-approval all approved:false; the third select title contains `Revision 3 of 3 — a further change request ends the job EXHAUSTED`."
+   },
+   {
+    "file": "test/gated-loop.test.ts",
+    "title": "a plan gate without dialog UI stops NEEDS_HUMAN with the resume command and never answers itself",
+    "asserts": "context {hasUI:false, mode:\"print\"} whose select/confirm/editor throw if called: state.json status NEEDS_HUMAN, recovery \"approval\", reason contains `Plan approval needs an interactive session` and `resume with /kpi <jobId>`, graph_status \"interrupted\", pending_question equals the node question, stage \"plan\"; exactly one loop.terminal with status NEEDS_HUMAN; no approval.result event; implement never ran; notifications include `K-π job <id> is waiting on you: Plan approval` and `K-π job <id> NEEDS_HUMAN: Plan approval needs an interactive session` containing the resume command."
+   },
+   {
+    "file": "test/gated-loop.test.ts",
+    "title": "a plan gate dismissed with Escape stops NEEDS_HUMAN, re-asks on resume, and an approved gate is never asked twice",
+    "asserts": "first run with select scripted to return undefined: NEEDS_HUMAN with reason /Plan approval was dismissed/ and recovery \"approval\", no approval.result; `resumeLoop(jobId, context)` with select answering Approve plan: selections gains exactly one `Plan approval`, implement executed, status DONE; a further `resumeLoop` on the finished job returns DONE without a select (selections length unchanged) and latestCheckpoint values.plan.approved stays true. Additionally, with a fresh fixture: answer Approve plan, then stop the run by a factory whose implement session throws once (existing transient pattern), resumeLoop again → selections still has one `Plan approval` (an answered gate is completed in the checkpoint and not re-asked)."
+   },
+   {
+    "file": "test/graph-engine.test.ts",
+    "title": "a denied human node with a feedback path writes the feedback and the re-run node reads it in its prompt",
+    "asserts": "graph: agent `draft` (feedbackPath draft.feedback, response-less) → human `check` (statePath draft.ok, feedbackPath draft.feedback) with edges check→draft when false, check→__end__ when true; run interrupts; resume({approved:false, feedback:\"  tighter \"}) writes values.draft.feedback === \"tighter\", routes back to draft, and the second draft prompt contains `Operator feedback on your previous response (node run 2):\\ntighter`; the first prompt contained no `Operator feedback` line; on a fresh interrupt submitHuman({approved:false}) rejects /denied without feedback/ and submitHuman({approved:true, feedback:\"x\"}) on a human node without feedbackPath rejects /accepts no feedback/; validateGraphDefinition rejects a human node with feedbackPath `a..b` and one with `detail: \"verdict.json\"` (/detail must be stack.json/)."
+   },
+   {
+    "file": "test/graph-routing.test.ts",
+    "title": "the gated graph gates implement on plan approval and routes a change request back to plan",
+    "asserts": "loadNamedGraph(coding-loop.gated): node plan-approval is type human with statePath plan.approved, detail stack.json, feedbackPath plan.feedback; node plan has feedbackPath plan.feedback; fired(plan) == [plan-approval]; fired(plan-approval,{plan.approved:true}) == [implement]; fired(plan-approval,{plan.approved:false}) == [plan]; fired(plan-check) == [implement]; coding-loop.auto has no human node and no plan-approval id."
+   },
+   {
+    "file": "test/stack.test.ts",
+    "title": "the plan summary names delivery, the current slice, and every module's bounds from stack.json alone",
+    "asserts": "renderPlanSummary on a two-module horizontal stack with a reason yields lines `Delivery: horizontal — <reason>`, `Root: src`, `Current slice: auth`, `Modules (2):`, one numbered line per module with its purpose, and a bounds line with `2 allowed path(s)` and `depends on auth`; a stack without current_module_id renders `Current slice: (none named — implement will refuse this map)`; PLAN_SUMMARY_MAX_MODULES + 2 modules render exactly 12 numbered lines plus `… and 2 more modules (see stack.json)`; called with a plain object and no filesystem."
+   },
+   {
+    "file": "test/schema-conformance.test.ts",
+    "title": "event schema has one valid normalized branch per event type",
+    "asserts": "(existing bound title, body edit) the approval.result sample carries approved:false and feedback and validates against exactly one oneOf branch."
+   },
+   {
+    "file": "test/gated-loop.test.ts",
+    "title": "loop on healthcheck fixture reaches human confirm with green gates",
+    "asserts": "(existing bound title, body extended) confirmations still deepEqual [\"Approve gated release\"]; selections deepEqual [\"Plan approval\"]; events.jsonl has two approval.result records with plan-approval before human; exactly one loop.terminal DONE. Titles bound in scripts/generate-traceability-map.mjs that must survive verbatim: this one, \"the ship node commits on the job branch, pushes only that branch, and opens the pull request\", \"kpi --plan freezes and hashes plan files without executing specify\", \"a stale stack stops implement, and re-freezing it lets the round proceed\", \"ship commit subject matches the conventional commit contract\", \"restored checkpoint does not rerun completed plan and implement nodes\", \"a resumed run restores every stop, retry, cost, and time field\", \"every configured cap persists EXHAUSTED and exactly one terminal event\", \"an autopilot graph cannot contain a human node\", \"release is reachable only from evidence, and only in one place\", and every bound test/stack.test.ts title."
+   }
+  ],
+  "docs": [
+   {
+    "file": "docs/PRD.md",
+    "section": "US-02 — Start from a task (gated) (L104-114) and WF-01 (L436-443)",
+    "what": "Story: '...plans, shows me the plan and asks me to approve it or request changes, implements, tests, reviews, then asks me before commit.' Add `- **AC-02.8** After plan writes stack.json the graph pauses on the human node `plan-approval` (operator plan approval, distinct from the Dune structural plan gate of US-30); its dialog shows a rendered summary of stack.json (delivery, current slice, every module with folder, interface, allowed-path count, dependencies) and the file path, and offers Approve plan / Request changes; implement never runs before an approval is recorded as `approval.result` with `node: plan-approval`.`; `- **AC-02.9** Request changes requires non-empty feedback (at most 4000 characters), records it in `approval.result.feedback` and the run state `plan.feedback`, and re-runs plan with the feedback in its prompt; the re-planned stack.json replaces the old one and is frozen before implement.`; `- **AC-02.10** Plan revisions are bounded by the plan node's run cap min(maxRounds, maxNodeRuns) (default 3 runs); the change request that would exceed it ends EXHAUSTED naming the cap.`; `- **AC-02.11** A human gate reached without dialog UI, or dismissed, ends NEEDS_HUMAN with recovery `approval` and the exact resume command; it is never answered by the harness. An answered gate is persisted with the checkpoint and is not asked again on resume.` WF-01: `→ plan (stack.json) → plan-approval (operator: approve / request changes → plan) → implement`."
+   },
+   {
+    "file": "docs/spec.md",
+    "section": "§5 SCH-event (L283-297), §6 Stop states (L317-330), §7 Graphs (L332-392), §8 Graph engine (L394-407)",
+    "what": "§5: approval.result fields `approved`, optional `question`, optional `feedback`. §6 NEEDS_HUMAN row: add 'a human gate reached without dialog UI or dismissed by the operator (recovery `approval`, resume command in reason)'. §7: shape diagram becomes `plan → plan-approval → implement` with `plan-approval → plan` on request changes; conditional list adds `plan-approval true → implement`, `plan-approval false → plan (feedback in plan.feedback, prompt-appended; bounded by the plan node cap → EXHAUSTED)`; new sub-section 'Human node fields': `title`, `question` (one line; the board shows it), `statePath`, optional `detail: \"stack.json\"` (the driver renders its summary into the dialog at ask time), optional `feedbackPath`; agent node optional `feedbackPath`; node tool policy table (L376-386) row `plan-approval | none | n/a`. §8 human-node bullet (L403): '`ctx.ui.confirm` for a yes/no gate, `ctx.ui.select` + `ctx.ui.editor` for a gate with `feedbackPath`; `submitHuman(HumanAnswer)`; no dialog UI → NEEDS_HUMAN, never auto-answered'."
+   },
+   {
+    "file": "docs/dune-architecture.md",
+    "section": "Mandatory stack and current slice (L84-92)",
+    "what": "L87 becomes: 'Plan writes `stack.json`. The operator approves it at `plan-approval` or requests changes; a change request re-runs plan with the feedback and overwrites `stack.json`. The control plane freezes the approved map before implement.'"
+   },
+   {
+    "file": "docs/uat.md",
+    "section": "UAT-02 (L44-48)",
+    "what": "Action: '...run `/kpi add a healthcheck endpoint and verify it`, read the plan summary, choose Approve plan, then answer the release confirm.' Pass evidence: 'A `Plan approval` dialog carrying the stack.json summary and file path appears before any write; Request changes with feedback re-runs plan and the second stack.json differs; `events.jsonl` holds an `approval.result` for `plan-approval` before the one for `human`; running the same job without a dialog UI stops `NEEDS_HUMAN` with `recovery: approval` and the resume command.' ACs: AC-02.1–02.11."
+   },
+   {
+    "file": "README.md",
+    "section": "§8 Gated versus autopilot (L413-417), §12 command table (L582), §13 The run directory (L609-704, L669), §19 Worked example (L788-890, L887)",
+    "what": "§8: 'Gated stops for you twice: at plan approval (approve, or request changes with feedback; two change requests by default, the third ends EXHAUSTED) and at the release gate. Without a dialog UI a gate stops NEEDS_HUMAN and prints `/kpi <job>` to resume.' §12 L582: `15 records chained`. §13: state.json `recovery` may be `approval`; the finished run produces fifteen records with `approval.result ×2 (plan-approval, human)`. §19: insert a 'Plan approval' block after `03 plan CURRENT` showing the notify line `K-π job … is waiting on you: Plan approval`, the select dialog with the summary lines, the `Full plan:` path and `Revision 1 of 3`, and the two options; renumber 'First approval' → 'Second approval — the release gate', 'Second approval' → 'Third approval — the commit'; L887 `15 records chained`."
+   },
+   {
+    "file": "docs/visual-targets.md",
+    "section": "Human oversight box (L164-165)",
+    "what": "Pending question examples become `approve plan? / commit?`; note the plan summary lives in the dialog, not the board, and the board row stays one line."
+   },
+   {
+    "file": "scripts/generate-traceability-map.mjs + docs/traceability-map.json",
+    "section": "AC map (US-02)",
+    "what": "Add AC-02.8–AC-02.11 triples as listed in change; regenerate the map with `node scripts/generate-traceability-map.mjs`; confirm no UNCOVERED line is printed for AC-02.*."
+   }
+  ],
+  "verification": [
+   "node --test --experimental-strip-types test/graph-engine.test.ts test/graph-routing.test.ts test/stack.test.ts test/schema-conformance.test.ts",
+   "node --test --experimental-strip-types test/gated-loop.test.ts test/resume.test.ts test/autopilot.test.ts test/control-plane.test.ts",
+   "node scripts/generate-traceability-map.mjs && git diff --stat docs/traceability-map.json && ! node scripts/generate-traceability-map.mjs | grep -q 'UNCOVERED.*AC-02\\.'",
+   "npm run check",
+   "(cd packages/coding-agent && npm run build)",
+   "npm run test:kpi",
+   "npm test",
+   "npm run verify:built",
+   "rm -rf /tmp/kpi-scratch && cp -R fixtures/healthcheck-gated /tmp/kpi-scratch && cd /tmp/kpi-scratch && git init -q . && git add -A && git commit -qm 'chore: fixture baseline' && node /Users/leebarry/K-pi/packages/coding-agent/dist/cli.js   # in the TUI: /kpi $(cat task.txt); expect the warning 'K-π job … is waiting on you: Plan approval' and a select whose title carries the stack.json summary, 'Full plan: .kpi/runs/<job>/stack.json' and 'Revision 1 of 3'; choose Request changes, submit empty text (expect the 'Feedback is required' warning and a re-ask), then Request changes with real feedback, then Approve plan, then the release confirm",
+   "cd /tmp/kpi-scratch && grep -c '\"approval.result\"' .kpi/runs/*/events.jsonl   # expect 3 (deny with feedback, approve, release); grep -c '\"loop.terminal\"' → 1; cat .kpi/runs/*/state.json → status DONE, no pending_question; ls -t .kpi/runs/*/graph | head -1 | xargs -I{} cat .kpi/runs/*/graph/{} | grep -A3 '\"plan\"' → provided false, approved true, feedback text",
+   "cd /tmp/kpi-scratch && rm -rf .kpi/runs && git checkout -q . && node /Users/leebarry/K-pi/packages/coding-agent/dist/cli.js --mode json -p \"/kpi $(cat task.txt)\"   # non-TUI: expect state.json status NEEDS_HUMAN, recovery 'approval', reason 'Plan approval needs an interactive session … resume with /kpi <job>', graph_status interrupted, pending_question set, and no implement session under .kpi/runs/<job>/agents/; then open the TUI, run /kpi <job>, confirm the gate is asked exactly once and the job proceeds to DONE"
+  ],
+  "risks": [
+   "Behaviour change for the existing release gate in non-TUI modes: today the stub confirm returns false and the run is routed by policy.onHumanDeny (revise → another implement round); after this change it stops NEEDS_HUMAN with recovery `approval`. This is the defect the issue names (a harness-answered gate), so it is intended, but it is visible to anyone driving gated jobs through print/RPC without a dialog handler.",
+   "A gated job started without a dialog UI still spends research/specify/plan cost before stalling at the gate (see open question 2); the stall is recoverable with the exact resume command and no work is lost.",
+   "Every gated job now emits one more approval.result and, for a no-UI stop, one loop.terminal NEEDS_HUMAN followed by a second terminal on resume — the same shape the provider NEEDS_HUMAN path already produces. README record counts (14 → 15) change in three places (L582, L669, L887). `graph_round` (max node runs) rises by one per plan revision; per-node caps are independent, so implement's own run budget is not reduced.",
+   "The revision bound reuses the plan node's run cap (default 3 runs). An operator who passes `--max-rounds 1` gets zero change requests: the first Request changes ends EXHAUSTED. The dialog states `Revision N of cap` so this is visible, but it couples plan revisions to the same flag as verifier rounds (open question 1).",
+   "stack.json is rewritten on re-plan; an operator reading `.kpi/runs/<job>/stack.json` between gates sees the latest version only. The event log keeps the feedback and both approval decisions, so the history is reconstructible.",
+   "The select title carries a multi-line summary (bounded by PLAN_SUMMARY_MAX_MODULES = 12); the interactive selector already accepts multi-line titles (confirm passes `${title}\\n${message}`), and RPC clients receive the same title string in extension_ui_request. There is no separate full-plan view: the dialog names the file path.",
+   "Feedback text is stored verbatim in the checkpoint and events.jsonl (redacted by redactJson for secret-shaped values), capped at MAX_HUMAN_FEEDBACK_CHARS = 4000. It is the operator's own words but it is durable run data.",
+   "Changing `submitHuman`/`resume` to HumanAnswer and deleting `GraphHumanUI`/`resumeWithUI` is a source-level API change for any external caller of the engine; none exists in this repository.",
+   "test/harness.test.ts compares src/kpi and dist/kpi byte-for-byte: forgetting the packages/coding-agent rebuild after editing the graph JSON or event.schema.json fails `npm run test:kpi` and `verify:built`.",
+   "`detail: \"stack.json\"` is a one-value literal on the human node. It is kept because the driver, not the node id, must know which run file to summarise, and validation refuses a second file until a renderer exists; a future gate over another file widens the union and adds a renderer in the same change.",
+   "rejected: 'the release-gate behaviour change in print mode is a product question' — the issue statement itself names the harness-answered gate as the defect and NEEDS_HUMAN-with-resume as the required behaviour; it is listed above as a visible change, not a choice.",
+   "rejected: 'MAX_HUMAN_FEEDBACK_CHARS / PLAN_SUMMARY_MAX_MODULES are surface nobody asked for' — AGENTS.md requires every failure mode to have a bound; an unbounded feedback string in a chained event log and an unbounded dialog title are the alternatives. The values are exported constants and named in the ACs so a product owner can change them; 'View full plan' and MAX_PLAN_VIEW_LINES were dropped as accepted.",
+   "rejected: 'move the dismissed-gate test to a shared helper module' — exporting fixture()/loopSessions/commandHarness from a new test helper adds structure for one consumer; the test lives in test/gated-loop.test.ts where the helpers already are."
+  ],
+  "open_questions": [
+   "Should plan revisions share the plan node's run cap with verifier rounds (`--max-rounds`, default 3 runs = 2 change requests; `--max-rounds 1` allows none), or get their own limit (a new `maxPlanRevisions` on GraphBudgetLimits and task.limits)? The design uses the existing cap because it needs no new limit, flag, or schema field.",
+   "When a gated job is started with no dialog UI (print/RPC without a handler), should it be refused before it starts (matching the engine's stated policy for non-interactive graphs at engine.ts L409-411, saving the research/specify/plan spend) or run to the gate and stop NEEDS_HUMAN with the resume command (the issue's stated fix, and the only option for a job that was started interactively and resumed without a UI)? The design implements the latter only; refuse-at-start can be added as a check in runLoop without changing this design.",
+   "Product-owner sign-off on the US-02 story edit and the AC-02.8–AC-02.11 wording (in particular naming the operator gate 'plan approval' to keep it distinct from the Dune 'plan gate' of AC-30.4/AC-30.10)."
+  ],
+  "size": "L"
+ },
+ "critiques": [
+  {
+   "lens": "correctness",
+   "verdict": "needs-revision",
+   "problems": [
+    {
+     "severity": "major",
+     "claim": "The state.json `plan` object and the two gated-loop test assertions `state.json plan == {approved: true}` / `== {approved: true, feedback: ...}` are wrong: `values.plan` already carries `plan.provided`, so a deepEqual on {approved: true} fails as specified.",
+     "evidence": "packages/coding-agent/src/kpi/extensions/gated-loop.ts L1272 returns `\"plan.provided\": planProvided` from the facts resolver on every resolve; engine.ts L1408-1418 refreshFacts does setStatePath per fact into values, and submitHuman (L1473) calls refreshFacts before routing. So after the gate `state.values.plan` is `{provided: false, approved: true[, feedback]}`. The design's event_or_data_contracts entry `plan: { approved?: boolean; feedback?: string }` and tests 1 and 2 (`state.json plan == {approved: true}`) would fail; they must assert `plan.approved`/`plan.feedback` individually or include `provided`."
+    },
+    {
+     "severity": "minor",
+     "claim": "Test 2's assertion 'stack.json on disk is the second plan's output' is not distinguishable with the fake session as it exists: loopSessions returns the same `options.stack ?? healthStack` for every plan run, and it records no prompts, so 'the second plan prompt (captured via the fake session)' also needs a harness extension the design does not specify.",
+     "evidence": "test/gated-loop.test.ts L171-178: plan/plan-check always set `lastAssistantText = options.stack ?? healthStack` (a single string, no per-run sequence); the factory pushes only node ids into `executed` (L166) and keeps no prompt array. commandHarness (L248-291) likewise has no prompt capture. The design's change list for test/gated-loop.test.ts adds `selections`/`answers`/`feedbacks` but nothing for per-run stack output or prompt capture."
+    },
+    {
+     "severity": "minor",
+     "claim": "The resume test as placed in test/resume.test.ts cannot be written from that file's existing helpers: it has no healthcheck fixture, no gated-graph session factory, and no command harness, all of which live un-exported in test/gated-loop.test.ts.",
+     "evidence": "grep for fixture|loopSessions|healthcheck in test/resume.test.ts returns nothing; its tests build ad-hoc GraphDefinitions with allowNonInteractive:true (L45-70). The new test needs fixtures/healthcheck-gated, loopSessions (gated-loop.test.ts L145-245) and commandHarness (L248-291), none exported."
+    },
+    {
+     "severity": "minor",
+     "claim": "Test 1's 'executed order has plan-approval's approval before the first implement' cannot be read from `executed`: human nodes never enter that array; only the events.jsonl ordering (which the same test already asserts) can prove it.",
+     "evidence": "test/gated-loop.test.ts L164-166: `executed.push(currentNode || detected)` runs only inside the fake agent session's prompt(); a human node never prompts a session (engine.ts L1281-1299 interrupts without one)."
+    },
+    {
+     "severity": "minor",
+     "claim": "README record-count edits miss one occurrence: the `/kpi verify` command table row also hard-codes `14 records chained`.",
+     "evidence": "README.md L582 `| /kpi verify [job-id] | events.jsonl verified: 14 records chained for <job>` in addition to L669 (`fourteen records`) and L887 (`14 records chained`), which the design's docs section (§13, §19) covers; L582 is in the commands section it does not list."
+    },
+    {
+     "severity": "minor",
+     "claim": "Evidence line cites are slightly off but land on the right code: GraphHumanUI is at engine.ts L109-111 (the design's change (e) says so, but the evidence entry for schema.ts L109-111 is GraphBudgetLimits); commandHarness spans L248-291 not L252-296; the traceability AC regex is at L1185 not L1176.",
+     "evidence": "engine.ts L109 `export interface GraphHumanUI`; schema.ts L109-111 is `GraphBudgetLimits`; test/gated-loop.test.ts L248 `function commandHarness(`; scripts/generate-traceability-map.mjs L1185 `/^- \\*\\*(AC-\\d+\\.\\d+)\\*\\*\\s*(.+)$/`. All other cited lines (gated.json L37/L139/L193; engine L218/L412/L697/L1281/L1459/L1494; budget L135-149; gated-loop L87/L418/L464/L664/L1690/L1932; runner L236/L492; append-log L87; event.schema L303/L344; graph-routing L347; graph-engine.test L179; schema-conformance L98-99; harness.test L238-254) verified correct."
+    },
+    {
+     "severity": "minor",
+     "claim": "Verification step 9 contains a garbled `node -e 'console.log(JSON.parse(...require(\"glob\")?\"\":\"\"))'` fragment that the same line admits is unnecessary; it should be removed so the manual UAT step is executable as written.",
+     "evidence": "Design 'verification' list, item 9."
+    }
+   ],
+   "required_changes": [
+    "Fix the state.json contract and tests 1/2: document that `plan` in state.json is `{ provided: boolean; approved?: boolean; feedback?: string }` (plan.provided is written by the facts resolver, gated-loop.ts L1272) and assert `state.plan.approved === true` / `state.plan.feedback === '...'` rather than deepEqual on {approved: true}.",
+    "Extend loopSessions in test/gated-loop.test.ts so test 2 is provable: accept a per-run stack sequence (e.g. `stacks: string[]` shifted per plan run) and record each plan prompt (e.g. `prompts: string[]` on the factory options) so the 'second plan prompt contains the feedback block' and 'stack.json is the second plan's output' assertions have a source of truth.",
+    "Either move the dismissed-gate/resume test into test/gated-loop.test.ts (where fixture(), loopSessions and commandHarness live) or export those helpers into a shared test helper module; test/resume.test.ts cannot host it as written.",
+    "Reword test 1's ordering assertion to rely on events.jsonl (approval.result for plan-approval precedes the first implement-related record / the human approval), not on `executed`.",
+    "Add README.md L582 (`/kpi verify` table row, `14 records chained`) to the record-count edits alongside §13 and §19.",
+    "Correct the evidence cites: GraphHumanUI/resumeWithUI are engine.ts L109-111 / L1494-1500 (schema.ts L109-111 is GraphBudgetLimits); commandHarness is test/gated-loop.test.ts L248-291; the AC regex is generate-traceability-map.mjs L1185.",
+    "Delete the garbled `node -e` fragment from verification step 9."
+   ],
+   "file_conflicts_seen": [
+    "packages/coding-agent/src/kpi/extensions/graph/engine.ts (board-live, agents-visibility)",
+    "packages/coding-agent/src/kpi/extensions/gated-loop.ts (board-live, agents-visibility)",
+    "packages/coding-agent/src/kpi/extensions/append-log.ts (board-live, onboarding)",
+    "packages/coding-agent/src/kpi/schemas/event.schema.json (board-live, onboarding)",
+    "test/gated-loop.test.ts (board-live)",
+    "test/graph-engine.test.ts (board-live, agents-visibility)",
+    "test/schema-conformance.test.ts (board-live)",
+    "scripts/generate-traceability-map.mjs (anthropic-auth, board-live, agents-visibility, onboarding)",
+    "docs/traceability-map.json (anthropic-auth, agents-visibility)",
+    "docs/PRD.md (board-live)",
+    "docs/spec.md (board-live)",
+    "docs/uat.md (board-live)",
+    "docs/visual-targets.md (board-live)",
+    "README.md (board-live)"
+   ]
+  },
+  {
+   "lens": "minimalism-and-contract",
+   "verdict": "needs-revision",
+   "problems": [
+    {
+     "severity": "major",
+     "claim": "open_questions is empty while the design silently makes several product decisions.",
+     "evidence": "(a) Plan revisions are bound by the same cap as verifier rounds (budget.ts L135-149, `--max-rounds 1` => zero change requests) — the design lists this only as a risk. (b) A gated job started without a dialog UI is allowed to spend research/specify/plan cost and then stall NEEDS_HUMAN at the gate; the engine's own comment (engine.ts L409-411) states the opposite policy for non-interactive graphs: refuse before a job starts rather than at the node. Refuse-at-start vs stall-with-resume is a product call. (c) MAX_HUMAN_FEEDBACK_CHARS=4000, PLAN_SUMMARY_MAX_MODULES=12, MAX_PLAN_VIEW_LINES=200 and a third 'View full plan' option are numbers and surface nobody asked for. (d) The US-02 story sentence is rewritten and four ACs are authored in the design; AGENTS.md: 'Do not invent requirements that are not in those files.' (e) The existing release gate changes behaviour in print mode (stub confirm→false→revise today; NEEDS_HUMAN after) — listed as a risk, not a question."
+    },
+    {
+     "severity": "major",
+     "claim": "New module packages/coding-agent/src/kpi/extensions/graph/plan-summary.ts has exactly one caller and is justified by speculative reuse.",
+     "evidence": "docs/minimalist.md: 'No utility module before a second caller exists' and rung 1 YAGNI. The only caller is engine.ts interrupt; 'Issue B may reuse it' is not a caller. stack.ts (L17-36) already owns DuneStack and assertDuneStack, and the design itself puts the test in test/stack.test.ts — the function belongs in stack.ts."
+    },
+    {
+     "severity": "major",
+     "claim": "The engine-side `detail` rendering, the `detail: \"stack.json\"` node field, `pendingHuman.detail` in the checkpoint, and state.json `pending_detail` / `plan` have no consumer in this change.",
+     "evidence": "board.ts L407-418 and control-plane.ts L232 read only pending_question; the design says resume reads the engine checkpoint, not state.json ('Persistence needs nothing new'). `detail` is a literal type with one legal value (a boolean in disguise) that forces engine.ts to do file I/O and import DuneStack at interrupt, only to fill a field nothing reads. The driver's answerPendingHuman already reads join(jobDirectory, 'stack.json') for View full plan and could render the summary at ask time from the same read — no schema, checkpoint, or state.json change needed."
+    },
+    {
+     "severity": "minor",
+     "claim": "'View full plan' has an unnamed failure path.",
+     "evidence": "Change (c) does readFile(join(jobDirectory, node.detail)) inside the ask loop with no stated behaviour on ENOENT/parse error; the interrupt path names its fallback, this one does not. AGENTS.md rule 5: every failure mode gets a real path and a recorded reason."
+    },
+    {
+     "severity": "minor",
+     "claim": "Owning docs are incomplete: dune-architecture.md, US-30 naming collision, LoopRecovery docstring, spec §8 wording.",
+     "evidence": "docs/dune-architecture.md L87 'Plan writes stack.json. The control plane freezes it before implement.' now needs the re-plan/overwrite lifecycle and is not in the docs list. docs/PRD.md L413/L419 (AC-30.4, AC-30.10) already use 'plan gate' for the Dune structural check; the new operator gate reuses the term without disambiguation. gated-loop.ts L80-86 docstring enumerates the two recovery kinds and says the control plane keys its prompt off it; control-plane.ts L498 branches only on 'provider' — the docstring must change and the design should say the control plane deliberately adds no branch. docs/spec.md L403 lists `ctx.ui.confirm / select / input`; the design uses `editor`."
+    },
+    {
+     "severity": "minor",
+     "claim": "Test 'request changes re-plans…' asserts a second, different stack.json but the fake planner returns a fixed stack.",
+     "evidence": "test/gated-loop.test.ts L172-173: loopSessions returns the same stack JSON for every plan run; the design does not say how the second run's output is varied or how the 'second plan prompt' is captured."
+    },
+    {
+     "severity": "minor",
+     "claim": "The 12-module / 200-line summary and a 200-line `notify` payload are an operator-surface choice not in visual-targets.md.",
+     "evidence": "docs/visual-targets.md L164-166 defines the oversight box as one pending question; the design only adds a note that pending_detail exists. A 200-line notification in the TUI transcript is a new visual surface with no target."
+    }
+   ],
+   "required_changes": [
+    "Populate open_questions with the decisions the design currently makes silently: (1) whether plan revisions share `--max-rounds` with verifier rounds or get their own bound; (2) whether a gated job with no dialog UI is refused before it starts (matching engine.ts L409-411's stated policy) or runs to the gate and stalls NEEDS_HUMAN; (3) the 4000-char / 12-module / 200-line caps and whether 'View full plan' exists at all; (4) the exact AC-02.8–02.11 wording and the US-02 story edit as a product owner decision; (5) the release-gate behaviour change in print mode.",
+    "Delete plan-summary.ts from the change; export renderPlanSummary from packages/coding-agent/src/kpi/extensions/stack.ts (owner of DuneStack/assertDuneStack) with the test already placed in test/stack.test.ts.",
+    "Drop `detail` from HumanGraphNode, PendingHumanInput, the checkpoint and state.json (`pending_detail`, `plan`) unless a consumer lands in the same change; render the summary in answerPendingHuman from the job directory's stack.json (the read it already performs). If the checkpointed detail is kept, name the reader and the AC that requires it.",
+    "Name the failure path for the View full plan readFile (recorded reason, re-ask or NEEDS_HUMAN), and name what happens when the summary cannot be rendered at ask time.",
+    "Add docs/dune-architecture.md (L84-92) to the docs list with the re-plan overwrite lifecycle; disambiguate the new operator gate from US-30's Dune 'plan gate' in PRD/spec wording; update the LoopRecovery docstring at gated-loop.ts L80-86 and state whether control-plane.ts adds an 'approval' branch; fix docs/spec.md §8 to name `editor`.",
+    "State how the fake plan session in test/gated-loop.test.ts (loopSessions L172) returns a different stack on the second run and how the second plan prompt is captured."
+   ],
+   "file_conflicts_seen": [
+    "packages/coding-agent/src/kpi/extensions/graph/engine.ts (board-live, agents-visibility)",
+    "packages/coding-agent/src/kpi/extensions/gated-loop.ts (board-live, agents-visibility)",
+    "packages/coding-agent/src/kpi/extensions/append-log.ts (board-live, onboarding)",
+    "packages/coding-agent/src/kpi/schemas/event.schema.json (board-live, onboarding)",
+    "test/gated-loop.test.ts (board-live)",
+    "test/graph-engine.test.ts (board-live, agents-visibility)",
+    "test/schema-conformance.test.ts (board-live)",
+    "scripts/generate-traceability-map.mjs (anthropic-auth, board-live, agents-visibility, onboarding)",
+    "docs/traceability-map.json (anthropic-auth, agents-visibility)",
+    "docs/PRD.md (board-live)",
+    "docs/spec.md (board-live)",
+    "docs/visual-targets.md (board-live)",
+    "docs/uat.md (board-live)",
+    "README.md (board-live)"
+   ]
+  }
+ ]
+}

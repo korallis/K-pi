@@ -1,0 +1,629 @@
+[
+ {
+  "package": "anthropic-auth",
+  "report": {
+   "package": "anthropic-auth",
+   "files_changed": [
+    "/Users/leebarry/K-pi/packages/coding-agent/src/kpi/extensions/accounts/errors.ts",
+    "/Users/leebarry/K-pi/packages/coding-agent/src/kpi/extensions/accounts/store.ts",
+    "/Users/leebarry/K-pi/packages/coding-agent/src/kpi/extensions/accounts/index.ts",
+    "/Users/leebarry/K-pi/packages/coding-agent/src/kpi/extensions/accounts/balancer.ts",
+    "/Users/leebarry/K-pi/packages/coding-agent/src/kpi/extensions/accounts/widget.ts",
+    "/Users/leebarry/K-pi/packages/ai/test/anthropic-auth-token.test.ts",
+    "/Users/leebarry/K-pi/test/accounts-errors.test.ts",
+    "/Users/leebarry/K-pi/test/accounts-commands.test.ts",
+    "/Users/leebarry/K-pi/test/accounts.test.ts",
+    "/Users/leebarry/K-pi/test/accounts-routing.test.ts",
+    "/Users/leebarry/K-pi/UPSTREAM.md"
+   ],
+   "tests_added": [
+    {
+     "file": "packages/ai/test/anthropic-auth-token.test.ts",
+     "title": "identifies OAuth requests as a Claude Code build Anthropic accepts"
+    },
+    {
+     "file": "test/accounts-errors.test.ts",
+     "title": "parseClientVersionRejection reads the sent and required versions from the rejection body"
+    },
+    {
+     "file": "test/accounts-errors.test.ts",
+     "title": "summarizeRefreshFailure never carries a stack trace"
+    },
+    {
+     "file": "test/accounts-commands.test.ts",
+     "title": "an existing default slot with a live grant of its own is never overwritten by the official import"
+    },
+    {
+     "file": "test/accounts-commands.test.ts",
+     "title": "the official slot is served from auth.json and never refreshed by K-π"
+    },
+    {
+     "file": "test/accounts-commands.test.ts",
+     "title": "an expired legacy default copy binds to the auth.json grant it duplicated"
+    },
+    {
+     "file": "test/accounts-commands.test.ts",
+     "title": "a pooled login the runtime persisted becomes the official slot and the previous official slot keeps its grant"
+    },
+    {
+     "file": "test/accounts-commands.test.ts",
+     "title": "an api-key login that leaves auth.json alone stays a secret-backed slot"
+    },
+    {
+     "file": "test/accounts-commands.test.ts",
+     "title": "an invalid_grant refresh marks the slot as needing login, once, without a stack trace"
+    },
+    {
+     "file": "test/accounts-commands.test.ts",
+     "title": "a transient refresh failure cools the slot with a plain reason and no login demand"
+    },
+    {
+     "file": "test/accounts-commands.test.ts",
+     "title": "a dead auth.json grant marks the official slot as needing login without touching auth.json"
+    },
+    {
+     "file": "test/accounts-commands.test.ts",
+     "title": "an official slot whose auth.json entry vanished is reported once at session start"
+    },
+    {
+     "file": "test/accounts.test.ts",
+     "title": "a Claude Code version rejection is surfaced once and never cools or fails over"
+    },
+    {
+     "file": "test/accounts-routing.test.ts",
+     "title": "the widget marks a slot that needs a login"
+    }
+   ],
+   "commands_run": [
+    {
+     "cmd": "grep -n 'claudeCodeVersion = ' packages/ai/src/api/anthropic-messages.ts && git show ea35b7f80 -- packages/ai/src/api/anthropic-messages.ts",
+     "exit": 0,
+     "summary": "Line 77 reads claudeCodeVersion = \"2.1.251\"; commit ea35b7f80 (cherry-picked from 96317e50b) changes only that one line. Not re-applied, file not edited."
+    },
+    {
+     "cmd": "git diff -- packages/ai/test/anthropic-auth-token.test.ts test/accounts-commands.test.ts test/accounts.test.ts test/accounts-routing.test.ts && cat test/accounts-errors.test.ts",
+     "exit": 0,
+     "summary": "Reviewed the interrupted engineer's test edits against the design; all titles/asserts match the design (harness gained an extra optional existingDirectory param used by the vanished-entry test; kept)."
+    },
+    {
+     "cmd": "node --test --experimental-strip-types test/accounts-errors.test.ts",
+     "exit": 1,
+     "summary": "REPRODUCTION (before sources): SyntaxError, errors.ts does not export parseClientVersionRejection."
+    },
+    {
+     "cmd": "node --test --experimental-strip-types test/accounts-commands.test.ts",
+     "exit": 1,
+     "summary": "REPRODUCTION (before sources): pass 12, fail 10 (the two rewritten import tests, the malformed-import test and all seven new official/needs-login tests)."
+    },
+    {
+     "cmd": "node --test --experimental-strip-types test/accounts.test.ts",
+     "exit": 1,
+     "summary": "REPRODUCTION (before sources): pass 32, fail 1 (the client-version rejection test)."
+    },
+    {
+     "cmd": "node --test --experimental-strip-types test/accounts-routing.test.ts",
+     "exit": 1,
+     "summary": "REPRODUCTION (before sources): pass 20, fail 1 (widget needs-login marker)."
+    },
+    {
+     "cmd": "cd packages/ai && npx vitest --run test/anthropic-auth-token.test.ts",
+     "exit": 0,
+     "summary": "Before sources: 9 passed. The floor case already passes because ea35b7f80 landed 2.1.251; a node one-liner confirmed the same comparison rejects 2.1.75 (prints false) and accepts 2.1.251/2.2.0/3.0.0."
+    },
+    {
+     "cmd": "npx biome format --write <10 owned ts files>",
+     "exit": 0,
+     "summary": "Formatted 10 files, fixed 2."
+    },
+    {
+     "cmd": "node --test --experimental-strip-types test/accounts-errors.test.ts test/accounts-commands.test.ts test/accounts.test.ts test/accounts-routing.test.ts",
+     "exit": 0,
+     "summary": "AFTER: tests 78, pass 78, fail 0 (errors 2, commands 22, accounts 33, routing 21)."
+    },
+    {
+     "cmd": "cd packages/ai && npx vitest --run test/anthropic-auth-token.test.ts test/anthropic-oauth.test.ts",
+     "exit": 0,
+     "summary": "AFTER: 2 files, 12 tests passed."
+    },
+    {
+     "cmd": "npx biome check --error-on-warnings packages/coding-agent/src/kpi/extensions/accounts/{errors,store,index,balancer,widget}.ts test/accounts-errors.test.ts test/accounts-commands.test.ts test/accounts.test.ts test/accounts-routing.test.ts packages/ai/test/anthropic-auth-token.test.ts",
+     "exit": 0,
+     "summary": "Checked 10 files, no diagnostics."
+    },
+    {
+     "cmd": "npx tsc --noEmit -p tsconfig.json",
+     "exit": 0,
+     "summary": "0 errors across the tree (none in owned files)."
+    },
+    {
+     "cmd": "git status --short -- <owned paths>",
+     "exit": 0,
+     "summary": "M UPSTREAM.md, M packages/ai/test/anthropic-auth-token.test.ts, M accounts/{balancer,errors,index,store,widget}.ts, M test/accounts-{commands,routing}.test.ts, M test/accounts.test.ts, ?? test/accounts-errors.test.ts"
+    }
+   ],
+   "deviations": [
+    "reconcileOfficialCredentials: when a content-matched slot takes the official flag from a sibling that was flagged WITHOUT a secret (design: 'clear official on siblings'), that sibling would be left with neither flag nor credential and silently send no auth; it is additionally marked needsLogin = 'its auth.json credential now belongs to <slot>' so the state is visible and bounded (every failure mode gets a real path). Only reachable when auth.json's grant matches a non-official slot's secret while another slot is already flagged.",
+    "reconcileOfficialCredentials: when the legacy `default` slot is adopted as official, its `kind` is set to match the auth.json credential type (oauth/api_key) so accounts.json never describes an api_key grant as an oauth slot; the design did not mention kind.",
+    "reconcileOfficialCredentials returns `orphaned` entries as `<pool>/<slot>` strings (like imported/adopted) rather than a pair; session_start splits on the first slash.",
+    "reconcileOfficialCredentials no longer returns early when auth.json is missing/not an object (the old importOfficialCredentials did): a missing file is treated as {} so the orphan pass still runs — required by the 'auth.json entry vanished' test.",
+    "markNeedsLogin throws on an empty reason or an unknown slot rather than writing a document assertAccounts would reject on the next read.",
+    "packages/ai/test/anthropic-auth-token.test.ts floor comparison rewritten to a two-line firstDifference form (same semantics, readable); the interrupted engineer's version was correct but convoluted.",
+    "Existing harness in test/accounts-commands.test.ts takes an optional third `existingDirectory` argument (from the interrupted engineer) so the vanished-entry test can open a second session on the same store; kept as-is.",
+    "Cherry-pick step skipped per lead DECISION (already commit ea35b7f80); verified with grep and git show. Live-artifact verification steps (backups, running dist/bundle/cli.js) skipped per DECISION. docs/remediation-plan.md not touched per DECISION (gate is recorded as NH-05 by the docs wave; text in handover)."
+   ],
+   "handover": {
+    "ac_rows": [
+     {
+      "id": "AC-10.2 (amended wording, existing binding unchanged)",
+      "file": "test/accounts.test.ts",
+      "title": "two Anthropic subscription slots coexist",
+      "note": "Binding survives verbatim. Amend the AC-10.2 last sentence in docs/PRD.md:190 to: 'Each pool has at most one official slot, whose grant is the one auth.json holds and which the base runtime refreshes; every other slot refreshes independently in K-π; no grant is ever held by two refreshers, and a slot's credential is never substituted by another slot's.'"
+     },
+     {
+      "id": "AC-10.9",
+      "file": "test/accounts.test.ts",
+      "title": "a Claude Code version rejection is surfaced once and never cools or fails over",
+      "note": "claude_code_version_too_old is explained once with sent/required versions and the update remedy; no cooldown, no failover. Add to scripts/generate-traceability-map.mjs after the AC-10.8 row (:334-338) as [\"test/accounts.test.ts\", \"a Claude Code version rejection is surfaced once and never cools or fails over\", \"claude_code_version_too_old is explained once with sent/required versions and the update remedy; no cooldown, no failover\"]."
+     },
+     {
+      "id": "AC-10.10",
+      "file": "test/accounts-commands.test.ts",
+      "title": "the official slot is served from auth.json and never refreshed by K-π",
+      "note": "one grant per slot: the official slot has no secrets copy and is never refreshed by K-π; invalid_grant marks needs-login, never a cooldown or a stack trace. Add to scripts/generate-traceability-map.mjs after AC-10.9 as [\"test/accounts-commands.test.ts\", \"the official slot is served from auth.json and never refreshed by K-π\", \"one grant per slot: the official slot has no secrets copy and is never refreshed by K-π; invalid_grant marks needs-login, never a cooldown or a stack trace\"]. Then node scripts/generate-traceability-map.mjs (docs/traceability-map.json is regenerated output; top-level key is \"entries\")."
+     }
+    ],
+    "doc_edits": [
+     {
+      "file": "docs/remediation-plan.md",
+      "section": "## NEEDS_HUMAN gates table (line 37, NH-02 row format at :44)",
+      "what": "Add row NH-05 | CLOSED (YES) | korallis | 2026-09-03 | question: may AC-10.2 (docs/PRD.md:190) and docs/spec.md:649 be amended so that each pool's official slot is the grant ~/.kpi/agent/auth.json holds, refreshed only by the base runtime (model-runtime.ts:583, resolve.ts:139-155), with K-π refreshing only non-official slots? | decision: YES, answered by the product owner's instruction 'fix /login anthropic so K-π synchronizes refreshed OAuth credentials into account routing and supports two distinct subscription slots' — Anthropic rotates refresh tokens, so two refreshers on one grant cannot both stay valid, and the runtime refreshes auth.json on every request | docs: PRD AC-10.2/10.9/10.10, spec §13, README §4/§5/§20, uat UAT-10 | RP-06, RP-07. (The design called this gate NH-03; NH-03 already exists, so it is NH-05.)"
+     },
+     {
+      "file": "docs/PRD.md",
+      "section": "US-10 AC-10.2 (line 190), new AC-10.9 and AC-10.10",
+      "what": "Amend AC-10.2's last sentence (text in ac_rows). Add AC-10.9: a claude_code_version_too_old refusal is explained once per session (K-π version, the Claude Code version sent, the required floor, the update command `npm install -g @korallis/k-pi@latest`) and never cools a slot or changes route. Add AC-10.10: an invalid_grant refresh — K-π's own on a non-official slot, or the runtime's on the official auth.json grant — marks that slot `needs login` (persisted in accounts.json as `needsLogin`, unselectable, shown in the widget) with one plain-language notification naming `/accounts login <pool> <slot>`; never a cooldown, never a stack trace; a transient refresh failure (http/transport) cools the slot 5h with a plain reason."
+     },
+     {
+      "file": "docs/spec.md",
+      "section": "§13 Accounts and providers — Store paragraph (line 649), schema block (612-632), Credential injection (655)",
+      "what": "Replace the line-649 sentence with the single-grant rule: per pool at most one official slot; auth.json[pool] is that slot's grant; it has no accounts.secrets.json entry; K-π never calls oauth.refresh on it (the base runtime refreshes it on every request); non-official slots exist only in accounts.secrets.json and are refreshed by K-π; a pooled OAuth login the runtime persisted into auth.json becomes the official slot and the previous official slot keeps the grant auth.json held until then as a K-π-refreshed secret (loginAccount reads it live immediately before login); reconciliation runs once per session_start, by content match (refresh or access token equal, or api key equal), then the legacy rule (bind `default` only when its secret is absent or an expired OAuth copy), else a fresh official slot (`default`, else next `slot-N`); a flagged slot whose auth.json entry vanished is marked needsLogin `auth.json no longer holds a <pool> credential`. Document in the schema block: `official?: true` (at most one per pool, never on a local slot) and `needsLogin?: string` (persisted reason; balancer.selectInFamily never selects it; putSlot on re-login clears it). Under Credential injection add: for the official slot the runtime's own auth header is left in place and only request attribution is recorded; Anthropic OAuth requests identify as Claude Code (`user-agent: claude-cli/<v>`, upstream constant, cherry-picked pin 2.1.251); a claude_code_version_too_old refusal is a client-identity failure — notified once per session at level error, no cooldown, no failover, assistant diagnostic `kpi_client_version_rejected` with details { sent?, required?, slot? } which never triggers the agent-session retry (only kpi_account_failover does)."
+     },
+     {
+      "file": "docs/uat.md",
+      "section": "UAT-10 (line 92)",
+      "what": "Add to Action/Pass evidence: rotate the auth.json grant out from under the official slot and start a session — no `could not refresh` warning, accounts.json shows `official: true` on the slot, accounts.secrets.json has no `anthropic/default`; break a non-official slot's refresh token — one notification `K-π accounts: anthropic/<slot> needs a new login: Anthropic rejected its refresh token (invalid_grant). Run /accounts login anthropic <slot>`, the widget shows `<slot> ?% needs login`, no stack trace; send a request with a below-floor Claude Code identity — one `K-π <version> identifies to Anthropic as Claude Code …` notification, the slot is not cooled. ACs: AC-10.1–10.10."
+     },
+     {
+      "file": "README.md",
+      "section": "§4 config directory table (164-176), §5 closing paragraph (310-313), §20 Troubleshooting (after line 890)",
+      "what": "§4 `auth.json` row: 'the base harness's credential per provider; for a K-π pool this is the official slot's grant, and K-π never writes it'. §5: replace the closing paragraph with the official-slot rule (the runtime refreshes the official slot on every request, K-π refreshes the others at session start and turn start; `/accounts login anthropic <slot>` makes the new slot official and the previous one keeps its grant, the notice reads `Added account anthropic/<slot> (anthropic/<previous> keeps its previous grant)`). §20 add two entries: `Claude Code 2.1.x does not support this model; version … or newer is required` — K-π identifies as Claude Code for subscription OAuth; update with `npm install -g @korallis/k-pi@latest`; nothing is cooled and no failover happens; and `K-π accounts: anthropic/<slot> needs a new login` — why a refresh token dies when two copies refresh it (Anthropic rotates refresh tokens), run `/accounts login anthropic <slot>`, the widget marker `needs login`; a dead official grant blocks the pool until that login — resend the prompt afterwards, there is no automatic retry."
+     },
+     {
+      "file": "docs/traceability-map.json",
+      "section": "AC-10.9, AC-10.10",
+      "what": "Regenerated by node scripts/generate-traceability-map.mjs after the script rows above; never hand-edited."
+     }
+    ],
+    "event_types_added": [],
+    "titles_changed": [
+     "test/accounts-commands.test.ts: `an existing default slot is never overwritten by the official import` -> `an existing default slot with a live grant of its own is never overwritten by the official import` (old title was not bound in scripts/generate-traceability-map.mjs; verified by grep)"
+    ],
+    "hunks_for_other_owners": []
+   },
+   "known_gaps": [
+    "Not run (forbidden for this wave): npm run build/build:offline, npm run check, npm run test:kpi, npm test, test/harness.test.ts, scripts/generate-traceability-map.mjs. The design's verification also lists test/milestone.test.ts, which is not an owned file and was not run.",
+    "Live-artifact verification (backing up ~/.kpi/agent/{accounts,accounts.secrets,auth}.json, running dist/bundle/cli.js -p, the TUI /accounts login anthropic work walkthrough) is the lead's after the build.",
+    "The docs wave must land the NH-05 gate row, the AC-10.2 amendment, AC-10.9/AC-10.10 script rows plus regeneration, and the spec/README/uat edits listed in handover; until then docs/PRD.md:190 and docs/spec.md:649 still state the old per-slot-copy contract.",
+    "The vitest floor case (packages/ai/test/anthropic-auth-token.test.ts) could not be shown failing in-tree because the 2.1.251 pin is already committed and the pinned file is not editable by this package; its comparison was shown to reject 2.1.75 via a node one-liner instead.",
+    "Known bounded behaviours (from the design's risks, unchanged): a dead official grant makes the pool unavailable until `/accounts login anthropic <slot>` with no automatic retry; `/accounts logout` of the official slot leaves auth.json's grant, which the next session_start re-imports as an official slot; a base `/logout anthropic` mid-session is only reported at the next session_start."
+   ]
+  },
+  "verdict": {
+   "package": "anthropic-auth",
+   "verdict": "pass",
+   "problems": [
+    {
+     "severity": "minor",
+     "file": "packages/coding-agent/src/kpi/extensions/accounts/store.ts",
+     "claim": "reconcileOfficialCredentials.flagOfficial adds a needsLogin reason (`its auth.json credential now belongs to <slot>`) to a demoted sibling that held no secret; the design only says 'clear official on siblings' and this reason string appears in no handover doc text.",
+     "evidence": "store.ts flagOfficial helper (diff hunk after `const flagOfficial = ...`): `if (secrets[secretKey(poolId, sibling.id)] === undefined && sibling.needsLogin === undefined) sibling.needsLogin = ...`. The implementer lists it as deviation 1. It is reachable only when auth.json's grant content-matches a non-official slot while another slot is already flagged; without it that sibling would silently send no auth, so the behaviour is bounded and visible, not a defect.",
+     "fix": "No code change needed. Add the reason string to the handover's spec §13 / README §20 needs-login wording so the docs wave documents every persisted needsLogin reason (the other two, `auth.json no longer holds a <pool> credential` and `its auth.json credential was replaced by the login of <slot>`, are already in the design)."
+    }
+   ],
+   "tests": [
+    {
+     "cmd": "node --test --experimental-strip-types test/accounts-errors.test.ts",
+     "exit": 0,
+     "summary": "tests 2, pass 2, fail 0 (parseClientVersionRejection, summarizeRefreshFailure)"
+    },
+    {
+     "cmd": "node --test --experimental-strip-types test/accounts-commands.test.ts",
+     "exit": 0,
+     "summary": "tests 22, pass 22, fail 0 (all ten official-slot / needs-login tests present with the design's titles)"
+    },
+    {
+     "cmd": "node --test --experimental-strip-types test/accounts.test.ts",
+     "exit": 0,
+     "summary": "tests 33, pass 33, fail 0; bound title `two Anthropic subscription slots coexist` unchanged at test/accounts.test.ts:186; new `a Claude Code version rejection is surfaced once and never cools or fails over` passes"
+    },
+    {
+     "cmd": "node --test --experimental-strip-types test/accounts-routing.test.ts",
+     "exit": 0,
+     "summary": "tests 21, pass 21, fail 0 (widget `needs login` marker)"
+    },
+    {
+     "cmd": "cd packages/ai && npx vitest --run test/anthropic-auth-token.test.ts",
+     "exit": 0,
+     "summary": "9 passed incl. `identifies OAuth requests as a Claude Code build Anthropic accepts`"
+    },
+    {
+     "cmd": "npx biome check --error-on-warnings <5 accounts/*.ts, 4 test/accounts*.test.ts, packages/ai/test/anthropic-auth-token.test.ts>",
+     "exit": 0,
+     "summary": "Checked 10 files, no diagnostics"
+    },
+    {
+     "cmd": "npx tsc --noEmit -p tsconfig.json",
+     "exit": 0,
+     "summary": "0 errors tree-wide"
+    },
+    {
+     "cmd": "grep -n 'claudeCodeVersion = ' packages/ai/src/api/anthropic-messages.ts; git diff -- packages/ai/src/api/anthropic-messages.ts | wc -l; git log --oneline -1",
+     "exit": 0,
+     "summary": "Line 77 reads claudeCodeVersion = \"2.1.251\" from commit ea35b7f80; working-tree diff on that file is empty (not edited, not re-cherry-picked)"
+    },
+    {
+     "cmd": "REPRODUCTION in a scratch copy (rsync packages+test, node_modules symlinked, the five accounts/*.ts restored from HEAD via git show): node --test on the four owned test files",
+     "exit": 1,
+     "summary": "Against HEAD sources: accounts-errors 1 fail (missing export), accounts-commands 12 pass / 10 fail (exactly the two rewritten import tests, the malformed-import test and the seven new tests), accounts.test 32/1 (version rejection), accounts-routing widget test fails (the second routing failure, the normative fixture, is a scratch-copy artifact: fixtures/ was not copied). Every new/rewritten test fails before the sources and passes after."
+    },
+    {
+     "cmd": "REPRODUCTION in the scratch copy: sed claudeCodeVersion to \"2.1.75\" in packages/ai/src/api/anthropic-messages.ts, then npx vitest --run test/anthropic-auth-token.test.ts",
+     "exit": 1,
+     "summary": "1 failed | 8 passed: `claude-cli/2.1.75 is below the 2.1.251 floor` — the vitest floor case does refute the old pin"
+    },
+    {
+     "cmd": "git status --short -- docs README.md scripts AGENTS.md packages/ai/src; grep -rn importOfficialCredentials packages/coding-agent/src test docs README.md scripts; grep -rn 'never overwritten by the official import' test scripts docs",
+     "exit": 0,
+     "summary": "No docs/scripts/README/AGENTS edits, no anthropic-messages.ts edit, no importOfficialCredentials alias left anywhere, the renamed commands-test title is bound nowhere (traceability script binds only `two Anthropic subscription slots coexist` for AC-10)"
+    }
+   ]
+  },
+  "fixed": false
+ },
+ {
+  "package": "plan-gate",
+  "report": {
+   "package": "plan-gate",
+   "files_changed": [
+    "/Users/leebarry/K-pi/packages/coding-agent/src/kpi/extensions/stack.ts",
+    "/Users/leebarry/K-pi/packages/coding-agent/src/kpi/extensions/graph/schema.ts",
+    "/Users/leebarry/K-pi/packages/coding-agent/src/kpi/extensions/graph/engine.ts",
+    "/Users/leebarry/K-pi/packages/coding-agent/src/kpi/graphs/coding-loop.gated.json",
+    "/Users/leebarry/K-pi/packages/coding-agent/src/kpi/extensions/gated-loop.ts",
+    "/Users/leebarry/K-pi/packages/coding-agent/src/kpi/extensions/append-log.ts",
+    "/Users/leebarry/K-pi/packages/coding-agent/src/kpi/schemas/event.schema.json",
+    "/Users/leebarry/K-pi/test/gated-loop.test.ts",
+    "/Users/leebarry/K-pi/test/graph-engine.test.ts",
+    "/Users/leebarry/K-pi/test/graph-routing.test.ts",
+    "/Users/leebarry/K-pi/test/stack.test.ts",
+    "/Users/leebarry/K-pi/test/schema-conformance.test.ts"
+   ],
+   "tests_added": [
+    {
+     "file": "test/gated-loop.test.ts",
+     "title": "the gated loop asks the operator to approve the plan before implement and records the approval"
+    },
+    {
+     "file": "test/gated-loop.test.ts",
+     "title": "request changes re-plans with the operator's feedback and refuses empty feedback"
+    },
+    {
+     "file": "test/gated-loop.test.ts",
+     "title": "a plan gate without dialog UI stops NEEDS_HUMAN with the resume command and never answers itself"
+    },
+    {
+     "file": "test/gated-loop.test.ts",
+     "title": "a plan gate dismissed with Escape stops NEEDS_HUMAN, re-asks on resume, and an approved gate is never asked twice"
+    },
+    {
+     "file": "test/gated-loop.test.ts",
+     "title": "loop on healthcheck fixture reaches human confirm with green gates (existing bound title; body extended: selections deepEqual [\"Plan approval\"], gate title carries the stack.json summary + Full plan path + Revision 1, waiting-on-you notification, two approval.result records plan-approval before human, checkpoint values.plan.approved true)"
+    },
+    {
+     "file": "test/graph-engine.test.ts",
+     "title": "a denied human node with a feedback path writes the feedback and the re-run node reads it in its prompt"
+    },
+    {
+     "file": "test/graph-routing.test.ts",
+     "title": "the gated graph gates implement on plan approval and routes a change request back to plan"
+    },
+    {
+     "file": "test/graph-routing.test.ts",
+     "title": "the gated graph routes every conditional branch as data (existing bound title; gatedCases gained plan -> plan-approval, plan-approval true -> implement, plan-approval false -> plan, plan-check -> implement)"
+    },
+    {
+     "file": "test/stack.test.ts",
+     "title": "the plan summary names delivery, the current slice, and every module's bounds from stack.json alone"
+    },
+    {
+     "file": "test/schema-conformance.test.ts",
+     "title": "event schema has one valid normalized branch per event type (existing bound title; approval.result sample now approved:false + feedback; node.started / node.finished samples added)"
+    },
+    {
+     "file": "test/schema-conformance.test.ts",
+     "title": "event schema rejects cross-type and research vocabulary drift (existing bound title; adds assertInvalid({ ...eventPayload(\"node.finished\"), approved: true }))"
+    }
+   ],
+   "commands_run": [
+    {
+     "cmd": "node --test --experimental-strip-types test/stack.test.ts test/graph-engine.test.ts test/graph-routing.test.ts test/schema-conformance.test.ts",
+     "exit": 1,
+     "summary": "Before implementation: stack.test.ts fails to load (no export PLAN_SUMMARY_MAX_MODULES); engine test rejects with 'no graph edge from check matched the run state' (boolean-form submitHuman treats the HumanAnswer object as truthy, no feedback refusal); routing case 'a written plan waits for the operator...' fails (no plan-approval node); schema-conformance fails on feedback / node.* branches."
+    },
+    {
+     "cmd": "node --test --experimental-strip-types test/stack.test.ts test/graph-engine.test.ts test/graph-routing.test.ts test/schema-conformance.test.ts",
+     "exit": 0,
+     "summary": "After stack.ts / schema.ts / engine.ts / gated graph / append-log.ts / event.schema.json changes: 61 tests, 61 pass, 0 fail."
+    },
+    {
+     "cmd": "node --test --experimental-strip-types test/gated-loop.test.ts",
+     "exit": 1,
+     "summary": "Before the driver change (tests written first): the whole file fails to load - gated-loop.ts does not export PLAN_GATE_OPTIONS."
+    },
+    {
+     "cmd": "node --test --experimental-strip-types test/gated-loop.test.ts",
+     "exit": 1,
+     "summary": "With only the two exported constants added: 8 pass, 12 fail; every gated run dies with 'K-π loop failed: human node plan-approval was denied without feedback' because the old loop answers the plan gate with a bare ctx.ui.confirm boolean."
+    },
+    {
+     "cmd": "node --test --experimental-strip-types test/gated-loop.test.ts",
+     "exit": 0,
+     "summary": "After answerPendingHuman / askGateWithFeedback landed in gated-loop.ts: 20 tests, 20 pass, 0 fail."
+    },
+    {
+     "cmd": "npx biome format --write <12 owned files listed explicitly>",
+     "exit": 0,
+     "summary": "Formatted 10 files (biome ignores the two JSON files by config), fixed 3 (engine.ts, test/gated-loop.test.ts, test/graph-engine.test.ts): line wrapping only."
+    },
+    {
+     "cmd": "npx biome check --error-on-warnings <12 owned files listed explicitly>",
+     "exit": 0,
+     "summary": "Checked 10 files. No fixes applied, no errors, no warnings."
+    },
+    {
+     "cmd": "npx tsc --noEmit",
+     "exit": 0,
+     "summary": "0 errors in the whole tree (including other engineers' mid-edit files at the time of the run)."
+    },
+    {
+     "cmd": "node --test --experimental-strip-types test/gated-loop.test.ts test/graph-engine.test.ts test/graph-routing.test.ts test/stack.test.ts test/schema-conformance.test.ts",
+     "exit": 0,
+     "summary": "Final run after formatting: 81 tests, 81 pass, 0 fail."
+    }
+   ],
+   "deviations": [
+    "Product decision applied: the gate dialog's last line is `Revision N` (the human node's run count) with no `of <cap>` and no EXHAUSTED warning; the design's test 'the third change request ends EXHAUSTED naming the plan node cap' was not written, and the healthcheck/plan-approval tests assert the title does not match / of \\d|EXHAUSTED/.",
+    "Last clause of the dismissed-gate/resume test: the design asked to stop the run after plan approval with 'a factory whose implement session throws once'. A node error puts the engine in status `failed`, whose checkpoint resumeLoop refuses ('Cannot resume graph in failed state'), so that shape cannot show a resume. Implemented instead with a harness whose hasUI getter turns false once the plan gate is answered: the release gate stops NEEDS_HUMAN (recovery approval, 'Approve gated release needs an interactive session'), and the interactive resume answers the release confirm without re-asking the plan gate (selections stay [\"Plan approval\"]).",
+    "Operator warning wording carries the mandated `K-π ` prefix: `K-π feedback is required to request plan changes`, `K-π feedback must be at most 4000 characters (got N)`, and `K-π job <id>: stack.json could not be summarised: <reason>` (the design's bare 'Feedback is required...' text is contained in the first).",
+    "The `Full plan:` line is built as a POSIX string `${CONFIG_DIR_NAME}/runs/<job>/stack.json` rather than path.join so the dialog line is identical on every platform; when a human node has no `detail` the summary block and the Full plan line are omitted (no blank lines).",
+    "An unknown select answer (not one of PLAN_GATE_OPTIONS) throws `<title> was answered with an option it did not offer: <choice>` rather than being treated as a request for changes - a named failure path for a misbehaving UI/RPC client.",
+    "The release gate's approval.result now also carries `question` (the design records `question: pending.question` for every answer, both gates).",
+    "Added `assertInvalid({ ...eventPayload(\"node.finished\"), approved: true })` to the existing drift test, as plan.json's shared contract asks; the task's DECISIONS list did not mention it but did not forbid it.",
+    "loopSessions' `stack: \"\"` branch was folded into the generic `options.stack ?? healthStack` expression (\"\" ?? x is \"\"), behaviour unchanged; `stacks` (per-run sequence) and `prompts` (`<node>\\n<prompt>` capture) were added as the design required."
+   ],
+   "handover": {
+    "ac_rows": [
+     {
+      "id": "AC-02.8",
+      "file": "test/gated-loop.test.ts",
+      "title": "the gated loop asks the operator to approve the plan before implement and records the approval",
+      "note": "plan approval with the stack.json summary and file path in the dialog before the first write; approval.result node plan-approval precedes the release approval; the waiting-on-you notification"
+     },
+     {
+      "id": "AC-02.9",
+      "file": "test/gated-loop.test.ts",
+      "title": "request changes re-plans with the operator's feedback and refuses empty feedback",
+      "note": "empty feedback refused and re-asked; feedback recorded in approval.result.feedback and checkpoint plan.feedback; the re-run planner prompt carries `Operator feedback on your previous response (node run 2):`; the re-planned stack.json is the one frozen before implement"
+     },
+     {
+      "id": "AC-02.10",
+      "file": "test/gated-loop.test.ts",
+      "title": "(no test in this package) plan revisions are unbounded; the operator is the bound",
+      "note": "PRODUCT DECISION 2026-09-03: no cap on plan revisions and the graph never ends a job on a counter. The proving test belongs to the later self-healing package that deletes the engine's per-node caps; until then the existing min(maxRounds, maxNodeRuns) node cap still applies to plan re-runs (see known_gaps). The two plan-gate tests above assert the dialog shows `Revision N` with no cap and no EXHAUSTED warning."
+     },
+     {
+      "id": "AC-02.11",
+      "file": "test/gated-loop.test.ts",
+      "title": "a plan gate without dialog UI stops NEEDS_HUMAN with the resume command and never answers itself",
+      "note": "hasUI false: NEEDS_HUMAN, recovery approval, reason `Plan approval needs an interactive session. Answer it in an interactive K-π session, then resume with /kpi <job>`, one loop.terminal, no approval.result, implement never ran. Companion title in the same file: 'a plan gate dismissed with Escape stops NEEDS_HUMAN, re-asks on resume, and an approved gate is never asked twice' (dismissal, re-ask on resume, answered gate persisted in the checkpoint and not re-asked)"
+     }
+    ],
+    "doc_edits": [
+     {
+      "file": "docs/PRD.md",
+      "section": "US-02 story (L104-114) and WF-01 (L436-443)",
+      "what": "Story: '...plans, shows me the plan and asks me to approve it or request changes, implements, tests, reviews, then asks me before commit.' Add AC-02.8 (plan-approval human node after plan writes stack.json - operator plan approval, distinct from the Dune structural plan gate of US-30; dialog shows the rendered stack.json summary: delivery, current slice, every module with folder/interface/allowed-path count/dependencies, plus the file path; offers Approve plan / Request changes; implement never runs before an approval.result with node plan-approval), AC-02.9 (Request changes requires non-empty feedback of at most 4000 characters, recorded in approval.result.feedback and run state plan.feedback, re-runs plan with the feedback in its prompt; the re-planned stack.json replaces the old one and is frozen before implement), AC-02.10 (plan revisions are unbounded: the dialog shows `Revision N`; the operator is the only bound - per the 2026-09-03 product decision, NOT the design's cap wording), AC-02.11 (a human gate reached without dialog UI, or dismissed, ends NEEDS_HUMAN with recovery `approval` and the exact resume command; never answered by the harness; an answered gate is persisted with the checkpoint and not asked again on resume). WF-01: `→ plan (stack.json) → plan-approval (operator: approve / request changes → plan) → implement`."
+     },
+     {
+      "file": "docs/spec.md",
+      "section": "§5 SCH-event (L283-297), §6 Stop states (L317-330), §7 Graphs (L332-392), §8 Graph engine (L394-407)",
+      "what": "§5: approval.result fields approved, optional question, optional feedback; event types gain node.started {run, model?} and node.finished {run, status completed|failed, elapsed_ms, cost_usd?, result?, session?, error?} (board-live emits them in a later wave). §6 NEEDS_HUMAN row: add 'a human gate reached without dialog UI or dismissed by the operator (recovery `approval`, resume command in reason)'. §7: shape becomes plan → plan-approval → implement with plan-approval → plan on request changes; conditional list adds `plan-approval true → implement`, `plan-approval false → plan (feedback in plan.feedback, prompt-appended; unbounded, the operator is the bound)`; new sub-section 'Human node fields': title, question (one line; the board shows it), statePath, optional detail: \"stack.json\" (the driver renders its summary into the dialog at ask time), optional feedbackPath; agent node optional feedbackPath; node tool policy table row `plan-approval | none | n/a`. §8 human-node bullet: '`ctx.ui.confirm` for a yes/no gate, `ctx.ui.select` + `ctx.ui.editor` for a gate with feedbackPath; `submitHuman(HumanAnswer)`; no dialog UI → NEEDS_HUMAN, never auto-answered'."
+     },
+     {
+      "file": "docs/dune-architecture.md",
+      "section": "Mandatory stack and current slice (L84-92), L87",
+      "what": "'Plan writes `stack.json`. The operator approves it at `plan-approval` or requests changes; a change request re-runs plan with the feedback and overwrites `stack.json`. The control plane freezes the approved map before implement.'"
+     },
+     {
+      "file": "docs/uat.md",
+      "section": "UAT-02 (L44-48)",
+      "what": "Action: '...run `/kpi add a healthcheck endpoint and verify it`, read the plan summary, choose Approve plan, then answer the release confirm.' Pass evidence: 'A `Plan approval` dialog carrying the stack.json summary and file path appears before any write; Request changes with feedback re-runs plan and the second stack.json differs; events.jsonl holds an approval.result for plan-approval before the one for human; the same job without a dialog UI stops NEEDS_HUMAN with recovery approval and the resume command.' ACs: AC-02.1–02.11."
+     },
+     {
+      "file": "README.md",
+      "section": "§8 Gated versus autopilot (L413-417), §12 command table (L582), §13 run directory (L609-704, L669), §19 worked example (L788-890, L887)",
+      "what": "§8: 'Gated stops for you twice: at plan approval (approve, or request changes with feedback, as many times as you need) and at the release gate. Without a dialog UI a gate stops NEEDS_HUMAN and prints `/kpi <job>` to resume.' §13: state.json `recovery` may be `approval`; record list gains `approval.result ×2 (plan-approval, human)`. §19: insert a 'Plan approval' block after `03 plan CURRENT` showing `K-π job … is waiting on you: Plan approval`, the select dialog with the summary lines, the `Full plan: .kpi/runs/<job>/stack.json` line and `Revision 1`, and the two options; renumber 'First approval' → 'Second approval — the release gate', 'Second approval' → 'Third approval — the commit'. Record counts at L582/L669/L887 are recomputed by the docs agent from a real gated run (plan-gate adds +1 approval.result; board-live adds node.* records) - not hard-coded to 15."
+     },
+     {
+      "file": "docs/visual-targets.md",
+      "section": "Human oversight box (L164-165)",
+      "what": "Pending question examples become `approve plan? / commit?`; note the plan summary lives in the dialog, not the board, and the board row stays one line."
+     },
+     {
+      "file": "scripts/generate-traceability-map.mjs + docs/traceability-map.json + test/traceability.test.ts",
+      "section": "AC map (US-02) and the EVENT_TYPES copies",
+      "what": "Add the AC-02.8–AC-02.11 triples from handover.ac_rows (AC-02.10 is deliberately not bound to a test in this package - bind it when the self-healing package lands its test, or mark it as owner-decided). Append \"node.started\", \"node.finished\" after \"agent.denied\" in BOTH the script's EVENT_TYPES copy and test/traceability.test.ts's copy (25 names). Regenerate with `node scripts/generate-traceability-map.mjs`."
+     }
+    ],
+    "event_types_added": [
+     "node.started",
+     "node.finished"
+    ],
+    "titles_changed": [],
+    "hunks_for_other_owners": [
+     {
+      "file": "scripts/generate-traceability-map.mjs",
+      "owner": "docs+traceability agent",
+      "hunk": "In the EVENT_TYPES copy: after `\"agent.denied\",` add `\"node.started\",` and `\"node.finished\",` (same order as packages/coding-agent/src/kpi/extensions/append-log.ts)."
+     },
+     {
+      "file": "test/traceability.test.ts",
+      "owner": "docs+traceability agent",
+      "hunk": "In the local `const EVENT_TYPES = [` copy (L15): after `\"agent.denied\",` add `\"node.started\",` and `\"node.finished\",`."
+     },
+     {
+      "file": "packages/coding-agent/dist",
+      "owner": "lead",
+      "hunk": "Rebuild packages/coding-agent so dist/kpi/graphs/coding-loop.gated.json and dist/kpi/schemas/event.schema.json are byte-for-byte copies of src (test/harness.test.ts L238-254); not run in this wave per instructions."
+     },
+     {
+      "file": "packages/coding-agent/src/kpi/extensions/renderers.ts",
+      "owner": "board-live (optional)",
+      "hunk": "No hunk required: registerEventRenderers iterates EVENT_TYPES, so node.started/node.finished get the generic formatEventEntry line and test/extension.test.ts's `rendererNames deepEqual EVENT_TYPES` stays true. board-live may add a dedicated `if (type.startsWith(\"node.\"))` branch (run, status, elapsed_ms) when it starts emitting them."
+     },
+     {
+      "file": "packages/coding-agent/src/kpi/extensions/control-plane.ts",
+      "owner": "board-live",
+      "hunk": "No hunk required: the generic notify at L494-497 already prints `K-π job <id> NEEDS_HUMAN: <reason>` with the resume command for recovery `approval`; only `provider` gets the extra confirm (L498), as designed."
+     }
+    ]
+   },
+   "known_gaps": [
+    "Until the self-healing package deletes the engine's per-node caps, findExhaustedNodeLimit (budget.ts L135-149, checked at engine.ts before a node starts) still bounds plan re-runs at min(maxRounds, maxNodeRuns) (default 3): a third accepted change request would still end the job EXHAUSTED with `node plan exhausted maxRounds 3 after 3 runs`. Per the product decision this package neither implements nor tests that bound; the dialog no longer names it.",
+    "packages/coding-agent/dist was not rebuilt (lead's job after the wave); test/harness.test.ts will fail its byte-for-byte src/dist comparison for coding-loop.gated.json and event.schema.json until then.",
+    "scripts/generate-traceability-map.mjs and test/traceability.test.ts keep their own 23-name EVENT_TYPES copies; test/traceability.test.ts will disagree with append-log.ts's 25 names until the docs agent applies the handover hunks.",
+    "A gated job started without dialog UI (print/RPC) still spends research/specify/plan before stopping NEEDS_HUMAN at the gate - the decided behaviour; no refuse-at-start check was added.",
+    "The re-ask loop inside askGateWithFeedback (dismissed editor, empty feedback, over-long feedback) is bounded only by the operator: Escape on the select ends the run NEEDS_HUMAN with the resume command.",
+    "The select title carries the multi-line stack.json summary (bounded by PLAN_SUMMARY_MAX_MODULES = 12); RPC clients receive the same string in extension_ui_request. There is no separate full-plan view; the dialog names the file path.",
+    "Behaviour change visible to non-TUI drivers of gated jobs: the existing release gate, which the no-UI stub used to answer `confirm → false` (routed by policy.onHumanDeny), now stops NEEDS_HUMAN with recovery `approval` - the defect the issue names, exercised by the partial-UI half of the dismissed-gate test.",
+    "Not run, by instruction: npm run build/build:offline/check/test:kpi/test, test/harness.test.ts, the traceability generator, and other packages' test files (test/extension.test.ts, test/resume.test.ts, test/control-plane.test.ts, test/autopilot.test.ts); tsc --noEmit over the whole tree was clean at the time of the run."
+   ]
+  },
+  "verdict": {
+   "package": "plan-gate",
+   "verdict": "pass",
+   "problems": [
+    {
+     "severity": "minor",
+     "file": "packages/coding-agent/src/kpi/extensions/gated-loop.ts",
+     "claim": "askGateWithFeedback reads the revision as `engine.state.nodes[pending.nodeId]?.runs ?? 1`, a defensive fallback on a path answerPendingHuman has already proven unreachable (the node was found in the graph and every graph node is seeded in state.nodes).",
+     "evidence": "gated-loop.ts line ~1603 `const revision = engine.state.nodes[pending.nodeId]?.runs ?? 1;` while answerPendingHuman (line ~1660) already throws `pending human node does not exist` when the node is absent.",
+     "fix": "Use `engine.state.nodes[pending.nodeId].runs` directly so a missing node record would surface as a defect rather than render as Revision 1."
+    },
+    {
+     "severity": "minor",
+     "file": "test/gated-loop.test.ts",
+     "claim": "The NEEDS_HUMAN stop on the resume path (resumeLoop invoked without dialog UI, or with the select dismissed) is not exercised directly; only the first-run path is (no-UI test, dismissed-gate test, partial-UI test all stop inside runLoop).",
+     "evidence": "All three stop scenarios in the new tests reach the stop through `commands.get(\"loop\")`; every `commands.get(\"kpi\")` resume in the file runs with hasUI true and answers the gate. The resume path shares answerPendingHuman but has its own writeTerminalState/return hunk.",
+     "fix": "Add a resume of a NEEDS_HUMAN job with `hasUI: false` asserting a second loop.terminal NEEDS_HUMAN, recovery `approval`, and no approval.result, or fold it into the dismissed-gate test."
+    }
+   ],
+   "tests": [
+    {
+     "cmd": "node --test --experimental-strip-types test/gated-loop.test.ts",
+     "exit": 0,
+     "summary": "20 tests, 20 pass, 0 fail (4 new plan-gate tests plus the extended healthcheck test)"
+    },
+    {
+     "cmd": "node --test --experimental-strip-types test/graph-engine.test.ts",
+     "exit": 0,
+     "summary": "20 tests, 20 pass, 0 fail (new feedback-path test; resume({approved:true}) form)"
+    },
+    {
+     "cmd": "node --test --experimental-strip-types test/graph-routing.test.ts",
+     "exit": 0,
+     "summary": "10 tests, 10 pass, 0 fail (4 new gated routing cases + new plan-approval test; supplied set gains plan.approved)"
+    },
+    {
+     "cmd": "node --test --experimental-strip-types test/stack.test.ts",
+     "exit": 0,
+     "summary": "28 tests, 28 pass, 0 fail (new renderPlanSummary test)"
+    },
+    {
+     "cmd": "node --test --experimental-strip-types test/schema-conformance.test.ts",
+     "exit": 0,
+     "summary": "3 tests, 3 pass, 0 fail (approval.result feedback, node.started, node.finished samples; node.finished cross-type drift rejected)"
+    },
+    {
+     "cmd": "npx biome check --error-on-warnings <12 owned files>",
+     "exit": 0,
+     "summary": "Checked 10 files, no errors, no warnings (the two JSON files are ignored by config)"
+    },
+    {
+     "cmd": "npx tsc --noEmit",
+     "exit": 0,
+     "summary": "0 type errors across the tree"
+    },
+    {
+     "cmd": "node --test --experimental-strip-types test/resume.test.ts / test/autopilot.test.ts / test/control-plane.test.ts / test/extension.test.ts",
+     "exit": 0,
+     "summary": "Non-owned neighbours from the design's verification list: 14/11/11/2 pass, 0 fail — the HumanAnswer API change and the EVENT_TYPES extension broke no consumer (renderer names still equal EVENT_TYPES)"
+    }
+   ]
+  },
+  "fixed": false
+ },
+ {
+  "package": "agents-visibility",
+  "report": {
+   "package": "agents-visibility",
+   "note": "The implementer reported: files_changed sessions-snapshot.ts (created), sessions-command.ts (created), spawn.ts, communicate.ts, test/bus.test.ts; tests added \"a registered bus lists its workers for the sessions snapshot and leaves it when released\", \"/agents prints every kind of session and names the mechanism\", and the migrated \"countLiveProcesses excludes dead PIDs without reaping the table\"; node --test test/bus.test.ts 96/96 pass; biome check clean on the five files; tsc --noEmit showed 0 errors in owned files."
+  },
+  "verdict": {
+   "package": "agents-visibility",
+   "verdict": "pass",
+   "problems": [
+    {
+     "severity": "minor",
+     "file": "packages/coding-agent/src/kpi/extensions/bus/sessions-command.ts",
+     "claim": "formatSessionsTable appends a `no active job` line when no job is passed, which the design's line list for formatSessionsTable does not specify.",
+     "evidence": "Lines 76-79: `if (job === undefined) { lines.push(\"no active job\"); return lines; }`. The design's formatSessionsTable spec lists header, table, caps, mechanism, and the conditional honest line only; the README docs entry in the same design does say `no active job` is not an error and the main row still prints, so the behaviour is consistent with the design's intent and no test contradicts it.",
+     "fix": "None required; if the exact line set matters, drop the `no active job` line or record it as an accepted deviation alongside the job status line."
+    }
+   ],
+   "tests": [
+    {
+     "cmd": "cd /Users/leebarry/K-pi && node --test --experimental-strip-types test/bus.test.ts",
+     "exit": 0,
+     "summary": "96 tests, 96 pass, 0 fail; includes 'countLiveProcesses excludes dead PIDs without reaping the table' (migrated, title unchanged, not bound in scripts/generate-traceability-map.mjs), 'a registered bus lists its workers for the sessions snapshot and leaves it when released', and '/agents prints every kind of session and names the mechanism'. Both new tests import the new sessions-snapshot.ts/sessions-command.ts modules and drive the real bus + fake pi, so they fail before the change (modules absent); the unreadable-run-store path is exercised for real by writing a file at .kpi/runs so readdir throws ENOTDIR, and the error notify begins with 'K-π /agents could not read the run store: '."
+    },
+    {
+     "cmd": "cd /Users/leebarry/K-pi && npx biome check --error-on-warnings packages/coding-agent/src/kpi/extensions/bus/sessions-snapshot.ts packages/coding-agent/src/kpi/extensions/bus/sessions-command.ts packages/coding-agent/src/kpi/extensions/bus/spawn.ts packages/coding-agent/src/kpi/extensions/bus/communicate.ts test/bus.test.ts",
+     "exit": 0,
+     "summary": "Checked 5 files, no diagnostics."
+    },
+    {
+     "cmd": "cd /Users/leebarry/K-pi && npx tsc --noEmit",
+     "exit": 0,
+     "summary": "Root typecheck (covers packages and test/) reports no errors; control-plane.ts still compiles against the kept live-snapshot.ts bridge."
+    },
+    {
+     "cmd": "cd /Users/leebarry/K-pi && git status --short && git diff -- <owned files> and grep of engine.ts/gated-loop.ts/control-plane.ts/board.ts diffs for sessions-snapshot|registerLiveBus|registerLiveNodeSession|onSessionsChange",
+     "exit": 0,
+     "summary": "Owned diffs are exactly the design/decision scope: sessions-snapshot.ts exports LiveNodeSession, LiveWorkerSession, SessionRow, SessionsSnapshot, MECHANISM_SENTENCE (verbatim), registerLiveNodeSession, registerLiveBus, resetSessionsRegistry, liveNodeSessions, liveWorkerSessions, liveWorkerCount, sessionsSnapshot, with only `import type` from spawn.ts; spawn.ts adds LiveWorker, liveWorkers() using the injected isProcessAlive without reaping, countLiveProcesses derived from it, node?: on spawn options/WorkerRecord/WorkerStatus (conditional spread, accepted); communicate.ts keeps live-snapshot.ts with setLiveWorkerCountProvider(() => liveWorkerCount()) bridging to the registry, registers each activeBus via registerLiveBus, releases at session_shutdown, and calls registerSessionsCommand at the top of registerParentTools (guarded inside by typeof pi.registerCommand). The board-package files carry no registry references, no docs were edited, live-snapshot.ts is untouched, no hard-coded model id, no alias/shim beyond the decided bridge, the only catch (stats reader) is design-specified and commented. K-π prefix present on table header, usage warning and error notify."
+    }
+   ]
+  },
+  "fixed": false
+ }
+]

@@ -1,0 +1,49 @@
+# K-π operator-issues batch — handoff (2026-09-03)
+
+Paste everything below the line into a new Claude Code session opened in `/Users/leebarry/K-pi`.
+
+---
+
+Continue the K-π operator-issues batch on branch `fix/operator-issues-0.3.0` (already checked out; tree clean). Use workflows (ultracode) for every substantive wave, exactly as before: several implementers in parallel on disjoint files in the ONE working tree, an adversarial verifier per package, one fix pass; I run the full gates between waves, not the agents.
+
+## What is already done (do not redo)
+
+Commits on the branch, all green on `npm run build:offline && npm run check && npm run test:kpi && npm test` (714 K-π tests):
+- ea35b7f80 cherry-pick of upstream 96317e50b: `claudeCodeVersion` 2.1.75 → 2.1.251 in packages/ai/src/api/anthropic-messages.ts (fixes the 400 `claude_code_version_too_old`).
+- 68da4505b accounts: one grant per slot — a pool's `default` slot is `official: true`, credential-free, served from `~/.kpi/agent/auth.json` (the base runtime is its only refresher); `reconcileOfficialCredentials` at session_start; `invalid_grant` marks the slot `needsLogin` and says so once (`/accounts login <pool> <slot>`), never a stack trace; `claude_code_version_too_old` is explained once with the update remedy, never cooled or failed over.
+- ae3565bc4 graph: plan-approval human node after `plan` in coding-loop.gated.json; dialog shows a stack.json summary; "Request changes" needs feedback, which reaches the plan prompt via `feedbackPath`; engine `submitHuman({approved, feedback?})`; a gate with no dialog UI stops NEEDS_HUMAN with recovery "approval"; shared event contracts landed (node.started / node.finished types+schema, approval.result.feedback, firecrawl research enums).
+- 640fbaa81 bus: `bus/sessions-snapshot.ts` registry, `BackgroundBus.liveWorkers()`, `/agents` command (sessions-command.ts), `node` on spawn/WorkerStatus. `bus/live-snapshot.ts` still exists with a bridge line in communicate.ts (board-live removes it).
+
+Proven on the real artifact: `node packages/coding-agent/dist/bundle/cli.js -p --no-session --mode json --provider anthropic --model claude-opus-4-8 'reply with the single word ok'` reached Anthropic (server said the account is out of extra usage — not a version error) with no "Could not refresh" line. Backups of the three account files are `~/.kpi/agent/*.pre-0.3.0.bak`.
+
+## Owner decisions (normative; do not re-ask)
+
+- No USD cost cap at all: delete `maxCostUsd`, `--max-cost-usd`, task.limits; cost is reported only ("est.").
+- Graphs never fail on their own: no counter or clock ends a run. Transient failures (timeout, 408/429/5xx, transport) retry indefinitely with 1 s doubling to a 60 s ceiling, no jitter, checkpoint before every wait, one `node.retry` event and one "K-π " notify per retry, board RETRY row. Repeated review output / failing-AC set → re-plan with `repair.json` (two automatic re-plans per operator touch), then pause NEEDS_HUMAN offering "Give guidance / Keep going / Stop". A failed `test` round counts as a round and identical evidence fingerprints across consecutive failed test rounds are a witness too. Run vocabulary becomes RUNNING | NEEDS_HUMAN | DONE | STOPPED; NEEDS_HUMAN and STOPPED are finished-but-resumable (`/kpi <job>` resumes anything but DONE); only RUNNING is live (PRD AC-24.3 stays). Old runs on disk keep their finished status until resumed. `loop.terminal` keeps its name with a `recovery` field. Autopilot keeps its mode gate (US-04) but no hard stops either.
+- Detach the running loop from the `/kpi` command handler (interactive-mode.ts main loop awaits the handler, so today `/kpi status`, `/kpi stop`, `/agents` and chat are blocked for the whole job): the handler starts the loop, keeps a module-level live handle with an AbortController, and returns; `/kpi stop` aborts immediately and writes `stop.json` + STOPPED; `/kpi <goal>` while a job runs is refused. The captured ctx stays valid (runner.ts marks ctx stale only on session replacement/reload).
+- Release gate gains the same shape as the plan gate: Approve / Request changes (feedback → back to implement) / Stop.
+- The NEEDS_HUMAN gate on the official-slot change is answered YES (record as NH-05 in docs/remediation-plan.md; NH-03 already exists). Onboarding = RP-20 / US-31; self-healing = RP-21. Version bump: 0.3.0.
+- Board: compact stage cells carry live content (DONE: "<elapsed> · <n> calls · $<cost>", CURRENT: last tool + target + elapsed, PENDING: "—") plus a NOW row; chat narration one line per node start/finish/route change/failover/gate; interactive `/kpi status` overlay (←/→ select stage, Enter detail, t transcript, r refresh, q/Esc); no keyboard shortcut (the detach makes `/kpi status` work mid-run).
+- Onboarding: `/onboarding` (no alias) composed from `loginPoolInteractively`, `promptResearchKeys`, `runKStackSetup`; auto-runs at TUI startup only when every pool has zero slots and no model is available; Firecrawl is a third research service (v2 `/v2/search`, Bearer, `sources:[{type:"web"}]`, never scrapeOptions; auto order exa → perplexity → firecrawl).
+
+## Artifacts
+
+`~/.claude/projects/-Users-leebarry-K-pi/handoff-0.3.0/`
+- `designs/design-<key>.json` — implementation-ready, critiqued designs for anthropic-auth, plan-gate, agents-visibility (landed), board-live, onboarding, self-healing (revised) and self-healing-draft; `designs/plan.json` — file ownership + shared contracts; `designs/wave1-reports.json` — implementer reports with hand-over hunks (owner "board-live" and "docs+traceability") and AC rows/doc edits for the docs wave.
+- `workflows/*.js` — the workflow scripts used (wave1b and wave2 are the templates: RULES, REPORT_SCHEMA, VERDICT_SCHEMA, implement → verify → fix).
+- `logs/` — baseline and wave-1 gate logs, the smoke JSON log.
+
+## Remaining plan
+
+1. **Wave 2** — run `workflows/kpi-wave2-implement-wf_ee4b350f-ced.js` (copy it into the session's workflow dir or pass it inline; it references `${SCRATCH}` paths — point them at `handoff-0.3.0/designs/`). board-live ∥ onboarding on disjoint files. It failed twice only because of API 529; the tree was clean both times. Then: `npm run build:offline && npm run check && npm run test:kpi && npm test`; commit per package.
+2. **Wave 3a self-healing core** — from `designs/design-self-healing.json`: budget.ts, graph/schema.ts, stop.ts, engine.ts, graphs (3 JSON), prompts/plan.md, schemas/task.schema.json + event.schema.json, append-log.ts, run-store.ts, and tests stop/graph-engine/resume/graph-routing/reviewer-session/run-store/schema-conformance + `test/fixtures/retired-cap-resume/` (scrub absolute paths). Apply the owner decisions above where the design differs (two re-plans; test-round witness; abort-immediately stop). Expect driver-file tests to fail until 3b; don't run full gates between 3a and 3b.
+3. **Wave 3b self-healing driver** — gated-loop.ts, control-plane.ts (detach + stop), board.ts / board-frame.ts / board-activity.ts / board-overlay.ts (vocabulary, `ROUND n`, RETRY row, `STOP NEEDS_HUMAN <recovery>`), status-line/*, scripts/pty-rows/uat-06/15/16/25.mjs, scripts/metric-runs.mjs, tests gated-loop/autopilot/control-plane/operator-ui/status-line/policy/milestone/research-control-plane; release gate options. Then full gates; commit.
+4. **Wave 4 docs+traceability** — ONE agent: gather every `handover` from the wave reports (wave1-reports.json plus the wave 2/3 results), write docs/PRD.md (US-02 ACs 02.8–02.11, US-05 rewrite, US-10 AC-10.2 amended + 10.9/10.10, US-23 AC-23.10/11, US-28 AC-28.8, new US-31, US-06/14/16/25 board ACs), docs/spec.md (§4 commands, §6 stop states, §7/8 pause nodes + no caps, §11 board, §13 accounts, §5 research), docs/uat.md (UAT-02/05/06/10/16/23/28 + UAT-31), docs/visual-targets.md, docs/agents-bus.md, docs/research.md, docs/remediation-plan.md (NH-05 CLOSED, RP-20, RP-21, status line), AGENTS.md (best-practice row on stopping conditions, US range), README.md (§3 first launch → /onboarding, §5, §8 no budget flags, §9 board, §12 commands incl. /agents /onboarding, §14, §15 Firecrawl, §20; recompute `/kpi verify` record counts from a real run), fixes.md (FX-05 board, FX-06 sessions), UPSTREAM.md check, scripts/generate-traceability-map.mjs rows + EVENT_TYPES copy + test/traceability.test.ts copy/loop, then `node scripts/generate-traceability-map.mjs` and `node --test --experimental-strip-types test/traceability.test.ts test/docs-routing.test.ts`.
+5. **Ship** — full gates; `npm run build:offline`; `npm run verify:built`; pty rows (`node scripts/pty-rows/uat-06.mjs` etc.); bump 0.2.1 → 0.3.0 through the checklist in memory `kpi-release-process` (root + coding-agent package.json, package-lock x3 + evals range, packages/evals, test/cli-smoke.test.ts, scripts/verify-built-harness.mjs, docs/uat.md UAT-01, README verify-built line); `npm run pack` then `bun install -g ./release/korallis-k-pi-0.3.0.tgz` so the user's global `kpi` has the fix; live TUI check (start a gated job, `/kpi status` mid-run, plan gate dialog, `/agents`, `/onboarding`); push the branch and open the PR (auto-merge runs after `check`); tag `v0.3.0` on the merge commit only when the user says so.
+
+## Gotchas
+
+- Agents share one working tree: forbid git write commands and whole-repo builds/tests inside agents; only scoped `node --test`, `npx tsc --noEmit`, biome.
+- macOS has no `timeout`; use `perl -e 'alarm 90; exec @ARGV' node …`.
+- The Anthropic and Codex subscriptions were at their usage limits during the session; K-π print mode does not fail over, so a smoke test may just report the quota error.
+- Unrelated pending item: import Claude Design project `e9a6e374-8c54-4805-be22-1d21ca1ee8cd` (`K-pi Command Centre.dc.html` + `support.js`) with DesignSync after `/design-login` succeeds; the user wants that page fully wired with no stubs.

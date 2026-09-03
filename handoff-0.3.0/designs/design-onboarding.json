@@ -1,0 +1,617 @@
+{
+ "key": "onboarding",
+ "design": {
+  "issue": "K-π has no onboarding: a first launch shows only the harness \"No models available\" warning (README.md:94-104 documents a manual /login → /accounts login → /setup-kstack sequence) and there is no /onboarding command. Research supports only Exa and Perplexity; Firecrawl cannot be configured or used.",
+  "root_cause": "Nothing in the built-in extension factory (packages/coding-agent/src/kpi/extensions/index.ts:58-104) registers an onboarding command or a first-run session_start hook; every setup path is a separate command with its own entry (accounts/index.ts:990-1028 for /accounts login, kstack/models.ts:305-345 for /setup-kstack) and the pieces are module-private (loginAccount at accounts/index.ts:245, loginWithOfficialProvider at :198, openAuthUrl at :178; the /setup-kstack handler body is inline at kstack/models.ts:308-343; promptResearchSetup at research/setup.ts:68-84 couples the key prompts to a project-file mode write), so no caller can compose them. Research is hard-wired to two services: RESEARCH_SERVICES at research/session.ts:10, ResearchKeys :39-42, env fallbacks :60-63 and :87, mode fallback :228, endpoints.ts:13-14/32-41/103-107/136, gate.ts:134-135/145-160, setup.ts:41-51, accounts/index.ts:306-308/321, append-log.ts:79, event.schema.json:115-128, board.ts:732-738 and settings.ts:32 — adding Firecrawl requires each of those to be generalized over the service list rather than a third copy of the exa/perplexity ternaries. The revised design drops two pieces of the original that the source refutes: a \"default model\" step (the extension setModel at agent-session.ts:2635-2639 never persists and rejects any provider outside the harness auth snapshot, which K-π api_key pool logins never enter) and a K-π-owned writer for ~/.kpi/agent/settings.json (the harness serialises writes under a lockfile and refuses to overwrite an unparseable file; a second unlocked writer that maps parse failure to {} would be a silent, destructive catch).",
+  "evidence": [
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/index.ts",
+    "line": 58,
+    "note": "kPi(pi) registers accounts, append-system, routing, research tools, control plane, ping, k-mode, setup-kstack, print profile, policy, renderers, status line (L58-104) — no onboarding, no first-run hook."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/accounts/index.ts",
+    "line": 245,
+    "note": "loginAccount(providerName, requestedSlotId, store, login, now, context: ExtensionCommandContext) is module-private; handles provider notices/confirms (L259-270, confirm-cancel returns undefined), local pools with a base-URL prompt (L272-289) and credentialed pools (L291-303)."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/accounts/index.ts",
+    "line": 198,
+    "note": "loginWithOfficialProvider(providerId, _slotId, context: ExtensionCommandContext, showAuthUrl) uses only context.modelRegistry, context.signal and context.ui (L203-229); an empty key answer throws LoginCancelledError (L224). All of those members live on ExtensionContext (types.ts:322-346), so the parameter type can be widened."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/accounts/index.ts",
+    "line": 512,
+    "note": "registerAccounts builds the default `login` as loginWithOfficialProvider(providerId, slotId, context, (url) => openAuthUrl(pi, url)) at L516-519 — the composition onboarding must reuse."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/accounts/index.ts",
+    "line": 306,
+    "note": "isResearchService hard-codes exa|perplexity; loginResearchService (L313-326) builds saveResearchKeys args with a two-way ternary at L321 and writes the PROJECT research mode at L323."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/accounts/index.ts",
+    "line": 962,
+    "note": "accounts session_start handler imports official auth.json credentials as `default` slots (store.ts:393-420 imports auth.json only, never environment keys), then refreshes and publishes the widget; it runs before any handler registered later (runner.ts:851-861)."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/accounts/store.ts",
+    "line": 7,
+    "note": "POOL_IDS lists cloud pools first then llama/ollama/lmstudio/local-openai; isLocalPool at L36-38; PoolId type at L21."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/kstack/models.ts",
+    "line": 305,
+    "note": "registerKStackSetup: the role-map logic (L309-341) is inline in the command handler, reads context.modelRegistry.getAvailable() at L315, and ends with promptResearchSetup(context) at L342."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/research/setup.ts",
+    "line": 41,
+    "note": "saveResearchKeys takes {exa?, perplexity?} only (L41-51); promptResearchSetup (L68-84) asks two keys, saves, then ALWAYS writes the PROJECT research mode via writeResearchMode(context.cwd, …) at L82."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/settings.ts",
+    "line": 127,
+    "note": "writeResearchMode writes <cwd>/.kpi/settings.json; README.md:132-137 says a project whose .kpi/ contains settings.json becomes trust-requiring on the next launch — so onboarding must not call the mode writer."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/settings.ts",
+    "line": 32,
+    "note": "RESEARCH_MODES = [auto, exa, perplexity, local]; KpiResearchEndpointSettings L48-52 and readEndpointSettings L62-71 know exa/perplexity only; readKpiSettings L100-114 defaults research to \"auto\" when the project file is absent."
+   },
+   {
+    "file": "packages/coding-agent/src/core/agent-session.ts",
+    "line": 2635,
+    "note": "Extension runtime setModel: `if (!this._modelRuntime.hasConfiguredAuth(model.provider)) return false; await this.setModel(model); return true;` — no persist option. AgentSession.setModel at L1678 persists only `if (options.persist)` (L1686-1689); ModelMutationOptions L268-271 says 'Defaults to session-only'. Corrects the original design's types.ts:1446 note: the default-model step is deleted."
+   },
+   {
+    "file": "packages/coding-agent/src/core/model-runtime.ts",
+    "line": 466,
+    "note": "hasConfiguredAuth = snapshot.configuredProviders.has(providerId); getAvailable() derives from the same set (L276-282). K-π api_key pool logins go to AccountsStore.putSlot only (accounts/index.ts:220-228), so they never make a provider 'available' here — the zero-slot guard, not this snapshot, is the K-π side of the trigger."
+   },
+   {
+    "file": "packages/coding-agent/src/core/settings-manager.ts",
+    "line": 224,
+    "note": "Every harness write runs under lockfile.lockSync (L224-236) and is queued (enqueueWrite L598-610); save() returns early when globalSettingsLoadError is set (L648-651). No K-π writer for ~/.kpi/agent/settings.json is added in this design."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/research/session.ts",
+    "line": 10,
+    "note": "RESEARCH_SERVICES = [\"exa\",\"perplexity\"]; ResearchKeys L39-42; resolveResearchKeys L60-63 and readSavedResearchKeys L87 enumerate both; configuredServices L223-234 filters this list in order and L228 hard-codes the two named modes."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/research/endpoints.ts",
+    "line": 30,
+    "note": "ResearchEndpoints/DEFAULT_RESEARCH_ENDPOINTS/RESEARCH_BASE_URL_ENV are Record<ResearchService,…> (L30-41); ResearchEndpointOverrides L103-107; resolveResearchEndpoints returns a literal {exa, perplexity} at L136."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/research/gate.ts",
+    "line": 134,
+    "note": "servedBy/answered typed \"exa\"|\"perplexity\"; the per-service call at L145-160 is a two-way ternary between exaSearch and perplexitySearch."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/research/perplexity.ts",
+    "line": 28,
+    "note": "asRecord/usableUrl/usableTitle/boundedSnippet helpers (L28-69) and perplexitySearch (L71-130): fetchBounded POST with Bearer, status-first ResearchHttpError (L94-96), results sliced to MAX_RESULTS_PER_REQUEST — the shape firecrawl.ts copies."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/research/index.ts",
+    "line": 141,
+    "note": "pplx_search tool registration (L141-164): sessionFor(cwd, service), session.call, addExternalResults, summarize — the pattern firecrawl_search mirrors."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/append-log.ts",
+    "line": 79,
+    "note": "ResearchPayload.mode is the literal union \"exa\"|\"perplexity\"|\"auto\"|\"local\"."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/schemas/event.schema.json",
+    "line": 115,
+    "note": "$defs.service enum [exa, perplexity, local] and $defs.researchMode enum [exa, perplexity, auto, local] (L122-128); test/harness.test.ts compares src/kpi/schemas with dist/kpi byte-for-byte so a schema edit needs a rebuild."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/board.ts",
+    "line": 732,
+    "note": "struck research marks iterate [\"exa\",\"perplexity\"] → \"EXA ✕\"/\"PPLX ✕\"; the fallback at L736-738 hard-codes \"EXA ✕  PPLX ✕\" with an 'Always show both' comment; test/operator-ui.test.ts:262-263 asserts with regex match, so a derived three-mark default still passes."
+   },
+   {
+    "file": "packages/coding-agent/src/core/extensions/types.ts",
+    "line": 317,
+    "note": "ExtensionMode = tui|rpc|json|print; ExtensionContext.mode/hasUI (L322-325), cwd, modelRegistry (L331), signal (L346), ui.select/confirm/input/notify (L143-154)."
+   },
+   {
+    "file": "packages/coding-agent/src/core/extensions/types.ts",
+    "line": 574,
+    "note": "SessionStartEvent.reason ∈ startup|reload|new|resume|fork — first-run trigger keys on reason === \"startup\"."
+   },
+   {
+    "file": "packages/coding-agent/src/core/extensions/types.ts",
+    "line": 1405,
+    "note": "pi.sendUserMessage returns void and always triggers a model turn — not a way to run /accounts login; the direct function export is required."
+   },
+   {
+    "file": "packages/coding-agent/src/core/extensions/runner.ts",
+    "line": 851,
+    "note": "emit() awaits each handler sequentially in registration order (L855-861), so an onboarding session_start handler registered last runs after the accounts import and the footer install."
+   },
+   {
+    "file": "packages/coding-agent/src/modes/interactive/interactive-mode.ts",
+    "line": 958,
+    "note": "'Start the UI before initializing extensions so session_start handlers can use interactive dialogs' then this.ui.start() at L959 — session_start handlers may open dialogs in tui mode."
+   },
+   {
+    "file": "packages/coding-agent/src/main.ts",
+    "line": 110,
+    "note": "resolveAppMode returns interactive only when stdin and stdout are TTYs and no --print/--mode; print/rpc/json never reach mode \"tui\"."
+   },
+   {
+    "file": "test/extension.test.ts",
+    "line": 31,
+    "note": "asserts the exact ordered command list ending in \"statusbar\" (L31-42); a new registration appended after registerStatusLine must be added there."
+   },
+   {
+    "file": "scripts/pty-rows/lib.mjs",
+    "line": 119,
+    "note": "pty UAT rows seed settings.json with defaultProvider/defaultModel (L120-122) plus one local-openai slot in accounts.json (L129-137) — both halves of the trigger guard are false there, so no row opens the wizard."
+   },
+   {
+    "file": "test/research-control-plane.test.ts",
+    "line": 128,
+    "note": "deepEqual on resolveResearchKeys results at L128, L134, L502, L544 enumerate {exa, perplexity}; the mode-persistence loop at L142 lists four modes; withHome L64-79 clears EXA/PERPLEXITY env only; 'both services keep their documented origins…' at L660."
+   },
+   {
+    "file": "test/research-control-plane.test.ts",
+    "line": 557,
+    "note": "'setup saves what the operator typed and records the resulting mode' drives promptResearchSetup with answers [EXA, \"s\"] and asserts the project mode auto/local — the /setup-kstack behaviour that must survive unchanged."
+   },
+   {
+    "file": "test/traceability.test.ts",
+    "line": 180,
+    "note": "every AC's primary_owner must match /^RP-/; L369-371 'UAT rows cover US-01..US-30' loops i <= 30 and must be bumped to 31."
+   },
+   {
+    "file": "test/docs-routing.test.ts",
+    "line": 645,
+    "note": "RP-19's section must still hand off to uat.md; the test does not forbid a further `## RP-20` section, but docs/remediation-plan.md:9 currently states 'RP-00 through RP-19 are complete. No incomplete remediation package remains' and must be updated when a package is added."
+   },
+   {
+    "file": "scripts/generate-traceability-map.mjs",
+    "line": 1117,
+    "note": "RP map binds one exact test title per package (L1117-1127); PRD ACs are parsed at L1176-1185; Owns-gaps parsed from remediation-plan.md at L1188-1195; usOwner hand map ends at US-30 (L1197-1228)."
+   },
+   {
+    "file": "docs/PRD.md",
+    "line": 390,
+    "note": "AC-28.5 'tries the other configured service', AC-28.7 (L392) names exa and perplexity only, AC-29.2 (L399) names exa_search/exa_contents/pplx_search only — all three need Firecrawl wording; US-30 ends at L420 and §11 table ends at L554."
+   },
+   {
+    "file": "README.md",
+    "line": 94,
+    "note": "§3 First launch L94-153 (manual path; trust subsection L128-153); §4 config table L172-177; §5 L181-187; §6 table L322; §7 L372-390; §12 L575-585; §15 L719-733."
+   }
+  ],
+  "change": [
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/accounts/index.ts",
+    "action": "edit",
+    "what": "Slice A (onboarding). (1) Widen the context parameter type from ExtensionCommandContext to ExtensionContext on answerAuthPrompt (L156), loginWithOfficialProvider (L198-203), loginAccount (L245-252) and AccountsDependencies.login (L129) — they use only ui/signal/modelRegistry which are on ExtensionContext. (2) Extract the default login built at L516-519 into `function defaultLogin(pi: ExtensionAPI): NonNullable<AccountsDependencies[\"login\"]>` and use it in registerAccounts. (3) Add ONE new export `export async function loginPoolInteractively(pi: ExtensionAPI, poolId: PoolId, context: ExtensionContext, dependencies: Pick<AccountsDependencies, \"store\" | \"now\" | \"login\"> = {}): Promise<{ poolId: PoolId; slotId: string } | undefined>` that calls loginAccount(poolId, undefined, dependencies.store ?? new AccountsStore(), dependencies.login ?? defaultLogin(pi), dependencies.now ?? (() => new Date()), context). Errors (LoginCancelledError included) propagate; the caller reports them. Slice B (Firecrawl): replace isResearchService (L306-308) body with `(RESEARCH_SERVICES as readonly string[]).includes(value)` importing RESEARCH_SERVICES from ../research/session.ts; replace the ternary at L321 with `await saveResearchKeys({ [service]: trimmed })`; update the comment at L397-398 to name firecrawl."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/kstack/models.ts",
+    "action": "edit",
+    "what": "Slice A. Extract the handler body L309-341 verbatim into `export async function runKStackSetup(context: Pick<ExtensionContext, \"ui\" | \"modelRegistry\">): Promise<void>` (AccountsStore read, liveCandidates, plan/edit loops, writeKStackModels, notifies). registerKStackSetup's handler becomes `await runKStackSetup(context); await promptResearchSetup(context);` — identical behaviour for /setup-kstack."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/research/setup.ts",
+    "action": "edit",
+    "what": "Slice A part: split promptResearchSetup (L68-84) into `export async function promptResearchKeys(ui: Pick<ExtensionContext[\"ui\"], \"input\">): Promise<ResearchService[]>` — asks one `${label} API key for research` (\"Enter to save, s to skip\") per service in RESEARCH_SERVICES order with labels { exa: \"Exa\", perplexity: \"Perplexity\" } (Slice B adds firecrawl: \"Firecrawl\"), same skip semantics (undefined/empty/\"s\"), calls saveResearchKeys once when any key was given, returns the services saved (empty when none) — and `promptResearchSetup(context: Pick<ExtensionContext, \"ui\" | \"cwd\">)` = `const saved = await promptResearchKeys(context.ui); await writeResearchMode(context.cwd, saved.length > 0 ? \"auto\" : \"local\"); notify(...)` exactly as today. Onboarding calls promptResearchKeys only, so it never writes <cwd>/.kpi/settings.json and never makes a directory trust-requiring. Slice B part: saveResearchKeys(values: ResearchKeys, path?) loops RESEARCH_SERVICES writing `${service}/default` for each defined value (replaces L46-49)."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/onboarding.ts",
+    "action": "create",
+    "what": "Slice A. New module. Exports: `ONBOARDING_COMMAND = \"onboarding\"`; `WELCOME_LINES: readonly string[]` (3 lines: K-π is a standalone coding-agent harness you own; a job runs a gated graph — specify → plan → implement → test → review → ship — with a plan gate and a release gate you confirm; reviewer and tester workers are separate kpi processes on the worker bus); `OnboardingDependencies { store?: AccountsStore; loginPool?: (poolId: PoolId, context: ExtensionContext) => Promise<{ poolId: PoolId; slotId: string } | undefined>; researchKeys?: (ui: ExtensionContext[\"ui\"]) => Promise<ResearchService[]>; kstackSetup?: (context: ExtensionContext) => Promise<void> }` (defaults: new AccountsStore(), (poolId, ctx) => loginPoolInteractively(pi, poolId, ctx, { store }), promptResearchKeys, runKStackSetup); `OnboardingOutcome = { status: \"completed\" | \"deferred\"; accounts: string[]; researchServices?: ResearchService[] (present only when the research step ran); kstack: boolean }`; `export async function runOnboarding(context: ExtensionContext, dependencies: Required<OnboardingDependencies>): Promise<OnboardingOutcome>`; `export function shouldAutoOnboard(reason: SessionStartEvent[\"reason\"], context: ExtensionContext, document: AccountsDocument): boolean`; `export function registerOnboarding(pi: ExtensionAPI, dependencies: OnboardingDependencies = {}): void`. runOnboarding steps, each via ctx.ui and each skippable: (a) notify(WELCOME_LINES.join(\"\\n\"), \"info\") then select(\"Welcome to K-π\", [\"Start setup\", \"Not now\"]) — undefined or \"Not now\" → return { status: \"deferred\", accounts: [], kstack: false } with no writes. (b) Model accounts loop: read store, select(\"Add a model account\", [...POOL_IDS.map(p => `${p}${isLocalPool(p) ? \" (local server)\" : \"\"} — ${slots} slot(s)`), \"Continue\"]) repeated until \"Continue\"/undefined; a pick calls dependencies.loginPool(poolId, context) inside try/catch — a defined result pushes `${poolId}/${slotId}` onto accounts; undefined (confirm declined) adds nothing; any thrown error → notify(`${poolId} login not completed: ${message}`, \"warning\") and the loop continues; one attempt per pick. (c) select(\"Research keys (Exa, Perplexity, Firecrawl)\", [\"Enter API keys\", \"Skip\"]) → \"Enter API keys\" sets researchServices = await dependencies.researchKeys(context.ui); Skip leaves researchServices undefined (nothing written anywhere). (d) select(\"K-stack roles\", [\"Map roles now\", \"Skip\"]) → dependencies.kstackSetup(context), kstack = true. (e) Summary notify: `accounts: ${accounts.join(\", \") || \"none\"}`, `research keys: ${researchServices === undefined ? \"skipped\" : researchServices.join(\", \") || \"none saved\"}`, `K-stack roles: ${kstack ? \"mapped\" : \"skipped\"}`, and the closing hint \"Run /onboarding any time; /accounts and /setup-kstack edit the same files.\" Every step body is wrapped in try/catch that notifies `Onboarding step \"<name>\" failed: ${message}` (\"error\") and moves to the next step; runOnboarding never rejects. shouldAutoOnboard returns true only when reason === \"startup\" && context.mode === \"tui\" && context.hasUI && Object.values(document.pools).every(pool => (pool?.slots.length ?? 0) === 0) && context.modelRegistry.getAvailable().length === 0 — i.e. K-π has nothing to route and the harness has nothing either (the exact state behind the 'No models available' warning). No marker file and no settings key: 'Not now' closes the wizard for this launch only. registerOnboarding: pi.registerCommand(\"onboarding\", { description: \"Guided first-run setup: model accounts, research keys, K-stack roles\", handler: (_args, ctx) => runOnboarding(ctx, resolved) }) — always runs; pi.on(\"session_start\", async (event, ctx) => { try { if (shouldAutoOnboard(event.reason, ctx, await resolved.store.read())) await runOnboarding(ctx, resolved); } catch (error) { ctx.ui.notify(`K-π onboarding failed: ${message}`, \"error\"); } }) so startup never dies on it. No /setup alias."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/index.ts",
+    "action": "edit",
+    "what": "Slice A. import { registerOnboarding } from \"./onboarding.ts\"; call `registerOnboarding(pi);` as the LAST registration (after registerStatusLine at L103) so its session_start handler runs after the accounts credential import and the footer install."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/settings.ts",
+    "action": "edit",
+    "what": "Slice B. RESEARCH_MODES = [\"auto\",\"exa\",\"perplexity\",\"firecrawl\",\"local\"] (L32); add firecrawl?: string to KpiResearchEndpointSettings (L48-52) and parse it in readEndpointSettings (L62-71). No user-file writer, no onboarding key."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/research/session.ts",
+    "action": "edit",
+    "what": "Slice B. RESEARCH_SERVICES = [\"exa\",\"perplexity\",\"firecrawl\"] (auto order: Exa first for developer research, Perplexity as live fallback — both unchanged per research.md — Firecrawl last because its search is credit-metered per call and returns scraped page excerpts, the heaviest option). `export type ResearchKeys = Partial<Record<ResearchService, string>>`; `export const RESEARCH_KEY_ENV: Readonly<Record<ResearchService, string>> = { exa: \"EXA_API_KEY\", perplexity: \"PERPLEXITY_API_KEY\", firecrawl: \"FIRECRAWL_API_KEY\" }`; resolveResearchKeys (L60-63) and readSavedResearchKeys (L87) build their result with Object.fromEntries over RESEARCH_SERVICES (keys with undefined values stay present, as today, so existing deepEqual bodies only gain `firecrawl: undefined`). configuredServices: replace L228 with `if ((RESEARCH_SERVICES as readonly string[]).includes(this.mode))`."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/research/endpoints.ts",
+    "action": "edit",
+    "what": "Slice B. Add `export const DEFAULT_FIRECRAWL_BASE_URL = \"https://api.firecrawl.dev\"`; DEFAULT_RESEARCH_ENDPOINTS.firecrawl; RESEARCH_BASE_URL_ENV.firecrawl = \"FIRECRAWL_BASE_URL\"; ResearchEndpointOverrides gains firecrawl?: string; resolveResearchEndpoints returns `endpoints: Object.fromEntries(RESEARCH_SERVICES.map(s => [s, resolveOne(s)])) as ResearchEndpoints` instead of the literal at L136 (import RESEARCH_SERVICES as a value from ./session.ts — session.ts does not import endpoints.ts, so no cycle)."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/research/firecrawl.ts",
+    "action": "create",
+    "what": "Slice B. Modelled on perplexity.ts. `export const FIRECRAWL_SEARCH_PATH = \"/v2/search\"`; `export const FIRECRAWL_MAX_QUERY_CHARACTERS = 500` (vendor schema maxLength); `export interface FirecrawlSearchOptions { limit?: number; baseUrl?: string; timeoutMs?: number; signal?: AbortSignal; fetch?: typeof fetch }`; `export async function firecrawlSearch(query: string, key: string, options = {}): Promise<ResearchResult[]>`: fetchBounded(`${baseUrl ?? DEFAULT_FIRECRAWL_BASE_URL}${FIRECRAWL_SEARCH_PATH}`, POST, headers authorization: `Bearer ${key}` + content-type application/json, body { query: clampField(query, FIRECRAWL_MAX_QUERY_CHARACTERS), limit: Math.max(1, Math.min(MAX_RESULTS_PER_REQUEST, Math.trunc(options.limit ?? 5))), sources: [{ type: \"web\" }] (the v2 schema's item form is an object with `type`, verified against docs.firecrawl.dev/api-reference/endpoint/search on 2026-09-03; the string form is not documented), timeout: options.timeoutMs ?? DEFAULT_RESEARCH_TIMEOUT_MS } — never scrapeOptions (full page content is never requested), { service: \"Firecrawl\", timeoutMs, signal, fetch }). Status first: !response.ok → throw new ResearchHttpError(response.status, \"Firecrawl\"). Parse JSON with asRecord; payload.success !== true → throw new ResearchHttpError(response.status, \"Firecrawl\") (a 200 refusal classifies as `unavailable` and cools the service — never silently empty). Results = payload.data.web when an array, else payload.data when an array (v1-shaped tolerance), else []; sliced to MAX_RESULTS_PER_REQUEST; each record: url via usableUrl (absolute http(s) only, drop otherwise), title via usableTitle(record.title, url) (300 cap), text = clampField(description ∥ markdown, MAX_FIELD_CHARACTERS) when non-empty; no publishedDate (search returns none). Copy the small asRecord/usableUrl/usableTitle helpers (they are module-private in perplexity.ts; a shared module is a larger change than 25 duplicated lines — see risks). Vendor-documented errors are 408 and 500; 402/429 are handled defensively exactly as Perplexity's 402 (AC-28.5)."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/research/gate.ts",
+    "action": "edit",
+    "what": "Slice B. Type servedBy/answered (L134-135) as ResearchService | undefined. Replace the ternary at L145-160 with a local `searchWith(service: ResearchService, query: string, key: string)` that dispatches exa → exaSearch({numResults: MAX_RESULTS_PER_REQUEST, baseUrl: endpoints.exa, …}), perplexity → perplexitySearch({maxResults, baseUrl: endpoints.perplexity, …}), firecrawl → firecrawlSearch(query, key, { limit: MAX_RESULTS_PER_REQUEST, baseUrl: endpoints.firecrawl, timeoutMs, fetch, signal })."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/research/index.ts",
+    "action": "edit",
+    "what": "Slice B. Register a fourth tool `firecrawl_search` after pplx_search (L164): label \"Firecrawl Search\", description \"Search current web sources through the first-party Firecrawl REST client\", parameters Type.Object({ query: Type.String(), limit: Type.Optional(Type.Number()) }); execute: sessionFor(context.cwd, \"firecrawl\"), session.call(\"firecrawl\", params.query, key => firecrawlSearch(params.query, key, { limit: Math.min(params.limit ?? 5, MAX_RESULTS_PER_REQUEST), baseUrl: endpoints.firecrawl, timeoutMs, signal })); !ok → throw Error(`Firecrawl research call failed: ${outcome.class}`); ok → addExternalResults(\"firecrawl\", value) and return summarize(value) with details { results }."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/append-log.ts",
+    "action": "edit",
+    "what": "Slice B. ResearchPayload.mode union at L79 gains \"firecrawl\"."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/schemas/event.schema.json",
+    "action": "edit",
+    "what": "Slice B. $defs.service enum → [\"exa\",\"perplexity\",\"firecrawl\",\"local\"]; $defs.researchMode enum → [\"exa\",\"perplexity\",\"firecrawl\",\"auto\",\"local\"]. Requires `npm run build:offline` so dist/kpi matches (harness.test.ts byte compare)."
+   },
+   {
+    "file": "packages/coding-agent/src/kpi/extensions/board.ts",
+    "action": "edit",
+    "what": "Slice B. researchCellFromDocument L732-738: add a module const `RESEARCH_MARKS: readonly [service: string, aliases: readonly string[], mark: string][] = [[\"exa\", [], \"EXA ✕\"], [\"perplexity\", [\"pplx\"], \"PPLX ✕\"], [\"firecrawl\", [\"fc\"], \"FC ✕\"]]`; struck = RESEARCH_MARKS.filter(([s, aliases]) => failed.has(s) || aliases.some(a => failed.has(a))).map(([, , mark]) => mark).join(\"  \"); the fallback when failures exist but none match becomes `RESEARCH_MARKS.map(([, , mark]) => mark).join(\"  \")` (derived, not the hard-coded two-service string) and the comment reads 'Every known service is struck when the engine recorded failures it did not name'. operator-ui.test.ts:262-263 uses regex match for EXA ✕ and PPLX ✕ and keeps passing unchanged."
+   },
+   {
+    "file": "test/extension.test.ts",
+    "action": "edit",
+    "what": "Slice A. Append \"onboarding\" after \"statusbar\" in the exact command list (L31-42)."
+   },
+   {
+    "file": "test/onboarding.test.ts",
+    "action": "create",
+    "what": "Slice A. New suite (see tests): fake pi capturing registerCommand/on, scripted ui (select/input/confirm/notify queues), temp HOME + KPI_CODING_AGENT_DIR, injected AccountsStore, injected loginPool/researchKeys/kstackSetup spies, fake modelRegistry.getAvailable."
+   },
+   {
+    "file": "test/traceability.test.ts",
+    "action": "edit",
+    "what": "Slice A. 'UAT rows cover US-01..US-30 and metrics M-01..M-07' (L369): rename to 'UAT rows cover US-01..US-31 and metrics M-01..M-07' and loop `i <= 31` (this title is not bound in scripts/generate-traceability-map.mjs — verified by grep before renaming; if it is, keep the title and bump only the loop)."
+   },
+   {
+    "file": "test/research-control-plane.test.ts",
+    "action": "edit",
+    "what": "Slice B. Bodies only (titles verbatim): deepEqual expectations at L128, L134, L502, L544 add `firecrawl: undefined`; withHome (L64-79) also clears/restores FIRECRAWL_API_KEY; the mode-persistence loop at L142 becomes [\"exa\",\"perplexity\",\"firecrawl\",\"local\",\"auto\"]; 'both services keep their documented origins…' (L660) additionally asserts endpoints.firecrawl === DEFAULT_FIRECRAWL_BASE_URL; 'setup saves what the operator typed…' (L557) keeps answers [EXA, \"s\"] (the third prompt is answered undefined → skip) and additionally asserts three prompts were shown and firecrawl is undefined. Add the two new control-plane tests listed under tests."
+   },
+   {
+    "file": "test/research-clients.test.ts",
+    "action": "edit",
+    "what": "Slice B. Add the two Firecrawl client tests (see tests); reuse capturing(), KEY_CANARY, TAIL_CANARY (L27-64)."
+   },
+   {
+    "file": "docs/remediation-plan.md",
+    "action": "edit",
+    "what": "Slice A. Add `## RP-20 — Onboarding` (Depends on: RP-07, RP-09, RP-16; Owns gaps: none; Stories: US-31) placed after RP-18 and before RP-19 so RP-19 stays the final hand-off section (test/docs-routing.test.ts:645-648), with Read first / Change / Verification / DoD in the RP-18 shape; update L9 to 'RP-00 through RP-19 are complete; RP-20 is the open package' and keep the uat.md hand-off sentence. Ordering note at L9 already says ids sort as written."
+   },
+   {
+    "file": "scripts/generate-traceability-map.mjs",
+    "action": "edit",
+    "what": "Add RP map entry `\"RP-20\": [\"test/onboarding.test.ts\", \"the onboarding factory registers /onboarding last and one session_start hook\", \"onboarding command and first-run hook registered\"]` (L1117-1127 shape); AC rows AC-31.1–AC-31.5 (Slice A) and AC-28.8 (Slice B) bound to the test titles below; usOwner \"US-31\": \"RP-20\"; then run node scripts/generate-traceability-map.mjs (docs/traceability-map.json regenerated, never hand-edited)."
+   }
+  ],
+  "event_or_data_contracts": [
+   "Command `/onboarding` (no alias). session_start auto-trigger rule: reason \"startup\" && mode \"tui\" && hasUI && every pool in accounts.json has zero slots && modelRegistry.getAvailable() is empty. No persisted marker, no settings key: \"Not now\" closes the wizard for this launch only.",
+   "onboarding.ts exports: `ONBOARDING_COMMAND = \"onboarding\"`, `WELCOME_LINES: readonly string[]`, `OnboardingDependencies { store?, loginPool?, researchKeys?, kstackSetup? }`, `OnboardingOutcome { status: \"completed\" | \"deferred\"; accounts: string[]; researchServices?: ResearchService[]; kstack: boolean }`, `runOnboarding(context: ExtensionContext, dependencies: Required<OnboardingDependencies>): Promise<OnboardingOutcome>`, `shouldAutoOnboard(reason, context, document: AccountsDocument): boolean`, `registerOnboarding(pi, dependencies?)`.",
+   "accounts/index.ts new export: `loginPoolInteractively(pi: ExtensionAPI, poolId: PoolId, context: ExtensionContext, dependencies?: Pick<AccountsDependencies, \"store\"|\"now\"|\"login\">): Promise<{ poolId: PoolId; slotId: string } | undefined>`; `AccountsDependencies.login` context parameter widened from ExtensionCommandContext to ExtensionContext (existing injected test logins keep compiling — the wider type is assignable).",
+   "kstack/models.ts new export: `runKStackSetup(context: Pick<ExtensionContext, \"ui\" | \"modelRegistry\">): Promise<void>` (role map only; /setup-kstack = runKStackSetup then promptResearchSetup).",
+   "research/setup.ts new export: `promptResearchKeys(ui: Pick<ExtensionContext[\"ui\"], \"input\">): Promise<ResearchService[]>` (asks one key per RESEARCH_SERVICES entry, saves, returns services saved, writes no project file); `promptResearchSetup(context: Pick<ExtensionContext, \"ui\" | \"cwd\">)` keeps its behaviour (keys + project research mode auto/local). `saveResearchKeys(values: ResearchKeys, path?)`.",
+   "research/session.ts: `RESEARCH_SERVICES = [\"exa\",\"perplexity\",\"firecrawl\"]` (auto order), `ResearchKeys = Partial<Record<ResearchService, string>>`, `RESEARCH_KEY_ENV` (FIRECRAWL_API_KEY); secret name `firecrawl/default` in ~/.kpi/agent/accounts.secrets.json; ResearchMode gains \"firecrawl\" (settings.ts RESEARCH_MODES); project `.kpi/settings.json` `researchEndpoints.firecrawl`.",
+   "research/endpoints.ts: `DEFAULT_FIRECRAWL_BASE_URL = \"https://api.firecrawl.dev\"`, env `FIRECRAWL_BASE_URL`, ResearchEndpoints/ResearchEndpointOverrides gain `firecrawl`.",
+   "research/firecrawl.ts: `firecrawlSearch(query, key, { limit?, baseUrl?, timeoutMs?, signal?, fetch? }): Promise<ResearchResult[]>`, `FIRECRAWL_SEARCH_PATH = \"/v2/search\"`, `FIRECRAWL_MAX_QUERY_CHARACTERS = 500`. Request: POST {base}/v2/search, Authorization: Bearer, body { query (≤500 chars), limit (1..10), sources: [{ type: \"web\" }], timeout (ms) } — never scrapeOptions. Failure classes: http_402/http_429/http_5xx/timeout/abort/unavailable (200 with success !== true → unavailable).",
+   "Tool `firecrawl_search` { query: string; limit?: number } registered beside exa_search/exa_contents/pplx_search; `/accounts login firecrawl` and `/accounts logout firecrawl`.",
+   "events.jsonl: research.* `service` enum gains \"firecrawl\"; `mode` (research.started/completed, research.json.mode) gains \"firecrawl\". Board struck mark \"FC ✕\"; the unnamed-failure fallback now lists every known service's mark.",
+   "Traceability: new package RP-20 (docs/remediation-plan.md), story US-31 with AC-31.1–AC-31.5, AC-28.8; UAT-31 owner RP-20."
+  ],
+  "tests": [
+   {
+    "file": "test/onboarding.test.ts",
+    "title": "the onboarding factory registers /onboarding last and one session_start hook",
+    "asserts": "registerOnboarding on a fake pi records command \"onboarding\" with a handler and exactly one session_start handler; kPi(pi) command list ends with \"onboarding\" (matches test/extension.test.ts). Bound as the RP-20 proof."
+   },
+   {
+    "file": "test/onboarding.test.ts",
+    "title": "a scripted onboarding adds accounts, saves research keys, maps K-stack, and writes no project file",
+    "asserts": "With a temp HOME/KPI_CODING_AGENT_DIR and scripted ui (select answers: Start setup → anthropic → Continue → Enter API keys → Map roles now; inputs for the real promptResearchKeys: exa canary, s, firecrawl canary), an injected loginPool that writes a slot into the temp AccountsStore, injected kstackSetup spy: outcome equals { status: \"completed\", accounts: [\"anthropic/a\"], researchServices: [\"exa\",\"firecrawl\"], kstack: true }; accounts.json has the anthropic slot; accounts.secrets.json has exa/default and firecrawl/default and no perplexity/default, mode 0600; the project cwd has NO .kpi/settings.json; ~/.kpi/agent/settings.json is untouched (absent before and after); kstackSetup called once with the context; the summary notification names anthropic/a and 'exa, firecrawl'; no notification contains a key canary."
+   },
+   {
+    "file": "test/onboarding.test.ts",
+    "title": "skipped onboarding steps write nothing and Not now closes the wizard for this launch",
+    "asserts": "select answers Start setup → Continue → Skip → Skip: outcome { status: \"completed\", accounts: [], researchServices: undefined, kstack: false }; no accounts.json slot, no accounts.secrets.json, no project .kpi/settings.json, kstackSetup and loginPool not called, summary says 'research keys: skipped'. A run answering Not now (and one answering undefined) returns status \"deferred\", calls no dependency, and the agent dir listing is identical before and after."
+   },
+   {
+    "file": "test/onboarding.test.ts",
+    "title": "first-run onboarding fires only for a tui startup with nothing to route",
+    "asserts": "shouldAutoOnboard is false for mode print/rpc/json, for reason reload/new/resume/fork, for hasUI false, when any pool has a slot (seed a local-openai slot exactly like scripts/pty-rows/lib.mjs:129-137), and when modelRegistry.getAvailable() is non-empty with zero slots (an env-key-only harness); true for tui + startup + hasUI + empty pools + empty getAvailable. Invoking the captured session_start handler in the true case calls ui.select once with title \"Welcome to K-π\"; in the print case ui.select is never called; a store.read() that throws produces one error notification containing 'K-π onboarding failed' and the handler resolves."
+   },
+   {
+    "file": "test/onboarding.test.ts",
+    "title": "/onboarding re-runs after setup and a failed login is reported by name",
+    "asserts": "With a configured slot present the command handler still runs the wizard (select called). An injected loginPool that throws LoginCancelledError-shaped 'Login cancelled' for anthropic produces one warning notification containing 'anthropic' and 'not completed', the account loop continues (a second pick of openai succeeds and is listed), and the wizard reaches completion; a loginPool that throws a generic Error likewise never rejects runOnboarding; a loginPool returning undefined adds nothing and warns nothing."
+   },
+   {
+    "file": "test/research-clients.test.ts",
+    "title": "Firecrawl Search posts to v2 search with a bounded limit and no scrape options",
+    "asserts": "capturing fetch: url === `${DEFAULT_FIRECRAWL_BASE_URL}/v2/search`; authorization === `Bearer ${KEY_CANARY}`; body.limit === MAX_RESULTS_PER_REQUEST when 50 requested; body.sources deepEqual [{ type: \"web\" }]; body.timeout === passed timeoutMs; \"scrapeOptions\" not in body; body.query length ≤ 500 for a 600-char query; normalized results from { success: true, data: { web: [...] } } carry title/url/text, a non-http url is dropped, a description longer than MAX_FIELD_CHARACTERS is clamped and TAIL_CANARY is absent, markdown is used only when description is empty; a v1-shaped flat data array is also read; a base URL override is honoured."
+   },
+   {
+    "file": "test/research-clients.test.ts",
+    "title": "Firecrawl failures are classified by status, and a 200 without success cools the service",
+    "asserts": "429 → rejects with ResearchHttpError status 429 → classifyResearchFailure === \"http_429\"; 402 → \"http_402\"; 503 → \"http_5xx\"; 200 { success: false, error: \"x\" } → rejects and classifies as \"unavailable\"; ResearchSession.call(\"firecrawl\", …) with that fetch returns { ok: false } and isCooling(\"firecrawl\") is true; no event payload contains KEY_CANARY."
+   },
+   {
+    "file": "test/research-control-plane.test.ts",
+    "title": "auto asks exa, then perplexity, then firecrawl, and a firecrawl key alone goes online",
+    "asserts": "ResearchSession with keys {exa, perplexity, firecrawl} → configuredServices deepEqual [\"exa\",\"perplexity\",\"firecrawl\"]; mode \"firecrawl\" without a firecrawl key falls back to the keyed list; keys { firecrawl } only → [\"firecrawl\"]. conductResearch with exa and perplexity answering 429 and firecrawl answering two distinct origins writes research.json mode \"firecrawl\", network.state online, two failures recorded (exa http_429, perplexity http_429), and every events.jsonl research.* record validates against event.schema.json."
+   },
+   {
+    "file": "test/research-control-plane.test.ts",
+    "title": "firecrawl is a research credential target: /accounts login firecrawl saves a key and creates no slot",
+    "asserts": "registerAccounts fake pi: `login firecrawl` stores accounts.secrets.json firecrawl/default type api_key; resolveResearchKeys(agentDir).firecrawl === canary; no pool named firecrawl, no slot in any pool, project research === \"auto\"; `/pool strategy firecrawl quota-first` notifies Unknown pool id; `logout firecrawl` removes it; FIRECRAWL_API_KEY env is used only when no saved key exists; no notification contains the canary."
+   },
+   {
+    "file": "test/research-control-plane.test.ts",
+    "title": "setup saves what the operator typed and records the resulting mode",
+    "asserts": "Existing test (title bound to AC-28.1) keeps passing: answers [EXA, \"s\"] leave the third prompt answered undefined → skip; body extended to assert three prompts were shown in order (Exa, Perplexity, Firecrawl), firecrawl is undefined, and the project mode is still auto/local exactly as before — proving /setup-kstack still writes the project mode while onboarding (above) does not."
+   }
+  ],
+  "docs": [
+   {
+    "file": "README.md",
+    "section": "§3 First launch (L94-153)",
+    "what": "Rewrite around /onboarding: on a first TUI launch with no configured slot and no harness model the welcome selector opens (show the two options and the step list: model accounts → research keys (Exa / Perplexity / Firecrawl) → K-stack roles); every step skippable; \"Not now\" closes it for this launch and it returns next launch until a slot exists; /onboarding re-runs it any time; print/rpc/json never prompt; the research step saves keys only and writes no project file (so it never makes a directory trust-requiring — /setup-kstack is what writes `.kpi/settings.json research`). Keep the ctrl+o startup report and the untrusted-project subsection."
+   },
+   {
+    "file": "README.md",
+    "section": "§4 config directory table (L172-177)",
+    "what": "secrets row text names FIRECRAWL_API_KEY beside the other research keys; settings.json row unchanged (no K-π key added)."
+   },
+   {
+    "file": "README.md",
+    "section": "§5 Signing in (L181-187) and §6 table (L322)",
+    "what": "Mention /onboarding as the guided entry to the same pooled login; change the logout row to `/accounts logout exa` / `perplexity` / `firecrawl`."
+   },
+   {
+    "file": "README.md",
+    "section": "§7 Models and K-stack roles (L372-390)",
+    "what": "Three key prompts in the transcript (add `Firecrawl API key for research`); note /onboarding runs the same role map and the same key prompts."
+   },
+   {
+    "file": "README.md",
+    "section": "§12 Other commands (L575-585)",
+    "what": "Add row `/onboarding` — guided setup; re-runnable; the first-run trigger rule (no slot, no model, TUI only)."
+   },
+   {
+    "file": "README.md",
+    "section": "§15 Research (L719-733)",
+    "what": "Add Firecrawl: `/accounts login firecrawl`, FIRECRAWL_API_KEY / FIRECRAWL_BASE_URL fallbacks, auto order exa → perplexity → firecrawl, `firecrawl_search` tool; 'Exa, Perplexity and Firecrawl are research credentials, not pools'."
+   },
+   {
+    "file": "docs/PRD.md",
+    "section": "§2 Goals G-17 (L49) and US-28 (L382-392)",
+    "what": "G-17 and the US-28 title/story read \"Exa, Perplexity, and Firecrawl\". AC-28.1 'offers Exa, Perplexity, and Firecrawl keys'. AC-28.2 adds `firecrawl/default` and `FIRECRAWL_API_KEY`. AC-28.5: 'tries the next configured service' and 'not a documented Perplexity or Firecrawl response'. AC-28.7: '`exa`, `perplexity`, and `firecrawl` are research credential targets, not pool ids … none appears …'. Add **AC-28.8**: Firecrawl is a third research credential target: first-party `firecrawl_search` over `POST /v2/search` with Bearer auth, `limit` ≤ 10, `sources: [{type: \"web\"}]`, never scrape options, the same 10,000-character clamp, failure classes and bounded attempts as AC-28.5; `auto` order is Exa, then Perplexity, then Firecrawl."
+   },
+   {
+    "file": "docs/PRD.md",
+    "section": "US-29 AC-29.2 (L399)",
+    "what": "'With an Exa, Perplexity, or Firecrawl key … from `exa_search`, `exa_contents`, `pplx_search`, or `firecrawl_search`'."
+   },
+   {
+    "file": "docs/PRD.md",
+    "section": "§6 new story US-31 — Onboarding (after AC-30.11, L420) and §11 traceability table (after L554)",
+    "what": "Story: as a new operator I run one guided setup on first launch or with /onboarding. AC-31.1 `/onboarding` exists at startup and walks welcome → model accounts → research keys → K-stack roles; each step skippable; re-runnable any time. AC-31.2 A TUI startup with no configured slot and no harness-available model opens the wizard; print/rpc/json never do; \"Not now\" closes it for that launch; nothing is persisted to record the choice. AC-31.3 Model login reuses the pooled `/accounts login` path (same provider notices, slots, secrets); a cancelled or failed login is reported by pool name and the wizard continues. AC-31.4 A skipped step writes nothing; the wizard writes no project `.kpi/settings.json` and no `~/.kpi/agent/settings.json`. AC-31.5 The research step saves Exa/Perplexity/Firecrawl keys through the same writer as `/setup-kstack` (`accounts.secrets.json`, 0600) and the K-stack step runs the same role-map function as `/setup-kstack`. Add `| US-31 | spec §Entry points, research.md, kstack.md | M5 |`."
+   },
+   {
+    "file": "docs/spec.md",
+    "section": "§4 Entry points (L153-161), §5 SCH-research (L277), §13 Store (L636)",
+    "what": "Add `/onboarding` row (guided setup; first-run trigger rule; writes nothing on its own); `/accounts login exa|perplexity|firecrawl` and logout row; `/setup-kstack` row names three keys; SCH-research `mode` enum `exa | perplexity | firecrawl | auto | local`; §13: `exa`, `perplexity` and `firecrawl` are not pool ids."
+   },
+   {
+    "file": "docs/research.md",
+    "section": "Title/intro (L1-5), service table (L7-10), references (L14-18), Setup (L20-34), Tools (L38-42), Planning default (L57), When a service fails (L61)",
+    "what": "Title \"Exa, Perplexity, and Firecrawl research in K-π\"; intro names three targets and four tools; table row Firecrawl `https://api.firecrawl.dev` Bearer `firecrawl/default` env `FIRECRAWL_API_KEY`; reference https://docs.firecrawl.dev/api-reference/endpoint/search; Setup lists three prompts, notes /onboarding asks the same keys without writing the project mode, mode list `exa|perplexity|firecrawl|auto|local`; Tools row `firecrawl_search` `POST https://api.firecrawl.dev/v2/search` — `limit` ≤ 10, `sources: [{type: \"web\"}]`, never `scrapeOptions`, description is the bounded excerpt; `auto` uses Exa first, then Perplexity, then Firecrawl; failure text 'tries the next configured service'; 402/429 handled defensively for Firecrawl as for Perplexity (vendor documents 408 and 500)."
+   },
+   {
+    "file": "docs/uat.md",
+    "section": "UAT-28 (L200-204) and new UAT-31 (after L216)",
+    "what": "UAT-28: title/action/evidence include Firecrawl (run setup with Firecrawl only; `firecrawl/default`; `firecrawl_search`; ACs AC-28.1–28.8). UAT-31 — US-31 Onboarding: real-user question \"Can I get from a clean install to a working K-π without reading the manual?\"; action: clean HOME, start the TUI, walk the wizard once, restart, run /onboarding, run under --print; pass evidence: wizard appears on the empty install, never in print mode, skipped steps leave no files, no project .kpi/settings.json and no trust prompt on relaunch, /onboarding re-runs; ACs AC-31.1–31.5 · Owner RP-20."
+   },
+   {
+    "file": "docs/remediation-plan.md",
+    "section": "L9 status line and new `## RP-20 — Onboarding` before RP-19",
+    "what": "L9: 'RP-00 through RP-19 are complete; RP-20 is the open package.' RP-20 section in the RP-18 shape: Depends on RP-07, RP-09, RP-16; Stories US-31; Read first (README §3, PRD US-31, spec §Entry points, kstack.md, research.md); Change bullets matching the Slice A change list; Verification = the onboarding test file plus the real-artifact walk; DoD boxes for AC-31.1–31.5."
+   },
+   {
+    "file": "docs/kstack.md",
+    "section": "§3 Commands (L139)",
+    "what": "/setup-kstack row: \"Then offer Exa, Perplexity, and Firecrawl keys\"; add a line that /onboarding invokes the same role map and key prompts but never writes the project research mode."
+   },
+   {
+    "file": "docs/visual-targets.md",
+    "section": "Research cell (L188)",
+    "what": "Struck marks are `EXA ✕  PPLX ✕  FC ✕` for the services named in `network.failures[]`; when failures are recorded without a recognisable name every known mark is struck."
+   },
+   {
+    "file": "AGENTS.md",
+    "section": "Read order table (L20) and hard rules research bullet (L50)",
+    "what": "\"stories US-01–US-31\"; research bullet names Exa, Perplexity, and Firecrawl."
+   },
+   {
+    "file": "scripts/generate-traceability-map.mjs",
+    "section": "RP map (L1117-1127), AC map (after AC-28.7 and AC-30.11) and usOwner (L1197-1228)",
+    "what": "RP-20 row bound to 'the onboarding factory registers /onboarding last and one session_start hook'; rows AC-28.8 and AC-31.1–31.5 bound to the test titles above; usOwner US-31 → RP-20; regenerate docs/traceability-map.json."
+   }
+  ],
+  "verification": [
+   "cd /Users/leebarry/K-pi && git status --short",
+   "cd /Users/leebarry/K-pi && grep -n 'UAT rows cover US-01' scripts/generate-traceability-map.mjs || echo 'title unbound: safe to rename'",
+   "cd /Users/leebarry/K-pi && node --test --experimental-strip-types test/onboarding.test.ts test/extension.test.ts test/accounts-commands.test.ts test/kstack-runtime.test.ts test/traceability.test.ts test/docs-routing.test.ts",
+   "cd /Users/leebarry/K-pi && node --test --experimental-strip-types test/research-clients.test.ts test/research-control-plane.test.ts test/operator-ui.test.ts test/append-log.test.ts test/schema-conformance.test.ts",
+   "cd /Users/leebarry/K-pi && node scripts/generate-traceability-map.mjs && git diff --stat docs/traceability-map.json",
+   "cd /Users/leebarry/K-pi && npm run check",
+   "cd /Users/leebarry/K-pi && npm run build:offline",
+   "cd /Users/leebarry/K-pi && npm run test:kpi",
+   "cd /Users/leebarry/K-pi && npm test",
+   "cd /Users/leebarry/K-pi && npm run verify:built",
+   "cd /Users/leebarry/K-pi && H=$(mktemp -d) && P=$(mktemp -d) && (cd $P && git init -q && git commit -q --allow-empty -m init) && cd $P && HOME=$H KPI_CODING_AGENT_DIR=$H/.kpi/agent node /Users/leebarry/K-pi/packages/coding-agent/dist/bundle/cli.js --print 'say ok' </dev/null; test ! -e $P/.kpi/settings.json && test ! -e $H/.kpi/agent/accounts.json && echo 'print mode: no onboarding, no writes'",
+   "Manual, real artifact: H=$(mktemp -d); P=$(mktemp -d); git -C $P init -q; cd $P; HOME=$H KPI_CODING_AGENT_DIR=$H/.kpi/agent node /Users/leebarry/K-pi/packages/coding-agent/dist/bundle/cli.js → the Welcome selector appears; choose Not now → quit → relaunch → appears again; Start setup, skip every step → summary lists skipped; ls -a $P (no .kpi/) and ls $H/.kpi/agent (no settings.json, no accounts.json); /accounts login local-openai (any URL) → quit → relaunch → no prompt and no trust prompt; type /onboarding → wizard runs; /accounts login firecrawl saves firecrawl/default in $H/.kpi/agent/accounts.secrets.json (stat -f %Lp shows 600)",
+   "cd /Users/leebarry/K-pi && for r in scripts/pty-rows/uat-06.mjs scripts/pty-rows/uat-15.mjs; do node $r; done  # pty rows seed a local-openai slot and a default model, so no wizard may appear"
+  ],
+  "risks": [
+   "The session_start wizard blocks the rest of startup for as long as the operator sits in a dialog (handlers are awaited sequentially, runner.ts:851-861); an OAuth login that never returns is bounded only by the operator pressing escape — the same bound /accounts login has today.",
+   "With no persisted marker, an install that keeps zero slots and zero harness models sees the welcome selector on every TUI launch until it adds a slot or answers a step; 'Not now' is one keypress. Any scripted TUI run in a truly empty agent dir (a future pty row) will hit it — the two-part guard (zero slots AND getAvailable() empty) covers scripts/pty-rows/lib.mjs today. Document the rule; no hidden env escape.",
+   "accounts/index.ts is owned by another design in this batch (anthropic-auth): the Slice A hunks are a type widening on four signatures, a defaultLogin extraction, and one new export; Slice B adds two one-liners at L306-308 and L321. Land Slice A (onboarding) and Slice B (Firecrawl) as two commits/PRs — they share no line except the label table in promptResearchKeys, and onboarding works with two services or three.",
+   "Logins performed through loginPoolInteractively do not refresh the accounts widget until the next turn (publishWidget is internal to registerAccounts); the footer/widget catches up on the first request.",
+   "asRecord/usableUrl/usableTitle are duplicated from perplexity.ts into firecrawl.ts (~25 lines) rather than extracted into a shared module; exa.ts has its own variants too. A three-way extraction is a larger diff touching exa.ts and perplexity.ts (owned by no other design, but outside the smallest change); do it in a follow-up if a fourth client ever appears.",
+   "Firecrawl request/response shape is taken from the vendor v2 schema fetched on 2026-09-03 (sources: array of {type} objects; query ≤500; limit default 10 max 100; timeout ms; errors 408/500). A self-hosted or older deployment answering a flat v1 data array is still read; a future schema change surfaces as empty results, which the two-source contract turns into NEEDS_HUMAN, never a fake citation.",
+   "Adding \"firecrawl\" to ResearchKeys changes deepEqual expectations in four existing test bodies; titles are preserved verbatim so the traceability map bindings hold.",
+   "event.schema.json edits require a rebuild before test/harness.test.ts passes (dist byte compare); packages/coding-agent/dist is also rewritten by the plan-gate design's build.",
+   "Adding RP-20 to docs/remediation-plan.md changes the plan's L9 'no incomplete package' statement; test/docs-routing.test.ts:645-648 only requires RP-19 to keep its uat.md hand-off, which placing RP-20 before RP-19 preserves. If the maintainer prefers not to reopen the plan, see open_questions.",
+   "rejected: critique 1's option of persisting defaultProvider/defaultModel into ~/.kpi/agent/settings.json from K-π — that is a second unlocked writer for a harness-owned file (settings-manager.ts:224-236, 648-651) and would set a harness default for a provider K-π's api_key pools never register with the harness (model-runtime.ts:466-468). K-π selects models through the accounts layer and kstack role map, so the harness default is not the onboarding outcome that matters; the step is deleted instead (critique 2's first option).",
+   "rejected: critique 1's minor line drift for interactive-mode.ts (\"L957-958\") — the file is packages/coding-agent/src/modes/interactive/interactive-mode.ts and the comment/ui.start() pair is at L958-959 as verified; the original design's line numbers were right, only its path was incomplete.",
+   "rejected: critique 2's suggestion to split the design into two returned objects — the requested output is one object with a fixed shape; the change list is instead ordered and labelled Slice A / Slice B so an implementer can land them as two independent PRs."
+  ],
+  "open_questions": [
+   "Story ownership: the traceability test requires an RP-prefixed owner for US-31 (test/traceability.test.ts:180) and docs/remediation-plan.md:9 currently declares every package complete. Default in this design: add RP-20 — Onboarding to remediation-plan.md (before RP-19) and update L9. Confirm, or name the alternative (e.g. reuse closed RP-07 and accept that the map shows a completed package owning a new story).",
+   "Should an operator be able to suppress the first-run wizard permanently while keeping zero slots and zero models (a 'Don't ask again' marker)? This design deliberately omits it: nothing reads such a marker, and the only install it serves has no routable model. If required, the marker must live in a K-π-owned file under ~/.kpi/agent/ (like accounts.json), never in the harness settings.json."
+  ],
+  "size": "L"
+ },
+ "critiques": [
+  {
+   "lens": "correctness",
+   "verdict": "needs-revision",
+   "problems": [
+    {
+     "severity": "major",
+     "claim": "The \"Default model\" step (f) does not persist anything: pi.setModel is session-only, so the evidence note at core/extensions/types.ts:1446 (\"agent-session.ts:1688 persists it via settingsManager.setDefaultModelAndProvider\") is wrong and the wizard's default-model choice is lost on the next launch — the exact first-launch symptom the design says it fixes.",
+     "evidence": "packages/coding-agent/src/core/agent-session.ts:2635-2638 builds the extension runtime's setModel as `if (!this._modelRuntime.hasConfiguredAuth(model.provider)) return false; await this.setModel(model); return true;` — no options. agent-session.ts:1678 `async setModel(model, options: ModelMutationOptions = {})` and L1686 `if (options.persist) { this.settingsManager.setDefaultModelAndProvider(...) }`; ModelMutationOptions at L268-271 documents \"Defaults to session-only\". The harness reads its default from settings.json `defaultProvider`/`defaultModel` (scripts/pty-rows/lib.mjs:120-122 seeds exactly those keys), which nothing in the design writes. The test \"a scripted onboarding … sets a default model\" only asserts the injected setModel spy was called, so it would pass while the real product forgets the choice."
+    },
+    {
+     "severity": "minor",
+     "claim": "The Firecrawl request `sources: [\"web\"]` (and the test asserting `body.sources deepEqual [\"web\"]`) bakes in a shape the vendor page fetched today does not document as the default form.",
+     "evidence": "docs.firecrawl.dev/api-reference/endpoint/search (fetched 2026-09-03) lists `sources` default as `[{type: \"web\"}]` (objects with a `type` field), `query` max 500, `limit` default 10 / max 100, `timeout` in ms default 60000, response `{ success, data: { web: [{ url, title, description, markdown|null, … }] }, creditsUsed }`, errors 408 and 500 — everything else in the design matches. Confirm the string form is accepted by the v2 schema or send `[{ type: \"web\" }]` and assert that in the test."
+    },
+    {
+     "severity": "minor",
+     "claim": "API-key pooled logins (zai, zai-coding-cn, key-only kimi) never reach the harness auth store, so step (f)'s candidate list from `context.modelRegistry.getAvailable()` omits those providers and `pi.setModel` returns false for them; the design's warning text \"no credential for that model\" is wrong for an account the wizard just added.",
+     "evidence": "accounts/index.ts:220-228 returns `{ type: \"api_key\", key }` straight to AccountsStore.putSlot (store.ts:318-338 writes only accounts.json/accounts.secrets.json); only the OAuth branch at L217 goes through `context.modelRegistry.login` → model-runtime.ts:673-677 `synchronizeCredentialState`. model-runtime.ts:276-282 computes `available` from `snapshot.configuredProviders`, i.e. harness auth checks. Pre-existing behaviour, but the wizard should say the provider's models are routed by the accounts layer and cannot be picked as the harness default, not blame a missing credential."
+    },
+    {
+     "severity": "minor",
+     "claim": "test/traceability.test.ts hard-codes the UAT range and is not in the design's change list.",
+     "evidence": "test/traceability.test.ts:369-375 `test(\"UAT rows cover US-01..US-30 …\")` loops `i <= 30`; adding US-31/UAT-31 and rewriting AGENTS.md:20 to \"US-01–US-31\" leaves that guard stale (it still passes, but UAT-31 is unguarded). Bump the loop and title to 31."
+    },
+    {
+     "severity": "minor",
+     "claim": "The completion summary reports a research mode that was never chosen.",
+     "evidence": "Step (g) reads `readKpiSettings(context.cwd)`.research; settings.ts:60 DEFAULT_SETTINGS.research is \"auto\", so a run that pressed Skip on the research step (no write, per the design) still summarises \"research: auto\" with zero keys saved. Report \"not configured\" when no project research key exists, or omit the line when the step was skipped."
+    },
+    {
+     "severity": "minor",
+     "claim": "Minor line drift in the evidence list.",
+     "evidence": "interactive-mode.ts: the \"Start the UI before initializing extensions\" comment and `this.ui.start()` are at L957-958, not 958-959. All other cited lines verified: index.ts:58, accounts/index.ts:129/156/178/198/245/306/321/398/515-518/962-975/990-1028, kstack/models.ts:305-343, settings.ts:32/48-52/62-71/100-114/127-139, session.ts:10/39-42/60-63/87/228, endpoints.ts:13-14/30-41/103-107/136, gate.ts:134-135/145-160, exa.ts:144-172/184-202, append-log.ts:79, event.schema.json:115-128, board.ts:732-738, types.ts:143-154/317-346/574/1405/1446, runner.ts:851-861, agent-session.ts:2486, main.ts:110, slash-commands.ts:36-47, extension.test.ts:31-42, pty-rows/lib.mjs:119-137 and uat-15.mjs:93-100 (both seed a slot), research-control-plane.test.ts:64-79/128/134/502/544/557-597/660, generate-traceability-map.mjs:1175-1197, traceability.test.ts:180, settings-manager.ts:626-648/707, README.md:94/172-177/181-187/322/372-390/575-585/719-733, PRD.md:49/382-392/554, spec.md:134/153-161/277-280/636, research.md/uat.md/kstack.md:139/visual-targets.md:188/AGENTS.md:20."
+    }
+   ],
+   "required_changes": [
+    "Make the default-model step actually persist: either write `defaultProvider`/`defaultModel` into ~/.kpi/agent/settings.json through the same writer as the marker (widen writeUserKpiSettings to accept those two top-level keys; persistScopedSettings at settings-manager.ts:626-648 merges only modified fields so they survive), or add a persist path on the extension API; correct the types.ts:1446 evidence note, and make the onboarding test assert the persisted default on disk (read settings.json defaultProvider/defaultModel) rather than only that a spy was called.",
+    "Confirm the Firecrawl v2 `sources` item form against the vendor schema; if the string form is not documented, send `[{ type: \"web\" }]` and assert that shape in \"Firecrawl Search posts to v2 search with a bounded limit and no scrape options\".",
+    "In step (f) build the candidate list from providers that are both in HEALTHY_POOLS and `modelRegistry.hasConfiguredAuth`/`getAvailable()`, and when setModel returns false word the warning as \"<provider> is routed by the accounts layer; it cannot be the harness default model\" instead of \"no credential for that model\".",
+    "Add test/traceability.test.ts to the change list: bump the \"UAT rows cover US-01..US-30\" loop and title to US-31 alongside the AGENTS.md/PRD/uat.md edits.",
+    "In the completion summary, report the research mode only when the research step ran (or say \"not configured\" when no key was saved) instead of echoing the \"auto\" default from readKpiSettings.",
+    "Extend the existing mode-persistence loop at test/research-control-plane.test.ts:142 to include \"firecrawl\" so the new RESEARCH_MODES entry is covered by the persist round-trip."
+   ],
+   "file_conflicts_seen": [
+    "packages/coding-agent/src/kpi/extensions/accounts/index.ts (anthropic-auth)",
+    "packages/coding-agent/src/kpi/extensions/append-log.ts (board-live, plan-gate)",
+    "packages/coding-agent/src/kpi/schemas/event.schema.json (board-live, plan-gate)",
+    "packages/coding-agent/src/kpi/extensions/board.ts (board-live, agents-visibility)",
+    "scripts/generate-traceability-map.mjs (anthropic-auth, board-live, plan-gate, agents-visibility)",
+    "docs/traceability-map.json (anthropic-auth, plan-gate, agents-visibility)",
+    "packages/coding-agent/dist (plan-gate; this design also requires a rebuild for the harness.test.ts byte compare)",
+    "README.md (board-live)",
+    "docs/PRD.md (board-live)",
+    "docs/spec.md (board-live)",
+    "docs/uat.md (board-live)",
+    "docs/visual-targets.md (board-live)"
+   ]
+  },
+  {
+   "lens": "minimalism-and-contract",
+   "verdict": "needs-revision",
+   "problems": [
+    {
+     "severity": "major",
+     "claim": "Step (f) 'Default model' persists nothing and will refuse every K-π key-only login: the extension `pi.setModel` is session-only, and its auth check reads the harness snapshot, not K-π's accounts store. The design's evidence for this step is wrong.",
+     "evidence": "packages/coding-agent/src/core/agent-session.ts:2635-2639 — `setModel: async (model) => { if (!this._modelRuntime.hasConfiguredAuth(model.provider)) return false; await this.setModel(model); return true; }` calls `setModel` with no `{ persist: true }`; ModelMutationOptions at agent-session.ts:268-271 says `persist` 'Defaults to session-only'. The `setDefaultModelAndProvider` call at :1688 sits behind `if (options.persist)`. `hasConfiguredAuth` (model-runtime.ts:466-468) is `configuredProviders.has(providerId)` from the harness auth snapshot; `AccountsStore.putSlot` (store.ts:318-338) writes only accounts.json/accounts.secrets.json, never auth.json, so an api_key pool login made seconds earlier in the same wizard returns false → the design's own 'no credential for that model' warning fires. The step is dead weight (YAGNI) and its summary line 'default model' would report a value that is gone on the next launch."
+    },
+    {
+     "severity": "major",
+     "claim": "`writeUserKpiSettings` is a second, unlocked writer for a harness-owned file and silently destroys an unparseable settings.json — the exact case the harness itself refuses to write over.",
+     "evidence": "packages/coding-agent/src/core/settings-manager.ts:251-279 — every harness write goes through `FileSettingsStorage.withLock` → `lockfile.lockSync(path)` (:224-236); `atomicWrite` (run-store.ts:168+) takes no such lock. settings-manager.ts:648-651 — `save()` returns early when `globalSettingsLoadError` is set, i.e. the harness never overwrites a file it could not parse; the design's writer reads 'missing/invalid → {}' and then `atomicWrite`s the whole document, wiping theme/defaultModel/etc. from a file with a stray comma. Harness writes are also queued asynchronously (`enqueueWrite`, :598-610), so a harness write in flight at startup (lastChangelogVersion :707-708, or anything the operator changed) can interleave with the wizard's unlocked read→rename. AGENTS.md 'Handle the failures your contracts name … Silence is a defect' and minimalist.md 'a swallowed failure is a defect' both apply: the catch that maps a corrupt file to `{}` is a silent, destructive catch."
+    },
+    {
+     "severity": "major",
+     "claim": "The persisted marker (`kpi.onboarding {completedAt, version, status}`), the user-file writer, `KpiOnboardingMarker`, and the three-way welcome exist only to let a zero-slot install suppress the wizard forever — a product decision the design made silently, and none of the three recorded fields is ever read.",
+     "evidence": "Design: `shouldAutoOnboard` already requires `every pool … has zero slots`. Any successful pooled login clears that; a harness `/login` is converted into a `default` slot by `importOfficialCredentials` (accounts/index.ts:962-966, store.ts:393-420) in the accounts session_start handler, which runs before onboarding's handler (runner.ts:851-861, onboarding registered last). So the only install that ever needs 'Don't ask again' is one with no routable model at all — a non-functional K-π. `shouldAutoOnboard` checks only `onboarding === undefined`; `completedAt`, `version`, `status` are written and never consumed (minimalist.md rung 1 YAGNI, 'No speculative abstraction'). Dropping the marker deletes settings.ts change (2), the writer in (3), the schema/README/spec rows for `kpi.onboarding`, AC-31.2's marker clause and two of the three welcome options, and removes problem 2 entirely. Whether a zero-slot install should be able to silence the wizard belongs in open_questions, not in code."
+    },
+    {
+     "severity": "minor",
+     "claim": "Two unrelated changes are bundled: onboarding (new command + hook) and a third research provider (generalising 12 files over the service list). Neither depends on the other; together they touch ~20 source/test files and 12 docs and collide with four other designs in this batch.",
+     "evidence": "Design 'change' list: onboarding needs accounts/index.ts (export), kstack/models.ts (extract), settings.ts, onboarding.ts, index.ts, extension.test.ts. Firecrawl needs session.ts, endpoints.ts, firecrawl.ts, gate.ts, research/index.ts, setup.ts, append-log.ts, event.schema.json, board.ts, three test files. The only shared line is `promptResearchSetup` asking a third key. AGENTS.md 'Smallest correct change' and 'Rewrite unrelated files while implementing one work package' (Do not) favour two slices; fixes.md §3 already models this repo's queue as one concern per package."
+    },
+    {
+     "severity": "minor",
+     "claim": "Owning docs are not fully updated for Firecrawl: AC-28.5, AC-28.7 and AC-29.2 keep two-service wording that the new behaviour contradicts.",
+     "evidence": "docs/PRD.md:390 AC-28.5 'tries the other configured service' (now the next of three); :392 AC-28.7 '`exa` and `perplexity` are research credential targets, not pool ids' (firecrawl is now one too; the design only adds AC-28.8 saying 'AC-28.7 applies'); :399 AC-29.2 'With an Exa or Perplexity key … from `exa_search`, `exa_contents`, or `pplx_search`' omits `firecrawl_search`, so a firecrawl-only online run (which the design's own test 'a firecrawl key alone goes online' asserts) is not AC-covered. AGENTS.md: 'Update the owning product docs in the same package as behavior' (remediation-plan.md execution rule 8)."
+    },
+    {
+     "severity": "minor",
+     "claim": "Onboarding's research step writes the project `.kpi/settings.json` of whatever cwd the first launch happens in, which makes that directory trust-requiring on the next launch — an unnamed consequence.",
+     "evidence": "research/setup.ts:80 `writeResearchMode(context.cwd, …)` → settings.ts:127-139 writes `<cwd>/.kpi/settings.json`. README.md:132-137: 'A project is trust-requiring when `.kpi/` contains any of `settings.json`, …' and K-π then asks 'Trust project folder?'. A first launch from `~` writes `~/.kpi/settings.json` beside `~/.kpi/agent/`. The design's risk list names the project write but not the trust prompt it causes; the PRD/README text should say it, or the research step should not write the project mode from onboarding."
+    },
+    {
+     "severity": "minor",
+     "claim": "board.ts keeps a two-service fallback string and comment after a third service is added, so an engine no-network with only a firecrawl failure that fails the name match still prints 'EXA ✕  PPLX ✕'.",
+     "evidence": "board.ts:736-738 — `const marks = struck.length > 0 ? struck : … \"EXA ✕  PPLX ✕\"`, comment 'Always show both struck marks'. The design says 'keep the … default \"EXA ✕  PPLX ✕\" string so operator-ui.test.ts:262-263 still holds' — preserving a test over the contract. If three services exist the default should be derived from RESEARCH_MARKS, and the test body updated with its title kept."
+    },
+    {
+     "severity": "minor",
+     "claim": "US-31 is assigned to RP-07, a closed package whose `Stories:` line does not include it; the traceability map would then show a completed package owning an unbuilt story.",
+     "evidence": "docs/remediation-plan.md:435-439 RP-07 'Stories: US-10–US-12, US-26', DoD all `[x]`; remediation-plan.md:9 'No incomplete remediation package remains'. scripts/generate-traceability-map.mjs:1197-1228 `usOwner` is a hand map with no cross-check, so the test passes while the map lies. The design already lists this in open_questions; it should be resolved (new package in the active queue, fixes.md `FX-##` style) before the generator is edited, not after."
+    }
+   ],
+   "required_changes": [
+    "Delete step (f) (Default model) and the `setModel` dependency, or replace it with a path that actually persists — the extension `pi.setModel` is session-only and rejects any provider not in the harness auth snapshot; correct the evidence note for types.ts:1446/agent-session.ts:1688.",
+    "Remove `writeUserKpiSettings` and the `kpi.onboarding` key from ~/.kpi/agent/settings.json. If a marker survives the product decision below, store it in a K-π-owned file under the agent dir (the way accounts.json is) via the existing `atomicWrite`, and never overwrite a file that failed to parse — surface that as an error the operator sees.",
+    "Move 'may a zero-slot install suppress the first-run wizard permanently (Don't ask again)?' to open_questions. Default to the smaller design: trigger = reason 'startup' + mode 'tui' + hasUI + zero configured slots; 'Not now' = dismiss for this launch; `/onboarding` re-runs. No marker, no version/completedAt fields nothing reads.",
+    "Split the design into two slices — onboarding (accounts export, kstack extract, onboarding.ts, index.ts, extension.test.ts, docs US-31) and Firecrawl (research/*, append-log, schema, board, tests, docs AC-28.8) — so each is the smallest correct change and file ownership against anthropic-auth / board-live / plan-gate is tractable.",
+    "Update docs/PRD.md AC-28.5 ('the next configured service'), AC-28.7 (add `firecrawl`), and AC-29.2 (add 'or Firecrawl key' and `firecrawl_search`) in the same change; regenerate docs/traceability-map.json after the AC rows are bound.",
+    "Either stop onboarding from writing the project research mode (call `saveResearchKeys` only and leave mode to `/setup-kstack`), or state in README §3 / PRD US-31 that the research step writes `<cwd>/.kpi/settings.json` and that this makes the directory trust-requiring on the next launch.",
+    "Derive board.ts's default struck marks from the same RESEARCH_MARKS table instead of keeping the hard-coded 'EXA ✕  PPLX ✕' string and its 'both' comment; update the operator-ui.test.ts body, keeping the title.",
+    "Resolve the US-31 owner before editing scripts/generate-traceability-map.mjs: add a package to the active queue (fixes.md `FX-##` or a new RP) and point usOwner/UAT-31 at it rather than at the closed RP-07."
+   ],
+   "file_conflicts_seen": [
+    "packages/coding-agent/src/kpi/extensions/accounts/index.ts (anthropic-auth)",
+    "packages/coding-agent/src/kpi/extensions/append-log.ts (board-live, plan-gate)",
+    "packages/coding-agent/src/kpi/schemas/event.schema.json (board-live, plan-gate)",
+    "packages/coding-agent/src/kpi/extensions/board.ts (board-live, agents-visibility)",
+    "scripts/generate-traceability-map.mjs (anthropic-auth, board-live, plan-gate, agents-visibility)",
+    "docs/traceability-map.json (anthropic-auth, plan-gate, agents-visibility)",
+    "README.md (board-live)",
+    "docs/PRD.md (board-live)",
+    "docs/spec.md (board-live)",
+    "docs/uat.md (board-live)",
+    "docs/visual-targets.md (board-live)",
+    "packages/coding-agent/dist (plan-gate — this design's required `npm run build` rewrites it for the event.schema.json byte compare)"
+   ]
+  }
+ ]
+}

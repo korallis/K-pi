@@ -1,0 +1,584 @@
+{
+ "shared_contracts": [
+  "append-log.ts (owner plan-gate, wave 1, lands ALL THREE designs' additions): EVENT_TYPES = existing 23 names (incl. \"agent.denied\") + \"node.started\", \"node.finished\" appended at the END in that order. EventInput gains Event<\"node.started\", { run: number; model?: string }> and Event<\"node.finished\", { run: number; status: \"completed\" | \"failed\"; elapsed_ms: number; cost_usd?: number; result?: string; session?: string; error?: string }>; export `type NodeLifecycleEvent = Extract<EventInput, { type: \"node.started\" | \"node.finished\" }>`. approval.result payload becomes `{ approved: boolean; question?: string; feedback?: string }`. ResearchPayload.mode union becomes \"exa\" | \"perplexity\" | \"firecrawl\" | \"auto\" | \"local\". appendEvent behaviour unchanged.",
+  "event.schema.json (owner plan-gate, wave 1): $defs.nodeStarted (base seven required + run; type const node.started; run integer minimum 1; model $ref identifier; additionalProperties false) and $defs.nodeFinished (base seven + run, status, elapsed_ms required; status enum [completed, failed]; elapsed_ms integer minimum 0; cost_usd number minimum 0; result/session/error $ref text; additionalProperties false) appended to the top-level oneOf; $defs.approvalResult.properties.feedback = {$ref: #/$defs/text}; $defs.service enum = [exa, perplexity, firecrawl, local]; $defs.researchMode enum = [exa, perplexity, firecrawl, auto, local]. test/schema-conformance.test.ts eventPayload(): approval.result → { ...base, approved: false, question: \"Commit?\", feedback: \"split the module\" }; node.started → { ...base, run: 1, model: \"openai-codex/gpt-test\" }; node.finished → { ...base, run: 1, status: \"completed\", elapsed_ms: 1200, cost_usd: 0.42, result: \"stack.json\", session: \"01a0test\" }; the existing 'rejects cross-type and research vocabulary drift' test also asserts assertInvalid({ ...eventPayload(\"node.finished\"), approved: true }). Existing titles verbatim.",
+  "GraphAgentSession (engine.ts:63): `getSessionStats?(): { cost: number; toolCalls?: number }` (agents-visibility's widening; board-live reads .cost, sessions-snapshot reads .toolCalls).",
+  "GraphEngine private `modelLabel(): string | undefined` = `${this.options.model.provider}/${this.options.model.id}` or undefined. It is the ONE source of the model string for bus.spawn (engine.ts:1035), node.started.model, and LiveNodeSession.model (agents-visibility's inline template is replaced by modelLabel()).",
+  "GraphEngineOptions: after `thinkingLevel?: ThinkingLevel;` add `onSessionsChange?: () => void | Promise<void>` (agents-visibility). Fired through private `noteSessionsChange()` (fire-and-forget, console.warn `[kpi/graph] sessions change hook failed: <msg>` on rejection). gated-loop.ts passes `onSessionsChange: dependencies.onStateChange` at BOTH construction sites (GraphEngine.restore and new GraphEngine). No other engine hook is added: board-live's onNodeEvent stays deleted; node lifecycle reaches the board via events.jsonl + the 1 s ticker only. Consequence for control-plane.installWidget (board-live): it MUST be re-entrant — each call disposes the previous widget component (which stops its ticker) and installs a fresh one; narration cursor and ActivityReader are module state keyed by eventsPath so a reinstall mid-run never re-narrates or re-parses.",
+  "executeNode (engine.ts) bracket order, both designs in one finally: after `this.runState.nodes[node.id].sessionId = session.sessionId;` → `const releaseSession = registerLiveNodeSession({ kind: \"node\", jobId: this.options.jobId, nodeId: node.id, sessionId: session.sessionId, contextMode: node.context.mode, threadKey: node.context.threadKey ?? node.id, model: this.modelLabel(), startedAt: new Date(this.now()).toISOString(), stats: () => session.getSessionStats?.() }); this.noteSessionsChange();` and in finally: `releaseSession(); this.noteSessionsChange(); const delta = this.recordSessionCost(session); if (delta !== undefined) this.nodeRunCostUsd.set(node.id, (this.nodeRunCostUsd.get(node.id) ?? 0) + delta); if (disposeAfter) session.dispose();`. recordSessionCost returns `number | undefined`. executeWorkerAgentNode: `const releaseBus = registerLiveBus(bus)` after construction, `node: node.id` in bus.spawn, noteSessionsChange() after spawn, and in finally after `await bus.stop(agentId).catch(() => undefined)`: `releaseBus(); this.noteSessionsChange();`. node.started/node.finished appends (board-live) live in runSuperstep, not in executeNode, so they are unaffected by retries.",
+  "graph/schema.ts (plan-gate, wave 1): `export interface HumanAnswer { approved: boolean; feedback?: string }`; HumanGraphNode += `detail?: \"stack.json\"`, `feedbackPath?: string`; AgentGraphNode += `feedbackPath?: string`. GraphEngine.submitHuman(answer: HumanAnswer) and resume(answer: HumanAnswer) replace the boolean forms; GraphHumanUI and resumeWithUI are deleted. Every later test (board-live, agents-visibility) that resumes an engine uses `resume({ approved: true })`.",
+  "gated-loop.ts: `LoopRecovery = \"provider\" | \"delivery\" | \"approval\"`; stageFor maps `plan-approval` → `plan`; exports `PLAN_GATE_OPTIONS = [\"Approve plan\", \"Request changes\"] as const`, `MAX_HUMAN_FEEDBACK_CHARS = 4000`. state.json gains no field. Board consumers (board-live) treat a current node `plan-approval` as stage plan with no node.* record (`NOW plan-approval  no node.started yet`); the plan gate dialog is ctx.ui.select/editor inside the /kpi handler and never coexists with the /kpi status overlay.",
+  "bus/sessions-snapshot.ts (agents-visibility, wave 1) is the ONLY liveness registry, exactly: LiveNodeSession { kind: 'node'; jobId; nodeId; sessionId; contextMode: 'isolated'|'thread'; threadKey; model?; startedAt: string; stats?: () => { cost: number; toolCalls?: number } | undefined }; LiveWorkerSession extends LiveWorker { kind: 'worker'; jobId }; SessionRow; SessionsSnapshot { rows; counts: { nodes; workers; liveTotal }; mechanism }; registerLiveNodeSession(record): () => void; registerLiveBus(bus): () => void; resetSessionsRegistry(); liveNodeSessions(jobId?); liveWorkerSessions(jobId?); liveWorkerCount(jobId?); sessionsSnapshot({ jobId?, main?, now? }); MECHANISM_SENTENCE. spawn.ts: `export interface LiveWorker { agentId; role; pid; alive; isWriter; spawnedAt; lastEvent; node? }`, `BackgroundBus.liveWorkers(): LiveWorker[]`, countLiveProcesses() derived from it, spawn options/WorkerRecord/WorkerStatus gain `node?: string`. bus/live-snapshot.ts survives wave 1 as a bridge (communicate.ts calls `setLiveWorkerCountProvider(() => liveWorkerCount())` from the new module) and is deleted by board-live in wave 2 together with that bridge line and control-plane's import; no shim after that.",
+  "board.ts BoardModel final shape (board-live owns the file; applies all three): existing fields + `sessions?: { nodes: number; workers: number }` (agents-visibility) + `activity?: Readonly<Record<string, StageActivity>>`, `eventsUnreadable?: number`, `eventsError?: string`, `surface?: 'widget' | 'overlay'`, `selectedStage?: number`, `detail?: NodeDetail` (board-live). Span += `optional?: boolean`; BoardCell += `detail?: string[]`; RegionId += 'now' | 'nodeDetail' | 'keys'. contextRows summary cell text: `AGENTS ${agents}` when sessions is undefined, else `AGENTS ${agents} · ${n} node|nodes · ${w} worker|workers` (tone 'text'; `AGENTS <digits>` prefix preserved for scripts/pty-rows). researchCellFromDocument uses module const RESEARCH_MARKS = [[\"exa\", [], \"EXA ✕\"], [\"perplexity\", [\"pplx\"], \"PPLX ✕\"], [\"firecrawl\", [\"fc\"], \"FC ✕\"]] with the unnamed-failure fallback derived from it (onboarding). board.ts stays a leaf module (imports only visibleWidth); board-activity.ts and board-overlay.ts import from it, never the reverse.",
+  "control-plane.ts (board-live owns; applies agents-visibility's hunk): `export type Ticker`, `BOARD_TICK_MS = 1000`, `export type ControlPlaneDependencies = LoopDependencies & { tick?: Ticker }`, registerControlPlane(pi, dependencies: ControlPlaneDependencies = {}). BoardBuildOptions = { agents?, sessions?: BoardModel['sessions'], now?, activity?: ActivityReader, surface? } (+ existing). buildBoardModel derives `const live = options.agents === undefined ? sessionsSnapshot({ jobId: job.jobId }).counts : undefined; const agents = options.agents ?? live!.nodes + live!.workers; const sessions = options.sessions ?? live;` and emits `sessions` only when defined — pure memory, runs on every tick with no I/O. import `sessionsSnapshot` from ./bus/sessions-snapshot.ts replaces the live-snapshot import. Exports `readNodeDetail(job, snapshot, stage)`.",
+  "accounts/index.ts final API after wave 1 (anthropic-auth) then wave 2 (onboarding): `loginAccount(providerName, requestedSlotId, store, login, now, context: ExtensionContext)` (onboarding widens the type; anthropic-auth's readOfficialCredential-before-login / claimOfficial-after-putSlot and the `(… keeps its previous grant)` notice stay inside it, so onboarding gets them for free); `loginWithOfficialProvider(providerId, slotId, context: ExtensionContext, showAuthUrl)`; `AccountsDependencies.login` context type ExtensionContext; `function defaultLogin(pi): NonNullable<AccountsDependencies[\"login\"]>` extracted from registerAccounts; `export async function loginPoolInteractively(pi, poolId, context: ExtensionContext, dependencies?: Pick<AccountsDependencies, \"store\"|\"now\"|\"login\">): Promise<{ poolId; slotId } | undefined>`; `isResearchService(value): value is ResearchService` = `(RESEARCH_SERVICES as readonly string[]).includes(value)`; `await saveResearchKeys({ [service]: trimmed } as ResearchKeys)`. session_start handler order: reconcileOfficialCredentials → needs-login reminders → refreshExpiringCredentials → usage.refreshAll → publishWidget; onboarding's session_start hook is registered LAST in kPi (after registerStatusLine) so it runs after this.",
+  "AccountsStore API after anthropic-auth (onboarding and its tests must use these names): `reconcileOfficialCredentials(now: number): Promise<{ imported: string[]; adopted: string[]; orphaned: string[] }>` REPLACES `importOfficialCredentials()` (removed, no alias); `readOfficialCredential(poolId)`; `claimOfficial(poolId, slotId, before)`; `markNeedsLogin(poolId, slotId, reason)`. AccountSlot += `official?: true`, `needsLogin?: string` (schema version stays 1). An official slot counts as a slot for onboarding's shouldAutoOnboard (pools are non-empty).",
+  "errors.ts (anthropic-auth) exports `parseClientVersionRejection(text: string | undefined): { sent?: string; required?: string } | undefined`, `type RefreshFailure`, `summarizeRefreshFailure(error: unknown): RefreshFailure`; classify/classifyProviderFailure/classifyProviderBodyFailure untouched. New assistant diagnostic type `kpi_client_version_rejected` (never `kpi_account_failover`).",
+  "research/session.ts (onboarding): `RESEARCH_SERVICES = [\"exa\", \"perplexity\", \"firecrawl\"] as const` (auto order); `ResearchKeys = Partial<Record<ResearchService, string>>`; `RESEARCH_KEY_ENV`. research/setup.ts: `promptResearchKeys(ui): Promise<ResearchService[]>` (no project-file write) and `promptResearchSetup(context)` = promptResearchKeys + writeResearchMode (unchanged behaviour). kstack/models.ts: `runKStackSetup(context: Pick<ExtensionContext, \"ui\"|\"modelRegistry\">)`. settings.ts RESEARCH_MODES = [auto, exa, perplexity, firecrawl, local].",
+  "Slash commands registered by this batch: `/agents` (agents-visibility, inside registerParentTools → registerBackgroundBus, which kPi calls only when pi.registerTool exists — so test/extension.test.ts's exact command list does NOT gain it) and `/onboarding` (onboarding, registered last in kPi — test/extension.test.ts list gains \"onboarding\" after \"statusbar\"). No `/kpi agents`, no `/setup` alias.",
+  "Registry numbering (resolved now): fixes.md FX-05 = board-live, FX-06 = agents-visibility (both designs claimed FX-05); onboarding = remediation-plan RP-20 / US-31; anthropic-auth = NEEDS_HUMAN gate NH-03 (no FX entry). Traceability AC ids are disjoint: AC-10.9, AC-10.10 (anthropic-auth); AC-02.8–AC-02.11 (plan-gate); AC-06.7, AC-14.5, AC-16.7, AC-16.8 (board-live); AC-23.10, AC-23.11 (agents-visibility); AC-28.8, AC-31.1–AC-31.5 + RP-20 + usOwner US-31 (onboarding). scripts/generate-traceability-map.mjs EVENT_TYPES copy and test/traceability.test.ts copy both become the 25-name list (adds agent.denied, node.started, node.finished). Only the docs+traceability agent edits the script, the map, or test/traceability.test.ts, and only it runs `node scripts/generate-traceability-map.mjs`; code-wave agents never regenerate the map (existing bound test titles must survive verbatim in every wave).",
+  "README `/kpi verify` record counts (README.md:582, :669, :887) are NOT plan-gate's \"15\": after plan-gate (+1 approval.result) and board-live (+2 node.* per agent node run) the docs agent recomputes them from a real gated run's events.jsonl and updates all three places plus the §13 record list with `node.started`/`node.finished` and `approval.result ×2`.",
+  "packages/coding-agent/dist is untracked: every code-wave agent runs `npm run build:offline` locally before test/harness.test.ts (dist/kpi must equal src/kpi byte-for-byte after graph JSON or schema edits); the docs+traceability agent performs the final `npm run build:offline && npm run test:kpi && npm test && npm run verify:built` and the pty rows (uat-06, uat-15, uat-16, uat-25) on the merged tree.",
+  "Notification namespace: all new operator lines start with `K-π ` (`K-π accounts: …`, `K-π job <id> is waiting on you: …`, `K-π ▶/■/✕/⇄ …`, `K-π board refresh failed: …`, `K-π onboarding failed: …`). The accounts widget uses ctx.ui.setStatus(\"accounts\"); the board uses ctx.ui.setWidget(\"kpi\"); no key collision."
+ ],
+ "ownership": [
+  {
+   "file": "packages/ai/src/api/anthropic-messages.ts",
+   "owner": "anthropic-auth",
+   "also_touched_by": [],
+   "resolution": "cherry-pick -x 96317e50b only (commit exists locally: `git cat-file -t 96317e50b` → commit); register in UPSTREAM.md"
+  },
+  {
+   "file": "packages/ai/test/anthropic-auth-token.test.ts",
+   "owner": "anthropic-auth",
+   "also_touched_by": [],
+   "resolution": "sole writer; UPSTREAM.md register row"
+  },
+  {
+   "file": "UPSTREAM.md",
+   "owner": "anthropic-auth",
+   "also_touched_by": [],
+   "resolution": "sole writer (AGENTS.md:42 register requirement is code-adjacent, so it stays in wave 1 rather than the docs wave)"
+  },
+  {
+   "file": "packages/coding-agent/src/kpi/extensions/accounts/errors.ts",
+   "owner": "anthropic-auth",
+   "also_touched_by": [],
+   "resolution": "sole writer"
+  },
+  {
+   "file": "packages/coding-agent/src/kpi/extensions/accounts/store.ts",
+   "owner": "anthropic-auth",
+   "also_touched_by": [],
+   "resolution": "sole writer; importOfficialCredentials removed — onboarding tests must not reference it"
+  },
+  {
+   "file": "packages/coding-agent/src/kpi/extensions/accounts/balancer.ts",
+   "owner": "anthropic-auth",
+   "also_touched_by": [],
+   "resolution": "sole writer"
+  },
+  {
+   "file": "packages/coding-agent/src/kpi/extensions/accounts/widget.ts",
+   "owner": "anthropic-auth",
+   "also_touched_by": [],
+   "resolution": "sole writer"
+  },
+  {
+   "file": "packages/coding-agent/src/kpi/extensions/accounts/index.ts",
+   "owner": "anthropic-auth",
+   "also_touched_by": [
+    "onboarding"
+   ],
+   "resolution": "sequential: anthropic-auth lands its hunks in wave 1 (loginAccount snapshot/claim, refreshExpiringCredentials, hooks, session_start); onboarding edits the same file in wave 2 after rebasing — widens four context types to ExtensionContext, extracts defaultLogin(pi), adds loginPoolInteractively export, and the two Firecrawl one-liners (isResearchService via RESEARCH_SERVICES, saveResearchKeys spread). No same-wave writer."
+  },
+  {
+   "file": "test/accounts-errors.test.ts",
+   "owner": "anthropic-auth",
+   "also_touched_by": [],
+   "resolution": "create; sole writer"
+  },
+  {
+   "file": "test/accounts-commands.test.ts",
+   "owner": "anthropic-auth",
+   "also_touched_by": [],
+   "resolution": "sole writer (onboarding only runs it in verification)"
+  },
+  {
+   "file": "test/accounts.test.ts",
+   "owner": "anthropic-auth",
+   "also_touched_by": [],
+   "resolution": "sole writer"
+  },
+  {
+   "file": "test/accounts-routing.test.ts",
+   "owner": "anthropic-auth",
+   "also_touched_by": [],
+   "resolution": "sole writer"
+  },
+  {
+   "file": "packages/coding-agent/src/kpi/extensions/stack.ts",
+   "owner": "plan-gate",
+   "also_touched_by": [],
+   "resolution": "sole writer"
+  },
+  {
+   "file": "packages/coding-agent/src/kpi/extensions/graph/schema.ts",
+   "owner": "plan-gate",
+   "also_touched_by": [],
+   "resolution": "sole writer; HumanAnswer/feedbackPath/detail are the contract later waves compile against"
+  },
+  {
+   "file": "packages/coding-agent/src/kpi/graphs/coding-loop.gated.json",
+   "owner": "plan-gate",
+   "also_touched_by": [],
+   "resolution": "sole writer"
+  },
+  {
+   "file": "packages/coding-agent/src/kpi/extensions/append-log.ts",
+   "owner": "plan-gate",
+   "also_touched_by": [
+    "board-live",
+    "onboarding"
+   ],
+   "resolution": "plan-gate lands all three designs' additive edits in wave 1 per the shared contract (node.started/node.finished + NodeLifecycleEvent for board-live, feedback for itself, \"firecrawl\" mode for onboarding); board-live and onboarding do not touch the file"
+  },
+  {
+   "file": "packages/coding-agent/src/kpi/schemas/event.schema.json",
+   "owner": "plan-gate",
+   "also_touched_by": [
+    "board-live",
+    "onboarding"
+   ],
+   "resolution": "plan-gate lands nodeStarted/nodeFinished $defs (board-live), approvalResult.feedback (own) and the firecrawl enum values (onboarding) in wave 1; rebuilds dist locally for test/harness.test.ts"
+  },
+  {
+   "file": "test/schema-conformance.test.ts",
+   "owner": "plan-gate",
+   "also_touched_by": [
+    "board-live"
+   ],
+   "resolution": "plan-gate adds its approval.result fixture and board-live's node.* fixtures plus the `approved: true` rejection in wave 1; titles verbatim; board-live does not touch it"
+  },
+  {
+   "file": "packages/coding-agent/src/kpi/extensions/graph/engine.ts",
+   "owner": "board-live",
+   "also_touched_by": [
+    "plan-gate",
+    "agents-visibility"
+   ],
+   "resolution": "three hunk sets serialised into two waves: plan-gate lands validateNode/nodePrompt/submitHuman(HumanAnswer)/resume + deletes GraphHumanUI/resumeWithUI in wave 1; board-live rebases in wave 2 and lands its own hunks (modelLabel, recordSessionCost → number|undefined, nodeRunCostUsd, appendNodeEvent, runSuperstep node.* appends) AND agents-visibility's hunks (getSessionStats widening, onSessionsChange option, noteSessionsChange, registerLiveNodeSession/registerLiveBus brackets, node: node.id in bus.spawn) per the executeNode contract, importing from bus/sessions-snapshot.ts which already exists from wave 1"
+  },
+  {
+   "file": "packages/coding-agent/src/kpi/extensions/gated-loop.ts",
+   "owner": "plan-gate",
+   "also_touched_by": [
+    "agents-visibility"
+   ],
+   "resolution": "plan-gate owns the file in wave 1 (answerPendingHuman, LoopRecovery approval, stageFor); agents-visibility's two option literals `onSessionsChange: dependencies.onStateChange` are applied by board-live in wave 2 together with the engine option they reference (sequential after plan-gate)"
+  },
+  {
+   "file": "test/gated-loop.test.ts",
+   "owner": "plan-gate",
+   "also_touched_by": [],
+   "resolution": "sole writer"
+  },
+  {
+   "file": "test/graph-routing.test.ts",
+   "owner": "plan-gate",
+   "also_touched_by": [],
+   "resolution": "sole writer"
+  },
+  {
+   "file": "test/stack.test.ts",
+   "owner": "plan-gate",
+   "also_touched_by": [],
+   "resolution": "sole writer"
+  },
+  {
+   "file": "test/graph-engine.test.ts",
+   "owner": "board-live",
+   "also_touched_by": [
+    "plan-gate",
+    "agents-visibility"
+   ],
+   "resolution": "sequential: plan-gate changes `restored.resume(true)` → `resume({ approved: true })` and adds its feedback-path test in wave 1; board-live adds its two node-lifecycle tests and agents-visibility's 'a running agent node is a live in-process session until it settles, and the engine says when it changes' in wave 2"
+  },
+  {
+   "file": "packages/coding-agent/src/kpi/extensions/bus/sessions-snapshot.ts",
+   "owner": "agents-visibility",
+   "also_touched_by": [],
+   "resolution": "create in wave 1; its API is a shared contract consumed by board-live in wave 2"
+  },
+  {
+   "file": "packages/coding-agent/src/kpi/extensions/bus/sessions-command.ts",
+   "owner": "agents-visibility",
+   "also_touched_by": [],
+   "resolution": "create in wave 1 (/agents); imports truncatePlain/readLiveJob read-only"
+  },
+  {
+   "file": "packages/coding-agent/src/kpi/extensions/bus/spawn.ts",
+   "owner": "agents-visibility",
+   "also_touched_by": [],
+   "resolution": "sole writer"
+  },
+  {
+   "file": "packages/coding-agent/src/kpi/extensions/bus/communicate.ts",
+   "owner": "agents-visibility",
+   "also_touched_by": [
+    "board-live"
+   ],
+   "resolution": "agents-visibility rewrites it in wave 1 but keeps a one-line bridge `setLiveWorkerCountProvider(() => liveWorkerCount())` so control-plane's old import keeps counting parent-tool workers; board-live removes that line in wave 2 when it deletes live-snapshot.ts (sequential)"
+  },
+  {
+   "file": "packages/coding-agent/src/kpi/extensions/bus/live-snapshot.ts",
+   "owner": "board-live",
+   "also_touched_by": [
+    "agents-visibility"
+   ],
+   "resolution": "deleted by board-live in wave 2 (the last importer, control-plane.ts, is board-live's); agents-visibility wanted the delete but cannot do it in wave 1 without breaking control-plane"
+  },
+  {
+   "file": "test/bus.test.ts",
+   "owner": "agents-visibility",
+   "also_touched_by": [],
+   "resolution": "sole writer; migrates the live-snapshot import to sessions-snapshot in wave 1"
+  },
+  {
+   "file": "packages/coding-agent/src/kpi/extensions/board.ts",
+   "owner": "board-live",
+   "also_touched_by": [
+    "agents-visibility",
+    "onboarding"
+   ],
+   "resolution": "board-live applies all three in wave 2: its own model/regions, agents-visibility's `sessions` field + agentsCell text, onboarding's RESEARCH_MARKS (pure, no dependency; test/operator-ui.test.ts:262-263 regexes keep passing). Neither other package edits the file."
+  },
+  {
+   "file": "packages/coding-agent/src/kpi/extensions/board-frame.ts",
+   "owner": "board-live",
+   "also_touched_by": [],
+   "resolution": "sole writer"
+  },
+  {
+   "file": "packages/coding-agent/src/kpi/extensions/board-activity.ts",
+   "owner": "board-live",
+   "also_touched_by": [],
+   "resolution": "create; sole writer"
+  },
+  {
+   "file": "packages/coding-agent/src/kpi/extensions/board-overlay.ts",
+   "owner": "board-live",
+   "also_touched_by": [],
+   "resolution": "create; sole writer"
+  },
+  {
+   "file": "packages/coding-agent/src/kpi/extensions/control-plane.ts",
+   "owner": "board-live",
+   "also_touched_by": [
+    "agents-visibility"
+   ],
+   "resolution": "board-live owns it in wave 2 and applies agents-visibility's buildBoardModel hunk (sessionsSnapshot import, BoardBuildOptions.sessions, agents/sessions derivation) inside its own rewrite; installWidget is re-entrant so onSessionsChange → onStateChange → installWidget coexists with the ticker"
+  },
+  {
+   "file": "packages/coding-agent/src/kpi/extensions/renderers.ts",
+   "owner": "board-live",
+   "also_touched_by": [],
+   "resolution": "sole writer"
+  },
+  {
+   "file": "test/board-activity.test.ts",
+   "owner": "board-live",
+   "also_touched_by": [],
+   "resolution": "create; sole writer"
+  },
+  {
+   "file": "test/concise-output.test.ts",
+   "owner": "board-live",
+   "also_touched_by": [],
+   "resolution": "sole writer"
+  },
+  {
+   "file": "test/operator-ui.test.ts",
+   "owner": "board-live",
+   "also_touched_by": [
+    "agents-visibility"
+   ],
+   "resolution": "board-live adds its three tests and agents-visibility's 'the AGENTS cell breaks live sessions into nodes and workers' in wave 2; all existing titles verbatim"
+  },
+  {
+   "file": "test/control-plane.test.ts",
+   "owner": "board-live",
+   "also_touched_by": [
+    "agents-visibility"
+   ],
+   "resolution": "board-live extends the context()/registerFixture fakes and adds its two tests plus agents-visibility's 'the session widget counts an in-process node session without starting one' in wave 2"
+  },
+  {
+   "file": "test/reviewer-session.test.ts",
+   "owner": "board-live",
+   "also_touched_by": [
+    "agents-visibility"
+   ],
+   "resolution": "handed over: the test needs the wave-2 engine brackets, so board-live writes agents-visibility's 'a graph reviewer worker is a live worker session while its node runs and is gone after' in wave 2"
+  },
+  {
+   "file": "packages/coding-agent/src/kpi/extensions/onboarding.ts",
+   "owner": "onboarding",
+   "also_touched_by": [],
+   "resolution": "create; sole writer"
+  },
+  {
+   "file": "packages/coding-agent/src/kpi/extensions/index.ts",
+   "owner": "onboarding",
+   "also_touched_by": [],
+   "resolution": "sole writer (registerOnboarding last)"
+  },
+  {
+   "file": "packages/coding-agent/src/kpi/kstack/models.ts",
+   "owner": "onboarding",
+   "also_touched_by": [],
+   "resolution": "sole writer"
+  },
+  {
+   "file": "packages/coding-agent/src/kpi/extensions/research/setup.ts",
+   "owner": "onboarding",
+   "also_touched_by": [],
+   "resolution": "sole writer"
+  },
+  {
+   "file": "packages/coding-agent/src/kpi/extensions/settings.ts",
+   "owner": "onboarding",
+   "also_touched_by": [],
+   "resolution": "sole writer"
+  },
+  {
+   "file": "packages/coding-agent/src/kpi/extensions/research/session.ts",
+   "owner": "onboarding",
+   "also_touched_by": [],
+   "resolution": "sole writer"
+  },
+  {
+   "file": "packages/coding-agent/src/kpi/extensions/research/endpoints.ts",
+   "owner": "onboarding",
+   "also_touched_by": [],
+   "resolution": "sole writer"
+  },
+  {
+   "file": "packages/coding-agent/src/kpi/extensions/research/firecrawl.ts",
+   "owner": "onboarding",
+   "also_touched_by": [],
+   "resolution": "create; sole writer"
+  },
+  {
+   "file": "packages/coding-agent/src/kpi/extensions/research/gate.ts",
+   "owner": "onboarding",
+   "also_touched_by": [],
+   "resolution": "sole writer"
+  },
+  {
+   "file": "packages/coding-agent/src/kpi/extensions/research/index.ts",
+   "owner": "onboarding",
+   "also_touched_by": [],
+   "resolution": "sole writer"
+  },
+  {
+   "file": "test/extension.test.ts",
+   "owner": "onboarding",
+   "also_touched_by": [],
+   "resolution": "sole writer (append \"onboarding\"; /agents does not appear because the fake pi has no registerTool)"
+  },
+  {
+   "file": "test/onboarding.test.ts",
+   "owner": "onboarding",
+   "also_touched_by": [],
+   "resolution": "create; sole writer"
+  },
+  {
+   "file": "test/research-control-plane.test.ts",
+   "owner": "onboarding",
+   "also_touched_by": [],
+   "resolution": "sole writer"
+  },
+  {
+   "file": "test/research-clients.test.ts",
+   "owner": "onboarding",
+   "also_touched_by": [],
+   "resolution": "sole writer"
+  },
+  {
+   "file": "scripts/generate-traceability-map.mjs",
+   "owner": "docs+traceability",
+   "also_touched_by": [
+    "anthropic-auth",
+    "board-live",
+    "plan-gate",
+    "agents-visibility",
+    "onboarding"
+   ],
+   "resolution": "one agent in the final wave adds every AC/RP/usOwner row and the EVENT_TYPES copy from the packages' hand-overs, then regenerates the map; code-wave agents never edit or run it"
+  },
+  {
+   "file": "docs/traceability-map.json",
+   "owner": "docs+traceability",
+   "also_touched_by": [
+    "anthropic-auth",
+    "board-live",
+    "plan-gate",
+    "agents-visibility",
+    "onboarding"
+   ],
+   "resolution": "regenerated once in the final wave; never hand-edited"
+  },
+  {
+   "file": "test/traceability.test.ts",
+   "owner": "docs+traceability",
+   "also_touched_by": [
+    "board-live",
+    "onboarding"
+   ],
+   "resolution": "final wave: EVENT_TYPES copy → 25 names (board-live) and the US-01..US-31 loop/title (onboarding); it must change in the same commit as the regenerated map because it compares its copy with the map's EVT entries (test/traceability.test.ts:252)"
+  },
+  {
+   "file": "docs/PRD.md",
+   "owner": "docs+traceability",
+   "also_touched_by": [
+    "anthropic-auth",
+    "board-live",
+    "plan-gate",
+    "agents-visibility",
+    "onboarding"
+   ],
+   "resolution": "final wave, one writer, from the packages' AC text hand-overs"
+  },
+  {
+   "file": "docs/spec.md",
+   "owner": "docs+traceability",
+   "also_touched_by": [
+    "anthropic-auth",
+    "board-live",
+    "plan-gate",
+    "agents-visibility",
+    "onboarding"
+   ],
+   "resolution": "final wave, one writer"
+  },
+  {
+   "file": "docs/uat.md",
+   "owner": "docs+traceability",
+   "also_touched_by": [
+    "anthropic-auth",
+    "board-live",
+    "plan-gate",
+    "agents-visibility",
+    "onboarding"
+   ],
+   "resolution": "final wave, one writer (UAT-02/06/10/16/23/28 edits + new UAT-31)"
+  },
+  {
+   "file": "README.md",
+   "owner": "docs+traceability",
+   "also_touched_by": [
+    "anthropic-auth",
+    "board-live",
+    "plan-gate",
+    "agents-visibility",
+    "onboarding"
+   ],
+   "resolution": "final wave, one writer; record counts recomputed from a real run"
+  },
+  {
+   "file": "docs/visual-targets.md",
+   "owner": "docs+traceability",
+   "also_touched_by": [
+    "board-live",
+    "plan-gate",
+    "agents-visibility",
+    "onboarding"
+   ],
+   "resolution": "final wave, one writer"
+  },
+  {
+   "file": "docs/remediation-plan.md",
+   "owner": "docs+traceability",
+   "also_touched_by": [
+    "anthropic-auth",
+    "onboarding"
+   ],
+   "resolution": "final wave writes RP-20 (before RP-19) and the L9 status line and records NH-03 with its decision; BUT the NH-03 question itself must be put to the human before wave 1 (see conflicts_unresolved) — the lead opens it, the docs agent only records the outcome"
+  },
+  {
+   "file": "docs/dune-architecture.md",
+   "owner": "docs+traceability",
+   "also_touched_by": [
+    "plan-gate"
+   ],
+   "resolution": "final wave"
+  },
+  {
+   "file": "docs/agents-bus.md",
+   "owner": "docs+traceability",
+   "also_touched_by": [
+    "agents-visibility"
+   ],
+   "resolution": "final wave"
+  },
+  {
+   "file": "docs/research.md",
+   "owner": "docs+traceability",
+   "also_touched_by": [
+    "onboarding"
+   ],
+   "resolution": "final wave"
+  },
+  {
+   "file": "docs/kstack.md",
+   "owner": "docs+traceability",
+   "also_touched_by": [
+    "onboarding"
+   ],
+   "resolution": "final wave"
+  },
+  {
+   "file": "AGENTS.md",
+   "owner": "docs+traceability",
+   "also_touched_by": [
+    "onboarding"
+   ],
+   "resolution": "final wave (US-01–US-31, research bullet)"
+  },
+  {
+   "file": "fixes.md",
+   "owner": "docs+traceability",
+   "also_touched_by": [
+    "board-live",
+    "agents-visibility"
+   ],
+   "resolution": "final wave writes FX-05 (board-live) and FX-06 (agents-visibility, renumbered from its claimed FX-05) plus the §4 waves rows mirroring this plan"
+  },
+  {
+   "file": "packages/coding-agent/dist",
+   "owner": "docs+traceability",
+   "also_touched_by": [
+    "plan-gate",
+    "board-live",
+    "onboarding"
+   ],
+   "resolution": "untracked build output: each code-wave agent rebuilds locally for test/harness.test.ts; the final wave's `npm run build:offline` / verify:built is the artifact of record"
+  }
+ ],
+ "waves": [
+  {
+   "wave": 1,
+   "packages": [
+    "anthropic-auth",
+    "plan-gate",
+    "agents-visibility"
+   ],
+   "why_parallel_safe": "Disjoint files: anthropic-auth = packages/ai/* + accounts/* + test/accounts-* + UPSTREAM.md; plan-gate = stack.ts, graph/schema.ts, graph/engine.ts (its hunks only), coding-loop.gated.json, gated-loop.ts, append-log.ts, event.schema.json, test/gated-loop|graph-routing|stack|schema-conformance|graph-engine; agents-visibility = bus/sessions-snapshot.ts (new), bus/sessions-command.ts (new), bus/spawn.ts, bus/communicate.ts (with the live-snapshot bridge line), test/bus.test.ts. No wave-1 package imports another wave-1 package's new code: plan-gate lands the node.*/firecrawl schema additions from the contract text alone, agents-visibility's registry has no engine/board hunks in this wave (they are handed to board-live in wave 2), and anthropic-auth touches nothing outside accounts/ai. Each agent rebuilds dist locally; nobody edits the traceability script/map/test or the docs files. Precondition: NH-03 answered (or anthropic-auth restricted to its A1 scope)."
+  },
+  {
+   "wave": 2,
+   "packages": [
+    "board-live",
+    "onboarding"
+   ],
+   "why_parallel_safe": "Disjoint files: board-live = graph/engine.ts (own + agents-visibility hunks), gated-loop.ts (two option literals), board.ts (own + agents-visibility's agentsCell + onboarding's RESEARCH_MARKS), board-frame.ts, board-activity.ts, board-overlay.ts, control-plane.ts, renderers.ts, bus/communicate.ts (bridge-line removal), bus/live-snapshot.ts (delete), test/board-activity|operator-ui|control-plane|graph-engine|reviewer-session|concise-output; onboarding = onboarding.ts, extensions/index.ts, accounts/index.ts (sequential after wave-1 anthropic-auth), kstack/models.ts, research/setup|session|endpoints|firecrawl|gate|index.ts, settings.ts, test/extension|onboarding|research-control-plane|research-clients. Every cross-package import each needs already exists from wave 1 (sessions-snapshot.ts, HumanAnswer, EVENT_TYPES node.*, schema enums, the reworked loginAccount); onboarding's only board.ts hunk and its append-log/schema enums are landed by others, so it never touches a board-live file."
+  },
+  {
+   "wave": 3,
+   "packages": [
+    "docs+traceability"
+   ],
+   "why_parallel_safe": "Single agent after all code waves: docs/PRD.md, docs/spec.md, docs/uat.md, README.md, docs/visual-targets.md, docs/dune-architecture.md, docs/agents-bus.md, docs/research.md, docs/kstack.md, docs/remediation-plan.md, AGENTS.md, fixes.md, scripts/generate-traceability-map.mjs, docs/traceability-map.json (regenerated), test/traceability.test.ts, final dist build + full verification (npm run check, build:offline, test:kpi, test, verify:built, pty rows uat-06/15/16/25). Hand-over each package owes this agent: (1) every new AC id with its exact PRD sentence and its section; (2) for each AC the [test file, exact test title, observable] triple; (3) the doc section edits listed in its design's `docs` array; (4) anthropic-auth: NH-03 decision text, AC-10.2 amendment, UPSTREAM.md already done; (5) board-live: the 25-name EVENT_TYPES list, FX-05 facts, a real run's events.jsonl record count for README; (6) plan-gate: AC-02.8–02.11, README §19 plan-approval block, dune-architecture line; (7) agents-visibility: AC-23.10/11, FX-06 entry, agents-bus §Visibility text; (8) onboarding: AC-28.8, AC-31.1–31.5, RP-20 section body, usOwner US-31, the traceability loop bump, kstack/research doc lines."
+  }
+ ],
+ "conflicts_unresolved": [
+  "NH-03 (anthropic-auth) blocks wave 1 for the official-slot half of that package: docs/PRD.md:190 AC-10.2 and docs/spec.md:649 forbid what the design does, and AGENTS.md:89 says stop at a contract conflict. The lead must put the NH-03 question to the human before wave 1. If answered yes, anthropic-auth lands in full and the docs agent records NH-03 CLOSED. If unanswered, restrict anthropic-auth in wave 1 to A1 + errors.ts + the kpi_client_version_rejected notice in message_end (none of which touch AC-10.2) and defer store.ts/balancer.ts/widget.ts/the official-slot hunks and their tests to a later wave.",
+  "Two repaint mechanisms coexist by this plan: board-live's 1 s ticker (which already derives AGENTS from sessionsSnapshot each tick) and agents-visibility's onSessionsChange → onStateChange → installWidget (immediate repaint, asserted by its tests). Default decision: keep both (installWidget re-entrant, module-level narration cursor). The lead may drop onSessionsChange as redundant, in which case agents-visibility's graph-engine and reviewer-session tests must stop asserting the hook and AC-23.11's 'repaints when a node session or worker starts or ends' becomes 'within the board's refresh interval'.",
+  "board-live absorbs ~40 lines of agents-visibility code (engine brackets, board agentsCell, control-plane derivation, gated-loop literals) and four of its tests. This is the price of three waves instead of four; if the lead prefers whole-package ownership, move agents-visibility entirely to a wave between board-live and docs (four waves) and drop the hand-over rows above.",
+  "README record counts: plan-gate's design says 15; board-live adds two node.* records per agent node run, so the true number is only known from a real run after wave 2. The docs agent must measure it (grep -c on a fresh gated run's events.jsonl) rather than copy either design.",
+  "Product questions the human still owns (non-blocking for code): board-live — whether compact stage cells also carry `<elapsed> <cost>` and whether a shortcut should open the overlay mid-run; plan-gate — whether plan revisions share --max-rounds or get maxPlanRevisions, and whether a no-UI gated job is refused at start; onboarding — RP-20 vs reusing a closed RP, and a 'don't ask again' marker. Default answers in the designs stand until overridden.",
+  "Transitional state between wave 1 and wave 2: after agents-visibility lands, communicate.ts registers /agents and the bridge keeps control-plane's AGENTS count working; node sessions and graph-spawned reviewers only become visible when board-live wires the engine brackets in wave 2. Acceptable, but wave 1's agents-visibility verification must not claim AC-23.11 green."
+ ],
+ "version_bump": "0.3.0 (minor). Current 0.2.1. The batch adds user-visible features and commands: /onboarding (first-run wizard), /agents, the plan-approval gate in the gated graph (new human node, feedback loop), the live NOW row/narration/interactive /kpi status overlay, Firecrawl as a third research service with firecrawl_search, and new events.jsonl types (node.started, node.finished) plus schema fields (approval.result.feedback, accounts.json official/needsLogin). It also changes behaviour in ways operators will notice (a gated job without a dialog UI now stops NEEDS_HUMAN instead of being auto-denied; K-π no longer refreshes the auth.json grant; engine API submitHuman(HumanAnswer) and removed importOfficialCredentials/live-snapshot). Under semver a pre-1.0 minor bump is the correct signal for new features with compatible-but-changed behaviour; a patch (0.2.2) would understate new commands and event types, and 1.0.0 is not warranted while NH-03 and the product questions remain open. Bump both package.json (root) and packages/coding-agent/package.json to 0.3.0 in the final wave, after the anthropic-auth cherry-pick since the update remedy text names @korallis/k-pi@latest."
+}
