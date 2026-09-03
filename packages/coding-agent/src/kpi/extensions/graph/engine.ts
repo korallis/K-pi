@@ -11,8 +11,9 @@ import { type CreateAgentSessionOptions, createAgentSession } from "../../../cor
 import { SessionManager } from "../../../core/session-manager.ts";
 import { SettingsManager } from "../../../core/settings-manager.ts";
 import { AccountsStore } from "../accounts/store.ts";
-import { appendEvent, buildReviewVerdictEventFields } from "../append-log.ts";
+import { appendEvent, buildReviewVerdictEventFields, type NodeLifecycleEvent } from "../append-log.ts";
 import { ROLE_CONTRACT_FILE } from "../bus/roles.ts";
+import { registerLiveBus, registerLiveNodeSession } from "../bus/sessions-snapshot.ts";
 import { BackgroundBus, type BusDependencies } from "../bus/spawn.ts";
 import { type LocalProviderId, registerLocalProviders } from "../local/providers.ts";
 import { registerPolicy } from "../policy.ts";
@@ -61,7 +62,7 @@ export interface GraphAgentSession {
 	 * Session-billed USD so far (provider usage × model.cost). Graph budget
 	 * accumulates deltas after each node; optional so test fakes stay thin.
 	 */
-	getSessionStats?(): { cost: number };
+	getSessionStats?(): { cost: number; toolCalls?: number };
 	getActiveToolNames(): string[];
 	dispose(): void;
 }
@@ -105,6 +106,8 @@ export interface GraphEngineOptions {
 	/** Parent-session routing inherited by every graph and worker node. */
 	model?: Model<any>;
 	thinkingLevel?: ThinkingLevel;
+	/** Fired (fire-and-forget) whenever a live node/worker session registers or releases. */
+	onSessionsChange?: () => void | Promise<void>;
 }
 
 function defaultSleep(milliseconds: number): Promise<void> {
@@ -561,6 +564,8 @@ export class GraphEngine {
 	private sessionCostUsd = 0;
 	/** Last getSessionStats().cost observed per live session (for deltas). */
 	private readonly sessionCostBaseline = new WeakMap<object, number>();
+	/** Cost summed across every attempt of a node's current run, reset at node.started. */
+	private readonly nodeRunCostUsd = new Map<string, number>();
 	private readonly sleep: Sleeper;
 	private readonly retryBaseDelayMs: number;
 	private checkpointWrites: Promise<void> = Promise.resolve();
@@ -832,17 +837,57 @@ export class GraphEngine {
 
 	/**
 	 * Fold session-billed cost into the job meter. Uses deltas so threaded
-	 * sessions that keep running across nodes are not double-counted.
+	 * sessions that keep running across nodes are not double-counted. Returns
+	 * the delta applied, or undefined when the session carries no finite cost
+	 * (never a fabricated zero).
 	 */
-	private recordSessionCost(session: GraphAgentSession): void {
+	private recordSessionCost(session: GraphAgentSession): number | undefined {
 		const stats = session.getSessionStats?.();
 		if (stats === undefined || typeof stats.cost !== "number" || !Number.isFinite(stats.cost)) {
-			return;
+			return undefined;
 		}
 		const previous = this.sessionCostBaseline.get(session) ?? 0;
 		const delta = Math.max(0, stats.cost - previous);
 		this.sessionCostBaseline.set(session, stats.cost);
 		this.sessionCostUsd += delta;
+		return delta;
+	}
+
+	/** The one source of the model label: bus.spawn, node.started, and LiveNodeSession all read it here. */
+	private modelLabel(): string | undefined {
+		return this.options.model === undefined ? undefined : `${this.options.model.provider}/${this.options.model.id}`;
+	}
+
+	/**
+	 * Fire-and-forget notice that the live sessions registry changed (a node or
+	 * worker session registered or released). Never blocks node execution; a
+	 * rejecting hook is logged, not thrown.
+	 */
+	private noteSessionsChange(): void {
+		let result: void | Promise<void>;
+		try {
+			result = this.options.onSessionsChange?.();
+		} catch (error) {
+			console.warn(
+				`[kpi/graph] sessions change hook failed: ${error instanceof Error ? error.message : String(error)}`,
+			);
+			return;
+		}
+		if (result instanceof Promise) {
+			result.catch((error: unknown) => {
+				console.warn(
+					`[kpi/graph] sessions change hook failed: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			});
+		}
+	}
+
+	/** Appends a node.started or node.finished record to the run's event log. */
+	private async appendNodeEvent(event: NodeLifecycleEvent): Promise<void> {
+		// node.started can be the very first write of a fresh run, before any
+		// checkpoint (whose atomicWrite otherwise creates the directory) has run.
+		await mkdir(this.runDirectory(), { recursive: true });
+		await appendEvent(join(this.runDirectory(), "events.jsonl"), event);
 	}
 
 	private async createSessionForNode(
@@ -940,6 +985,18 @@ export class GraphEngine {
 
 		const { session, disposeAfter } = await this.createSessionForNode(node);
 		this.runState.nodes[node.id].sessionId = session.sessionId;
+		const releaseSession = registerLiveNodeSession({
+			kind: "node",
+			jobId: this.options.jobId,
+			nodeId: node.id,
+			sessionId: session.sessionId,
+			contextMode: node.context.mode,
+			threadKey: node.context.threadKey ?? node.id,
+			model: this.modelLabel(),
+			startedAt: new Date(this.now()).toISOString(),
+			stats: () => session.getSessionStats?.(),
+		});
+		this.noteSessionsChange();
 		try {
 			if (node.response === undefined) {
 				await session.prompt(this.nodePrompt(node));
@@ -1018,7 +1075,12 @@ export class GraphEngine {
 				`agent node ${node.id} failed response validation after ${node.response.retries + 1} attempts: ${validationErrors.join("; ")}`,
 			);
 		} finally {
-			this.recordSessionCost(session);
+			releaseSession();
+			this.noteSessionsChange();
+			const delta = this.recordSessionCost(session);
+			if (delta !== undefined) {
+				this.nodeRunCostUsd.set(node.id, (this.nodeRunCostUsd.get(node.id) ?? 0) + delta);
+			}
 			if (disposeAfter) {
 				session.dispose();
 			}
@@ -1047,15 +1109,17 @@ export class GraphEngine {
 			this.options.jobId,
 			this.options.busDependencies ?? {},
 		);
+		const releaseBus = registerLiveBus(bus);
 		let agentId: string | undefined;
 		try {
 			const worker = await bus.spawn({
 				role: node.workerRole,
 				prompt: this.workerNodePrompt(node),
-				model:
-					this.options.model === undefined ? undefined : `${this.options.model.provider}/${this.options.model.id}`,
+				model: this.modelLabel(),
+				node: node.id,
 			});
 			agentId = worker.agentId;
+			this.noteSessionsChange();
 			const nodeState = this.runState.nodes[node.id];
 			nodeState.sessionId = worker.sessionPath;
 			nodeState.agentId = worker.agentId;
@@ -1104,6 +1168,8 @@ export class GraphEngine {
 			if (agentId !== undefined) {
 				await bus.stop(agentId).catch(() => undefined);
 			}
+			releaseBus();
+			this.noteSessionsChange();
 		}
 	}
 
@@ -1355,6 +1421,30 @@ export class GraphEngine {
 			}
 			this.countRound();
 
+			// Bracket every agent node in the batch with node.started/node.finished on
+			// events.jsonl; a resumed `running` node re-emits node.started with the
+			// same run number since its runs count did not move above. Transient
+			// retries inside executeWithRetries never repeat either event.
+			const startedAt = new Map<string, number>();
+			for (const node of batch) {
+				if (node.type !== "agent") {
+					continue;
+				}
+				const t = this.now();
+				startedAt.set(node.id, t);
+				this.nodeRunCostUsd.delete(node.id);
+				const model = this.modelLabel();
+				await this.appendNodeEvent({
+					ts: new Date(t).toISOString(),
+					type: "node.started",
+					job_id: this.options.jobId,
+					round: this.runState.budget.round,
+					node: node.id,
+					run: this.runState.nodes[node.id].runs,
+					...(model === undefined ? {} : { model }),
+				});
+			}
+
 			// Settled, not fail-fast. A sibling that finished has already had its
 			// side effects, so discarding its result would make a resumed run repeat
 			// them; it is committed exactly once here and never reruns.
@@ -1370,6 +1460,52 @@ export class GraphEngine {
 				rejected.push({ node, error: outcome.reason });
 				this.runState.nodes[node.id].error =
 					outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason);
+			}
+
+			for (const [index, outcome] of settled.entries()) {
+				const node = batch[index];
+				if (node.type !== "agent") {
+					continue;
+				}
+				const nodeStartedAt = startedAt.get(node.id);
+				if (nodeStartedAt === undefined) {
+					continue;
+				}
+				const t = this.now();
+				const elapsedMs = Math.max(0, t - nodeStartedAt);
+				const costUsd = this.nodeRunCostUsd.get(node.id);
+				this.nodeRunCostUsd.delete(node.id);
+				const nodeState = this.runState.nodes[node.id];
+				if (outcome.status === "fulfilled") {
+					await this.appendNodeEvent({
+						ts: new Date(t).toISOString(),
+						type: "node.finished",
+						job_id: this.options.jobId,
+						round: this.runState.budget.round,
+						node: node.id,
+						run: nodeState.runs,
+						status: "completed",
+						elapsed_ms: elapsedMs,
+						...(costUsd === undefined ? {} : { cost_usd: costUsd }),
+						...(node.response !== undefined ? { result: node.response.path } : {}),
+						...(nodeState.sessionId === undefined ? {} : { session: nodeState.sessionId }),
+					});
+				} else {
+					const error = outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason);
+					await this.appendNodeEvent({
+						ts: new Date(t).toISOString(),
+						type: "node.finished",
+						job_id: this.options.jobId,
+						round: this.runState.budget.round,
+						node: node.id,
+						run: nodeState.runs,
+						status: "failed",
+						elapsed_ms: elapsedMs,
+						...(costUsd === undefined ? {} : { cost_usd: costUsd }),
+						...(nodeState.sessionId === undefined ? {} : { session: nodeState.sessionId }),
+						error,
+					});
+				}
 			}
 
 			if (rejected.length > 0) {

@@ -29,7 +29,7 @@ export const routingState: { override?: RoutingMode } = {};
  * as the live fallback; a named service without a key falls back through `auto`
  * and then to local research.
  */
-export const RESEARCH_MODES = ["auto", "exa", "perplexity", "local"] as const;
+export const RESEARCH_MODES = ["auto", "exa", "perplexity", "firecrawl", "local"] as const;
 
 export type ResearchMode = (typeof RESEARCH_MODES)[number];
 
@@ -48,6 +48,7 @@ export function isResearchMode(value: unknown): value is ResearchMode {
 export interface KpiResearchEndpointSettings {
 	exa?: string;
 	perplexity?: string;
+	firecrawl?: string;
 	timeoutMs?: number;
 }
 
@@ -66,6 +67,7 @@ function readEndpointSettings(value: unknown): KpiResearchEndpointSettings {
 	return {
 		...(typeof value.exa === "string" ? { exa: value.exa } : {}),
 		...(typeof value.perplexity === "string" ? { perplexity: value.perplexity } : {}),
+		...(typeof value.firecrawl === "string" ? { firecrawl: value.firecrawl } : {}),
 		...(typeof value.timeoutMs === "number" ? { timeoutMs: value.timeoutMs } : {}),
 	};
 }

@@ -6,8 +6,13 @@ import test from "node:test";
 
 import type { ExtensionCommandContext, ExtensionContext } from "../packages/coding-agent/src/core/extensions/types.ts";
 
-import { verifyChain } from "../packages/coding-agent/src/kpi/extensions/append-log.ts";
-import { createStatusWidget, registerControlPlane } from "../packages/coding-agent/src/kpi/extensions/control-plane.ts";
+import { appendEvent, verifyChain } from "../packages/coding-agent/src/kpi/extensions/append-log.ts";
+import {
+	type ControlPlaneDependencies,
+	createStatusWidget,
+	registerControlPlane,
+} from "../packages/coding-agent/src/kpi/extensions/control-plane.ts";
+import { registerLiveNodeSession, resetSessionsRegistry } from "../packages/coding-agent/src/kpi/extensions/bus/sessions-snapshot.ts";
 import { routingState } from "../packages/coding-agent/src/kpi/extensions/settings.ts";
 
 type CommandHandler = (args: string, context: ExtensionCommandContext) => Promise<void>;
@@ -22,7 +27,7 @@ async function withFixture(run: (directory: string) => Promise<void>): Promise<v
 	}
 }
 
-function registerFixture() {
+function registerFixture(dependencies: ControlPlaneDependencies = {}) {
 	const commands = new Map<string, CommandHandler>();
 	let sessionStart: SessionStartHandler | undefined;
 	const pi = {
@@ -41,37 +46,91 @@ function registerFixture() {
 			throw new Error("model mutation attempted");
 		},
 	};
-	registerControlPlane(pi as unknown as Parameters<typeof registerControlPlane>[0]);
+	registerControlPlane(pi as unknown as Parameters<typeof registerControlPlane>[0], dependencies);
 	return { commands, getSessionStart: () => sessionStart };
 }
 
-type WidgetFactory = (tui: unknown, theme: unknown) => { render(width: number): string[] };
+type WidgetComponent = { render(width: number): string[]; dispose?(): void };
+type WidgetFactory = (tui: unknown, theme: unknown) => WidgetComponent;
+type CustomFactory = (
+	tui: unknown,
+	theme: unknown,
+	keybindings: unknown,
+	done: (value: unknown) => void,
+) => WidgetComponent | Promise<WidgetComponent>;
 
-function context(cwd: string, notifications: string[], widgets: Array<string[] | undefined>): ExtensionCommandContext {
+/** A spy theme: wraps painted text in `<tone>...</tone>` so tests can grep for it. */
+const spyTheme = { fg: (tone: string, text: string) => (text.length === 0 ? text : `<${tone}>${text}</${tone}>`) };
+const plainTheme = { fg: (_tone: string, text: string) => text };
+
+function context(
+	cwd: string,
+	notifications: string[],
+	widgets: Array<string[] | undefined>,
+	options: {
+		hasUI?: boolean;
+		mode?: string;
+		components?: Array<WidgetComponent | undefined>;
+		custom?: (factory: CustomFactory, opts?: unknown) => Promise<unknown>;
+		theme?: { fg(tone: string, text: string): string };
+	} = {},
+): ExtensionCommandContext {
 	return {
 		cwd,
-		hasUI: false,
-		mode: "json",
+		hasUI: options.hasUI ?? false,
+		mode: options.mode ?? "json",
 		newSession: async () => {
 			throw new Error("agent start attempted");
 		},
 		ui: {
-			custom: async () => {
-				throw new Error("unexpected overlay");
-			},
+			custom:
+				options.custom ??
+				(async () => {
+					throw new Error("unexpected overlay");
+				}),
 			notify(message: string) {
 				notifications.push(message);
 			},
 			// The board is a component; render it the way the interactive mode would.
 			setWidget(_key: string, content: string[] | WidgetFactory | undefined) {
-				widgets.push(
-					typeof content === "function"
-						? content({ requestRender() {} }, { fg: (_name: string, text: string) => text }).render(120)
-						: content,
-				);
+				if (typeof content === "function") {
+					const component = content({ requestRender() {} }, options.theme ?? plainTheme);
+					options.components?.push(component);
+					widgets.push(component.render(120));
+				} else {
+					options.components?.push(undefined);
+					widgets.push(content);
+				}
 			},
 		},
 	} as unknown as ExtensionCommandContext;
+}
+
+/** Test/DI ticker: the caller fires the latest registered callback on demand. */
+function manualTicker(): { tick: NonNullable<ControlPlaneDependencies["tick"]>; fire: () => void; stopCount: number } {
+	let callback: (() => void) | undefined;
+	const state = {
+		tick: (cb: () => void, _intervalMs: number) => {
+			callback = cb;
+			return () => {
+				callback = undefined;
+				state.stopCount += 1;
+			};
+		},
+		fire: () => callback?.(),
+		stopCount: 0,
+	};
+	return state;
+}
+
+async function waitUntil(check: () => boolean, timeoutMs = 3000): Promise<void> {
+	const start = Date.now();
+	while (!check()) {
+		if (Date.now() - start > timeoutMs) {
+			throw new Error("waitUntil timed out");
+		}
+		await new Promise((resolve) => setTimeout(resolve, 5));
+	}
 }
 
 async function createRun(directory: string): Promise<string> {

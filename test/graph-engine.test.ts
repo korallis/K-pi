@@ -8,8 +8,12 @@ import {
 	appendEvent,
 	buildReviewVerdictEventFields,
 	EVENT_TYPES,
+	verifyChain,
 } from "../packages/coding-agent/src/kpi/extensions/append-log.ts";
-
+import {
+	liveNodeSessions,
+	resetSessionsRegistry,
+} from "../packages/coding-agent/src/kpi/extensions/bus/sessions-snapshot.ts";
 import { resolveGraphBudgetLimits } from "../packages/coding-agent/src/kpi/extensions/graph/budget.ts";
 import {
 	type GraphAgentSessionFactory,
@@ -17,6 +21,7 @@ import {
 	loadNamedGraph,
 	validateGraphDefinition,
 } from "../packages/coding-agent/src/kpi/extensions/graph/engine.ts";
+import { type JsonSchema, validateJsonSchema } from "../packages/coding-agent/src/kpi/extensions/graph/json-schema.ts";
 import type {
 	AgentGraphNode,
 	GraphBudgetOverrides,
@@ -25,6 +30,7 @@ import type {
 	GraphNode,
 	GraphRunState,
 } from "../packages/coding-agent/src/kpi/extensions/graph/schema.ts";
+import { reviewerBusDependencies } from "./helpers/reviewer-bus.ts";
 
 const limits = {
 	maxSteps: 12,
@@ -75,6 +81,20 @@ async function terminalEvents(projectRoot: string, jobId: string): Promise<Recor
 		.filter((line) => line.length > 0)
 		.map((line) => JSON.parse(line) as Record<string, unknown>)
 		.filter((event) => event.type === "loop.terminal");
+}
+
+async function allEvents(projectRoot: string, jobId: string): Promise<Record<string, unknown>[]> {
+	const source = await readFile(join(projectRoot, ".kpi", "runs", jobId, "events.jsonl"), "utf8");
+	return source
+		.split("\n")
+		.filter((line) => line.length > 0)
+		.map((line) => JSON.parse(line) as Record<string, unknown>);
+}
+
+async function eventSchema(): Promise<JsonSchema> {
+	return JSON.parse(
+		await readFile(new URL("../packages/coding-agent/src/kpi/schemas/event.schema.json", import.meta.url), "utf8"),
+	) as JsonSchema;
 }
 
 test("set nodes write nested state and checkpoint the superstep", async () => {
@@ -713,6 +733,35 @@ function flakyGraph(id: string): GraphDefinition {
 	);
 }
 
+/** A one-node reviewer-worker graph, the same shape as test/reviewer-session.test.ts's reviewGraph. */
+function reviewGraphFixture(): GraphDefinition {
+	return graph(
+		"review-worker-lifecycle",
+		[
+			{
+				id: "review",
+				type: "agent",
+				prompt: "Apply the isolated-review skill. Publish verdict via write_contract.",
+				context: { mode: "isolated" },
+				tools: ["read", "grep", "find", "ls"],
+				readOnly: true,
+				workerRole: "reviewer",
+				response: {
+					path: "verdict.json",
+					schema: "verdict.schema.json",
+					retries: 0,
+					state: {
+						"review.approved": "approved",
+						"review.status": "status",
+						"review.output_fingerprint": "output_fingerprint",
+					},
+				},
+			},
+		],
+		[{ from: "review", to: "__end__" }],
+	);
+}
+
 test("a transient prompt failure retries in place with exponential backoff", async () => {
 	for (const kind of ["http", "timeout", "transport"] as const) {
 		const projectRoot = await fixture();
@@ -1031,6 +1080,244 @@ test("a denied human node with a feedback path writes the feedback and the re-ru
 			/agent node draft\.feedbackPath must be a non-empty string/u,
 		);
 	} finally {
+		await rm(projectRoot, { recursive: true, force: true });
+	}
+});
+
+test("agent nodes append node.started and node.finished with run, elapsed and cost", async () => {
+	const projectRoot = await fixture();
+	try {
+		let nowMs = 0;
+		let prompts = 0;
+		const session = {
+			sessionId: "priced-session",
+			prompt: async () => {
+				prompts += 1;
+				nowMs += 1500;
+			},
+			getSessionStats: () => ({ cost: prompts * 0.04 }),
+			getActiveToolNames: () => ["read"],
+			dispose: () => undefined,
+		};
+		const engine = new GraphEngine(flakyGraph("lifecycle"), {
+			projectRoot,
+			jobId: "lifecycle-job",
+			createAgentSession: async () => ({ session }),
+			model: { provider: "openai-codex", id: "gpt-test" } as Model<any>,
+			now: () => nowMs,
+		});
+
+		const state = await engine.runUntilPause();
+		assert.equal(state.status, "completed");
+
+		const events = await allEvents(projectRoot, "lifecycle-job");
+		const started = events.find((event) => event.type === "node.started");
+		const finished = events.find((event) => event.type === "node.finished");
+		assert.ok(started, "node.started was appended");
+		assert.ok(finished, "node.finished was appended");
+		assert.ok(events.indexOf(started!) < events.indexOf(finished!), "node.started precedes node.finished");
+		assert.equal(started?.node, "implement");
+		assert.equal(started?.run, 1);
+		assert.equal(started?.model, "openai-codex/gpt-test");
+		assert.equal(finished?.node, "implement");
+		assert.equal(finished?.run, 1);
+		assert.equal(finished?.status, "completed");
+		assert.equal(finished?.elapsed_ms, 1500);
+		assert.equal(finished?.cost_usd, 0.04);
+		assert.equal(finished?.session, "priced-session");
+		assert.equal("result" in (finished as object), false, "no response was declared");
+		assert.equal(finished?.ts, new Date(1500).toISOString());
+
+		const schema = await eventSchema();
+		assert.deepEqual(validateJsonSchema(started, schema), []);
+		assert.deepEqual(validateJsonSchema(finished, schema), []);
+		assert.equal(
+			await verifyChain(join(projectRoot, ".kpi", "runs", "lifecycle-job", "events.jsonl")),
+			true,
+			"the lifecycle records are hash-chained like every other event",
+		);
+
+		// A set node emits neither record — indeed a set-only run never appends
+		// events.jsonl at all, since nothing else in it does either.
+		const setProjectRoot = await fixture();
+		try {
+			const setEngine = new GraphEngine(graph("set-only", [{ id: "s", type: "set", assignments: { a: true } }]), {
+				projectRoot: setProjectRoot,
+				jobId: "set-only-job",
+			});
+			await setEngine.runUntilPause();
+			const eventsPath = join(setProjectRoot, ".kpi", "runs", "set-only-job", "events.jsonl");
+			await assert.rejects(readFile(eventsPath, "utf8"), /ENOENT/u, "a set-only run writes no event log");
+		} finally {
+			await rm(setProjectRoot, { recursive: true, force: true });
+		}
+
+		// A workerRole node emits both records too, but never a fabricated cost.
+		const workerJobId = "lifecycle-worker";
+		const workerDirectory = await mkdtemp(join(tmpdir(), "k-pi-graph-worker-"));
+		try {
+			const workerEngine = new GraphEngine(reviewGraphFixture(), {
+				projectRoot: workerDirectory,
+				jobId: workerJobId,
+				busDependencies: reviewerBusDependencies(),
+			});
+			const workerState = await workerEngine.runUntilPause();
+			assert.equal(workerState.status, "completed");
+			const workerEvents = await allEvents(workerDirectory, workerJobId);
+			const workerStarted = workerEvents.find((event) => event.type === "node.started" && event.node === "review");
+			const workerFinished = workerEvents.find((event) => event.type === "node.finished" && event.node === "review");
+			assert.ok(workerStarted);
+			assert.ok(workerFinished);
+			assert.equal(workerFinished?.status, "completed");
+			assert.equal("cost_usd" in (workerFinished as object), false, "worker nodes never fabricate a session cost");
+			assert.deepEqual(validateJsonSchema(workerStarted, schema), []);
+			assert.deepEqual(validateJsonSchema(workerFinished, schema), []);
+		} finally {
+			await rm(workerDirectory, { recursive: true, force: true });
+		}
+	} finally {
+		await rm(projectRoot, { recursive: true, force: true });
+	}
+});
+
+test("a failed agent node records node.finished failed with its error and sums cost across retries", async () => {
+	// A non-transient failure: node.finished failed, no cost_usd key without getSessionStats.
+	const projectRoot = await fixture();
+	try {
+		const failingSession = {
+			sessionId: "unpriced-session",
+			prompt: async () => {
+				throw new Error("prompt refused: bad input");
+			},
+			getActiveToolNames: () => ["read"],
+			dispose: () => undefined,
+		};
+		const engine = new GraphEngine(flakyGraph("lifecycle-fail"), {
+			projectRoot,
+			jobId: "lifecycle-fail-job",
+			createAgentSession: async () => ({ session: failingSession }),
+		});
+
+		await assert.rejects(engine.runSuperstep(), /prompt refused: bad input/u);
+		const events = await allEvents(projectRoot, "lifecycle-fail-job");
+		const finished = events.find((event) => event.type === "node.finished");
+		assert.ok(finished);
+		assert.equal(finished?.status, "failed");
+		assert.match(String(finished?.error), /prompt refused: bad input/u);
+		assert.equal("cost_usd" in (finished as object), false);
+		const terminals = events.filter((event) => event.type === "loop.terminal");
+		assert.equal(terminals.length, 0, "a failed superstep does not itself append the terminal event");
+		const schema = await eventSchema();
+		assert.deepEqual(validateJsonSchema(finished, schema), []);
+	} finally {
+		await rm(projectRoot, { recursive: true, force: true });
+	}
+
+	// A transient failure then a success: exactly one started/finished pair for
+	// the run, cost summed across both isolated-mode attempts.
+	const retryRoot = await fixture();
+	try {
+		let attempt = 0;
+		const factory: GraphAgentSessionFactory = async (options) => {
+			attempt += 1;
+			const isFirstAttempt = attempt === 1;
+			let localPrompts = 0;
+			return {
+				session: {
+					sessionId: `retry-session-${attempt}`,
+					async prompt() {
+						localPrompts += 1;
+						if (isFirstAttempt) {
+							throw Object.assign(new Error("Too Many Requests"), { status: 429 });
+						}
+					},
+					getSessionStats: () => ({ cost: localPrompts * 0.04 }),
+					getActiveToolNames: () => [...(options.tools ?? [])],
+					dispose() {},
+				},
+			};
+		};
+		const slept: number[] = [];
+		const engine = new GraphEngine(flakyGraph("lifecycle-retry"), {
+			projectRoot: retryRoot,
+			jobId: "lifecycle-retry-job",
+			createAgentSession: factory,
+			sleep: async (ms) => {
+				slept.push(ms);
+			},
+			retryBaseDelayMs: 0,
+		});
+
+		const state = await engine.runUntilPause();
+		assert.equal(state.status, "completed");
+		assert.deepEqual(slept, [0], "one backoff between the two attempts");
+		const events = await allEvents(retryRoot, "lifecycle-retry-job");
+		const started = events.filter((event) => event.type === "node.started");
+		const finished = events.filter((event) => event.type === "node.finished");
+		assert.equal(started.length, 1, "transient retries inside one run do not repeat node.started");
+		assert.equal(finished.length, 1, "transient retries inside one run do not repeat node.finished");
+		assert.equal(finished[0]?.status, "completed");
+		assert.equal(finished[0]?.run, 1);
+		assert.ok(
+			Math.abs((finished[0]?.cost_usd as number) - 0.08) < 1e-9,
+			`cost sums both attempts' deltas: got ${finished[0]?.cost_usd}`,
+		);
+		assert.ok(typeof finished[0]?.elapsed_ms === "number" && (finished[0]?.elapsed_ms as number) >= 0);
+	} finally {
+		await rm(retryRoot, { recursive: true, force: true });
+	}
+});
+
+test("a running agent node is a live in-process session until it settles, and the engine says when it changes", async () => {
+	const projectRoot = await fixture();
+	resetSessionsRegistry();
+	try {
+		const entered = createGate();
+		const release = createGate();
+		let seenDuringRun: ReturnType<typeof liveNodeSessions> = [];
+		const changes: number[] = [];
+		const factory: GraphAgentSessionFactory = async (options) => ({
+			session: {
+				sessionId: "live-session",
+				async prompt() {
+					seenDuringRun = liveNodeSessions();
+					entered.open();
+					await release.promise;
+				},
+				getSessionStats: () => ({ cost: 0.1, toolCalls: 3 }),
+				getActiveToolNames: () => [...(options.tools ?? [])],
+				dispose() {},
+			},
+		});
+		const engine = new GraphEngine(flakyGraph("live-session"), {
+			projectRoot,
+			jobId: "live-session-job",
+			createAgentSession: factory,
+			model: { provider: "openai-codex", id: "gpt-test" } as Model<any>,
+			onSessionsChange: () => {
+				changes.push(liveNodeSessions().length);
+			},
+		});
+
+		const running = engine.runUntilPause();
+		await entered.promise;
+
+		assert.equal(seenDuringRun.length, 1, "the node's session is live while prompt() is in flight");
+		assert.equal(seenDuringRun[0]?.jobId, "live-session-job");
+		assert.equal(seenDuringRun[0]?.nodeId, "implement");
+		assert.equal(seenDuringRun[0]?.sessionId, "live-session");
+		assert.equal(seenDuringRun[0]?.contextMode, "isolated");
+		assert.equal(seenDuringRun[0]?.model, "openai-codex/gpt-test");
+		assert.equal(seenDuringRun[0]?.stats?.()?.cost, 0.1);
+		assert.equal(liveNodeSessions().length, 1);
+
+		release.open();
+		const state = await running;
+		assert.equal(state.status, "completed");
+		assert.equal(liveNodeSessions().length, 0, "the session is released once the node settles");
+		assert.ok(changes.length >= 2, "onSessionsChange fired at least once on register and once on release");
+	} finally {
+		resetSessionsRegistry();
 		await rm(projectRoot, { recursive: true, force: true });
 	}
 });

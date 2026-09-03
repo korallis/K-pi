@@ -1831,6 +1831,7 @@ export async function resumeLoop(
 		resolveFacts: facts.resolve,
 		model: ctx.model,
 		thinkingLevel: ctx.thinkingLevel,
+		onSessionsChange: dependencies.onStateChange,
 	});
 	const eventsPath = join(jobDirectory, "events.jsonl");
 	const stopState = restoreStopState(stateDocument, engine.limits.maxRounds);
@@ -2074,6 +2075,7 @@ export async function runLoop(
 		uiContext: ctx.ui,
 		model: ctx.model,
 		thinkingLevel: ctx.thinkingLevel,
+		onSessionsChange: dependencies.onStateChange,
 	});
 
 	try {

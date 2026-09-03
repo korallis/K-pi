@@ -3,7 +3,12 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { DEFAULT_FIRECRAWL_BASE_URL } from "../packages/coding-agent/src/kpi/extensions/research/endpoints.ts";
 import { exaContents, exaSearch, ResearchHttpError } from "../packages/coding-agent/src/kpi/extensions/research/exa.ts";
+import {
+	FIRECRAWL_SEARCH_PATH,
+	firecrawlSearch,
+} from "../packages/coding-agent/src/kpi/extensions/research/firecrawl.ts";
 import { conductResearch } from "../packages/coding-agent/src/kpi/extensions/research/gate.ts";
 import {
 	registerResearchTools,
@@ -586,5 +591,114 @@ test("tool output is bounded and carries no provider envelope", async () => {
 		else process.env.EXA_API_KEY = previousExa;
 		resetResearchSessions();
 		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("Firecrawl Search posts to v2 search with a bounded limit and no scrape options", async () => {
+	const { fetch: fetchImpl, calls } = capturing(
+		() =>
+			new Response(
+				JSON.stringify({
+					success: true,
+					data: {
+						web: [
+							{
+								url: "https://a.example.com/x",
+								title: "Result A",
+								description: `${"x".repeat(20_000)} ${TAIL_CANARY}`,
+							},
+							{ url: "not-a-url", title: "dropped" },
+							{ url: "https://b.example.com/y", title: "Result B", markdown: "from markdown" },
+						],
+					},
+				}),
+				{ status: 200 },
+			),
+	);
+
+	const results = await firecrawlSearch("x".repeat(600), KEY_CANARY, {
+		limit: 50,
+		fetch: fetchImpl,
+		timeoutMs: 12_345,
+	});
+
+	assert.equal(calls.length, 1);
+	assert.equal(calls[0].url, `${DEFAULT_FIRECRAWL_BASE_URL}${FIRECRAWL_SEARCH_PATH}`);
+	assert.equal(calls[0].headers.get("authorization"), `Bearer ${KEY_CANARY}`);
+	const body = calls[0].body;
+	assert.equal(body.limit, MAX_RESULTS_PER_REQUEST, "a request over the cap is capped, never sent as asked");
+	assert.deepEqual(body.sources, [{ type: "web" }]);
+	assert.equal(body.timeout, 12_345);
+	assert.equal("scrapeOptions" in body, false, "search never asks for full page content");
+	assert.ok((body.query as string).length <= 500, "the query is clamped to the vendor's own bound");
+
+	assert.equal(results.length, 2, "the non-http url is dropped");
+	assert.equal(results[0].title, "Result A");
+	assert.equal(results[0].url, "https://a.example.com/x");
+	assert.ok((results[0].text ?? "").length <= MAX_FIELD_CHARACTERS, "an oversized description is clamped");
+	assert.doesNotMatch(results[0].text ?? "", new RegExp(TAIL_CANARY, "u"));
+	assert.equal(results[1].url, "https://b.example.com/y");
+	assert.equal(results[1].text, "from markdown", "markdown is used only when description is empty");
+
+	// A v1-shaped flat `data` array is also read.
+	const { fetch: v1Fetch } = capturing(
+		() =>
+			new Response(
+				JSON.stringify({ success: true, data: [{ url: "https://v1.example.com/a", title: "v1 result" }] }),
+				{ status: 200 },
+			),
+	);
+	const v1Results = await firecrawlSearch("q", KEY_CANARY, { fetch: v1Fetch });
+	assert.deepEqual(v1Results, [{ title: "v1 result", url: "https://v1.example.com/a" }]);
+
+	// A base URL override is honoured.
+	const { fetch: overridden, calls: overriddenCalls } = capturing(
+		() => new Response(JSON.stringify({ success: true, data: { web: [] } }), { status: 200 }),
+	);
+	await firecrawlSearch("q", KEY_CANARY, { baseUrl: "https://self-hosted.example.net", fetch: overridden });
+	assert.equal(overriddenCalls[0].url, `https://self-hosted.example.net${FIRECRAWL_SEARCH_PATH}`);
+});
+
+test("Firecrawl failures are classified by status, and a 200 without success cools the service", async () => {
+	for (const [status, expected] of [
+		[429, "http_429"],
+		[402, "http_402"],
+		[503, "http_5xx"],
+	] as const) {
+		const failing: typeof fetch = async () => new Response(JSON.stringify({ success: false }), { status });
+		await assert.rejects(
+			firecrawlSearch("q", KEY_CANARY, { fetch: failing }),
+			(error: unknown) => error instanceof ResearchHttpError && error.status === status,
+			`Firecrawl ${status}`,
+		);
+		assert.equal(classifyResearchFailure(new ResearchHttpError(status, "Firecrawl")), expected);
+	}
+
+	// A 200 refusal is a refusal, not a silently empty result.
+	const refusing: typeof fetch = async () =>
+		new Response(JSON.stringify({ success: false, error: "x" }), { status: 200 });
+	await assert.rejects(
+		firecrawlSearch("q", KEY_CANARY, { fetch: refusing }),
+		(error: unknown) => error instanceof ResearchHttpError,
+	);
+
+	const session = new ResearchSession({ jobId: "fc-cool", mode: "firecrawl", keys: { firecrawl: KEY_CANARY } });
+	const capturedEvents: string[] = [];
+	const emittingSession = new ResearchSession({
+		jobId: "fc-cool-events",
+		mode: "firecrawl",
+		keys: { firecrawl: KEY_CANARY },
+		emit: async (_type, payload) => {
+			capturedEvents.push(JSON.stringify(payload));
+		},
+	});
+	const outcome = await session.call("firecrawl", "q", async (key) => firecrawlSearch("q", key, { fetch: refusing }));
+	assert.equal(outcome.ok, false);
+	assert.equal(outcome.ok === false ? outcome.class : undefined, "unavailable");
+	assert.equal(session.isCooling("firecrawl"), true);
+
+	await emittingSession.call("firecrawl", "q", async (key) => firecrawlSearch("q", key, { fetch: refusing }));
+	for (const payload of capturedEvents) {
+		assert.doesNotMatch(payload, new RegExp(KEY_CANARY, "u"));
 	}
 });

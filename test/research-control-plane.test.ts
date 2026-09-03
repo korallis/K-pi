@@ -10,9 +10,11 @@ import { AccountsStore } from "../packages/coding-agent/src/kpi/extensions/accou
 import { verifyChain } from "../packages/coding-agent/src/kpi/extensions/append-log.ts";
 import { researchCellFromDocument } from "../packages/coding-agent/src/kpi/extensions/board.ts";
 import { parseLoopInvocation } from "../packages/coding-agent/src/kpi/extensions/gated-loop.ts";
+import { type JsonSchema, validateJsonSchema } from "../packages/coding-agent/src/kpi/extensions/graph/json-schema.ts";
 import {
 	assertResearchBaseUrl,
 	DEFAULT_EXA_BASE_URL,
+	DEFAULT_FIRECRAWL_BASE_URL,
 	DEFAULT_PERPLEXITY_BASE_URL,
 	DEFAULT_RESEARCH_TIMEOUT_MS,
 	fetchBounded,
@@ -46,6 +48,7 @@ import { readKpiSettings, writeResearchMode } from "../packages/coding-agent/src
 /** Canaries: if either string reaches an artifact, a secret leaked. */
 const EXA_CANARY = "exa-secret-canary-9d41f2";
 const PPLX_CANARY = "pplx-secret-canary-7c08ab";
+const FIRECRAWL_CANARY = "firecrawl-secret-canary-a03be9";
 const FIXED_NOW = new Date("2026-09-01T12:00:00.000Z");
 
 function task(goal = "add a healthcheck endpoint"): Task {
@@ -67,10 +70,12 @@ async function withHome<T>(run: (home: string) => Promise<T>): Promise<T> {
 	const previousAgentDir = process.env.KPI_CODING_AGENT_DIR;
 	const previousExa = process.env.EXA_API_KEY;
 	const previousPerplexity = process.env.PERPLEXITY_API_KEY;
+	const previousFirecrawl = process.env.FIRECRAWL_API_KEY;
 	process.env.HOME = home;
 	delete process.env.KPI_CODING_AGENT_DIR;
 	delete process.env.EXA_API_KEY;
 	delete process.env.PERPLEXITY_API_KEY;
+	delete process.env.FIRECRAWL_API_KEY;
 	try {
 		return await run(home);
 	} finally {
@@ -82,6 +87,7 @@ async function withHome<T>(run: (home: string) => Promise<T>): Promise<T> {
 		restore("KPI_CODING_AGENT_DIR", previousAgentDir);
 		restore("EXA_API_KEY", previousExa);
 		restore("PERPLEXITY_API_KEY", previousPerplexity);
+		restore("FIRECRAWL_API_KEY", previousFirecrawl);
 		await rm(home, { recursive: true, force: true });
 	}
 }
@@ -106,14 +112,14 @@ test("a saved research key beats the environment, and the environment is the fal
 		process.env.PERPLEXITY_API_KEY = "env-pplx";
 		assert.deepEqual(
 			await resolveResearchKeys(agentDirectory),
-			{ exa: "env-exa", perplexity: "env-pplx" },
+			{ exa: "env-exa", perplexity: "env-pplx", firecrawl: undefined },
 			"with nothing saved, the environment is the fallback",
 		);
 
 		await saveResearchKeys({ exa: EXA_CANARY }, secretsPath);
 		assert.deepEqual(
 			await resolveResearchKeys(agentDirectory),
-			{ exa: EXA_CANARY, perplexity: "env-pplx" },
+			{ exa: EXA_CANARY, perplexity: "env-pplx", firecrawl: undefined },
 			"a saved key wins; the unsaved service still falls back",
 		);
 
@@ -125,13 +131,21 @@ test("a saved research key beats the environment, and the environment is the fal
 		assert.equal(stored[researchSecretName("exa")].key, EXA_CANARY);
 
 		await saveResearchKeys({ perplexity: PPLX_CANARY }, secretsPath);
-		assert.deepEqual(await resolveResearchKeys(agentDirectory), { exa: EXA_CANARY, perplexity: PPLX_CANARY });
+		assert.deepEqual(await resolveResearchKeys(agentDirectory), {
+			exa: EXA_CANARY,
+			perplexity: PPLX_CANARY,
+			firecrawl: undefined,
+		});
 		assert.equal((await stat(secretsPath)).mode & 0o777, 0o600, "rewrites stay 0600");
 
 		// Logout removes only the named credential.
 		assert.equal(await removeResearchKey("exa", secretsPath), true);
 		assert.equal(await removeResearchKey("exa", secretsPath), false, "removing twice is not an error");
-		assert.deepEqual(await resolveResearchKeys(agentDirectory), { exa: "env-exa", perplexity: PPLX_CANARY });
+		assert.deepEqual(await resolveResearchKeys(agentDirectory), {
+			exa: "env-exa",
+			perplexity: PPLX_CANARY,
+			firecrawl: undefined,
+		});
 	});
 });
 
@@ -139,7 +153,7 @@ test("research mode persists and a named service without a key falls back", asyn
 	const project = await mkdtemp(join(tmpdir(), "kpi-research-mode-"));
 	try {
 		assert.equal((await readKpiSettings(project)).research, "auto", "the default is auto");
-		for (const mode of ["exa", "perplexity", "local", "auto"] as const) {
+		for (const mode of ["exa", "perplexity", "firecrawl", "local", "auto"] as const) {
 			await writeResearchMode(project, mode);
 			assert.equal((await readKpiSettings(project)).research, mode, `${mode} persists`);
 		}
@@ -292,6 +306,85 @@ test("a healthy service with one distinct source ends NEEDS_HUMAN and is never d
 		);
 		assert.equal(calls, 2, "one bounded alternate query, then it stops");
 		await assert.rejects(readFile(join(directory, "research.json"), "utf8"), { code: "ENOENT" });
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("auto asks exa, then perplexity, then firecrawl, and a firecrawl key alone goes online", async () => {
+	const all = new ResearchSession({
+		jobId: "order",
+		mode: "auto",
+		keys: { exa: "e", perplexity: "p", firecrawl: "f" },
+	});
+	assert.deepEqual(all.configuredServices, ["exa", "perplexity", "firecrawl"]);
+
+	// A named mode without its own key falls back through the keyed list, same
+	// as `exa` and `perplexity` already do.
+	const unkeyedFirecrawl = new ResearchSession({
+		jobId: "order-fallback",
+		mode: "firecrawl",
+		keys: { exa: "e", perplexity: "p" },
+	});
+	assert.deepEqual(unkeyedFirecrawl.configuredServices, ["exa", "perplexity"]);
+
+	const firecrawlOnly = new ResearchSession({ jobId: "order-fc-only", mode: "auto", keys: { firecrawl: "f" } });
+	assert.deepEqual(firecrawlOnly.configuredServices, ["firecrawl"]);
+
+	const directory = await mkdtemp(join(tmpdir(), "kpi-research-fc-order-"));
+	try {
+		const eventsPath = join(directory, "events.jsonl");
+		const fetchMock: typeof fetch = async (input) => {
+			const url = String(input);
+			if (url.includes("exa.ai") || url.includes("perplexity.ai")) {
+				return new Response(JSON.stringify({ error: { code: "slow_down" } }), { status: 429 });
+			}
+			// Firecrawl answers with two distinct origins.
+			return new Response(
+				JSON.stringify({
+					success: true,
+					data: {
+						web: [
+							{ url: "https://one.example.com/a", title: "One" },
+							{ url: "https://two.example.org/b", title: "Two" },
+						],
+					},
+				}),
+				{ status: 200 },
+			);
+		};
+		const document = await conductResearch(directory, directory, task(), {
+			keys: { exa: EXA_CANARY, perplexity: PPLX_CANARY, firecrawl: "firecrawl-canary" },
+			mode: "auto",
+			fetch: fetchMock,
+			now: () => FIXED_NOW,
+			eventsPath,
+		});
+
+		assert.equal(document.mode, "firecrawl");
+		assert.equal(document.network.state, "online");
+		assert.deepEqual(
+			document.network.failures.map((failure) => `${failure.service}:${failure.class}`),
+			["exa:http_429", "perplexity:http_429"],
+			"exa and perplexity each failed once before firecrawl was tried",
+		);
+		assert.equal(document.sources.length, REQUIRED_EXTERNAL_SOURCES);
+
+		const eventSchema = JSON.parse(
+			await readFile(new URL("../packages/coding-agent/src/kpi/schemas/event.schema.json", import.meta.url), "utf8"),
+		) as JsonSchema;
+		const lines = (await readFile(eventsPath, "utf8")).trim().split("\n");
+		const researchLines = lines
+			.map((line) => JSON.parse(line) as { type: string })
+			.filter((record) => record.type.startsWith("research."));
+		assert.ok(researchLines.length > 0, "the run emitted research events");
+		for (const record of researchLines) {
+			assert.deepEqual(
+				validateJsonSchema(record, eventSchema),
+				[],
+				`${record.type} validates against event.schema.json`,
+			);
+		}
 	} finally {
 		await rm(directory, { recursive: true, force: true });
 	}
@@ -499,7 +592,11 @@ test("/accounts login and logout treat exa and perplexity as research targets, n
 			await accounts("login perplexity", context);
 
 			// The credentials exist...
-			assert.deepEqual(await resolveResearchKeys(agentDirectory), { exa: EXA_CANARY, perplexity: PPLX_CANARY });
+			assert.deepEqual(await resolveResearchKeys(agentDirectory), {
+				exa: EXA_CANARY,
+				perplexity: PPLX_CANARY,
+				firecrawl: undefined,
+			});
 			// ...and nothing about routing changed.
 			const document = await store.read();
 			assert.equal(Object.keys(document.pools).includes("exa"), false, "exa is not a pool");
@@ -541,12 +638,94 @@ test("/accounts login and logout treat exa and perplexity as research targets, n
 			);
 
 			await accounts("logout exa", context);
-			assert.deepEqual(await resolveResearchKeys(agentDirectory), { exa: undefined, perplexity: PPLX_CANARY });
+			assert.deepEqual(await resolveResearchKeys(agentDirectory), {
+				exa: undefined,
+				perplexity: PPLX_CANARY,
+				firecrawl: undefined,
+			});
 			assert.ok(notifications.some((message) => message.includes("Removed exa research credential")));
 
 			// A canary never appears in an operator-visible message.
 			for (const message of notifications) {
 				assert.doesNotMatch(message, new RegExp(`${EXA_CANARY}|${PPLX_CANARY}`, "u"));
+			}
+		} finally {
+			await rm(project, { recursive: true, force: true });
+		}
+	});
+});
+
+test("firecrawl is a research credential target: /accounts login firecrawl saves a key and creates no slot", async () => {
+	await withHome(async (home) => {
+		const project = await mkdtemp(join(tmpdir(), "kpi-research-firecrawl-"));
+		const agentDirectory = join(home, ".kpi", "agent");
+		try {
+			const store = new AccountsStore(agentDirectory);
+			const commands = new Map<string, (args: string, context: ExtensionCommandContext) => Promise<void>>();
+			const notifications: string[] = [];
+			const inputs: string[] = [FIRECRAWL_CANARY];
+			const pi = {
+				on() {},
+				registerCommand(
+					name: string,
+					options: { handler: (args: string, context: ExtensionCommandContext) => Promise<void> },
+				) {
+					commands.set(name, options.handler);
+				},
+			};
+			registerAccounts(pi as unknown as Parameters<typeof registerAccounts>[0], { store, now: () => FIXED_NOW });
+			const context = {
+				cwd: project,
+				hasUI: true,
+				mode: "tui",
+				ui: {
+					async confirm() {
+						return true;
+					},
+					async input() {
+						return inputs.shift();
+					},
+					notify(message: string) {
+						notifications.push(message);
+					},
+					setStatus() {},
+					setWidget() {},
+				},
+			} as unknown as ExtensionCommandContext;
+
+			const accounts = commands.get("accounts")!;
+			await accounts("login firecrawl", context);
+
+			assert.equal((await store.readSecrets())[researchSecretName("firecrawl")]?.type, "api_key");
+			assert.equal((await resolveResearchKeys(agentDirectory)).firecrawl, FIRECRAWL_CANARY);
+
+			const document = await store.read();
+			assert.equal(Object.keys(document.pools).includes("firecrawl"), false, "firecrawl is not a pool");
+			assert.deepEqual(
+				Object.values(document.pools).flatMap((pool) => pool?.slots.map((slot) => slot.id) ?? []),
+				[],
+				"a research login creates no slot in any pool",
+			);
+			assert.equal((await readKpiSettings(project)).research, "auto", "saving a key enables online research");
+
+			const pool = commands.get("pool")!;
+			await pool("strategy firecrawl quota-first", context);
+			assert.match(notifications.at(-1) ?? "", /Unknown pool id: firecrawl/u);
+
+			// The environment fallback yields to a saved key, and applies only once
+			// nothing is saved.
+			process.env.FIRECRAWL_API_KEY = "env-firecrawl";
+			assert.equal((await resolveResearchKeys(agentDirectory)).firecrawl, FIRECRAWL_CANARY, "saved key wins");
+			await accounts("logout firecrawl", context);
+			assert.ok(notifications.some((message) => message.includes("Removed firecrawl research credential")));
+			assert.equal(
+				(await resolveResearchKeys(agentDirectory)).firecrawl,
+				"env-firecrawl",
+				"the environment is the fallback once nothing is saved",
+			);
+
+			for (const message of notifications) {
+				assert.doesNotMatch(message, new RegExp(FIRECRAWL_CANARY, "u"));
 			}
 		} finally {
 			await rm(project, { recursive: true, force: true });
@@ -560,10 +739,12 @@ test("setup saves what the operator typed and records the resulting mode", async
 		try {
 			const answers = [EXA_CANARY, "s"];
 			const notifications: string[] = [];
+			const prompts: string[] = [];
 			const context = {
 				cwd: project,
 				ui: {
-					async input() {
+					async input(title: string) {
+						prompts.push(title);
 						return answers.shift();
 					},
 					notify(message: string) {
@@ -573,11 +754,23 @@ test("setup saves what the operator typed and records the resulting mode", async
 			} as unknown as ExtensionCommandContext;
 
 			await promptResearchSetup(context);
+			// Three prompts, in RESEARCH_SERVICES order; the third is answered
+			// undefined (the queue is exhausted) -> skip, exactly like typing "s".
+			assert.deepEqual(prompts, [
+				"Exa API key for research",
+				"Perplexity API key for research",
+				"Firecrawl API key for research",
+			]);
 			assert.equal((await resolveResearchKeys(join(home, ".kpi", "agent"))).exa, EXA_CANARY);
 			assert.equal(
 				(await resolveResearchKeys(join(home, ".kpi", "agent"))).perplexity,
 				undefined,
 				"skip means skip",
+			);
+			assert.equal(
+				(await resolveResearchKeys(join(home, ".kpi", "agent"))).firecrawl,
+				undefined,
+				"the unanswered third prompt saved nothing",
 			);
 			assert.equal((await readKpiSettings(project)).research, "auto");
 
@@ -661,6 +854,7 @@ test("both services keep their documented origins when nothing overrides them", 
 	const { endpoints, timeoutMs } = resolveResearchEndpoints({}, {} as NodeJS.ProcessEnv);
 	assert.equal(endpoints.exa, DEFAULT_EXA_BASE_URL);
 	assert.equal(endpoints.perplexity, DEFAULT_PERPLEXITY_BASE_URL);
+	assert.equal(endpoints.firecrawl, DEFAULT_FIRECRAWL_BASE_URL);
 	assert.equal(timeoutMs, DEFAULT_RESEARCH_TIMEOUT_MS);
 });
 

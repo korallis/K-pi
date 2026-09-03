@@ -1,4 +1,4 @@
-import type { ResearchService } from "./session.ts";
+import { RESEARCH_SERVICES, type ResearchService } from "./session.ts";
 
 /**
  * Where each research service is reached, and how long one request may take.
@@ -12,6 +12,7 @@ import type { ResearchService } from "./session.ts";
  */
 export const DEFAULT_EXA_BASE_URL = "https://api.exa.ai";
 export const DEFAULT_PERPLEXITY_BASE_URL = "https://api.perplexity.ai";
+export const DEFAULT_FIRECRAWL_BASE_URL = "https://api.firecrawl.dev";
 
 /**
  * A research request that has not answered by now is a failure, not a wait.
@@ -32,12 +33,14 @@ export type ResearchEndpoints = Readonly<Record<ResearchService, string>>;
 export const DEFAULT_RESEARCH_ENDPOINTS: ResearchEndpoints = {
 	exa: DEFAULT_EXA_BASE_URL,
 	perplexity: DEFAULT_PERPLEXITY_BASE_URL,
+	firecrawl: DEFAULT_FIRECRAWL_BASE_URL,
 };
 
 /** Environment fallbacks, named after each service's own key variable. */
 export const RESEARCH_BASE_URL_ENV: Readonly<Record<ResearchService, string>> = {
 	exa: "EXA_BASE_URL",
 	perplexity: "PERPLEXITY_BASE_URL",
+	firecrawl: "FIRECRAWL_BASE_URL",
 };
 
 export class ResearchEndpointError extends Error {
@@ -103,6 +106,7 @@ export function assertResearchTimeoutMs(value: number, source: string): number {
 export interface ResearchEndpointOverrides {
 	exa?: string;
 	perplexity?: string;
+	firecrawl?: string;
 	timeoutMs?: number;
 }
 
@@ -133,7 +137,12 @@ export function resolveResearchEndpoints(
 			: timeoutFromEnvironment !== undefined && timeoutFromEnvironment.trim().length > 0
 				? assertResearchTimeoutMs(Number(timeoutFromEnvironment), "the environment")
 				: DEFAULT_RESEARCH_TIMEOUT_MS;
-	return { endpoints: { exa: resolveOne("exa"), perplexity: resolveOne("perplexity") }, timeoutMs };
+	return {
+		endpoints: Object.fromEntries(
+			RESEARCH_SERVICES.map((service) => [service, resolveOne(service)]),
+		) as ResearchEndpoints,
+		timeoutMs,
+	};
 }
 
 /**

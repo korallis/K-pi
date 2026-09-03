@@ -18,7 +18,6 @@ import {
 	type WorkerIdentity,
 } from "./identity.ts";
 import { claimLease, defaultIsProcessAlive, type LeaseDependencies, releaseLease } from "./leases.ts";
-import { setLiveWorkerCountProvider } from "./live-snapshot.ts";
 import {
 	hasReadOnlyShell,
 	hasTestShellOnly,
@@ -30,7 +29,7 @@ import {
 	type WorkerRole,
 } from "./roles.ts";
 import { registerSessionsCommand } from "./sessions-command.ts";
-import { liveWorkerCount, registerLiveBus } from "./sessions-snapshot.ts";
+import { registerLiveBus } from "./sessions-snapshot.ts";
 import { BackgroundBus, type BusDependencies, MAX_LIVE_WORKERS, MAX_LIVE_WRITERS } from "./spawn.ts";
 import { mintContractPin, writeContract } from "./write-contract.ts";
 
@@ -288,8 +287,6 @@ function registerParentTools(pi: ExtensionAPI, options: BusRegistrationOptions):
 	const buses = new Map<string, BackgroundBus>();
 	/** Each bus's registration in the sessions registry, released at shutdown. */
 	const busReleases = new Map<string, () => void>();
-	// Bridge for the board's old count provider until control-plane reads the registry directly.
-	setLiveWorkerCountProvider(() => liveWorkerCount());
 	registerSessionsCommand(pi, { admission: options.admission, now: options.now });
 	/**
 	 * One parent-level queue for spawn and stop-all.

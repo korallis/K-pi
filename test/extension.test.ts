@@ -39,6 +39,7 @@ test("extension factory registers commands, policy hook, and renderers", () => {
 		"k-mode",
 		"setup-kstack",
 		"statusbar",
+		"onboarding",
 	]);
 	assert.equal(eventNames.filter((event) => event === "tool_call").length, 1);
 	assert.deepEqual(rendererNames, EVENT_TYPES);

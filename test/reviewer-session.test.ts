@@ -7,6 +7,10 @@ import test from "node:test";
 
 import type { WorkerLauncher } from "../packages/coding-agent/src/kpi/extensions/bus/launch.ts";
 import { WorkerProtocol } from "../packages/coding-agent/src/kpi/extensions/bus/protocol.ts";
+import {
+	liveWorkerSessions,
+	resetSessionsRegistry,
+} from "../packages/coding-agent/src/kpi/extensions/bus/sessions-snapshot.ts";
 import { BackgroundBus, createWorkerAdmission } from "../packages/coding-agent/src/kpi/extensions/bus/spawn.ts";
 import {
 	type GraphAgentSessionFactory,
@@ -316,6 +320,39 @@ test("shared admission blocks a graph reviewer when parent bus already holds max
 		await second.stopAll();
 	} finally {
 		await parent.stopAll().catch(() => undefined);
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("a graph reviewer worker is a live worker session while its node runs and is gone after", async () => {
+	const jobId = "review-live";
+	const { directory } = await jobRoot(jobId);
+	resetSessionsRegistry();
+	const bus = reviewerBusDependencies();
+	const seen: ReturnType<typeof liveWorkerSessions>[] = [];
+	try {
+		const engine = new GraphEngine(reviewGraph(), {
+			projectRoot: directory,
+			jobId,
+			busDependencies: bus,
+			onSessionsChange: () => {
+				seen.push(liveWorkerSessions());
+			},
+		});
+		const state = await engine.runUntilPause();
+		assert.equal(state.status, "completed");
+
+		assert.ok(seen.length >= 2, "the engine says when the worker session registers and releases");
+		const whileRunning = seen[0] ?? [];
+		assert.equal(whileRunning.length, 1, "the worker was a live session for the duration of its node");
+		assert.equal(whileRunning[0]?.jobId, jobId);
+		assert.equal(whileRunning[0]?.role, "reviewer");
+		assert.equal(whileRunning[0]?.node, "review");
+		assert.equal(whileRunning[0]?.alive, true);
+
+		assert.equal(liveWorkerSessions().length, 0, "the bus is released once the node settles");
+	} finally {
+		resetSessionsRegistry();
 		await rm(directory, { recursive: true, force: true });
 	}
 });

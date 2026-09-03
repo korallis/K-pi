@@ -7,7 +7,9 @@ import { kModeState } from "../kstack/mode.ts";
 
 import { appendEvent, inspectChain, type JsonValue } from "./append-log.ts";
 import {
+	BOARD_STAGES,
 	type BoardModel,
+	type NodeDetail,
 	normalizeStop,
 	RUN_FILE_NAMES,
 	renderBoard,
@@ -15,11 +17,13 @@ import {
 	type StopDisplay,
 	type Verifier,
 } from "./board.ts";
+import { type ActivityReader, type ActivitySnapshot, createActivityReader, narrateRecord } from "./board-activity.ts";
 import { createBoardComponent } from "./board-component.ts";
 import { type BoardLayout, type BoardPalette, PLAIN_PALETTE, paintBoard, paletteFromTheme } from "./board-frame.ts";
-import { liveWorkerCount } from "./bus/live-snapshot.ts";
+import { createBoardOverlay } from "./board-overlay.ts";
+import { sessionsSnapshot } from "./bus/sessions-snapshot.ts";
 import { type LoopDependencies, type LoopOutcome, parseLoopInvocation, resumeLoop, runLoop } from "./gated-loop.ts";
-import { atomicWrite, JOB_ID_PATTERN, type RunState, readActiveJob, readLiveJob } from "./run-store.ts";
+import { type ActiveJob, atomicWrite, JOB_ID_PATTERN, type RunState, readActiveJob, readLiveJob } from "./run-store.ts";
 import { isRoutingMode, type RoutingMode, routingState } from "./settings.ts";
 import { getFooterRouteSnapshot } from "./status-line/route-snapshot.ts";
 import { formatUsage } from "./status-line/segments.ts";
@@ -195,10 +199,18 @@ export interface BoardBuildOptions {
 	/** Terminal width for narrow fit. */
 	width?: number;
 	/**
-	 * Injected live worker count. Production reads the bus snapshot; tests inject.
-	 * Never starts workers.
+	 * Injected live agent count. Production derives it from the sessions
+	 * registry. Never starts anything.
 	 */
 	agents?: number;
+	/** Injected node/worker split. Production derives it from the sessions registry alongside `agents`. */
+	sessions?: BoardModel["sessions"];
+	/** Test/DI wall clock for the activity reader. Production uses Date.now. */
+	now?: () => number;
+	/** Injected activity reader. Production keeps one per live job's eventsPath. */
+	activity?: ActivityReader;
+	/** Which surface is being built: the always-on widget or the `/kpi status` overlay. */
+	surface?: BoardModel["surface"];
 }
 
 /**
@@ -214,11 +226,19 @@ export async function buildBoardModel(cwd: string, options: BoardBuildOptions = 
 	const route = getFooterRouteSnapshot();
 	const usage = formatUsage(route.remainingPercent, route.slotKind);
 	const freeze = await jobPlaybookFreeze(job.directory, state);
-	const agents = options.agents ?? liveWorkerCount();
+	// The sessions registry is pure memory (no I/O): safe to read on every tick.
+	const live = options.agents === undefined ? sessionsSnapshot({ jobId: job.jobId }).counts : undefined;
+	const agents = options.agents ?? (live === undefined ? 0 : live.nodes + live.workers);
+	const sessions = options.sessions ?? live;
 	const busLit = await busLogLit(job.directory);
 
 	const fileLit = await fileLitMap(job.directory);
 	const passed = booleanValue(typeof state.passed === "boolean" ? state.passed : nestedValue(state, "test", "passed"));
+
+	const reader = options.activity ?? activityReaderFor(job.eventsPath);
+	const now = options.now ?? Date.now;
+	const snapshot = await reader.read(job.eventsPath, now());
+
 	return {
 		jobId: job.jobId,
 		mode: stringValue(state.mode, "gated"),
@@ -237,6 +257,7 @@ export async function buildBoardModel(cwd: string, options: BoardBuildOptions = 
 		contextPack: await contextPackLamps(cwd, job.directory),
 		research: await loadResearchCell(job.directory),
 		agents,
+		...(sessions === undefined ? {} : { sessions }),
 		// Sticky K-mode only — never the mutable plan match for an open job.
 		kModeEnabled: kModeState.enabled,
 		busLit,
@@ -251,7 +272,48 @@ export async function buildBoardModel(cwd: string, options: BoardBuildOptions = 
 		...(route.route === undefined ? {} : { route: route.route }),
 		...(usage === undefined ? {} : { usage }),
 		...(options.width === undefined ? {} : { width: options.width }),
+		activity: snapshot.stages,
+		...(snapshot.unreadableLines > 0 ? { eventsUnreadable: snapshot.unreadableLines } : {}),
+		...(snapshot.readError === undefined ? {} : { eventsError: snapshot.readError }),
+		...(options.surface === undefined ? {} : { surface: options.surface }),
 	};
+}
+
+/** The NODE detail panel's content for one stage, from an already-read activity snapshot. */
+export async function readNodeDetail(job: ActiveJob, snapshot: ActivitySnapshot, stage: number): Promise<NodeDetail> {
+	const key = BOARD_STAGES[stage]?.key;
+	const activity = key === undefined ? undefined : snapshot.stages[key];
+	if (activity === undefined) {
+		return { node: key ?? String(stage), status: "pending", runs: 0, toolsByName: {} };
+	}
+	const base: NodeDetail = {
+		node: activity.node,
+		status: activity.status,
+		runs: activity.runs,
+		toolsByName: activity.toolsByName,
+		...(activity.elapsedMs === undefined ? {} : { elapsedMs: activity.elapsedMs }),
+		...(activity.costUsd === undefined ? {} : { costUsd: activity.costUsd }),
+		...(activity.model === undefined ? {} : { model: activity.model }),
+		...(activity.session === undefined ? {} : { session: activity.session }),
+		...(activity.error === undefined ? {} : { error: activity.error }),
+	};
+	if (activity.result === undefined) {
+		return base;
+	}
+	try {
+		const info = await stat(join(job.directory, activity.result));
+		if (info.isDirectory()) {
+			// A declared result path that is actually a directory is broken, not a
+			// written file — report it as a load error rather than a lit result.
+			return { ...base, loadError: "EISDIR" };
+		}
+		return { ...base, result: { name: activity.result, lit: true, bytes: info.size } };
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+			return { ...base, result: { name: activity.result, lit: false } };
+		}
+		return { ...base, loadError: (error as NodeJS.ErrnoException).code ?? String(error) };
+	}
 }
 
 export async function createStatusWidget(cwd: string, options: BoardBuildOptions = {}): Promise<string[]> {
@@ -313,6 +375,42 @@ export function resetBoardThemeWarning(): void {
 	boardThemeWarned = false;
 }
 
+/** A callback fired on an interval; returns a function that stops it. Test/DI seam for the board's ticker. */
+export type Ticker = (callback: () => void, intervalMs: number) => () => void;
+
+/** How often the always-on widget rereads run files and repaints. */
+export const BOARD_TICK_MS = 1000;
+
+function defaultTicker(callback: () => void, intervalMs: number): () => void {
+	const handle = setInterval(callback, intervalMs);
+	handle.unref?.();
+	return () => clearInterval(handle);
+}
+
+export type ControlPlaneDependencies = LoopDependencies & { tick?: Ticker };
+
+/**
+ * One ActivityReader and one narration cursor per live job's eventsPath,
+ * module state so a widget reinstall (onSessionsChange → onStateChange →
+ * installWidget) never re-parses the log from scratch or re-narrates history.
+ */
+const activityReaders = new Map<string, ActivityReader>();
+const narrationCursors = new Map<string, number>();
+
+function activityReaderFor(eventsPath: string): ActivityReader {
+	let reader = activityReaders.get(eventsPath);
+	if (reader === undefined) {
+		reader = createActivityReader();
+		activityReaders.set(eventsPath, reader);
+	}
+	return reader;
+}
+
+function forgetJob(eventsPath: string): void {
+	activityReaders.delete(eventsPath);
+	narrationCursors.delete(eventsPath);
+}
+
 /**
  * The always-on board above the editor.
  *
@@ -321,23 +419,96 @@ export function resetBoardThemeWarning(): void {
  * how the board came up as an unframed text block. A component renders at the
  * live width, is never cut, and repaints in the new colours when the theme
  * swaps between amber and protocol-blue.
+ *
+ * Re-entrant: every call disposes the previous widget component (which stops
+ * its ticker) before installing a fresh one, so a reinstall mid-run never
+ * doubles the ticker or narrates a record twice.
  */
-async function installWidget(ctx: ExtensionContext): Promise<boolean> {
-	const model = await buildBoardModel(ctx.cwd);
+async function installWidget(ctx: ExtensionContext, dependencies: ControlPlaneDependencies = {}): Promise<boolean> {
+	const now = dependencies.now ?? Date.now;
+	const tick = dependencies.tick ?? defaultTicker;
+	const job = await readLiveJob(ctx.cwd);
+	if (job === undefined) {
+		ctx.ui.setWidget("kpi", undefined);
+		return false;
+	}
+	const eventsPath = job.eventsPath;
+	const reader = activityReaderFor(eventsPath);
+	const model = await buildBoardModel(ctx.cwd, { now, activity: reader, surface: "widget" });
 	if (model === undefined) {
 		ctx.ui.setWidget("kpi", undefined);
 		return false;
 	}
+	if (!narrationCursors.has(eventsPath)) {
+		// History from before this widget (or before this reinstall) existed is
+		// never narrated — only records the ticker itself observes from here.
+		narrationCursors.set(eventsPath, reader.last()?.records.length ?? 0);
+	}
 	applyBoardTheme(ctx, model.paused);
-	ctx.ui.setWidget("kpi", (_tui, theme) =>
-		createBoardComponent(model, { layout: "compact", palette: paletteFromTheme(theme) }),
-	);
+
+	function narrate(): void {
+		const records = reader.last()?.records ?? [];
+		const seen = narrationCursors.get(eventsPath) ?? records.length;
+		const cursor = Math.min(seen, records.length);
+		for (const record of records.slice(cursor)) {
+			const line = narrateRecord(record);
+			if (line !== undefined) {
+				ctx.ui.notify(line.text, line.level);
+			}
+		}
+		narrationCursors.set(eventsPath, records.length);
+	}
+
+	ctx.ui.setWidget("kpi", (tui, theme) => {
+		const component = createBoardComponent(model, { layout: "compact", palette: paletteFromTheme(theme) });
+		let current = model;
+		let busy = false;
+		let disposed = false;
+		const warned = new Set<string>();
+		const stop = tick(() => {
+			if (busy || disposed) return;
+			busy = true;
+			void buildBoardModel(ctx.cwd, { now, activity: reader, surface: "widget" })
+				.then((next) => {
+					if (disposed) return;
+					if (next === undefined) {
+						stop();
+						forgetJob(eventsPath);
+						ctx.ui.setWidget("kpi", undefined);
+						return;
+					}
+					narrate();
+					if (next.paused !== current.paused) applyBoardTheme(ctx, next.paused);
+					current = next;
+					component.refresh(next);
+					tui.requestRender();
+				})
+				.catch((error: unknown) => {
+					const key = (error as NodeJS.ErrnoException | undefined)?.code ?? String(error);
+					if (!warned.has(key) && warned.size < 8) {
+						warned.add(key);
+						ctx.ui.notify(`K-π board refresh failed: ${key}`, "warning");
+					}
+				})
+				.finally(() => {
+					busy = false;
+				});
+		}, BOARD_TICK_MS);
+		return {
+			...component,
+			dispose() {
+				disposed = true;
+				stop();
+				component.dispose();
+			},
+		};
+	});
 	return true;
 }
 
 async function showStatus(ctx: ExtensionCommandContext): Promise<void> {
-	const model = await buildBoardModel(ctx.cwd);
-	if (model === undefined) {
+	const job = await readLiveJob(ctx.cwd);
+	if (job === undefined) {
 		ctx.ui.setWidget("kpi", undefined);
 		// The last run is still worth a line: it says why the board is empty.
 		const last = await readActiveJob(ctx.cwd);
@@ -346,6 +517,14 @@ async function showStatus(ctx: ExtensionCommandContext): Promise<void> {
 			last === undefined ? "no active job" : `no active job — last job ${last.jobId} ${status ?? "ended"}`,
 			"info",
 		);
+		return;
+	}
+
+	const reader = activityReaderFor(job.eventsPath);
+	const model = await buildBoardModel(ctx.cwd, { activity: reader });
+	if (model === undefined) {
+		ctx.ui.setWidget("kpi", undefined);
+		ctx.ui.notify("no active job", "info");
 		return;
 	}
 
@@ -358,30 +537,23 @@ async function showStatus(ctx: ExtensionCommandContext): Promise<void> {
 		return;
 	}
 
-	// The full board, framed and in the live theme; any key closes it.
+	// The full board, framed and in the live theme: ←/→ selects a stage, ↵
+	// opens its NODE detail, q/Esc/Ctrl+C close. Static — one read on open, one
+	// more per Enter — because it is reachable only while the main input loop
+	// is idle, i.e. on a job already paused, whose run files are not moving.
 	await ctx.ui.custom<void>(
-		(_tui, theme, _keybindings, done) => {
-			const board = createBoardComponent(model, { layout: "full", palette: paletteFromTheme(theme) });
-			return {
-				handleInput() {
-					done();
-				},
-				invalidate() {
-					board.invalidate();
-				},
-				render(width: number) {
-					return board.render(width);
-				},
-				dispose() {
-					board.dispose();
-				},
-			};
-		},
+		(_tui, theme, _keybindings, done) =>
+			createBoardOverlay({
+				palette: paletteFromTheme(theme),
+				model,
+				done,
+				loadDetail: (stage) => readNodeDetail(job, reader.last()!, stage),
+			}),
 		{ overlay: true, overlayOptions: { width: "92%", maxHeight: "90%", anchor: "center" } },
 	);
 }
 
-async function stopJob(ctx: ExtensionCommandContext): Promise<void> {
+async function stopJob(ctx: ExtensionCommandContext, dependencies: ControlPlaneDependencies): Promise<void> {
 	const job = await readActiveJob(ctx.cwd);
 	if (job === undefined) {
 		ctx.ui.notify("no active job", "info");
@@ -400,7 +572,8 @@ async function stopJob(ctx: ExtensionCommandContext): Promise<void> {
 	});
 	const stoppedState: RunState = { ...job.state, status: "BLOCKED" };
 	await atomicWrite(job.statePath, `${JSON.stringify(stoppedState, null, 2)}\n`);
-	await installWidget(ctx);
+	forgetJob(job.eventsPath);
+	await installWidget(ctx, dependencies);
 	ctx.ui.notify(`K-π job ${job.jobId} BLOCKED`, "warning");
 }
 
@@ -456,7 +629,7 @@ async function isRunDirectory(cwd: string, jobId: string): Promise<boolean> {
 async function handleKpiCommand(
 	args: string,
 	ctx: ExtensionCommandContext,
-	dependencies: LoopDependencies,
+	dependencies: ControlPlaneDependencies,
 ): Promise<void> {
 	const command = args.trim();
 	if (command === "" || command === "status") {
@@ -464,7 +637,7 @@ async function handleKpiCommand(
 		return;
 	}
 	if (command === "stop") {
-		await stopJob(ctx);
+		await stopJob(ctx, dependencies);
 		return;
 	}
 	if (isRoutingMode(command)) {
@@ -481,7 +654,7 @@ async function handleKpiCommand(
 
 	try {
 		const onStateChange = async () => {
-			await installWidget(ctx);
+			await installWidget(ctx, dependencies);
 		};
 		// Only something shaped like a job id is probed as one. A goal is free
 		// text, and turning it into a path is how a long message once died with
@@ -513,9 +686,9 @@ async function handleKpiCommand(
 	}
 }
 
-export function registerControlPlane(pi: ExtensionAPI, dependencies: LoopDependencies = {}): void {
+export function registerControlPlane(pi: ExtensionAPI, dependencies: ControlPlaneDependencies = {}): void {
 	pi.on("session_start", async (_event, ctx) => {
-		await installWidget(ctx);
+		await installWidget(ctx, dependencies);
 	});
 
 	const command = {

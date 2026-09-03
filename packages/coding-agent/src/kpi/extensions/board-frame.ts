@@ -79,6 +79,31 @@ function paintRow(row: Row, width: number, palette: BoardPalette, fallback: Tone
 	return painted + " ".repeat(width - visibleWidth(plain));
 }
 
+/**
+ * A row painted span by span, dropping `optional` spans right-to-left when it
+ * would otherwise overflow — MODEL, then ▸ lastTool, then run n for the NOW
+ * row — before ever falling back to `paintRow`'s ellipsis truncation. A row
+ * with no optional spans left that still overflows truncates exactly as
+ * `paintRow` would.
+ */
+export function paintShrinkingRow(row: Row, width: number, palette: BoardPalette): string {
+	let candidate = row;
+	while (visibleWidth(rowText(candidate)) > width) {
+		let lastOptional = -1;
+		for (let index = candidate.length - 1; index >= 0; index -= 1) {
+			if (candidate[index]?.optional === true) {
+				lastOptional = index;
+				break;
+			}
+		}
+		if (lastOptional === -1) {
+			break;
+		}
+		candidate = candidate.filter((_, index) => index !== lastOptional);
+	}
+	return paintRow(candidate, width, palette);
+}
+
 function wrapWords(text: string, width: number): string[] {
 	const lines: string[] = [];
 	let current = "";
@@ -195,11 +220,15 @@ export function frameCells(
 ): string[] {
 	// Compact cells fold the id and label onto one line and keep the status
 	// below it; when that still needs two rows, one-line cells are tried and the
-	// shorter of the two boards wins.
-	const twoLine = (cell: BoardCell) =>
-		cell.lines.length > 2 ? [cell.lines.slice(0, -1).join(" "), cell.lines.at(-1) ?? ""] : cell.lines;
-	const oneLine = (cell: BoardCell) => [cell.compact];
-	let bodyOf = layout === "full" ? (cell: BoardCell) => cell.lines : twoLine;
+	// shorter of the two boards wins. A cell with live activity carries one more
+	// line — DONE/CURRENT/PENDING content per the 2026-09-03 product decision —
+	// in every layout, not only the full board.
+	const twoLine = (cell: BoardCell) => {
+		const base = cell.lines.length > 2 ? [cell.lines.slice(0, -1).join(" "), cell.lines.at(-1) ?? ""] : cell.lines;
+		return cell.detail === undefined ? base : [...base, ...cell.detail];
+	};
+	const oneLine = (cell: BoardCell) => (cell.detail === undefined ? [cell.compact] : [cell.compact, ...cell.detail]);
+	let bodyOf = layout === "full" ? (cell: BoardCell) => [...cell.lines, ...(cell.detail ?? [])] : twoLine;
 	let { perRow, cellInner } = cellLayout(region.cells, width, bodyOf);
 	if (layout === "compact" && perRow < region.cells.length) {
 		const single = cellLayout(region.cells, width, oneLine);
@@ -293,6 +322,8 @@ export function paintFlat(regions: BoardRegions, width: number, palette: BoardPa
 			return regions.byId.stop?.kind === "stop" ? regions.byId.stop.tone : "warning";
 		if (line.includes("CURRENT") || line.startsWith("WAITING ON OPERATOR") || line.startsWith("HUMAN OVERSIGHT"))
 			return "accent";
+		if (line.includes("EVENTS ✕")) return "error";
+		if (line.startsWith("NOW ")) return "text";
 		return "text";
 	};
 	return fitBoard(flattenRegions(regions), width).map((line) => palette.paint(toneFor(line), line));
@@ -311,6 +342,12 @@ function telemetryBlock(regions: BoardRegions, width: number, palette: BoardPale
 	const telemetry = rowsOf(regions.byId.telemetry);
 	if (telemetry !== undefined) {
 		for (const row of telemetry.rows) lines.push(paintRow(row, width, palette));
+	}
+	if (layout !== "compact") {
+		const now = rowsOf(regions.byId.now);
+		if (now !== undefined && now.rows[0] !== undefined) {
+			lines.push(paintShrinkingRow(now.rows[0], width, palette));
+		}
 	}
 	if (layout === "compact") {
 		const iteration = rowsOf(regions.byId.iteration);
@@ -352,6 +389,10 @@ function telemetryBlock(regions: BoardRegions, width: number, palette: BoardPale
 					paintRow([{ text: "CONTEXT ", tone: "muted" }, ...lamps, { text: "  " }, ...summary], width, palette),
 				);
 			}
+		}
+		const now = rowsOf(regions.byId.now);
+		if (now !== undefined && now.rows[0] !== undefined) {
+			lines.push(paintShrinkingRow(now.rows[0], width, palette));
 		}
 		const stopStates = cellsOf(regions.byId.stopStates);
 		if (stopStates !== undefined) {
@@ -437,6 +478,8 @@ function paintFull(regions: BoardRegions, width: number, palette: BoardPalette, 
 	if (context !== undefined) out.push(...framePanel(context, width, palette));
 	const stages = cellsOf(regions.byId.stages);
 	if (stages !== undefined) out.push(...frameCells(stages, width, "full", palette));
+	const nodeDetail = rowsOf(regions.byId.nodeDetail);
+	if (nodeDetail !== undefined) out.push(...framePanel(nodeDetail, width, palette));
 	const iteration = rowsOf(regions.byId.iteration);
 	const oversight = rowsOf(regions.byId.oversight);
 	if (iteration !== undefined) {
@@ -457,6 +500,10 @@ function paintFull(regions: BoardRegions, width: number, palette: BoardPalette, 
 	if (waiting !== undefined) out.push(...framePanel(waiting, width, palette));
 	const stop = regions.byId.stop;
 	if (stop?.kind === "stop") out.push(...rightAlign(stopBox(stop.text, stop.tone, palette), width));
+	const keys = rowsOf(regions.byId.keys);
+	if (keys !== undefined) {
+		for (const row of keys.rows) out.push(paintRow(row, width, palette));
+	}
 	return out.map((line) => pad(line, width));
 }
 

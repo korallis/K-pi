@@ -4,12 +4,14 @@ import { isJsonObject } from "../graph/schema.ts";
 import { atomicWrite, contractHash, type Task } from "../run-store.ts";
 import type { ResearchMode } from "../settings.ts";
 import { DEFAULT_RESEARCH_ENDPOINTS, type ResearchEndpoints } from "./endpoints.ts";
-import { exaSearch } from "./exa.ts";
+import { exaSearch, type ResearchResult } from "./exa.ts";
+import { firecrawlSearch } from "./firecrawl.ts";
 import { perplexitySearch } from "./perplexity.ts";
 import {
 	clampField,
 	MAX_RESULTS_PER_REQUEST,
 	type ResearchKeys,
+	type ResearchService,
 	ResearchSession,
 	ResearchShortfallError,
 	type ResearchSource,
@@ -131,8 +133,23 @@ export async function conductResearch(
 	});
 	await session.started();
 
-	let servedBy: "exa" | "perplexity" | undefined;
-	let answered: "exa" | "perplexity" | undefined;
+	let servedBy: ResearchService | undefined;
+	let answered: ResearchService | undefined;
+	const searchWith = (service: ResearchService, query: string, key: string, endpoints: ResearchEndpoints) => {
+		const transport = {
+			baseUrl: endpoints[service],
+			timeoutMs: dependencies.timeoutMs,
+			fetch: dependencies.fetch,
+			signal: dependencies.signal,
+		};
+		if (service === "exa") {
+			return exaSearch(query, key, { numResults: MAX_RESULTS_PER_REQUEST, ...transport });
+		}
+		if (service === "perplexity") {
+			return perplexitySearch(query, key, { maxResults: MAX_RESULTS_PER_REQUEST, ...transport });
+		}
+		return firecrawlSearch(query, key, { limit: MAX_RESULTS_PER_REQUEST, ...transport });
+	};
 	// Each configured service gets its bounded attempts, in mode order. The
 	// alternate service is tried once, exactly as AC-28.5 requires.
 	for (const service of session.configuredServices) {
@@ -142,22 +159,10 @@ export async function conductResearch(
 		const queries = [task.goal, alternateQuery(task.goal)];
 		for (const [index, query] of queries.entries()) {
 			const endpoints = dependencies.endpoints ?? DEFAULT_RESEARCH_ENDPOINTS;
-			const outcome = await session.call(service, query, async (key) =>
-				service === "exa"
-					? exaSearch(query, key, {
-							numResults: MAX_RESULTS_PER_REQUEST,
-							baseUrl: endpoints.exa,
-							timeoutMs: dependencies.timeoutMs,
-							fetch: dependencies.fetch,
-							signal: dependencies.signal,
-						})
-					: perplexitySearch(query, key, {
-							maxResults: MAX_RESULTS_PER_REQUEST,
-							baseUrl: endpoints.perplexity,
-							timeoutMs: dependencies.timeoutMs,
-							fetch: dependencies.fetch,
-							signal: dependencies.signal,
-						}),
+			const outcome = await session.call(
+				service,
+				query,
+				(key): Promise<ResearchResult[]> => searchWith(service, query, key, endpoints),
 			);
 			if (!outcome.ok) {
 				break;

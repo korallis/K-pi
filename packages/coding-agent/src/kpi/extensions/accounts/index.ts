@@ -10,7 +10,7 @@ import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "..
 import { resolveFallbackModels } from "../../kstack/models.ts";
 import { appendEvent } from "../append-log.ts";
 import { DEFAULT_LOCAL_BASE_URLS, type LocalProviderId } from "../local/providers.ts";
-import type { ResearchService } from "../research/session.ts";
+import { RESEARCH_SERVICES, type ResearchService } from "../research/session.ts";
 import { removeResearchKey, saveResearchKeys } from "../research/setup.ts";
 import { readActiveJob } from "../run-store.ts";
 import { writeResearchMode } from "../settings.ts";
@@ -133,7 +133,7 @@ function providerNotice(poolId: PoolId): ProviderNotice | undefined {
 export interface AccountsDependencies {
 	store?: AccountsStore;
 	now?: () => Date;
-	login?: (providerId: PoolId, slotId: string, context: ExtensionCommandContext) => Promise<Credential>;
+	login?: (providerId: PoolId, slotId: string, context: ExtensionContext) => Promise<Credential>;
 	/**
 	 * Readers for providers that document a usage endpoint. None by default: a
 	 * provider without a documented signal stays unknown rather than polled.
@@ -160,7 +160,7 @@ function authEventMessage(event: AuthEvent): string {
 	return [event.message, ...links.map((link) => link.url)].join("\n");
 }
 
-async function answerAuthPrompt(prompt: AuthPrompt, context: ExtensionCommandContext): Promise<string> {
+async function answerAuthPrompt(prompt: AuthPrompt, context: ExtensionContext): Promise<string> {
 	if (prompt.type === "select") {
 		const labels = prompt.options.map((option) => option.label);
 		const selected = await context.ui.select(prompt.message, labels, {
@@ -205,7 +205,7 @@ function openAuthUrl(pi: ExtensionAPI, url: string): void {
 async function loginWithOfficialProvider(
 	providerId: PoolId,
 	_slotId: string,
-	context: ExtensionCommandContext,
+	context: ExtensionContext,
 	showAuthUrl: (url: string) => void,
 ): Promise<Credential> {
 	const auth = context.modelRegistry.getProvider(providerId)?.auth;
@@ -255,7 +255,7 @@ async function loginAccount(
 	store: AccountsStore,
 	login: NonNullable<AccountsDependencies["login"]>,
 	now: () => Date,
-	context: ExtensionCommandContext,
+	context: ExtensionContext,
 ): Promise<{ poolId: PoolId; slotId: string } | undefined> {
 	if (providerName === undefined || !isPoolId(providerName)) {
 		throw new Error("Usage: /accounts login <provider> [slot]");
@@ -318,7 +318,7 @@ async function loginAccount(
 }
 
 function isResearchService(value: string | undefined): value is ResearchService {
-	return value === "exa" || value === "perplexity";
+	return value !== undefined && (RESEARCH_SERVICES as readonly string[]).includes(value);
 }
 
 /**
@@ -332,7 +332,7 @@ async function loginResearchService(service: ResearchService, context: Extension
 		context.ui.notify(`Cancelled ${service} research login`, "info");
 		return;
 	}
-	await saveResearchKeys(service === "exa" ? { exa: trimmed } : { perplexity: trimmed });
+	await saveResearchKeys({ [service]: trimmed });
 	// Online research is now possible, so the default mode reflects that.
 	await writeResearchMode(context.cwd, "auto");
 	context.ui.notify(`Saved ${service} research credential`, "info");
@@ -409,8 +409,8 @@ async function handleAccountsCommand(
 		throw new Error("Too many /accounts arguments");
 	}
 	if (action === "login" || action === "login-active") {
-		// `exa` and `perplexity` are research credential targets, never pools: they
-		// create no slot, join no fallback chain, and change no routing.
+		// `exa`, `perplexity` and `firecrawl` are research credential targets, never
+		// pools: they create no slot, join no fallback chain, and change no routing.
 		if (isResearchService(first)) {
 			if (action === "login-active" || second !== undefined) {
 				throw new Error(`Usage: /accounts login ${first}`);
@@ -522,14 +522,39 @@ async function handlePoolCommand(
 	throw new Error("Usage: /pool strategy <provider> <name> | /pool chain a,b,c");
 }
 
+/** The default login registerAccounts wires up: the official provider flow, its auth URL opened by pi.exec. */
+function defaultLogin(pi: ExtensionAPI): NonNullable<AccountsDependencies["login"]> {
+	return (providerId, slotId, context) =>
+		loginWithOfficialProvider(providerId, slotId, context, (url) => openAuthUrl(pi, url));
+}
+
+/**
+ * Logs into one pool the same way `/accounts login <pool>` does — same provider
+ * notices, slots, and secrets — so onboarding and the command share one path.
+ * A cancelled or declined login resolves to `undefined`; every other failure
+ * (including `LoginCancelledError`) propagates for the caller to report.
+ */
+export async function loginPoolInteractively(
+	pi: ExtensionAPI,
+	poolId: PoolId,
+	context: ExtensionContext,
+	dependencies: Pick<AccountsDependencies, "store" | "now" | "login"> = {},
+): Promise<{ poolId: PoolId; slotId: string } | undefined> {
+	return loginAccount(
+		poolId,
+		undefined,
+		dependencies.store ?? new AccountsStore(),
+		dependencies.login ?? defaultLogin(pi),
+		dependencies.now ?? (() => new Date()),
+		context,
+	);
+}
+
 export function registerAccounts(pi: ExtensionAPI, dependencies: AccountsDependencies = {}): void {
 	const resolved: Required<AccountsDependencies> = {
 		store: dependencies.store ?? new AccountsStore(),
 		now: dependencies.now ?? (() => new Date()),
-		login:
-			dependencies.login ??
-			((providerId, slotId, context) =>
-				loginWithOfficialProvider(providerId, slotId, context, (url) => openAuthUrl(pi, url))),
+		login: dependencies.login ?? defaultLogin(pi),
 		usageReaders: dependencies.usageReaders ?? {},
 		fallbackModels: dependencies.fallbackModels ?? resolveFallbackModels,
 	};

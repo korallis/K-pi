@@ -89,6 +89,32 @@ test("research accounts bus checkpoint and terminal renderers are field-aware", 
 	);
 });
 
+test("node lifecycle renderers are field-aware", () => {
+	const started = formatEventEntry(
+		"node.started",
+		event({ type: "node.started", job_id: "j", round: 0, node: "plan", run: 1, model: "m" }),
+	);
+	assert.equal(started, "K-π node.started job=j r0 plan run=1 model=m");
+	assert.doesNotMatch(started, /\|/);
+
+	const finished = formatEventEntry(
+		"node.finished",
+		event({
+			type: "node.finished",
+			job_id: "j",
+			round: 0,
+			node: "plan",
+			run: 1,
+			status: "completed",
+			elapsed_ms: 192_000,
+			cost_usd: 0.42,
+			result: "stack.json",
+		}),
+	);
+	assert.match(finished, /plan completed 3m12s \$0\.42 → stack\.json/u);
+	assert.doesNotMatch(finished, /\|/);
+});
+
 test("structured verdict protocol reply stays under 800 visible characters", () => {
 	const reply = formatVerdictReply({
 		status: "REVISE",

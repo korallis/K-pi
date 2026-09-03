@@ -6,10 +6,23 @@ import { appendEvent, type ResearchEventType, type ResearchPayload } from "../ap
 import { isJsonObject } from "../graph/schema.ts";
 import type { ResearchMode } from "../settings.ts";
 
-/** Services that can answer an external research call. */
-export const RESEARCH_SERVICES = ["exa", "perplexity"] as const;
+/**
+ * Services that can answer an external research call, in `auto` order: Exa
+ * first for developer research, Perplexity as the live fallback (both
+ * unchanged per research.md), Firecrawl last because its search is
+ * credit-metered per call and returns scraped page excerpts, the heaviest
+ * option of the three.
+ */
+export const RESEARCH_SERVICES = ["exa", "perplexity", "firecrawl"] as const;
 
 export type ResearchService = (typeof RESEARCH_SERVICES)[number];
+
+/** The environment variable each service's key falls back to. */
+export const RESEARCH_KEY_ENV: Readonly<Record<ResearchService, string>> = {
+	exa: "EXA_API_KEY",
+	perplexity: "PERPLEXITY_API_KEY",
+	firecrawl: "FIRECRAWL_API_KEY",
+};
 
 /** `research.md` §Caps. Every one of these is a hard bound, not a hint. */
 export const MAX_EXTERNAL_CALLS_PER_JOB = 20;
@@ -36,10 +49,7 @@ export interface ResearchNetwork {
 	failures: ResearchFailure[];
 }
 
-export interface ResearchKeys {
-	exa?: string;
-	perplexity?: string;
-}
+export type ResearchKeys = Partial<Record<ResearchService, string>>;
 
 /**
  * A saved key wins over the environment.
@@ -57,10 +67,12 @@ export async function resolveResearchKeys(
 		const trimmed = value?.trim();
 		return trimmed === undefined || trimmed.length === 0 ? undefined : trimmed;
 	};
-	return {
-		exa: saved.exa ?? fromEnvironment(environment.EXA_API_KEY),
-		perplexity: saved.perplexity ?? fromEnvironment(environment.PERPLEXITY_API_KEY),
-	};
+	return Object.fromEntries(
+		RESEARCH_SERVICES.map((service) => [
+			service,
+			saved[service] ?? fromEnvironment(environment[RESEARCH_KEY_ENV[service]]),
+		]),
+	) as ResearchKeys;
 }
 
 export function researchSecretName(service: ResearchService): string {
@@ -84,7 +96,7 @@ async function readSavedResearchKeys(agentDirectory: string): Promise<ResearchKe
 		}
 		return typeof credential.key === "string" && credential.key.length > 0 ? credential.key : undefined;
 	};
-	return { exa: keyFor("exa"), perplexity: keyFor("perplexity") };
+	return Object.fromEntries(RESEARCH_SERVICES.map((service) => [service, keyFor(service)])) as ResearchKeys;
 }
 
 /** Raised when a call would cross this job's external-call budget. */
@@ -225,7 +237,7 @@ export class ResearchSession {
 			return [];
 		}
 		const keyed = RESEARCH_SERVICES.filter((service) => this.keyFor(service) !== undefined);
-		if (this.mode === "exa" || this.mode === "perplexity") {
+		if ((RESEARCH_SERVICES as readonly string[]).includes(this.mode)) {
 			const named = keyed.filter((service) => service === this.mode);
 			// A selected service without a key falls back through `auto`.
 			return named.length > 0 ? named : keyed;
@@ -254,7 +266,9 @@ export class ResearchSession {
 			...payload,
 			...(payload.query === undefined ? {} : { query: clampField(payload.query) }),
 			...(payload.reason === undefined ? {} : { reason: clampField(payload.reason) }),
-			...(payload.source_refs === undefined ? {} : { source_refs: payload.source_refs.map(clampField) }),
+			...(payload.source_refs === undefined
+				? {}
+				: { source_refs: payload.source_refs.map((ref) => clampField(ref)) }),
 		};
 		if (this.emitter !== undefined) {
 			await this.emitter(type, redacted);

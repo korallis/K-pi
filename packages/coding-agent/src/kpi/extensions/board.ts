@@ -53,6 +53,37 @@ export interface ResearchBoardCell {
 	struck?: string;
 }
 
+/** One graph node's live activity, as the board reads it back from events.jsonl. */
+export interface StageActivity {
+	status: "pending" | "running" | "completed" | "failed";
+	runs: number;
+	elapsedMs?: number;
+	costUsd?: number;
+	toolCalls: number;
+	toolsByName: Readonly<Record<string, number>>;
+	lastTool?: string;
+	model?: string;
+	node: string;
+	result?: string;
+	session?: string;
+	error?: string;
+}
+
+/** What the `/kpi status` overlay's NODE panel shows for one selected stage. */
+export interface NodeDetail {
+	node: string;
+	status: string;
+	runs: number;
+	elapsedMs?: number;
+	costUsd?: number;
+	model?: string;
+	session?: string;
+	toolsByName: Readonly<Record<string, number>>;
+	result?: { name: string; lit: boolean; bytes?: number };
+	error?: string;
+	loadError?: string;
+}
+
 export interface BoardModel {
 	jobId: string;
 	mode: string;
@@ -78,12 +109,26 @@ export interface BoardModel {
 	contextPack: { product: boolean; structure: boolean; tech: boolean };
 	research?: ResearchBoardCell;
 	agents: number;
+	/** Live sessions broken into node/worker counts, when the caller has them. */
+	sessions?: { nodes: number; workers: number };
 	busLit: boolean;
 	kstack?: { playbook: string; todos: readonly string[] };
 	route?: string;
 	usage?: string;
 	/** Terminal width; narrow paths must keep CURRENT stage + STOP. */
 	width?: number;
+	/** Per-stage live activity folded from events.jsonl; undefined draws no NOW row. */
+	activity?: Readonly<Record<string, StageActivity>>;
+	/** Unparsable events.jsonl lines seen by the activity reader. */
+	eventsUnreadable?: number;
+	/** The activity reader's own I/O failure (an errno code), distinct from unreadable lines. */
+	eventsError?: string;
+	/** Which surface is painting: the always-on widget or the `/kpi status` overlay. */
+	surface?: "widget" | "overlay";
+	/** The overlay's selected stage index, highlighted independent of DONE/CURRENT/PENDING. */
+	selectedStage?: number;
+	/** The overlay's open NODE detail panel, when toggled on. */
+	detail?: NodeDetail;
 }
 
 export function stageIndex(stage: string): number {
@@ -128,6 +173,8 @@ export type Tone = "accent" | "success" | "warning" | "error" | "dim" | "muted" 
 export interface Span {
 	text: string;
 	tone?: Tone;
+	/** A shrinking row (paintShrinkingRow) drops optional spans right-to-left before it truncates. */
+	optional?: boolean;
 }
 
 /** One logical line of a region: spans joined without separators. */
@@ -145,6 +192,8 @@ export interface BoardCell {
 	tone: Tone;
 	borderTone: Tone;
 	lit: boolean;
+	/** Extra line(s) — the stage's live elapsed/cost/tool summary, when activity is known. */
+	detail?: string[];
 }
 
 export type RegionId =
@@ -152,13 +201,16 @@ export type RegionId =
 	| "telemetry"
 	| "contextLayer"
 	| "stages"
+	| "now"
+	| "nodeDetail"
 	| "iteration"
 	| "oversight"
 	| "lamps"
 	| "stopStates"
 	| "threeLaws"
 	| "waiting"
-	| "stop";
+	| "stop"
+	| "keys";
 
 interface RegionBase {
 	id: RegionId;
@@ -236,22 +288,102 @@ export function stopTone(stop: StopDisplay): Tone {
 const LIT = "●";
 const DARK = "○";
 
-function stageCells(current: number): BoardCell[] {
+/**
+ * `12s` | `3m12s` | `1h02m` — never more than 6 characters, never a fabricated
+ * unit. Callers own the clamp at zero.
+ */
+export function formatElapsed(ms: number): string {
+	const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+	if (totalSeconds < 60) {
+		return `${totalSeconds}s`;
+	}
+	const totalMinutes = Math.floor(totalSeconds / 60);
+	if (totalMinutes < 60) {
+		const seconds = totalSeconds % 60;
+		return `${totalMinutes}m${String(seconds).padStart(2, "0")}s`;
+	}
+	const hours = Math.floor(totalMinutes / 60);
+	const minutes = totalMinutes % 60;
+	return `${hours}h${String(minutes).padStart(2, "0")}m`;
+}
+
+/**
+ * `$0.42` | `$12` (rounded once it reaches double digits) | `$—` when no
+ * finite cost is known. Cost is notional (subscriptions), never a bill.
+ */
+export function formatCost(usd: number | undefined): string {
+	if (usd === undefined || !Number.isFinite(usd)) {
+		return "$—";
+	}
+	if (usd >= 10) {
+		return `$${Math.round(usd)}`;
+	}
+	return `$${usd.toFixed(2)}`;
+}
+
+/** `edit board.ts` | `bash` — the tool name plus its target's basename, when it has a path. */
+export function shortTool(name: string, path?: string): string {
+	if (path === undefined || path.length === 0) {
+		return name;
+	}
+	const parts = path.split("/");
+	const base = parts.at(-1);
+	return base === undefined || base.length === 0 ? name : `${name} ${base}`;
+}
+
+/**
+ * The compact widget's stage-cell content: a running or finished node has
+ * something to say, a pending one does not. Product decision 2026-09-03: the
+ * always-on widget's cells carry this, not only the full `/kpi status` board.
+ */
+function stageDetailLine(status: "DONE" | "CURRENT" | "PENDING", record: StageActivity | undefined): string {
+	if (status === "PENDING" || record === undefined || record.elapsedMs === undefined) {
+		return "—";
+	}
+	if (status === "DONE") {
+		return `${formatElapsed(record.elapsedMs)} · ${record.toolCalls} calls · ${formatCost(record.costUsd)}`;
+	}
+	// CURRENT
+	return record.lastTool === undefined
+		? formatElapsed(record.elapsedMs)
+		: `${record.lastTool}  ${formatElapsed(record.elapsedMs)}`;
+}
+
+function stageCells(
+	current: number,
+	activity?: Readonly<Record<string, StageActivity>>,
+	selected?: number,
+): BoardCell[] {
 	return BOARD_STAGES.map((entry, index) => {
 		const status = index === current ? "CURRENT" : current >= 0 && index < current ? "DONE" : "PENDING";
-		const tone: Tone = status === "CURRENT" ? "accent" : status === "DONE" ? "success" : "dim";
+		const isSelected = selected !== undefined && index === selected;
+		const tone: Tone = isSelected
+			? "warning"
+			: status === "CURRENT"
+				? "accent"
+				: status === "DONE"
+					? "success"
+					: "dim";
+		const borderTone: Tone = isSelected ? "borderAccent" : status === "CURRENT" ? "borderAccent" : "border";
+		const detail = activity === undefined ? undefined : [stageDetailLine(status, activity[entry.key])];
 		return {
 			lines: [entry.id, entry.label, status],
 			compact: `${entry.id} ${entry.label} ${status}`,
 			tone,
-			borderTone: status === "CURRENT" ? "borderAccent" : "border",
-			lit: status === "CURRENT",
+			borderTone,
+			lit: isSelected ? true : status === "CURRENT",
+			...(detail === undefined ? {} : { detail }),
 		};
 	});
 }
 
-function stagesRegion(current: number, title: string): CellsRegion {
-	const cells = stageCells(current);
+function stagesRegion(
+	current: number,
+	title: string,
+	activity?: Readonly<Record<string, StageActivity>>,
+	selected?: number,
+): CellsRegion {
+	const cells = stageCells(current, activity, selected);
 	const labels = cells.map((cell) => cell.compact);
 	return {
 		kind: "cells",
@@ -307,6 +439,15 @@ function lampsRegion(model: BoardModel, paused: boolean): CellsRegion {
 	};
 }
 
+/** `AGENTS n` alone, or `AGENTS n · k node|nodes · w worker|workers` once the caller has the split. */
+function agentsCellText(model: BoardModel): string {
+	if (model.sessions === undefined) {
+		return `AGENTS ${model.agents}`;
+	}
+	const { nodes, workers } = model.sessions;
+	return `AGENTS ${model.agents} · ${nodes} node${nodes === 1 ? "" : "s"} · ${workers} worker${workers === 1 ? "" : "s"}`;
+}
+
 function contextRows(model: BoardModel): Row[] {
 	const pack = model.contextPack;
 	const rows: Row[] = [
@@ -332,7 +473,7 @@ function contextRows(model: BoardModel): Row[] {
 		}
 	}
 	const cells: Span[] = [
-		{ text: `AGENTS ${model.agents}`, tone: "text" },
+		{ text: agentsCellText(model), tone: "text" },
 		{ text: "  " },
 		{ text: model.busLit ? `BUS ${LIT}` : `BUS ${DARK}`, tone: model.busLit ? "text" : "dim" },
 	];
@@ -475,6 +616,119 @@ function telemetryRegion(model: BoardModel, current: number, gate: "human" | "ma
 	return { kind: "rows", id: "telemetry", rows: [row], frame: "none", flat: [rowText(row)] };
 }
 
+/**
+ * The NOW row: what the current stage's node is doing right now, refreshed
+ * from events.jsonl by the ticker. Undefined activity means no reader ran
+ * (a paused overlay build that never asked for one) and draws nothing.
+ */
+function nowRegion(model: BoardModel, current: number): RowsRegion | undefined {
+	if (model.activity === undefined) {
+		return undefined;
+	}
+	const stage = BOARD_STAGES[current] ?? BOARD_STAGES[0];
+	const record = model.activity[stage.key];
+	const row: Row = [];
+	if (record === undefined || record.elapsedMs === undefined) {
+		row.push({ text: `NOW ${model.node}`, tone: "text" }, { text: "  no node.started yet", tone: "dim" });
+	} else {
+		row.push({ text: `NOW ${model.node}`, tone: "text" });
+		row.push({ text: `  run ${record.runs}`, tone: "text", optional: true });
+		row.push({ text: `  ${record.toolCalls} tools`, tone: "text" });
+		if (record.lastTool !== undefined) {
+			row.push({ text: `  ▸ ${record.lastTool}`, tone: "text", optional: true });
+		}
+		row.push({ text: `  ${formatElapsed(record.elapsedMs)}`, tone: "text" });
+		row.push({ text: `  ${formatCost(record.costUsd)}`, tone: "text" });
+		if (record.model !== undefined) {
+			row.push({ text: `  MODEL ${record.model}`, tone: "text", optional: true });
+		}
+	}
+	if (model.eventsUnreadable !== undefined && model.eventsUnreadable > 0) {
+		row.push({ text: `  EVENTS ✕ ${model.eventsUnreadable} unreadable`, tone: "error" });
+	}
+	if (model.eventsError !== undefined) {
+		row.push({ text: `  EVENTS ✕ ${model.eventsError}`, tone: "error" });
+	}
+	return { kind: "rows", id: "now", rows: [row], frame: "none", flat: [rowText(row)] };
+}
+
+/** Top count-by-name tool entries, most-called first, ties by name. */
+/** Most-called first; ties keep the tool's first-seen (insertion) order — Array.sort is stable. */
+function topTools(toolsByName: Readonly<Record<string, number>>, limit: number): Array<[string, number]> {
+	return Object.entries(toolsByName)
+		.sort(([, leftCount], [, rightCount]) => rightCount - leftCount)
+		.slice(0, limit);
+}
+
+/** The overlay's NODE detail panel: only present when a stage is selected and expanded. */
+function nodeDetailRegion(model: BoardModel): RowsRegion | undefined {
+	if (model.surface !== "overlay" || model.detail === undefined) {
+		return undefined;
+	}
+	const detail = model.detail;
+	const title = `NODE ${detail.node} · ${detail.status.toLowerCase()}`;
+	if (detail.loadError !== undefined) {
+		const rows: Row[] = [[{ text: `load error ${detail.loadError}`, tone: "error" }]];
+		return {
+			kind: "rows",
+			id: "nodeDetail",
+			title,
+			rows,
+			frame: "panel",
+			flat: [title, `  load error ${detail.loadError}`],
+		};
+	}
+	if (detail.status === "pending" && detail.runs === 0 && detail.elapsedMs === undefined) {
+		const rows: Row[] = [[{ text: "no run yet", tone: "dim" }]];
+		return { kind: "rows", id: "nodeDetail", title, rows, frame: "panel", flat: [title, "  no run yet"] };
+	}
+	const summaryParts = [`runs ${detail.runs}`];
+	if (detail.elapsedMs !== undefined) summaryParts.push(`elapsed ${formatElapsed(detail.elapsedMs)}`);
+	if (detail.costUsd !== undefined) summaryParts.push(`cost ${formatCost(detail.costUsd)}`);
+	if (detail.model !== undefined) summaryParts.push(`model ${detail.model}`);
+	const total = Object.values(detail.toolsByName).reduce((sum, count) => sum + count, 0);
+	const toolsText =
+		total === 0
+			? "tools 0"
+			: `tools ${total}: ${topTools(detail.toolsByName, 6)
+					.map(([name, count]) => `${name} ${count}`)
+					.join(" · ")}`;
+	const resultRow: Row =
+		detail.result === undefined
+			? [{ text: "result — none declared", tone: "dim" }]
+			: detail.result.lit
+				? [{ text: `result ${detail.result.name} ${LIT} ${detail.result.bytes ?? 0} B`, tone: "text" }]
+				: [{ text: `result ${detail.result.name} ${DARK} not written`, tone: "dim" }];
+	const rows: Row[] = [
+		[{ text: summaryParts.join(" · "), tone: "text" }],
+		[{ text: toolsText, tone: "text" }],
+		resultRow,
+	];
+	if (detail.session !== undefined) rows.push([{ text: `session ${detail.session}`, tone: "text" }]);
+	if (detail.error !== undefined) rows.push([{ text: `error ${detail.error}`, tone: "error" }]);
+	return {
+		kind: "rows",
+		id: "nodeDetail",
+		title,
+		rows,
+		frame: "panel",
+		flat: [title, ...rows.map((row) => `  ${rowText(row)}`)],
+	};
+}
+
+const KEYS_HINT = "←/→ select · ↵ detail · q close";
+
+/** The overlay's key hint bar; present whenever the overlay is the surface. */
+function keysRegion(): RowsRegion {
+	return {
+		kind: "rows",
+		id: "keys",
+		rows: [[{ text: KEYS_HINT, tone: "dim" }]],
+		frame: "none",
+		flat: [KEYS_HINT],
+	};
+}
+
 function headerRegion(model: BoardModel, paused: boolean): StripRegion {
 	const segments: Span[] = [
 		{ text: paused ? "K-π PROTOCOL" : "K-π GRAPH CONTROL", tone: "accent" },
@@ -502,9 +756,13 @@ export function buildBoardRegions(model: BoardModel): BoardRegions {
 		headerRegion(model, paused),
 		telemetryRegion(model, current, gate),
 		contextRegion(model),
-		stagesRegion(current, paused ? "STAGE RAIL" : "STAGES 01–08"),
-		iterationRegion(model),
+		stagesRegion(current, paused ? "STAGE RAIL" : "STAGES 01–08", model.activity, model.selectedStage),
 	];
+	const now = nowRegion(model, current);
+	if (now !== undefined) regions.push(now);
+	const nodeDetail = nodeDetailRegion(model);
+	if (nodeDetail !== undefined) regions.push(nodeDetail);
+	regions.push(iterationRegion(model));
 	if (paused) {
 		regions.push(oversightRegion(pending), waitingRegion(pending));
 	}
@@ -519,6 +777,9 @@ export function buildBoardRegions(model: BoardModel): BoardRegions {
 		tone: stopTone(model.stop),
 		flat: [`STOP ${model.stop}`],
 	});
+	if (model.surface === "overlay") {
+		regions.push(keysRegion());
+	}
 	const byId: Partial<Record<RegionId, Region>> = {};
 	for (const region of regions) byId[region.id] = region;
 	return { variant: paused ? "blue" : "amber", regions, byId };
@@ -697,6 +958,17 @@ export function fitBoard(lines: readonly string[], width?: number): string[] {
 	return [...essential, ...rest];
 }
 
+/**
+ * The research service marks the board strikes when the engine reports
+ * no-network with named failures. `researchCellFromDocument`'s unnamed
+ * fallback lists every mark here, so a new service only needs one entry.
+ */
+const RESEARCH_MARKS: ReadonlyArray<readonly [service: string, aliases: readonly string[], mark: string]> = [
+	["exa", [], "EXA ✕"],
+	["perplexity", ["pplx"], "PPLX ✕"],
+	["firecrawl", ["fc"], "FC ✕"],
+];
+
 /** Research.json → board cell. Never invents external URLs. */
 export function researchCellFromDocument(document: {
 	network?: {
@@ -729,13 +1001,14 @@ export function researchCellFromDocument(document: {
 				.map((failure) => failure.service?.toLowerCase())
 				.filter((service): service is string => typeof service === "string"),
 		);
-		const struck = ["exa", "perplexity"]
-			.filter((service) => failed.has(service) || failed.has(service === "perplexity" ? "pplx" : service))
-			.map((service) => (service === "perplexity" ? "PPLX ✕" : "EXA ✕"))
+		const struck = RESEARCH_MARKS.filter(
+			([service, aliases]) => failed.has(service) || aliases.some((alias) => failed.has(alias)),
+		)
+			.map(([, , mark]) => mark)
 			.join("  ");
-		// Always show both struck marks when engine no-network recorded any failure list.
-		const marks =
-			struck.length > 0 ? struck : (network.failures ?? []).length > 0 ? "EXA ✕  PPLX ✕" : "EXA ✕  PPLX ✕";
+		// An unnamed failure still strikes every known mark, so the operator never
+		// reads "online" while the engine actually fell back to local.
+		const marks = struck.length > 0 ? struck : RESEARCH_MARKS.map(([, , mark]) => mark).join("  ");
 		return {
 			cell: `RESEARCH local · no-network engine · ${reason}`,
 			struck: marks,
