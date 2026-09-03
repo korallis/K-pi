@@ -81,10 +81,14 @@ jobs:
           package-manager-cache: false
 
       - name: Upgrade npm for trusted publishing
-        # Trusted publishing needs npm >= 11.5.1; Node 22.19 ships npm 10.
+        # Trusted publishing needs npm >= 11.5.1; Node 22 ships npm 10. npm 11
+        # goes into its own prefix and onto PATH for the later steps: upgrading
+        # npm in place on the toolcache removes modules the running npm still
+        # needs and dies with MODULE_NOT_FOUND mid-install (seen on 22.22.2).
         run: |
-          npm install -g npm@11
-          npm --version
+          npm install -g --prefix "$RUNNER_TEMP/npm11" npm@11
+          echo "$RUNNER_TEMP/npm11/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/npm11/bin/npm" --version
 
       - name: Resolve the release version from the tag
         id: version
