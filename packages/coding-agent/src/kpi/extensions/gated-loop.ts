@@ -78,10 +78,19 @@ export interface LoopInvocation {
 	};
 }
 
+/**
+ * What a `NEEDS_HUMAN` outcome is waiting on, as data rather than as a phrase
+ * in `reason`: a provider account the operator must repair or route around,
+ * or a ship delivery (push, pull request) the operator must complete. The
+ * control plane keys its recovery prompt off this, never off the wording.
+ */
+export type LoopRecovery = "provider" | "delivery";
+
 export interface LoopOutcome {
 	jobId: string;
 	status: TerminalStatus;
 	reason?: string;
+	recovery?: LoopRecovery;
 	graphState?: Readonly<GraphRunState>;
 }
 
@@ -605,6 +614,36 @@ interface ShipDelivery {
 }
 
 /**
+ * The ship commit exists but has not reached origin, or has no pull request:
+ * something the operator can finish by hand, after which resuming the job
+ * finalizes the same commit. Distinct from an integrity failure (no commit,
+ * two commits, a foreign commit), which is `BLOCKED` and not the operator's
+ * to repair by pushing.
+ */
+export class ShipDeliveryError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "ShipDeliveryError";
+	}
+}
+
+/** The terminal a failed ship finalization writes, and how the operator gets past it. */
+function shipFailure(
+	error: unknown,
+	jobId: string,
+): { terminalStatus: TerminalStatus; reason: string; recovery?: LoopRecovery } {
+	const message = error instanceof Error ? error.message : String(error);
+	if (error instanceof ShipDeliveryError) {
+		return {
+			terminalStatus: "NEEDS_HUMAN",
+			reason: `${message}. Put that right, then resume with /kpi ${jobId}`,
+			recovery: "delivery",
+		};
+	}
+	return { terminalStatus: "BLOCKED", reason: message };
+}
+
+/**
  * Verifies that the job's commit reached where the ship node was told to take
  * it: on the job branch, pushed to `origin`, and in front of the merge queue as
  * a pull request. Each failure names what is missing, because the fix is the
@@ -626,21 +665,30 @@ async function verifyShipDelivery(
 	const branch = jobBranchName(jobId);
 	const checkedOut = await currentBranch(projectRoot);
 	if (checkedOut !== branch) {
-		throw new Error(`Ship commit is on ${checkedOut ?? "a detached HEAD"}, not the job branch ${branch}`);
+		throw new ShipDeliveryError(`Ship commit is on ${checkedOut ?? "a detached HEAD"}, not the job branch ${branch}`);
 	}
 	const remoteHead = await pushedHead(projectRoot, branch);
 	if (remoteHead === undefined) {
-		throw new Error(`Job branch ${branch} was not pushed to origin`);
+		throw new ShipDeliveryError(`Job branch ${branch} was not pushed to origin`);
 	}
 	if (remoteHead !== head && !(await isAncestor(projectRoot, head, remoteHead))) {
-		throw new Error(`origin/${branch} is at ${remoteHead.slice(0, 8)}, which does not carry the ship commit`);
+		throw new ShipDeliveryError(
+			`origin/${branch} is at ${remoteHead.slice(0, 8)}, which does not carry the ship commit`,
+		);
 	}
-	const pullRequest = await (readPullRequest ?? readPullRequestWithGh)(projectRoot, branch);
+	let pullRequest: PullRequestRecord | undefined;
+	try {
+		pullRequest = await (readPullRequest ?? readPullRequestWithGh)(projectRoot, branch);
+	} catch (error) {
+		throw new ShipDeliveryError(error instanceof Error ? error.message : String(error));
+	}
 	if (pullRequest === undefined) {
-		throw new Error(`No pull request is open for ${branch}; open one with gh pr create --head ${branch} --fill`);
+		throw new ShipDeliveryError(
+			`No pull request is open for ${branch}; open one with gh pr create --head ${branch} --fill`,
+		);
 	}
 	if (pullRequest.state !== "OPEN" && pullRequest.state !== "MERGED") {
-		throw new Error(`The pull request for ${branch} is ${pullRequest.state}: ${pullRequest.url}`);
+		throw new ShipDeliveryError(`The pull request for ${branch} is ${pullRequest.state}: ${pullRequest.url}`);
 	}
 	return { branch, prUrl: pullRequest.url };
 }
@@ -1160,6 +1208,7 @@ interface DriveResult {
 	shippedThisRun?: boolean;
 	/** The engine already emitted the one `loop.terminal` event for this run. */
 	terminalEmitted?: boolean;
+	recovery?: LoopRecovery;
 }
 
 async function driveUntilPause(
@@ -1269,6 +1318,7 @@ async function driveUntilPause(
 					shippedThisRun,
 					terminalStatus: "NEEDS_HUMAN",
 					reason: `${error.message}. Select a healthy model or resolve that provider account, then resume this job.`,
+					recovery: "provider",
 				};
 			}
 			// Plan owns stack.json via its response contract. A map the plan cannot
@@ -1545,7 +1595,13 @@ export async function resumeLoop(
 		);
 		if (result.terminalStatus !== undefined) {
 			await writeTerminalState(jobDirectory, eventsPath, task, result);
-			return { jobId, status: result.terminalStatus, reason: result.reason, graphState: result.state };
+			return {
+				jobId,
+				status: result.terminalStatus,
+				reason: result.reason,
+				recovery: result.recovery,
+				graphState: result.state,
+			};
 		}
 		while (result.state.status === "interrupted") {
 			const pending = result.state.pendingHuman;
@@ -1575,7 +1631,13 @@ export async function resumeLoop(
 			);
 			if (result.terminalStatus !== undefined) {
 				await writeTerminalState(jobDirectory, eventsPath, task, result);
-				return { jobId, status: result.terminalStatus, reason: result.reason, graphState: result.state };
+				return {
+					jobId,
+					status: result.terminalStatus,
+					reason: result.reason,
+					recovery: result.recovery,
+					graphState: result.state,
+				};
 			}
 		}
 		if (result.state.status !== "completed") {
@@ -1607,16 +1669,11 @@ export async function resumeLoop(
 				dependencies.readPullRequest,
 			);
 		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
-			const blocked: DriveResult = {
-				state: result.state,
-				stopState: result.stopState,
-				terminalStatus: "BLOCKED",
-				reason: message,
-			};
-			await writeTerminalState(jobDirectory, eventsPath, task, blocked);
+			const failure = shipFailure(error, jobId);
+			const stopped: DriveResult = { state: result.state, stopState: result.stopState, ...failure };
+			await writeTerminalState(jobDirectory, eventsPath, task, stopped);
 			await dependencies.onStateChange?.();
-			return { jobId, status: "BLOCKED", graphState: result.state };
+			return { jobId, ...failure, status: failure.terminalStatus, graphState: result.state };
 		}
 		// DONE is a terminal like any other: it goes through the one writer, so
 		// `events.jsonl` alone shows the run ended rather than only `state.json`.
@@ -1777,6 +1834,7 @@ export async function runLoop(
 				jobId: job.jobId,
 				status: result.terminalStatus,
 				reason: result.reason,
+				recovery: result.recovery,
 				graphState: result.state,
 			};
 		}
@@ -1817,6 +1875,7 @@ export async function runLoop(
 					jobId: job.jobId,
 					status: result.terminalStatus,
 					reason: result.reason,
+					recovery: result.recovery,
 					graphState: result.state,
 				};
 			}
@@ -1849,15 +1908,14 @@ export async function runLoop(
 				dependencies.readPullRequest,
 			);
 		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
-			const blocked: DriveResult = {
-				state,
-				stopState: result.stopState,
-				terminalStatus: "BLOCKED",
-				reason: message,
-			};
-			await writeTerminalState(job.directory, job.eventsPath, task, blocked);
-			throw error;
+			// A failed finalization is a terminal the operator reads like any
+			// other - the reason and, for a delivery, the resume command - rather
+			// than a thrown "loop failed" that hides which job stopped and why.
+			const failure = shipFailure(error, job.jobId);
+			const stopped: DriveResult = { state, stopState: result.stopState, ...failure };
+			await writeTerminalState(job.directory, job.eventsPath, task, stopped);
+			await dependencies.onStateChange?.();
+			return { jobId: job.jobId, ...failure, status: failure.terminalStatus, graphState: state };
 		}
 		// Same one writer as every other terminal, so a finished run is legible
 		// from `events.jsonl` on its own.

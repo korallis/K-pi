@@ -537,7 +537,7 @@ test("the ship node commits on the job branch, pushes only that branch, and open
 	}
 });
 
-test("a pushed job branch with no pull request stops BLOCKED and finishes on resume without a second commit", async () => {
+test("a pushed job branch with no pull request stops NEEDS_HUMAN and finishes on resume without a second commit", async () => {
 	const directory = await fixture();
 	const origin = await bareOrigin(directory);
 	const jobId = "20260903-healthcheck-no-pr";
@@ -564,10 +564,21 @@ test("a pushed job branch with no pull request stops BLOCKED and finishes on res
 			{ readPullRequest },
 		);
 		await first.commands.get("loop")!(await readFile(join(directory, "task.txt"), "utf8"), first.context);
-		const blocked = await runDocument(directory, jobId, "state.json");
-		assert.equal(blocked.status, "BLOCKED");
-		assert.match(String(blocked.reason), new RegExp(`No pull request is open for ${branch}`, "u"));
-		assert.match(String(blocked.reason), /gh pr create/u);
+		const stopped = await runDocument(directory, jobId, "state.json");
+		assert.equal(stopped.status, "NEEDS_HUMAN");
+		assert.match(String(stopped.reason), new RegExp(`No pull request is open for ${branch}`, "u"));
+		assert.match(String(stopped.reason), /gh pr create/u);
+		assert.match(String(stopped.reason), new RegExp(`resume with /kpi ${jobId}`, "u"));
+		// The operator is told through the job's own terminal, never a thrown "loop failed".
+		assert.ok(
+			first.notifications.some((message) => message.includes(`K-π job ${jobId} NEEDS_HUMAN`)),
+			first.notifications.join("\n"),
+		);
+		assert.equal(
+			first.notifications.some((message) => message.includes("loop failed")),
+			false,
+			first.notifications.join("\n"),
+		);
 		await assert.rejects(readFile(join(directory, ".kpi", "runs", jobId, "ship.json"), "utf8"), { code: "ENOENT" });
 		const shipped = await git(directory, "rev-parse", "HEAD");
 
@@ -598,7 +609,7 @@ test("a pushed job branch with no pull request stops BLOCKED and finishes on res
 	}
 });
 
-test("a ship that never pushed its job branch is BLOCKED naming that branch", async () => {
+test("a ship that never pushed its job branch is NEEDS_HUMAN naming that branch", async () => {
 	const directory = await fixture();
 	const origin = await bareOrigin(directory);
 	const jobId = "20260903-healthcheck-unpushed";
@@ -614,8 +625,11 @@ test("a ship that never pushed its job branch is BLOCKED naming that branch", as
 		);
 		await harness.commands.get("loop")!(await readFile(join(directory, "task.txt"), "utf8"), harness.context);
 		const state = await runDocument(directory, jobId, "state.json");
-		assert.equal(state.status, "BLOCKED");
-		assert.equal(state.reason, `Job branch ${branch} was not pushed to origin`);
+		assert.equal(state.status, "NEEDS_HUMAN");
+		assert.equal(
+			state.reason,
+			`Job branch ${branch} was not pushed to origin. Put that right, then resume with /kpi ${jobId}`,
+		);
 		assert.equal(await git(directory, "branch", "--show-current"), branch);
 	} finally {
 		await rm(directory, { recursive: true, force: true });

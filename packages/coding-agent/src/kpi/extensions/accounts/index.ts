@@ -690,6 +690,11 @@ export function registerAccounts(pi: ExtensionAPI, dependencies: AccountsDepende
 
 	if (typeof pi.on === "function") {
 		pi.on("before_provider_headers", async (event, context) => {
+			// A session's requests are sequential, so the response slot below always
+			// pairs with the request that just started; a slot left by an earlier
+			// request (aborted mid-stream, or answered with no assistant message)
+			// is dropped here rather than paired with this request's outcome.
+			lastResponse = undefined;
 			const modelProvider = context.model?.provider;
 			// `llama` is served by Pi's built-in `llama.cpp`, so the pool a request
 			// belongs to is not always the provider id it carries.

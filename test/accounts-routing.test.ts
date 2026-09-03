@@ -85,6 +85,23 @@ test("a quota-first pin hands off before exhaustion when a sibling has materiall
 	assert.equal(handoff?.remainingPercent, 50);
 });
 
+test("a round-robin pin yields at 5% remaining too; stickiness is not a strategy privilege", () => {
+	const document = accounts({ anthropic: pool("round-robin", "A", "B") });
+	const usage = new UsageCache({ now: () => NOW });
+	const balancer = new AccountBalancer(() => NOW);
+	assert.equal(balancer.select("anthropic", document, usage)?.slot.id, "A");
+	usage.recordHeaders("anthropic", "A", { "x-ratelimit-limit": "100", "x-ratelimit-remaining": "40" });
+	assert.equal(balancer.select("anthropic", document, usage)?.reason, "sticky", "40% left holds the pin");
+
+	usage.recordHeaders("anthropic", "A", {
+		"x-ratelimit-limit": "100",
+		"x-ratelimit-remaining": String(LOW_QUOTA_REMAINING_PERCENT),
+	});
+	const yielded = balancer.select("anthropic", document, usage);
+	assert.equal(yielded?.slot.id, "B");
+	assert.equal(balancer.pinned("anthropic"), "B", "the pin moved with the route");
+});
+
 test("a near-limit pin yields to a healthy sibling whose quota is still unknown", () => {
 	const document = accounts({ anthropic: pool("quota-first", "A", "B") });
 	const usage = new UsageCache({ now: () => NOW });
