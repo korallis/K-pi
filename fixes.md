@@ -257,7 +257,7 @@ Incidental findings recorded for the other packages:
 
 Keep the existing `overrides` (`protobufjs`, `rimraf`, `gaxios.rimraf`); add `overrides.vitest = 4.1.11` because `vitest-evals` otherwise nests vitest 4.1.9 under `packages/evals` and splits the `TaskMeta` augmentation.
 
-**Release-age rule.** The repository `.npmrc` sets `min-release-age=2`, so the newest installable version is the newest one published at least two days before the install. The versions above are those on 2026-09-02; `@anthropic-ai/sdk 0.123.0`, `openai 7.9.0`, `@google/genai 2.20.0`, `typebox 1.3.25`, `@aws-sdk/client-bedrock-runtime 3.1124.0`, `@smithy/node-http-handler 4.12.0` and `@anthropic-ai/sandbox-runtime 0.0.75` were published inside that window and follow on the next refresh.
+**Release-age rule (removed 2026-09-03).** Until then the repository `.npmrc` set `min-release-age=2`, so the newest installable version was the newest one published at least two days before the install; it was dropped so a freshly published `@korallis/k-pi` resolves at once. The versions above are those on 2026-09-02; `@anthropic-ai/sdk 0.123.0`, `openai 7.9.0`, `@google/genai 2.20.0`, `typebox 1.3.25`, `@aws-sdk/client-bedrock-runtime 3.1124.0`, `@smithy/node-http-handler 4.12.0` and `@anthropic-ai/sandbox-runtime 0.0.75` were published inside that window and follow on the next refresh.
 
 ### Change
 
