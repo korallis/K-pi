@@ -48,7 +48,8 @@ export function renderAccountsWidget(document: AccountsDocument, options: Accoun
 				cooldownUntil === undefined || cooldownUntil <= now
 					? ""
 					: ` cd ${Math.ceil((cooldownUntil - now) / 60_000)}m`;
-			return `${slot.label ?? slot.id} ${percent}${window}${cooldown}`;
+			const needsLogin = slot.needsLogin === undefined ? "" : " needs login";
+			return `${slot.label ?? slot.id} ${percent}${window}${cooldown}${needsLogin}`;
 		});
 		lines.push(`  ${poolId.toUpperCase()}  ${slots.join("   ")}`);
 	}

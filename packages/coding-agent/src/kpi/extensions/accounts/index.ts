@@ -5,6 +5,7 @@ import type {
 	Credential,
 	ProviderAuthInteraction,
 } from "@earendil-works/pi-ai";
+import { VERSION } from "../../../config.ts";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "../../../core/extensions/types.ts";
 import { resolveFallbackModels } from "../../kstack/models.ts";
 import { appendEvent } from "../append-log.ts";
@@ -15,7 +16,13 @@ import { readActiveJob } from "../run-store.ts";
 import { writeResearchMode } from "../settings.ts";
 import { setFooterRouteSnapshot } from "../status-line/route-snapshot.ts";
 import { AccountBalancer, LOW_QUOTA_REMAINING_PERCENT, type SelectedSlot } from "./balancer.ts";
-import { classifyProviderBodyFailure, classifyProviderFailure, DEFAULT_COOLDOWN_MS } from "./errors.ts";
+import {
+	classifyProviderBodyFailure,
+	classifyProviderFailure,
+	DEFAULT_COOLDOWN_MS,
+	parseClientVersionRejection,
+	summarizeRefreshFailure,
+} from "./errors.ts";
 import {
 	type AccountsDocument,
 	AccountsStore,
@@ -288,6 +295,11 @@ async function loginAccount(
 		return { poolId: providerName, slotId };
 	}
 
+	// The runtime's login persists a pooled OAuth grant into auth.json, replacing
+	// the grant the official slot was serving. That grant is read from the live
+	// file immediately before the login, so no copy of it can be stale, and it
+	// is handed to the demoted slot once the new login claims the official flag.
+	const before = await store.readOfficialCredential(providerName);
 	const credential = await login(providerName, slotId, context);
 	await store.putSlot(
 		providerName,
@@ -299,7 +311,9 @@ async function loginAccount(
 		},
 		credential,
 	);
-	context.ui.notify(`Added account ${providerName}/${slotId}`, "info");
+	const claim = await store.claimOfficial(providerName, slotId, before);
+	const demoted = claim.demoted === undefined ? "" : ` (${providerName}/${claim.demoted} keeps its previous grant)`;
+	context.ui.notify(`Added account ${providerName}/${slotId}${demoted}`, "info");
 	return { poolId: providerName, slotId };
 }
 
@@ -556,6 +570,31 @@ export function registerAccounts(pi: ExtensionAPI, dependencies: AccountsDepende
 			(pool?.slots ?? []).map((slot) => ({ poolId: poolId as PoolId, slotId: slot.id })),
 		);
 
+	/** Slots already told to log in this session; each is named once. */
+	const announcedLoginNeeds = new Set<string>();
+	const announceLoginNeeded = (
+		poolId: PoolId,
+		slotId: string,
+		reason: string,
+		context: Pick<ExtensionContext, "ui">,
+	): void => {
+		const key = `${poolId}/${slotId}`;
+		if (announcedLoginNeeds.has(key)) return;
+		announcedLoginNeeds.add(key);
+		context.ui.notify(
+			`K-π accounts: ${poolId}/${slotId} needs a new login: ${reason}. Run /accounts login ${poolId} ${slotId}`,
+			"error",
+		);
+	};
+	const providerLabel = (context: ExtensionContext, poolId: PoolId): string =>
+		context.modelRegistry?.getProvider(poolId)?.name ?? poolId;
+
+	/**
+	 * Refreshes the OAuth slots K-π owns. The official slot is skipped: its grant
+	 * is auth.json's and the base runtime refreshes it on every request, so a
+	 * second refresher here would revoke the runtime's rotated token. A slot that
+	 * already needs a login has nothing to refresh.
+	 */
 	const refreshExpiringCredentials = async (context: ExtensionContext): Promise<void> => {
 		if (context.modelRegistry === undefined) return;
 		const [accounts, secrets] = await Promise.all([resolved.store.read(), resolved.store.readSecrets()]);
@@ -564,6 +603,7 @@ export function registerAccounts(pi: ExtensionAPI, dependencies: AccountsDepende
 			const oauth = context.modelRegistry.getProvider(poolName)?.auth?.oauth;
 			if (oauth === undefined) continue;
 			for (const slot of pool.slots) {
+				if (slot.official === true || slot.needsLogin !== undefined) continue;
 				const credential = secrets[`${poolName}/${slot.id}`];
 				if (
 					credential?.type !== "oauth" ||
@@ -576,9 +616,21 @@ export function registerAccounts(pi: ExtensionAPI, dependencies: AccountsDepende
 					const refreshed = await oauth.refresh(credential, context.signal ?? new AbortController().signal);
 					await resolved.store.putSlot(poolName, slot, refreshed);
 				} catch (error) {
+					const failure = summarizeRefreshFailure(error);
+					if (failure.kind === "invalid_grant") {
+						// A revoked refresh token never comes back: a cooldown would only
+						// postpone the same refusal, so the slot is retired until a login.
+						const reason = `${providerLabel(context, poolName)} rejected its refresh token (invalid_grant)`;
+						await resolved.store.markNeedsLogin(poolName, slot.id, reason);
+						balancer.releaseSlot(poolName, slot.id);
+						announceLoginNeeded(poolName, slot.id, reason, context);
+						continue;
+					}
 					balancer.markCooling(poolName, slot.id, nowMs() + DEFAULT_COOLDOWN_MS);
-					const reason = error instanceof Error ? error.message : String(error);
-					context.ui.notify(`Could not refresh ${poolName}/${slot.id}: ${reason}`, "warning");
+					context.ui.notify(
+						`K-π accounts: could not refresh ${poolName}/${slot.id}: ${failure.summary}; cooling ${Math.round(DEFAULT_COOLDOWN_MS / 60_000)}m`,
+						"warning",
+					);
 				}
 			}
 		}
@@ -772,6 +824,8 @@ export function registerAccounts(pi: ExtensionAPI, dependencies: AccountsDepende
 	};
 	/** Ambiguities already announced this run; the same pair is said once. */
 	const reportedAmbiguities = new Set<string>();
+	/** Client-version rejections already explained this session, by sent->required. */
+	const explainedVersionRejections = new Set<string>();
 
 	if (typeof pi.on === "function") {
 		pi.on("before_provider_headers", async (event, context) => {
@@ -817,6 +871,13 @@ export function registerAccounts(pi: ExtensionAPI, dependencies: AccountsDepende
 						if (event.headers[name] !== undefined) event.headers[name] = null;
 					}
 				}
+				return;
+			}
+			if (active.slot.official === true) {
+				// The runtime built this request's auth header from auth.json, which is
+				// by definition this slot's grant: K-π neither reads auth.json nor
+				// rewrites the header, and only records whose response this will be.
+				recordRequestSlot(event.requestId, active);
 				return;
 			}
 			// A local slot carries no credential unless the operator referenced one:
@@ -894,9 +955,61 @@ export function registerAccounts(pi: ExtensionAPI, dependencies: AccountsDepende
 				releaseSucceededResponse(context);
 				return;
 			}
+			const rejection = parseClientVersionRejection(message.errorMessage);
+			if (rejection !== undefined) {
+				// A client-identity failure, not a slot failure: the paired 400 is
+				// dropped, nothing cools, nothing fails over, and the fix is named once.
+				const paired = takeErroredResponse();
+				const key = `${rejection.sent}->${rejection.required}`;
+				if (!explainedVersionRejections.has(key)) {
+					explainedVersionRejections.add(key);
+					context.ui.notify(
+						`K-π ${VERSION} identifies to Anthropic as Claude Code ${rejection.sent ?? "an older version"}; Anthropic requires ${rejection.required ?? "a newer version"} or newer for ${context.model?.id ?? "this model"}. Update K-π: npm install -g @korallis/k-pi@latest`,
+						"error",
+					);
+				}
+				return {
+					message: {
+						...message,
+						diagnostics: [
+							...(message.diagnostics ?? []),
+							{
+								type: "kpi_client_version_rejected",
+								timestamp: nowMs(),
+								details: {
+									sent: rejection.sent,
+									required: rejection.required,
+									slot: "response" in paired ? slotName(paired.response) : undefined,
+								},
+							},
+						],
+					},
+				};
+			}
 			const taken = takeErroredResponse();
 			if ("ambiguous" in taken) {
-				if (taken.ambiguous.length === 0) return;
+				if (taken.ambiguous.length === 0) {
+					// No request reached the provider: the runtime's own prepareRequest
+					// threw. The one failure K-π can name and bound is a revoked
+					// auth.json grant, which is the official slot's; it is retired until
+					// the operator logs in again. auth.json is never written here.
+					const failure = summarizeRefreshFailure(message.errorMessage);
+					if (failure.kind !== "invalid_grant") return;
+					const provider = context.model?.provider;
+					const pool = provider === undefined ? undefined : poolIdForProvider(provider);
+					if (pool === undefined) return;
+					const accounts = await resolved.store.read();
+					const official = accounts.pools[pool]?.slots.find(
+						(slot) => slot.official === true && slot.needsLogin === undefined,
+					);
+					if (official === undefined) return;
+					const reason = `${providerLabel(context, pool)} rejected the refresh token held in auth.json (invalid_grant)`;
+					await resolved.store.markNeedsLogin(pool, official.id, reason);
+					balancer.releaseSlot(pool, official.id);
+					announceLoginNeeded(pool, official.id, reason, context);
+					await publishWidget(context);
+					return;
+				}
 				// Two failed responses and one error: attributing it would be a
 				// guess. Nothing cools, and both the operator and the transcript
 				// are told which slots went unjudged rather than nothing at all.
@@ -960,15 +1073,42 @@ export function registerAccounts(pi: ExtensionAPI, dependencies: AccountsDepende
 			await refreshExpiringCredentials(context);
 		});
 		pi.on("session_start", async (_event, context) => {
-			// The official primary credential becomes slot `default` before any
-			// turn needs a slot. The secret moves between private agent files.
-			const imported = await resolved.store.importOfficialCredentials();
-			if (imported.length > 0) {
-				context.ui.notify(`Imported official credentials as ${imported.join(", ")}`, "info");
+			// One grant, one refresher: each pool's official slot is the grant
+			// auth.json holds, refreshed by the base runtime alone and kept without a
+			// secrets copy; every other slot is K-π's own and K-π refreshes it.
+			try {
+				const result = await resolved.store.reconcileOfficialCredentials(nowMs());
+				if (result.imported.length > 0) {
+					context.ui.notify(`Imported official credentials as ${result.imported.join(", ")}`, "info");
+				}
+				if (result.adopted.length > 0) {
+					context.ui.notify(
+						`K-π accounts: ${result.adopted.join(", ")} now reads its credential from auth.json`,
+						"info",
+					);
+				}
+				for (const orphan of result.orphaned) {
+					const slash = orphan.indexOf("/");
+					const pool = orphan.slice(0, slash);
+					if (!isPoolId(pool)) continue;
+					announceLoginNeeded(pool, orphan.slice(slash + 1), "auth.json no longer holds its credential", context);
+				}
+			} catch (error) {
+				// Startup continues without the binding; the pool is whatever the
+				// store already holds, and the operator is told why.
+				context.ui.notify(
+					`K-π accounts: could not reconcile auth.json with accounts.json: ${error instanceof Error ? error.message : String(error)}`,
+					"error",
+				);
+			}
+			// One reminder per slot per session for anything still waiting on a login.
+			for (const [poolName, pool] of Object.entries((await resolved.store.read()).pools)) {
+				if (pool === undefined || !isPoolId(poolName)) continue;
+				for (const slot of pool.slots) {
+					if (slot.needsLogin !== undefined) announceLoginNeeded(poolName, slot.id, slot.needsLogin, context);
+				}
 			}
 			// OAuth refresh and usage readers stay off the request-header hot path.
-			// Each subscription refreshes independently, so a stale slot never wins
-			// merely because another login updated the provider's primary auth.json.
 			await refreshExpiringCredentials(context);
 			await usage.refreshAll(configuredSlots(await resolved.store.read()), context.signal);
 			await publishWidget(context);

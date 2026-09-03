@@ -213,4 +213,32 @@ describe("Anthropic-compatible user agents", () => {
 		const headers = mockState.constructorOpts?.defaultHeaders as Record<string, string>;
 		expect(headers["User-Agent"]).toBe("custom-client");
 	});
+
+	it("identifies OAuth requests as a Claude Code build Anthropic accepts", async () => {
+		const models = createModels({
+			authContext: {
+				env: async (name) => (name === "ANTHROPIC_OAUTH_TOKEN" ? "sk-ant-oat-test" : undefined),
+				fileExists: async () => false,
+			},
+		});
+		models.setProvider(anthropicProvider());
+
+		await models.streamSimple(anthropicModel, context).result();
+
+		const headers = mockState.constructorOpts?.defaultHeaders as Record<string, string>;
+		const userAgent = headers["user-agent"];
+		expect(userAgent).toMatch(/^claude-cli\/\d+\.\d+\.\d+$/u);
+		// Anthropic refuses OAuth requests below this floor with claude_code_version_too_old.
+		// A floor, not an equality, so a later upstream bump keeps this green.
+		const floor = [2, 1, 251];
+		const sent = userAgent
+			.slice("claude-cli/".length)
+			.split(".")
+			.map((part) => Number(part));
+		const firstDifference = sent.findIndex((part, index) => part !== floor[index]);
+		const atLeastFloor = firstDifference < 0 || sent[firstDifference] > floor[firstDifference];
+		expect(atLeastFloor, `claude-cli/${sent.join(".")} is below the ${floor.join(".")} floor`).toBe(true);
+		expect(headers["anthropic-beta"]).toContain("claude-code-20250219");
+		expect(headers["anthropic-beta"]).toContain("oauth-2025-04-20");
+	});
 });

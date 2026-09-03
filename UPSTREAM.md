@@ -142,6 +142,13 @@ Every `packages/*/package.json`, the example-extension manifests and the root ma
 | `package.json` `overrides.vitest` | One vitest for the whole tree; `vitest-evals` otherwise nests 4.1.9 and splits the `TaskMeta` augmentation. |
 | `packages/coding-agent/test/mermaid.test.ts` | The two fallback fixtures use the invisible link `~~~`, which grok-mermaid 0.2.3 still drops with a warning; it now renders the `:::class` syntax they used before. |
 
+**Anthropic OAuth client identity — `packages/ai/` (§6: one narrow upstream fix, cherry-picked)**
+
+| File | Patch |
+|---|---|
+| `src/api/anthropic-messages.ts` | Upstream `96317e50b` cherry-picked with `-x` (local commit `ea35b7f80`): `claudeCodeVersion` 2.1.75 → 2.1.251, the `user-agent: claude-cli/<v>` every subscription OAuth request identifies with. Anthropic rejects OAuth requests below that floor with `claude_code_version_too_old`; K-π ships exactly upstream's constant, so the hunk drops out on the next upstream merge. Also the pre-existing K-π insertion at line 581, `onResponse: (failed) => options?.onResponse?.(failed, model)`, which forwards failed-response metadata (status and headers, never the body) to the accounts extension's `after_provider_response` hook. |
+| `test/anthropic-auth-token.test.ts` | Adds one OAuth case asserting the `claude-cli/<major>.<minor>.<patch>` user-agent shape and a numeric floor of 2.1.251 (a floor, not an equality, so a later upstream bump keeps it green) plus the `claude-code-20250219` and `oauth-2025-04-20` beta flags. |
+
 **Root build system (medium risk: upstream edits these every release; resolve hunk-by-hunk, keeping K-π's workspace shape and the publish removals)**
 
 | File | Patch |
