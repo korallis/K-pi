@@ -42,7 +42,6 @@ const task: Task = {
 	],
 	runtime_dependencies: [],
 	dependency_baseline: ["typescript"],
-	limits: { maxRounds: 5, maxCostUsd: 12.5 },
 	current_module_id: "schema-contract",
 };
 
@@ -75,7 +74,7 @@ test("task, evidence, and verdict schemas match live payloads", async () => {
 
 	assertInvalid({ ...task, current_module_id: "" }, taskSchema);
 	assertInvalid({ ...task, limits: { maxRounds: 0 } }, taskSchema);
-	assertInvalid({ ...task, limits: { maxTokens: 10 } }, taskSchema);
+	assertInvalid({ ...task, limits: { maxCostUsd: 5 } }, taskSchema);
 	const { head: _head, ...evidenceWithoutHead } = evidence;
 	assertInvalid(evidenceWithoutHead, evidenceSchema);
 	assertInvalid({ ...verdict, status: "GREEN" }, verdictSchema);
@@ -164,6 +163,8 @@ function eventPayload(type: (typeof EVENT_TYPES)[number]): Record<string, unknow
 			return { ...base, run: 1, model: "openai-codex/gpt-test" };
 		case "node.finished":
 			return { ...base, run: 1, status: "completed", elapsed_ms: 1200, cost_usd: 0.01 };
+		case "node.retry":
+			return { ...base, attempt: 1, reason: "http", delay_ms: 1000, status: 503, message: "upstream overloaded" };
 		default:
 			return base;
 	}
@@ -188,4 +189,40 @@ test("event schema rejects cross-type and research vocabulary drift", async () =
 	assertInvalid({ ...eventPayload("research.started"), network_state: "degraded" }, schema);
 	assertInvalid({ ...eventPayload("research.started"), mode: "native" }, schema);
 	assertInvalid({ ...eventPayload("agent.message"), headers: { authorization: "secret" } }, schema);
+});
+
+test("event schema accepts node.retry and the three-word loop.terminal vocabulary", async () => {
+	const schema = await loadSchema("event");
+	const terminal = eventPayload("loop.terminal");
+
+	const { status: _status, message: _message, ...retryRequiredOnly } = eventPayload("node.retry");
+	assertValid(retryRequiredOnly, schema);
+	assertValid({ ...terminal, status: "STOPPED", reason: "operator stop" }, schema);
+	assertValid({ ...terminal, status: "NEEDS_HUMAN", reason: "resume with /kpi job", recovery: "no_progress" }, schema);
+	for (const recovery of [
+		"approval",
+		"provider",
+		"delivery",
+		"ship",
+		"bounds",
+		"review",
+		"no_progress",
+		"research",
+		"stack",
+		"contract",
+		"ac_quality",
+	]) {
+		assertValid({ ...terminal, status: "NEEDS_HUMAN", recovery }, schema);
+	}
+
+	for (const legacy of ["EXHAUSTED", "NO_PROGRESS", "UNSAFE", "BLOCKED"]) {
+		assertInvalid({ ...terminal, status: legacy }, schema);
+	}
+	assertInvalid({ ...terminal, status: "NEEDS_HUMAN", recovery: "budget" }, schema);
+	assertInvalid({ ...eventPayload("node.retry"), attempt: 0 }, schema);
+	assertInvalid({ ...eventPayload("node.retry"), reason: "budget" }, schema);
+	assertInvalid({ ...eventPayload("node.retry"), delay_ms: -1 }, schema);
+	const { delay_ms: _delay, ...retryWithoutDelay } = eventPayload("node.retry");
+	assertInvalid(retryWithoutDelay, schema);
+	assertInvalid({ ...eventPayload("node.retry"), approved: true }, schema);
 });

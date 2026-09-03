@@ -1,0 +1,39 @@
+{
+  "job_id": "20260903-fix-claude-model-requests-failin-42986cfa",
+  "mode": "gated",
+  "round": 0,
+  "maxRounds": 3,
+  "stage": "implement",
+  "node": "implement",
+  "passed": false,
+  "bounds": {
+    "held": true
+  },
+  "ac": {
+    "quality": "executable"
+  },
+  "status": "EXHAUSTED",
+  "reason": "graph exhausted maxCostUsd 5 at 7.691661999999999",
+  "graph_status": "exhausted",
+  "superstep": 4,
+  "limits": {
+    "maxSteps": 24,
+    "maxNodeRuns": 16,
+    "maxConcurrency": 2,
+    "maxCostUsd": 5,
+    "timeoutMs": 1800000,
+    "maxRounds": 3,
+    "maxTransientRetries": 2
+  },
+  "started_at_ms": 1788426724318,
+  "elapsed_ms": 876471,
+  "cost_usd": 7.691661999999999,
+  "graph_round": 1,
+  "batches": 3,
+  "exhausted_limit": "maxCostUsd",
+  "evidence_fingerprints": [],
+  "output_fingerprints": [],
+  "failing_ac_sets": [],
+  "retries": 0,
+  "retry_delays_ms": []
+}

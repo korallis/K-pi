@@ -1,0 +1,144 @@
+1
+K-π always-on widget · 160 columns · strict cell grid
+Assumptions and reasoning
+Source of truth: board.ts · board-frame.ts · segments.ts · brand.ts · renderers.ts · loop-amber.json · protocol-blue.json · coding-loop.gated.json. Everything below is drawn from the two theme palettes and the real stop/stage/file vocabulary; nothing that cannot be produced with box-drawing, braille, block characters and truecolor.
+1a is the widget as paintCompact renders it today at 160 columns. 1b–1f are one proposal seen through its tabs and states: a framed widget whose top border carries the tabs (BOARD · GRAPH · FILES · EVENTS · ACCOUNTS), a one-line stage rail with per-stage elapsed time, and a NOW line that always names the node, the tool and the command that is running right now. All spinners, timers, sparklines and edge flow are live.
+1a
+Current widget, recreated · compact layout at 160 cols · running, round 0, stage 01
+                                                                                                                                                                
+ /kpi Add GET /health returning status 200 and JSON {"status":"ok"}; cmd npm test exits 0; writes only src/health/** and test/health/**                         
+                                                                                                                                                                
+K-π handoff.created job=20260903-add-get-health-returning-status-ae4a7049 r0                                                                                    
+K-π research.started job=20260903-add-get-health-returning-status-ae4a7049 r0 mode=local net=no-network                                                         
+K-π research.completed job=20260903-add-get-health-returning-status-ae4a7049 r0 mode=local net=no-network n=3                                                   
+                                                                                                                                                                
+K-π GRAPH CONTROL │ MODE gated │ JOB 20260903-add-get-health-returning-status-ae4a7049 │ ROUND 0/3                                                              
+┌──────────────────┬──────────────────┬──────────────────┬──────────────────┬──────────────────┬──────────────────┬──────────────────┬──────────────────┐       
+│  01 ac-compile   │    02 specify    │     03 plan      │   04 implement   │     05 test      │    06 bounds     │    07 review     │     08 ship      │       
+│     CURRENT      │     PENDING      │     PENDING      │     PENDING      │     PENDING      │     PENDING      │     PENDING      │     PENDING      │       
+└──────────────────┴──────────────────┴──────────────────┴──────────────────┴──────────────────┴──────────────────┴──────────────────┴──────────────────┘       
+FILES  ● task.json ● context.md ○ candidate.json ○ evidence.json ○ verdict.json ● events.jsonl                                                                  
+LOOP 20260903-add-get-health-returning-status-ae4a7049  STAGE 01 ac-compile  NODE ac-compiler  GATE machine                                     ┌──────────────┐
+ROUND 0/3  PASS/FAIL PENDING  FINGERPRINT —                                                                                                     │ STOP RUNNING │
+CONTEXT product ●  structure ●  tech ○  AGENTS 0  BUS ○  ROUTE anthropic/home                                                                   └──────────────┘
+                                                                                                                                                                
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+>                                                                                                                                                               
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+K-π ⠙ 7s  >  ⬡ claude-opus-4  >  ● high  >  📁 K-pi  >  ⎇ main  >  ▦ 12%/200k  >  (sub)                                                                         
+K-π LOOP gated r0/3 STAGE ac-compile GATE machine ROUTE anthropic/home                                                                                          
+                                                                                                                                                                
+1b
+BOARD tab · running · stage rail with elapsed per stage, NOW line, budget sparklines
+                                                                                                                                                                
+K-π tool.request job=20260903-add-get-health-returning-status-ae4a7049 r1 status=ok                                                                             
+K-π checkpoint job=20260903-add-get-health-returning-status-ae4a7049 r1 graph/checkpoint-000007.json                                                            
+                                                                                                                                                                
+┌─ K-π GRAPH CONTROL ─┤ 1 BOARD ├─ 2 GRAPH ── 3 FILES ── 4 EVENTS ── 5 ACCOUNTS ───────────── MODE gated · JOB 20260903-add-get-health-…-ae4a7049 · ROUND 1/3 ─┐
+│ ✓ 01 ac-compile 4s ━ ✓ 02 specify 41s ━ ✓ 03 plan 22s ━ ⠙ 04 implement 1m15s ╌ ○ 05 test ╌ ○ 06 bounds ╌ ○ 07 review ╌ ○ 08 ship           ┌──────────────┐  │
+│ NOW  implement › bash  npm test -- --filter health  15s   step 7/24 · writes 3 files in bounds · next: 05 test                             │ STOP RUNNING │  │
+│ ROUND 1/3  PASS/FAIL PENDING  FINGERPRINT —  GATE machine  NODE implement  AC 2/3 ██░  BOUNDS held  RESEARCH local 3 src                   └──────────────┘  │
+│ FILES ● task.json ● context.md ● candidate.json ○ evidence.json ○ verdict.json ● events.jsonl   CONTEXT product ● structure ● tech ●  AGENTS 1  BUS ●        │
+│ COST $0.84/$5.00 ▁▂▂▃▃▄▄▅▅▆▆▇ ██░░░░░░░░ 17%   CTX 42%/200k ▃▃▄▄▅▅▅▆▆▆▇▇   TOK 38.4k ▆▇▄█▅▇▇▅█▄█▆   TIME 6m44s/30m   ROUNDS r0 ▇▇▇▇▇ 2m03s r1 ▇▇▇⠙ 1m44s     │
+└─ tab/shift+tab switch · 1-5 jump · ctrl+k full board · esc interrupt ────────────────────────────────────────────────────────────────────────────────────────┘
+                                                                                                                                                                
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+>                                                                                                                                                               
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+K-π ⠙ 404s  >  ⬡ claude-opus-4  >  ● high  >  📁 K-pi  >  ⎇ main  >  ▦ 42%/200k  >  (sub)                                                        add healthcheck
+K-π LOOP gated r1/3 STAGE implement GATE machine ROUTE anthropic/home                                                                                           
+1c
+GRAPH tab · FAIL → retry · the coding-loop.gated graph itself, walked edges lit, retry edge flowing, the WHY spelled out
+                                                                                                                                                                
+K-π review.verdict job=20260903-add-get-health-returning-status-ae4a7049 r1 FAIL not-approved blocking=2 fp=e19fa3fb0278a1c4                                    
+K-π tool.request job=20260903-add-get-health-returning-status-ae4a7049 r2 status=ok                                                                             
+                                                                                                                                                                
+┌─ K-π GRAPH CONTROL ── 1 BOARD ─┤ 2 GRAPH ├─ 3 FILES ── 4 EVENTS ── 5 ACCOUNTS ───────────── MODE gated · JOB 20260903-add-get-health-…-ae4a7049 · ROUND 2/3 ─┐
+│                                                    ┌◀━━━━◀━━━━◀━━━━◀━━━━◀━━━┐  retry #1 · test.passed=false                                ┌──────────────┐  │
+│                                                    ▼                        │                                                              │ STOP RUNNING │  │
+│  [ac-compiler ✓] ━━▶ [specify ✓] ━━▶ [plan ✓] ━━▶ [ implement ⠙ ] ╌╌▶ [test ✕] ╌╌▶ [review ○] ╌╌▶ [human ○] ╌╌▶ [ship ○] ╌╌▶ [__end__ ○]   └──────────────┘  │
+│         │                                                ▲                │                   │                                                              │
+│         └╌▶ [plan-check ○] ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┘                └╌▶ [unsafe ○]      └╌▶ [needs-human ○]                                            │
+│                                                          └╌╌╌╌╌╌╌╌╌╌ review REVISE ╌╌╌╌╌┘                                                                    │
+│ EDGE test ━▶ implement   when bounds.held=true ∧ test.passed=false   ROUND 2/3   FAIL ● last verifier  npm test exit 1 · 2/3 acceptance red (AC-02 AC-03)    │
+│ NOW  implement › edit  src/health/index.ts  37s   next: test ▶ review ▶ human   retries left 1 · same fingerprint twice ends NO_PROGRESS                     │
+└─ ← → walk nodes · enter open transcript · tab next ──────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+                                                                                                                                                                
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+>                                                                                                                                                               
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+K-π ⠙ 37s  >  ⬡ claude-opus-4  >  ● high  >  📁 K-pi  >  ⎇ main  >  ▦ 58%/200k  >  (sub)                                                         add healthcheck
+K-π LOOP gated r2/3 STAGE implement GATE machine ROUTE anthropic/home                                                                                           
+1d
+EVENTS tab · no-network research (engine) + account failover · streaming events.jsonl beside live cost / context / token / round charts
+                                                                                                                                                                
+K-π accounts.failover job=20260903-add-get-health-returning-status-ae4a7049 r1 anthropic/home → anthropic/work (quota 5% remaining)                             
+K-π agent.spawned job=20260903-add-get-health-returning-status-ae4a7049 r1 reviewer reviewer-01 pid=48122                                                       
+                                                                                                                                                                
+┌─ K-π GRAPH CONTROL ── 1 BOARD ── 2 GRAPH ── 3 FILES ─┤ 4 EVENTS ├─ 5 ACCOUNTS ───────────── MODE gated · JOB 20260903-add-get-health-…-ae4a7049 · ROUND 1/3 ─┐
+│ RESEARCH local · no-network engine · provider failures   EXA ✕  PPLX ✕     ROUTE anthropic/work  via work 71% 5h   home 4% cd 58m   AGENTS 1  BUS ●          │
+│ EVENTS.JSONL · 14 records chained ✓ · follow                                                        ┌─ TELEMETRY ─────────────────────────────────────────┐  │
+│ 11:45:58  research.started    r1 mode=exa net=online q=express healthcheck endpoint pattern…        │ COST     $1.42/$5.00  ███░░░░░░░ 28%                │  │
+│ 11:46:07  research.failed     svc=exa 503 after 3 attempts                                          │          ▁▁▂▂▃▃▄▄▅▅▅▆▆▇  +$0.06/min · ~57m to cap   │  │
+│ 11:46:14  research.failed     svc=perplexity timeout 8000ms                                         │ CONTEXT  61%/200k        ██████░░░░  ▄▄▅▅▅▆▆▆▇▇▇███ │  │
+│ 11:46:14  research.completed  r1 mode=local net=no-network n=3 reason=provider failures             │ TOKENS   in 31.5k  out 6.8k  ▄█▆▄█▆▅█▅▆█▄▆█         │  │
+│ 11:46:31  accounts.failover   anthropic/home → anthropic/work (quota 5% remaining)                  │ ROUNDS   r0 ▇▇▇▇▇▇ 2m03s  r1 ▇▇▇▇⠙ 1m44s            │  │
+│ 11:46:31  tool.request        implement bash  npm test -- --filter health                           │ TIME     8m40s/30m       ███░░░░░░░                 │  │
+│ ▸ live   tool.request        implement bash  npm test -- --filter health  ⠙ 3s                      │ STEPS    9/24            ████░░░░░░  workers 1/2    │  │
+│                                                                                                     └─────────────────────────────────────────────────────┘  │
+│ FILES ● task.json ● context.md ● candidate.json ○ evidence.json ○ verdict.json ● events.jsonl   STAGE 04 implement  ROUND 1/3                  STOP RUNNING  │
+└─ j/k scroll · f follow · enter open record · tab next ───────────────────────────────────────────────────────────────────────────────────────────────────────┘
+                                                                                                                                                                
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+>                                                                                                                                                               
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+K-π ⠙ 520s  >  ⬡ claude-opus-4  >  ● high  >  📁 K-pi  >  ⎇ main  >  ▦ 61%/200k  >  (sub)                                                        add healthcheck
+K-π LOOP gated r1/3 STAGE implement GATE machine ROUTE anthropic/work                                                                                           
+                                                                                                                                                                
+                                                                                                                                                                
+1e
+Paused on operator · protocol-blue · question, diff, verdict and hotkeys in one panel; stop states and three laws kept
+                                                                                                                                                                
+K-π review.verdict job=20260903-add-get-health-returning-status-ae4a7049 r1 PASS approved blocking=0 nonblocking=1 fp=e19fa3fb0278a1c4                          
+K-π approval.requested job=20260903-add-get-health-returning-status-ae4a7049 r1 node=human                                                                      
+                                                                                                                                                                
+┌─ K-π PROTOCOL ─┤ 1 BOARD ├─ 2 GRAPH ── 3 FILES ── 4 EVENTS ── 5 ACCOUNTS ── MODE gated · JOB 20260903-add-get-health-…-ae4a7049 · ROUND 1/3 · GATE approval ─┐
+│ ✓ 01 ac-compile 4s ━ ✓ 02 specify 41s ━ ✓ 03 plan 22s ━ ✓ 04 implement 3m12s ━ ✓ 05 test 38s ━ ✓ 06 bounds 1s ━ ✓ 07 review 54s ━ ◉ human 45s ╌ ○ 08 ship    │
+│ ┌─ WAITING ON OPERATOR ────────────────────────────────────────────────────────────────────────────────────────┐    ┌─ STOP STATES ───┐    ┌──────────────┐  │
+│ │ All quality gates and isolated review are green. Approve this change for a commit on the job branch,         │    │ DONE      ○     │    │ STOP RUNNING │  │
+│ │ a push of that branch to origin, and a pull request?                                                         │    │ BLOCKED   ○     │    └──────────────┘  │
+│ │ diff +12/-3  src/health/index.ts  test/health/health.test.ts     PASS ● reviewer  fp e19fa3fb0278  1 note    │    │ APPROVAL  ●     │    GATE human        │
+│ │ [y] approve   [n] deny → revise   [d] show diff   [v] verdict.json   [e] evidence.json                       │    └─────────────────┘    waiting 45s       │
+│ └──────────────────────────────────────────────────────────────────────────────────────────────────────────────┘                                             │
+│ FILES ● task.json ● context.md ● candidate.json ● evidence.json ● verdict.json ● events.jsonl                                                                │
+│ THREE LAWS 1 outer loop owns the return path · 2 shared files are the contract · 3 irreversible effects stay outside the worker                              │
+└─ y approve · n deny · d diff · tab next · ctrl+k full board ─────────────────────────────────────────────────────────────────────────────────────────────────┘
+                                                                                                                                                                
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+>                                                                                                                                                               
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+K-π  >  ⬡ claude-opus-4  >  ● high  >  📁 K-pi  >  ⎇ main  >  ▦ 47%/200k  >  (sub)                                                               add healthcheck
+K-π LOOP gated r1/3 STAGE human GATE human ROUTE anthropic/home                                                                                                 
+1f
+Terminal states · DONE, EXHAUSTED, and idle with no job (widget collapses to one line)
+┌─ K-π GRAPH CONTROL ─┤ 1 BOARD ├─ 2 GRAPH ── 3 FILES ── 4 EVENTS ── 5 ACCOUNTS ───────────── MODE gated · JOB 20260903-add-get-health-…-ae4a7049 · ROUND 1/3 ─┐
+│ ✓ 01 ac-compile ━ ✓ 02 specify ━ ✓ 03 plan ━ ✓ 04 implement ━ ✓ 05 test ━ ✓ 06 bounds ━ ✓ 07 review ━ ✓ 08 ship  12m08s total                ┌───────────┐   │
+│ SHIPPED cfcda90 feat: healthcheck endpoint · kpi/20260903-add-get-health-…-ae4a7049 pushed · PR #42 opened · 14 records chained ✓            │ STOP DONE │   │
+│ COST $1.86/$5.00  TOKENS 61.3k  ROUNDS 1/3  PASS ● reviewer  FINGERPRINT 59106f5dc44b       /kpi verify · /kpi status · any key dismisses    └───────────┘   │
+└─ DONE ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+                                                                                                                                                                
+┌─ K-π GRAPH CONTROL ─┤ 1 BOARD ├─ 2 GRAPH ── 3 FILES ── 4 EVENTS ── 5 ACCOUNTS ───────── MODE autopilot · JOB 20260903-migrate-logger-…-1f0b2c77 · ROUND 3/3 ─┐
+│ ✓ 01 ac-compile ━ ✓ 02 specify ━ ✓ 03 plan ━ ✓ 04 implement ━ ✕ 05 test ×3 ━ ○ 06 bounds ╌ ○ 07 review ╌ ○ 08 ship                      ┌────────────────┐   │
+│ BUDGET maxCostUsd 5.00 crossed at $5.02 in round 3/3 · elapsed 27m50s/30m · steps 22/24 · no commit made                                │ STOP EXHAUSTED │   │
+│ WHY    test failed 3 rounds · AC-03 red each time · fingerprints differed so not NO_PROGRESS · FAIL ● last verifier                     └────────────────┘   │
+│ NEXT   read task.json limits + state.json cost_usd · /kpi --max-cost-usd 8 <goal> resumes with a larger budget · /kpi verify checks the chain                │
+└─ EXHAUSTED ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+                                                                                                                                                                
+K-π no active job  ·  last 20260903-add-get-health-…-ae4a7049 DONE 2h ago  ·  /kpi <goal> starts a gated loop  ·  /kpi status redraws the last board            
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+>                                                                                                                                                               
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+K-π  >  ⬡ claude-opus-4  >  ● high  >  📁 K-pi  >  ⎇ main  >  ▦ 12%/200k  >  (sub)                                                                   /kpi verify
+                                                                                                                                                                
+
+Try next: "make 1b the default and fold the charts of 1d into it" · "show 1c at 80 columns" · "design the FILES and ACCOUNTS tabs" · "a version without tabs that cycles views automatically"

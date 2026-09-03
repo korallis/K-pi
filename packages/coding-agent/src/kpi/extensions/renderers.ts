@@ -89,10 +89,27 @@ export function formatEventEntry(type: EventType, event: EventRecord | undefined
 		return `K-π checkpoint${job}${round}${detail ? ` ${detail}` : ""}`;
 	}
 
+	if (type === "node.retry") {
+		const node = event?.node;
+		const attempt = field(event, "attempt") ?? "?";
+		const reason = field(event, "reason") ?? "transient";
+		const status = field(event, "status");
+		const delayMs = typeof event?.delay_ms === "number" ? event.delay_ms : 0;
+		const parts = [`K-π node.retry${job}${round}`];
+		if (typeof node === "string" && node.length > 0) parts.push(node);
+		parts.push(
+			`attempt=${attempt}`,
+			status === undefined ? reason : `${reason} ${status}`,
+			`next ${formatElapsed(delayMs)}`,
+		);
+		return parts.join(" ");
+	}
+
 	if (type === "loop.terminal") {
 		const status = field(event, "status") ?? "DONE";
+		const recovery = field(event, "recovery");
 		const reason = field(event, "reason");
-		return `K-π loop.terminal${job}${round} ${status}${reason ? ` — ${reason}` : ""}`;
+		return `K-π loop.terminal${job}${round} ${status}${recovery ? ` ${recovery}` : ""}${reason ? ` — ${reason}` : ""}`;
 	}
 
 	if (type === "review.verdict") {

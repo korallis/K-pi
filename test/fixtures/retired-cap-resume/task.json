@@ -1,0 +1,43 @@
+{
+  "job_id": "20260903-fix-claude-model-requests-failin-42986cfa",
+  "mode": "gated",
+  "goal": "Fix Claude model requests failing with 401 after an OAuth token refresh; cmd npm test exits 0; writes only packages/coding-agent/src/kpi/extensions/accounts.ts and test/accounts.test.ts",
+  "nongoals": [],
+  "acceptance": [
+    {
+      "id": "AC-01",
+      "statement": "Fix Claude model requests failing with 401 after an OAuth token refresh; cmd npm test exits 0; writes only packages/coding-agent/src/kpi/extensions/accounts.ts and test/accounts.test.ts",
+      "required": true,
+      "check": {
+        "kind": "command",
+        "cmd": "npm test",
+        "expect": {
+          "exit": 0
+        }
+      },
+      "bounds": {
+        "write_allow": [
+          "packages/coding-agent/src/kpi/extensions/accounts.ts",
+          "test/accounts.test.ts"
+        ]
+      }
+    }
+  ],
+  "constraints": [
+    "Human approval is required before commit",
+    "Push only the job branch kpi/20260903-fix-claude-model-requests-failin-42986cfa to origin after approval, then open a pull request; never push another branch, force-push, push tags, delete a branch, or merge"
+  ],
+  "quality_gates": [
+    "npm test"
+  ],
+  "ac": {
+    "quality": "executable"
+  },
+  "dependency_baseline": [
+    "typescript@5.9.3"
+  ],
+  "limits": {
+    "maxCostUsd": 5
+  },
+  "current_module_id": "accounts"
+}

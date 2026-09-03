@@ -1,182 +1,139 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { resolveGraphBudgetLimits } from "../packages/coding-agent/src/kpi/extensions/graph/budget.ts";
-import type { GraphLimits } from "../packages/coding-agent/src/kpi/extensions/graph/schema.ts";
 import {
 	canonicalFingerprint,
 	classifyTransientFailure,
 	createStopState,
+	DEFAULT_RETRY_BASE_MS,
 	failingAcSetKey,
-	MAX_TRANSIENT_RETRIES,
-	planRetry,
-	retryTransient,
+	MAX_AUTOMATIC_REPLANS,
+	RETRY_MAX_DELAY_MS,
+	recordVerifier,
+	repeatedWitness,
+	retryDelayMs,
 	stopFingerprint,
-	transitionStopState,
+	type VerifierEvent,
 } from "../packages/coding-agent/src/kpi/extensions/graph/stop.ts";
-
-const graphLimits: GraphLimits = {
-	maxSteps: 24,
-	maxNodeRuns: 16,
-	maxConcurrency: 2,
-	maxCostUsd: 5,
-	timeoutMs: 1_800_000,
-};
 
 const fingerprint = (character: string): string => `sha256:${character.repeat(64)}`;
 
-test("a repeated output fingerprint stops with NO_PROGRESS", () => {
-	const firstRound = transitionStopState(createStopState(), {
+function review(evidence: string, output: string, failingAcIds?: readonly string[]): VerifierEvent {
+	return {
 		type: "verifier",
 		passed: false,
-		evidenceFingerprint: fingerprint("1"),
-		outputFingerprint: fingerprint("a"),
-	});
-	const repeated = transitionStopState(firstRound, {
-		type: "verifier",
-		passed: false,
-		evidenceFingerprint: fingerprint("2"),
-		outputFingerprint: fingerprint("a"),
-	});
+		evidenceFingerprint: fingerprint(evidence),
+		outputFingerprint: fingerprint(output),
+		...(failingAcIds === undefined ? {} : { failingAcIds }),
+	};
+}
 
-	assert.equal(firstRound.status, "RUNNING");
-	assert.equal(repeated.status, "NO_PROGRESS");
+test("a repeated output fingerprint is a repeated witness and a fresh one is not", () => {
+	const fresh = createStopState();
+	assert.equal(repeatedWitness(fresh, review("1", "a")), undefined, "nothing has been seen yet");
+
+	const firstRound = recordVerifier(fresh, review("1", "a"));
+	assert.equal(firstRound.round, 1);
+	assert.deepEqual(firstRound.outputFingerprints, [fingerprint("a")]);
+
+	// New evidence, the same review output: the witness is the output fingerprint.
+	assert.equal(repeatedWitness(firstRound, review("2", "a")), fingerprint("a"));
+	assert.equal(repeatedWitness(firstRound, review("2", "b")), undefined, "a fresh output is progress");
+
+	// Recording the repeat moves the round but stores each witness once.
+	const repeated = recordVerifier(firstRound, review("2", "a"));
 	assert.equal(repeated.round, 2);
+	assert.deepEqual(repeated.outputFingerprints, [fingerprint("a")]);
+	assert.deepEqual(repeated.evidenceFingerprints, [fingerprint("1"), fingerprint("2")]);
+	assert.equal("status" in repeated, false, "the reducer no longer decides a terminal");
 });
 
-test("a repeated output stops even without new verifier evidence", () => {
-	const firstRound = transitionStopState(createStopState(), {
-		type: "verifier",
-		passed: false,
-		evidenceFingerprint: fingerprint("1"),
-		outputFingerprint: fingerprint("a"),
-	});
-	const repeated = transitionStopState(firstRound, {
-		type: "verifier",
-		passed: false,
-		evidenceFingerprint: fingerprint("1"),
-		outputFingerprint: fingerprint("a"),
-	});
-
-	assert.equal(repeated.status, "NO_PROGRESS");
-	// The verifier ran again, so the round moved: a round key that stood still
-	// would put the loop beyond the reach of `maxRounds`.
-	assert.equal(repeated.round, 2);
-});
-
-test("the third failed round stops with EXHAUSTED by default", () => {
-	let state = createStopState();
-	for (const [index, character] of ["a", "b", "c"].entries()) {
-		state = transitionStopState(state, {
-			type: "verifier",
-			passed: false,
-			evidenceFingerprint: fingerprint(String(index + 1)),
-			outputFingerprint: fingerprint(character),
-		});
-	}
-
-	assert.equal(state.round, 3);
-	assert.equal(state.maxRounds, 3);
-	assert.equal(state.status, "EXHAUSTED");
-});
-
-test("a transient 429 retry does not increment the round", () => {
-	const firstRound = transitionStopState(createStopState(), {
-		type: "verifier",
-		passed: false,
-		evidenceFingerprint: fingerprint("1"),
-		outputFingerprint: fingerprint("a"),
-	});
-	const retried = transitionStopState(firstRound, {
-		type: "retry",
-		reason: "http",
-		status: 429,
-	});
-
-	assert.equal(retried.round, 1, "a retry is not a round");
-	assert.equal(retried.status, "RUNNING");
-	assert.equal(retried.retries, 1);
-	assert.deepEqual(retried.evidenceFingerprints, firstRound.evidenceFingerprints);
-});
-
-test("a custom task maxRounds overrides the default before EXHAUSTED", () => {
-	const limits = resolveGraphBudgetLimits(graphLimits, { maxRounds: 5 });
-	assert.equal(limits.maxRounds, 5);
-
-	let state = createStopState(limits.maxRounds);
-	for (const [index, character] of ["a", "b", "c", "d"].entries()) {
-		state = transitionStopState(state, {
-			type: "verifier",
-			passed: false,
-			evidenceFingerprint: fingerprint(String(index + 1)),
-			outputFingerprint: fingerprint(character),
-		});
-	}
-
-	assert.equal(state.round, 4);
-	assert.equal(state.status, "RUNNING", "the default cap must not stop a job that raised maxRounds");
-
-	const exhausted = transitionStopState(state, {
-		type: "verifier",
-		passed: false,
-		evidenceFingerprint: fingerprint("5"),
-		outputFingerprint: fingerprint("e"),
-	});
-
-	assert.equal(exhausted.round, 5);
-	assert.equal(exhausted.maxRounds, 5);
-	assert.equal(exhausted.status, "EXHAUSTED");
-});
-
-test("the default maxRounds still governs a job with no cap overrides", () => {
-	assert.equal(resolveGraphBudgetLimits(graphLimits).maxRounds, 3);
-	assert.equal(createStopState(resolveGraphBudgetLimits(graphLimits).maxRounds).maxRounds, 3);
-});
-
-test("the same failing acceptance set twice stops even when the prose changes", () => {
-	const first = transitionStopState(createStopState(), {
-		type: "verifier",
-		passed: false,
-		evidenceFingerprint: fingerprint("1"),
-		outputFingerprint: fingerprint("a"),
-		failingAcIds: ["AC-2", "AC-1"],
-	});
-	assert.equal(first.status, "RUNNING");
+test("the same failing acceptance set twice is a repeated witness even when the prose changes", () => {
+	const first = recordVerifier(createStopState(), review("1", "a", ["AC-2", "AC-1"]));
 	assert.deepEqual(first.failingAcSets, ["AC-1,AC-2"], "the set is canonical, so order cannot hide a repeat");
 
 	// New evidence, new prose, entirely different output fingerprint - and the
-	// same two criteria still failing.
-	const repeated = transitionStopState(first, {
-		type: "verifier",
-		passed: false,
-		evidenceFingerprint: fingerprint("2"),
-		outputFingerprint: fingerprint("b"),
-		failingAcIds: ["AC-1", "AC-2"],
-	});
-
-	assert.equal(repeated.status, "NO_PROGRESS");
-	assert.equal(repeated.round, 2);
+	// same two criteria still failing, reordered and duplicated.
+	assert.equal(repeatedWitness(first, review("2", "b", ["AC-1", "AC-2", "AC-1"])), "AC-1,AC-2");
 });
 
 test("a changed failing acceptance set continues", () => {
-	let state = transitionStopState(createStopState(5), {
+	const first = recordVerifier(createStopState(), review("1", "a", ["AC-1", "AC-2"]));
+	const narrower = review("2", "b", ["AC-2"]);
+	assert.equal(repeatedWitness(first, narrower), undefined, "fixing one criterion is progress");
+
+	const second = recordVerifier(first, narrower);
+	assert.equal(second.round, 2);
+	assert.deepEqual(second.failingAcSets, ["AC-1,AC-2", "AC-2"]);
+});
+
+test("rounds are unbounded and a passing verifier is never a stop", () => {
+	let state = createStopState();
+	for (let index = 0; index < 50; index += 1) {
+		// Every round repeats the same receipts under fresh prose over one failing set.
+		state = recordVerifier(state, review("same-receipts", `prose-${index}`, ["AC-1"]));
+	}
+	assert.equal(state.round, 50);
+	assert.equal("status" in state, false, "no counter in the reducer ends a run");
+	assert.equal(state.evidenceFingerprints.length, 1, "one witness for one set of receipts");
+	assert.equal(state.outputFingerprints.length, 50);
+	assert.deepEqual(state.failingAcSets, ["AC-1"], "witness sets hold distinct entries only");
+
+	const passed: VerifierEvent = {
 		type: "verifier",
-		passed: false,
-		evidenceFingerprint: fingerprint("1"),
-		outputFingerprint: fingerprint("a"),
-		failingAcIds: ["AC-1", "AC-2"],
-	});
-	state = transitionStopState(state, {
+		passed: true,
+		evidenceFingerprint: fingerprint("green"),
+		outputFingerprint: fingerprint("approved"),
+		failingAcIds: [],
+	};
+	assert.equal(repeatedWitness(state, passed), undefined);
+	const done = recordVerifier(state, passed);
+	assert.equal(done.round, 51, "a passing verifier is a round like any other");
+	assert.deepEqual(done.failingAcSets, ["AC-1"], "a passed event adds no failing set");
+	assert.deepEqual(done.repaired, [], "nothing here re-planned");
+	assert.equal(done.repair, undefined);
+});
+
+test("identical evidence in consecutive failed test rounds is a repeated witness and a review round in between clears it", () => {
+	const failedTest = (evidence: string): VerifierEvent => ({
 		type: "verifier",
+		source: "test",
 		passed: false,
-		evidenceFingerprint: fingerprint("2"),
-		outputFingerprint: fingerprint("b"),
-		failingAcIds: ["AC-2"],
+		evidenceFingerprint: fingerprint(evidence),
+		failingAcIds: ["AC-1"],
 	});
 
-	assert.equal(state.status, "RUNNING", "fixing one criterion is progress");
-	assert.equal(state.round, 2);
-	assert.deepEqual(state.failingAcSets, ["AC-1,AC-2", "AC-2"]);
+	const fresh = createStopState();
+	assert.equal(repeatedWitness(fresh, failedTest("1")), undefined);
+
+	const first = recordVerifier(fresh, failedTest("1"));
+	assert.equal(first.round, 1, "a failed test round counts as a round");
+	assert.equal(first.lastTestEvidence, fingerprint("1"));
+	assert.deepEqual(first.evidenceFingerprints, [fingerprint("1")]);
+	assert.deepEqual(first.failingAcSets, [], "a test round's failing ids are not a review witness");
+
+	// The same evidence again, straight after: the implementer changed nothing
+	// the tests can see.
+	assert.equal(repeatedWitness(first, failedTest("1")), `evidence:${fingerprint("1")}`);
+	assert.equal(repeatedWitness(first, failedTest("2")), undefined, "different receipts are progress");
+
+	// A review round between two identical test evidences breaks the chain:
+	// the repeats are no longer consecutive.
+	const reviewed = recordVerifier(first, review("1", "a"));
+	assert.equal(reviewed.round, 2);
+	assert.equal(reviewed.lastTestEvidence, undefined, "a review round clears the test chain");
+	assert.equal(repeatedWitness(reviewed, failedTest("1")), undefined);
+
+	// A passing test round clears it as well: it is not a failed round.
+	const greenBetween = recordVerifier(first, { ...failedTest("1"), passed: true });
+	assert.equal(greenBetween.lastTestEvidence, undefined);
+	assert.equal(repeatedWitness(greenBetween, failedTest("1")), undefined);
+
+	// A review event must carry the output it is judged on.
+	assert.throws(
+		() => repeatedWitness(first, { type: "verifier", passed: false, evidenceFingerprint: fingerprint("x") }),
+		/review verifier event needs an outputFingerprint/u,
+	);
 });
 
 test("a canonical fingerprint ignores key order and nothing else", () => {
@@ -200,65 +157,21 @@ test("a failing acceptance set is sorted, deduplicated, and empty means no set",
 	assert.equal(failingAcSetKey([""]), undefined);
 });
 
-test("two transient failures retry with increasing backoff and the third stops", async () => {
-	const slept: number[] = [];
-	const sleep = async (milliseconds: number): Promise<void> => {
-		slept.push(milliseconds);
-	};
-	const timeout = { type: "retry", reason: "timeout" } as const;
-
-	let state = transitionStopState(createStopState(), {
-		type: "verifier",
-		passed: false,
-		evidenceFingerprint: fingerprint("1"),
-		outputFingerprint: fingerprint("a"),
-		failingAcIds: ["AC-1"],
-	});
-	const round = state.round;
-
-	state = await retryTransient(state, timeout, sleep, 100);
-	assert.equal(state.retries, 1);
-	assert.equal(state.round, round, "a retry never advances the round");
-
-	state = await retryTransient(state, timeout, sleep, 100);
-	assert.equal(state.retries, 2);
-	assert.equal(state.round, round);
-	assert.equal(state.status, "RUNNING");
-
-	assert.deepEqual(slept, [100, 200], "each retry waits twice as long as the last");
-	assert.deepEqual(state.retryDelaysMs, [100, 200]);
-	assert.equal(planRetry(state, 100), undefined, "the budget is spent");
-
-	// The third transient failure is deterministic and does not sleep again.
-	const stopped = await retryTransient(state, timeout, sleep, 100);
-	assert.equal(stopped.status, "EXHAUSTED");
-	assert.equal(stopped.round, round);
-	assert.deepEqual(slept, [100, 200]);
-	assert.equal(MAX_TRANSIENT_RETRIES, 2);
-});
-
-test("a new round restores the retry budget", async () => {
-	const sleep = async (): Promise<void> => {};
-	let state = createStopState(5);
-	state = await retryTransient(state, { type: "retry", reason: "transport" }, sleep, 10);
-	state = await retryTransient(state, { type: "retry", reason: "transport" }, sleep, 10);
-	assert.equal(state.retries, 2);
-
-	state = transitionStopState(state, {
-		type: "verifier",
-		passed: false,
-		evidenceFingerprint: fingerprint("1"),
-		outputFingerprint: fingerprint("a"),
-		failingAcIds: ["AC-1"],
-	});
-
-	assert.equal(state.retries, 0, "the next round starts with its own retry budget");
-	assert.equal(state.round, 1);
+test("retry delays double from the base and stop growing at the ceiling", () => {
+	assert.equal(DEFAULT_RETRY_BASE_MS, 1_000);
+	assert.equal(RETRY_MAX_DELAY_MS, 60_000);
+	assert.deepEqual(
+		[0, 1, 2, 3, 4, 5, 6, 7].map((spent) => retryDelayMs(spent, 1_000)),
+		[1_000, 2_000, 4_000, 8_000, 16_000, 32_000, 60_000, 60_000],
+	);
+	assert.equal(retryDelayMs(0), 1_000, "the base defaults to one second");
+	assert.equal(retryDelayMs(40), 60_000, "no jitter and no growth past the ceiling, however long it goes");
+	assert.equal(MAX_AUTOMATIC_REPLANS, 2, "two automatic re-plans per operator touch");
 });
 
 test("the transition path canonicalizes fingerprints rather than trusting the caller's spelling", () => {
 	const digest = `sha256:${"A".repeat(64)}`;
-	const first = transitionStopState(createStopState(), {
+	const first = recordVerifier(createStopState(), {
 		type: "verifier",
 		passed: false,
 		evidenceFingerprint: fingerprint("1"),
@@ -269,17 +182,19 @@ test("the transition path canonicalizes fingerprints rather than trusting the ca
 
 	// The same digest in different case and padding is the same output, so the
 	// repeat is caught instead of buying another round.
-	const repeated = transitionStopState(first, {
-		type: "verifier",
-		passed: false,
-		evidenceFingerprint: fingerprint("2"),
-		outputFingerprint: `  sha256:${"a".repeat(64)}  `,
-	});
-	assert.equal(repeated.status, "NO_PROGRESS");
+	assert.equal(
+		repeatedWitness(first, {
+			type: "verifier",
+			passed: false,
+			evidenceFingerprint: fingerprint("2"),
+			outputFingerprint: `  sha256:${"a".repeat(64)}  `,
+		}),
+		`sha256:${"a".repeat(64)}`,
+	);
 
 	// A caller holding the payload rather than a digest is hashed canonically by
 	// the reducer, on the same terms.
-	const fromPayload = transitionStopState(createStopState(), {
+	const fromPayload = recordVerifier(createStopState(), {
 		type: "verifier",
 		passed: false,
 		evidenceFingerprint: fingerprint("1"),
@@ -287,18 +202,42 @@ test("the transition path canonicalizes fingerprints rather than trusting the ca
 	});
 	assert.deepEqual(fromPayload.outputFingerprints, [canonicalFingerprint({ blocking: ["x"], approved: false })]);
 	assert.equal(stopFingerprint(digest), stopFingerprint(digest.toLowerCase()));
+
+	// Test evidence is canonicalized the same way, so a resume compares like with like.
+	const tested = recordVerifier(createStopState(), {
+		type: "verifier",
+		source: "test",
+		passed: false,
+		evidenceFingerprint: `  ${digest}  `,
+	});
+	assert.equal(tested.lastTestEvidence, `sha256:${"a".repeat(64)}`);
+	assert.equal(
+		repeatedWitness(tested, { type: "verifier", source: "test", passed: false, evidenceFingerprint: digest }),
+		`evidence:sha256:${"a".repeat(64)}`,
+	);
 });
 
-test("transient classification retries only transport, 429, and timeout", () => {
+test("transient classification retries transport, http 408/429/5xx, and timeout", () => {
 	assert.equal(classifyTransientFailure(Object.assign(new Error("rate limited"), { status: 429 })), "http");
 	assert.equal(classifyTransientFailure(Object.assign(new Error("x"), { statusCode: 429 })), "http");
+	assert.equal(classifyTransientFailure(Object.assign(new Error("x"), { status: 408 })), "http");
+	assert.equal(classifyTransientFailure(Object.assign(new Error("server error"), { status: 500 })), "http");
+	assert.equal(classifyTransientFailure(Object.assign(new Error("overloaded"), { status: 503 })), "http");
+	assert.equal(classifyTransientFailure(Object.assign(new Error("x"), { statusCode: 599 })), "http");
+	assert.equal(
+		classifyTransientFailure(
+			Object.assign(new Error("fetch failed"), { cause: Object.assign(new Error("bad gateway"), { status: 502 }) }),
+		),
+		"http",
+		"a 5xx one level down is still a 5xx",
+	);
 	assert.equal(classifyTransientFailure(Object.assign(new Error("x"), { code: "UND_ERR_BODY_TIMEOUT" })), "timeout");
 	assert.equal(classifyTransientFailure(Object.assign(new Error("request timed out"), {})), "timeout");
 	assert.equal(classifyTransientFailure(Object.assign(new Error("x"), { code: "ECONNRESET" })), "transport");
 	assert.equal(classifyTransientFailure(new Error("socket hang up")), "transport");
 	assert.equal(classifyTransientFailure(new Error("fetch failed")), "transport");
 
-	// Not transient: an operator decision, a defect, or an unrecognized failure.
+	// Not transient: an operator decision, a defect, a refusal, or an unrecognized failure.
 	assert.equal(classifyTransientFailure(Object.assign(new Error("aborted"), { name: "AbortError" })), undefined);
 	assert.equal(classifyTransientFailure(Object.assign(new Error("cancelled by operator"), {})), undefined);
 	assert.equal(
@@ -335,49 +274,11 @@ test("transient classification retries only transport, 429, and timeout", () => 
 		"a plain operator abort stays non-transient",
 	);
 	assert.equal(classifyTransientFailure(Object.assign(new Error("bad request"), { status: 400 })), undefined);
-	assert.equal(classifyTransientFailure(Object.assign(new Error("server error"), { status: 500 })), undefined);
+	assert.equal(classifyTransientFailure(Object.assign(new Error("unauthorized"), { status: 401 })), undefined);
+	assert.equal(classifyTransientFailure(Object.assign(new Error("forbidden"), { status: 403 })), undefined);
+	assert.equal(classifyTransientFailure(Object.assign(new Error("not found"), { status: 404 })), undefined);
+	assert.equal(classifyTransientFailure(Object.assign(new Error("x"), { status: 600 })), undefined);
 	assert.equal(classifyTransientFailure(new Error("failed response validation")), undefined);
 	assert.equal(classifyTransientFailure("a string"), undefined);
 	assert.equal(classifyTransientFailure(undefined), undefined);
-});
-
-test("repeated evidence with changing output still ends at maxRounds", () => {
-	// The verifier keeps rewriting its prose over the same receipts. Nothing is
-	// no-progress by fingerprint, but the loop is not learning anything either, so
-	// it must reach a terminal instead of running forever.
-	let state = createStopState(3);
-	const statuses: string[] = [];
-	for (let index = 0; index < 3; index += 1) {
-		state = transitionStopState(state, {
-			type: "verifier",
-			passed: false,
-			evidenceFingerprint: fingerprint("same-receipts"),
-			outputFingerprint: fingerprint(`prose-${index}`),
-			failingAcIds: [`AC-${index}`],
-		});
-		statuses.push(state.status);
-	}
-
-	assert.deepEqual(statuses, ["RUNNING", "RUNNING", "EXHAUSTED"], "each verifier event is a round");
-	assert.equal(state.round, 3);
-	assert.equal(state.evidenceFingerprints.length, 1, "one witness for one set of receipts");
-	assert.equal(state.outputFingerprints.length, 3);
-});
-
-test("a terminal state is final: further verifier events cannot revive it", () => {
-	let state = createStopState(1);
-	state = transitionStopState(state, {
-		type: "verifier",
-		passed: false,
-		evidenceFingerprint: fingerprint("e1"),
-		outputFingerprint: fingerprint("o1"),
-	});
-	assert.equal(state.status, "EXHAUSTED");
-	const after = transitionStopState(state, {
-		type: "verifier",
-		passed: true,
-		evidenceFingerprint: fingerprint("e2"),
-		outputFingerprint: fingerprint("o2"),
-	});
-	assert.strictEqual(after, state, "an exhausted run cannot be talked into DONE");
 });

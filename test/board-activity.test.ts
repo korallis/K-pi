@@ -248,3 +248,47 @@ test("narration is one line per node start and finish and none per tool call", (
 	);
 	assert.equal(narrateRecord(record({ type: "checkpoint", node: "plan", ts: iso(t0, 0) })), undefined);
 });
+
+test("a retry and a terminal narrate one line each with the run vocabulary", () => {
+	const t0 = Date.parse("2026-01-01T00:00:00.000Z");
+	const retry = narrateRecord(
+		record({ type: "node.retry", node: "implement", ts: iso(t0, 0), attempt: 3, reason: "timeout", delay_ms: 8_000 }),
+	);
+	assert.deepEqual(retry, { text: "K-π ↻ 04 implement retry 3 · timeout · next 8s", level: "warning" });
+	const http = narrateRecord(
+		record({
+			type: "node.retry",
+			node: "worker-x",
+			ts: iso(t0, 0),
+			attempt: 1,
+			reason: "http",
+			status: 529,
+			delay_ms: 1_000,
+		}),
+	);
+	assert.deepEqual(http, { text: "K-π ↻ worker-x retry 1 · http · next 1s", level: "warning" });
+
+	const paused = narrateRecord(
+		record({
+			type: "loop.terminal",
+			node: "bounds",
+			ts: iso(t0, 0),
+			status: "NEEDS_HUMAN",
+			recovery: "bounds",
+			reason: "r",
+		}),
+	);
+	assert.deepEqual(paused, { text: "K-π ■ job NEEDS_HUMAN bounds", level: "warning" });
+	const stopped = narrateRecord(record({ type: "loop.terminal", node: "graph", ts: iso(t0, 0), status: "STOPPED" }));
+	assert.deepEqual(stopped, { text: "K-π ■ job STOPPED", level: "warning" });
+	const done = narrateRecord(record({ type: "loop.terminal", node: "ship", ts: iso(t0, 0), status: "DONE" }));
+	assert.deepEqual(done, { text: "K-π ■ job DONE", level: "info" });
+	const gate = narrateRecord(
+		record({ type: "approval.result", node: "human", ts: iso(t0, 0), approved: false, feedback: "tighten it" }),
+	);
+	assert.deepEqual(gate, { text: "K-π ⚑ human gate changes requested", level: "info" });
+	assert.equal(
+		narrateRecord(record({ type: "approval.result", node: "human", ts: iso(t0, 0), approved: true }))?.text,
+		"K-π ⚑ human gate approved",
+	);
+});

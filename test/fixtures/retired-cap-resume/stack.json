@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "shape": "dune",
+  "delivery": "vertical",
+  "delivery_reason": "one slice owns the token refresh path end to end; nothing else changes",
+  "root": "packages/coding-agent/src/kpi/extensions",
+  "scaffold_first": true,
+  "task_hash": "sha256:0d2c9670d358085a1a89f2658828a51e290bf153eaea1a38e5c4fdcafbbd964f",
+  "current_module_id": "accounts",
+  "modules": [
+    {
+      "id": "accounts",
+      "purpose": "official-slot account routing and OAuth token refresh for Claude model requests",
+      "folder": "packages/coding-agent/src/kpi/extensions/accounts",
+      "interface": "packages/coding-agent/src/kpi/extensions/accounts/index.ts",
+      "allowed_paths": [
+        "packages/coding-agent/src/kpi/extensions/accounts/**",
+        "test/accounts/**",
+        "test/accounts.test.ts"
+      ],
+      "depends_on": []
+    }
+  ]
+}

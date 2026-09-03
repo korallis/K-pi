@@ -1,4 +1,4 @@
-import { readFile, stat } from "node:fs/promises";
+import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 
 import { CONFIG_DIR_NAME } from "../../config.ts";
@@ -20,10 +20,36 @@ import {
 import { type ActivityReader, type ActivitySnapshot, createActivityReader, narrateRecord } from "./board-activity.ts";
 import { createBoardComponent } from "./board-component.ts";
 import { type BoardLayout, type BoardPalette, PLAIN_PALETTE, paintBoard, paletteFromTheme } from "./board-frame.ts";
-import { createBoardOverlay } from "./board-overlay.ts";
+import {
+	type CommandCentreSources,
+	createCommandCentre,
+	type RunFileRow,
+	type TranscriptEntry,
+} from "./board-overlay.ts";
 import { sessionsSnapshot } from "./bus/sessions-snapshot.ts";
-import { type LoopDependencies, type LoopOutcome, parseLoopInvocation, resumeLoop, runLoop } from "./gated-loop.ts";
-import { type ActiveJob, atomicWrite, JOB_ID_PATTERN, type RunState, readActiveJob, readLiveJob } from "./run-store.ts";
+import {
+	type LoopDependencies,
+	type LoopInvocation,
+	type LoopOutcome,
+	makeJobId,
+	parseLoopInvocation,
+	resumeLoop,
+	runLoop,
+	writeStopMarker,
+} from "./gated-loop.ts";
+import { loadNamedGraph } from "./graph/engine.ts";
+import { type GraphDefinition, isJsonObject } from "./graph/schema.ts";
+import type { TransientReason } from "./graph/stop.ts";
+import {
+	type ActiveJob,
+	atomicWrite,
+	JOB_ID_PATTERN,
+	LOOP_RECOVERIES,
+	type LoopRecovery,
+	type RunState,
+	readActiveJob,
+	readLiveJob,
+} from "./run-store.ts";
 import { isRoutingMode, type RoutingMode, routingState } from "./settings.ts";
 import { getFooterRouteSnapshot } from "./status-line/route-snapshot.ts";
 import { formatUsage } from "./status-line/segments.ts";
@@ -46,6 +72,34 @@ function numberValue(value: JsonValue | undefined, fallback: number): number {
 
 function booleanValue(value: JsonValue | undefined): boolean | undefined {
 	return typeof value === "boolean" ? value : undefined;
+}
+
+const TRANSIENT_REASONS: Record<TransientReason, true> = { http: true, timeout: true, transport: true };
+
+/** The backoff row state.json carries while a node waits, or nothing. */
+function retryValue(value: JsonValue | undefined): BoardModel["retry"] {
+	if (
+		!isJsonObject(value) ||
+		typeof value.node !== "string" ||
+		typeof value.attempt !== "number" ||
+		typeof value.reason !== "string" ||
+		!(value.reason in TRANSIENT_REASONS) ||
+		typeof value.delay_ms !== "number"
+	) {
+		return undefined;
+	}
+	return {
+		node: value.node,
+		attempt: value.attempt,
+		reason: value.reason as TransientReason,
+		delayMs: value.delay_ms,
+	};
+}
+
+function recoveryValue(value: JsonValue | undefined): LoopRecovery | undefined {
+	return typeof value === "string" && (LOOP_RECOVERIES as readonly string[]).includes(value)
+		? (value as LoopRecovery)
+		: undefined;
 }
 
 /**
@@ -234,6 +288,8 @@ export async function buildBoardModel(cwd: string, options: BoardBuildOptions = 
 
 	const fileLit = await fileLitMap(job.directory);
 	const passed = booleanValue(typeof state.passed === "boolean" ? state.passed : nestedValue(state, "test", "passed"));
+	const recovery = recoveryValue(state.recovery);
+	const retry = retryValue(state.retry);
 
 	const reader = options.activity ?? activityReaderFor(job.eventsPath);
 	const now = options.now ?? Date.now;
@@ -243,10 +299,12 @@ export async function buildBoardModel(cwd: string, options: BoardBuildOptions = 
 		jobId: job.jobId,
 		mode: stringValue(state.mode, "gated"),
 		round: numberValue(state.round, 0),
-		maxRounds: numberValue(state.maxRounds ?? nestedValue(state, "limits", "maxRounds"), 3),
+		...(typeof state.superstep === "number" ? { superstep: state.superstep } : {}),
 		stage: stringValue(state.stage, "unknown"),
 		node: stringValue(state.node, "unknown"),
 		stop: displayStop(state),
+		...(recovery === undefined ? {} : { recovery }),
+		...(retry === undefined ? {} : { retry }),
 		paused,
 		gate: paused ? "human" : "machine",
 		...(typeof state.pending_question === "string" ? { pendingQuestion: state.pending_question } : {}),
@@ -387,7 +445,11 @@ function defaultTicker(callback: () => void, intervalMs: number): () => void {
 	return () => clearInterval(handle);
 }
 
-export type ControlPlaneDependencies = LoopDependencies & { tick?: Ticker };
+export type ControlPlaneDependencies = LoopDependencies & {
+	tick?: Ticker;
+	/** The chat line the Command Centre hands a message to. Production binds the extension API's; tests may omit it. */
+	sendUserMessage?: (text: string) => void;
+};
 
 /**
  * One ActivityReader and one narration cursor per live job's eventsPath,
@@ -429,6 +491,9 @@ async function installWidget(ctx: ExtensionContext, dependencies: ControlPlaneDe
 	const tick = dependencies.tick ?? defaultTicker;
 	const job = await readLiveJob(ctx.cwd);
 	if (job === undefined) {
+		// No live job: nothing to read, so no reader or cursor may outlive it.
+		activityReaders.clear();
+		narrationCursors.clear();
 		ctx.ui.setWidget("kpi", undefined);
 		return false;
 	}
@@ -506,7 +571,208 @@ async function installWidget(ctx: ExtensionContext, dependencies: ControlPlaneDe
 	return true;
 }
 
-async function showStatus(ctx: ExtensionCommandContext): Promise<void> {
+/**
+ * The loop `/kpi <goal>` or `/kpi <job>` detached from its command handler.
+ * One per process: the handler returns as soon as the loop is started, which
+ * is what frees `/kpi status`, `/kpi stop`, `/agents` and chat mid-run, and a
+ * second goal is refused while this one runs. `controller` is the operator's
+ * immediate stop; `done` settles once the outcome is on the record.
+ */
+interface LiveLoop {
+	jobId: string;
+	controller: AbortController;
+	done: Promise<void>;
+}
+
+let live: LiveLoop | undefined;
+
+/** Test seam: settles when the detached loop, if any, has recorded its outcome. */
+export function liveLoopSettled(): Promise<void> {
+	return live?.done ?? Promise.resolve();
+}
+
+/** Clears the handle once its loop has settled, unless a newer loop already replaced it. */
+function releaseLive(controller: AbortController): void {
+	if (live?.controller === controller) live = undefined;
+}
+
+/** The graph a job's node sessions were named by: its thread keys are the session directories. */
+async function jobGraph(cwd: string, state: RunState): Promise<GraphDefinition> {
+	return loadNamedGraph(
+		cwd,
+		stringValue(state.mode, "gated") === "autopilot" ? "coding-loop.auto" : "coding-loop.gated",
+	);
+}
+
+/** One session message as the transcript shows it; entries the view has no row for are skipped. */
+function transcriptEntry(entry: Record<string, unknown>): TranscriptEntry | undefined {
+	const at = typeof entry.timestamp === "string" ? entry.timestamp : undefined;
+	if (entry.type !== "message" || !isJsonObject(entry.message)) {
+		return undefined;
+	}
+	const message = entry.message;
+	const text = (blocks: unknown): string =>
+		typeof blocks === "string"
+			? blocks
+			: Array.isArray(blocks)
+				? blocks
+						.flatMap((block) =>
+							isJsonObject(block) && block.type === "text" && typeof block.text === "string" ? [block.text] : [],
+						)
+						.join("\n")
+				: "";
+	if (message.role === "user") {
+		return { ...(at === undefined ? {} : { at }), kind: "prompt", text: text(message.content) };
+	}
+	if (message.role === "toolResult") {
+		const body = text(message.content);
+		return {
+			...(at === undefined ? {} : { at }),
+			kind: message.isError === true ? "error" : "output",
+			text: `${typeof message.toolName === "string" ? `${message.toolName}: ` : ""}${body}`,
+		};
+	}
+	if (message.role !== "assistant") {
+		return undefined;
+	}
+	const calls = Array.isArray(message.content)
+		? message.content.flatMap((block) =>
+				isJsonObject(block) && block.type === "toolCall" && typeof block.name === "string" ? [block.name] : [],
+			)
+		: [];
+	const spoken = text(message.content);
+	if (message.stopReason === "error" && typeof message.errorMessage === "string") {
+		return { ...(at === undefined ? {} : { at }), kind: "error", text: message.errorMessage };
+	}
+	if (calls.length > 0 && spoken.length === 0) {
+		return { ...(at === undefined ? {} : { at }), kind: "tool", text: calls.join(", ") };
+	}
+	return { ...(at === undefined ? {} : { at }), kind: "assistant", text: spoken };
+}
+
+/**
+ * The newest `limit` entries of a node's session, oldest first, from the
+ * latest JSONL file under `agents/<threadKey>/`. No directory or no file is
+ * an empty transcript; an unreadable one throws with its code for the view.
+ */
+async function readNodeTranscript(runDirectory: string, threadKey: string, limit: number): Promise<TranscriptEntry[]> {
+	// The engine's session directory name for a thread key.
+	const directory = join(runDirectory, "agents", threadKey.replace(/[^a-zA-Z0-9._-]/gu, "-"));
+	let names: string[];
+	try {
+		names = (await readdir(directory)).filter((name) => name.endsWith(".jsonl")).sort();
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+		throw error;
+	}
+	const latest = names.at(-1);
+	if (latest === undefined) return [];
+	const entries: TranscriptEntry[] = [];
+	for (const line of (await readFile(join(directory, latest), "utf8")).split("\n")) {
+		if (line.trim().length === 0) continue;
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(line);
+		} catch {
+			// A line still being written is not part of the transcript yet.
+			continue;
+		}
+		const entry = isJsonObject(parsed) ? transcriptEntry(parsed) : undefined;
+		if (entry !== undefined) entries.push(entry);
+	}
+	return entries.slice(-limit);
+}
+
+/** One row per run file, as `stat` sees it right now. */
+async function readRunFileRows(runDirectory: string): Promise<RunFileRow[]> {
+	return Promise.all(
+		RUN_FILE_NAMES.map(async (name): Promise<RunFileRow> => {
+			try {
+				const info = await stat(join(runDirectory, name));
+				return {
+					name,
+					present: true,
+					bytes: info.size,
+					mtime: info.mtime.toISOString(),
+					note: RUN_FILE_NOTES[name],
+				};
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+					return { name, present: false, note: RUN_FILE_NOTES[name] };
+				}
+				throw error;
+			}
+		}),
+	);
+}
+
+const RUN_FILE_NOTES: Record<(typeof RUN_FILE_NAMES)[number], string> = {
+	"task.json": "frozen contract",
+	"context.md": "context pack",
+	"candidate.json": "implementer's ladder decision",
+	"evidence.json": "verifier receipts",
+	"verdict.json": "isolated review",
+	"events.jsonl": "chained event log",
+};
+
+/**
+ * Everything the Command Centre reads and does, built from the control
+ * plane's own pieces: the widget's model builder on the job's shared reader,
+ * the node session files, the run files, the route snapshot, and exactly the
+ * `/kpi stop` and `/kpi verify` paths.
+ */
+function commandCentreSources(
+	ctx: ExtensionCommandContext,
+	job: ActiveJob,
+	reader: ActivityReader,
+	dependencies: ControlPlaneDependencies,
+): CommandCentreSources {
+	const now = dependencies.now ?? Date.now;
+	let graph: Promise<GraphDefinition> | undefined;
+	const threadKeyFor = async (stage: number): Promise<string> => {
+		const key = BOARD_STAGES[stage]?.key ?? String(stage);
+		const nodeId = reader.last()?.stages[key]?.node ?? key;
+		graph ??= jobGraph(ctx.cwd, job.state);
+		const node = (await graph).nodes.find((candidate) => candidate.id === nodeId);
+		return node?.type === "agent" ? (node.context.threadKey ?? node.id) : nodeId;
+	};
+	return {
+		jobId: job.jobId,
+		runDirectory: job.directory,
+		readModel: () => buildBoardModel(ctx.cwd, { now, activity: reader, surface: "overlay" }),
+		activity: () => reader.last(),
+		readNodeDetail: async (stage) => {
+			const snapshot = reader.last();
+			return snapshot === undefined
+				? { node: BOARD_STAGES[stage]?.key ?? String(stage), status: "pending", runs: 0, toolsByName: {} }
+				: readNodeDetail(job, snapshot, stage);
+		},
+		readTranscript: async (stage, limit) => readNodeTranscript(job.directory, await threadKeyFor(stage), limit),
+		readRunFiles: () => readRunFileRows(job.directory),
+		route: () => {
+			const snapshot = getFooterRouteSnapshot();
+			const usage = formatUsage(snapshot.remainingPercent, snapshot.slotKind);
+			return snapshot.route === undefined ? "—" : `${snapshot.route}${usage === undefined ? "" : ` ${usage}`}`;
+		},
+		stop: () => stopJob(ctx, dependencies),
+		verify: async () => {
+			const report = await inspectChain(job.eventsPath);
+			return report.ok
+				? `events.jsonl verified: ${report.records} records chained for ${job.jobId}`
+				: `events.jsonl FAILED verification at line ${report.line ?? 0}: ${report.reason ?? "unknown"} (${report.records} records verified before it)`;
+		},
+		chat: async (text) => {
+			if (dependencies.sendUserMessage === undefined) {
+				throw new Error("K-π chat is not available in this session");
+			}
+			dependencies.sendUserMessage(text);
+		},
+		now,
+		tick: dependencies.tick ?? defaultTicker,
+	};
+}
+
+async function showStatus(ctx: ExtensionCommandContext, dependencies: ControlPlaneDependencies): Promise<void> {
 	const job = await readLiveJob(ctx.cwd);
 	if (job === undefined) {
 		ctx.ui.setWidget("kpi", undefined);
@@ -520,61 +786,81 @@ async function showStatus(ctx: ExtensionCommandContext): Promise<void> {
 		return;
 	}
 
+	// One read for the board shown by this command; the always-on widget keeps
+	// ticking on the same reader, so this never re-parses the log or re-narrates
+	// it. Only the interactive Command Centre carries the overlay surface: the
+	// print/rpc notification is the plain board.
+	const overlay = ctx.mode === "tui" && ctx.hasUI;
 	const reader = activityReaderFor(job.eventsPath);
-	const model = await buildBoardModel(ctx.cwd, { activity: reader });
+	const model = await buildBoardModel(ctx.cwd, {
+		now: dependencies.now,
+		activity: reader,
+		...(overlay ? { surface: "overlay" as const } : {}),
+	});
 	if (model === undefined) {
 		ctx.ui.setWidget("kpi", undefined);
 		ctx.ui.notify("no active job", "info");
 		return;
 	}
 
-	applyBoardTheme(ctx, model.paused);
-	ctx.ui.setWidget("kpi", (_tui, theme) =>
-		createBoardComponent(model, { layout: "compact", palette: paletteFromTheme(theme) }),
-	);
-	if (ctx.mode !== "tui" || !ctx.hasUI) {
+	// `/kpi status` must not freeze the board: the widget is reinstalled with its
+	// ticker (re-entrant), never replaced by a static component.
+	await installWidget(ctx, dependencies);
+	if (!overlay) {
 		ctx.ui.notify(renderBoard(model).join("\n"), "info");
 		return;
 	}
 
-	// The full board, framed and in the live theme: ←/→ selects a stage, ↵
-	// opens its NODE detail, q/Esc/Ctrl+C close. Static — one read on open, one
-	// more per Enter — because it is reachable only while the main input loop
-	// is idle, i.e. on a job already paused, whose run files are not moving.
+	// The Command Centre: live on the same reader and tick as the widget behind
+	// it, and usable while the detached loop runs.
 	await ctx.ui.custom<void>(
-		(_tui, theme, _keybindings, done) =>
-			createBoardOverlay({
+		(tui, theme, _keybindings, done) =>
+			createCommandCentre({
 				palette: paletteFromTheme(theme),
-				model,
 				done,
-				loadDetail: (stage) => readNodeDetail(job, reader.last()!, stage),
+				requestRender: () => tui.requestRender(),
+				rows: () => tui.terminal.rows,
+				sources: commandCentreSources(ctx, job, reader, dependencies),
 			}),
-		{ overlay: true, overlayOptions: { width: "92%", maxHeight: "90%", anchor: "center" } },
+		{ overlay: true, overlayOptions: { width: "100%", maxHeight: "100%", anchor: "center" } },
 	);
 }
 
+/**
+ * `/kpi stop` (C9). The marker goes down first, so a loop in another process
+ * stops at its next superstep or wait. A loop live in this process is aborted
+ * at once and records its own STOPPED terminal; otherwise the control plane
+ * records it here. Either way the job is STOPPED and resumes with `/kpi <id>`.
+ */
 async function stopJob(ctx: ExtensionCommandContext, dependencies: ControlPlaneDependencies): Promise<void> {
-	const job = await readActiveJob(ctx.cwd);
+	const handle = live;
+	if (handle !== undefined) {
+		await writeStopMarker(join(ctx.cwd, CONFIG_DIR_NAME, "runs", handle.jobId), false);
+		handle.controller.abort();
+		await handle.done;
+		ctx.ui.notify(`K-π job ${handle.jobId} STOPPED (resume with /kpi ${handle.jobId})`, "info");
+		return;
+	}
+	const job = await readLiveJob(ctx.cwd);
 	if (job === undefined) {
 		ctx.ui.notify("no active job", "info");
 		return;
 	}
-
-	const round = numberValue(job.state.round, 0);
+	await writeStopMarker(job.directory, true);
 	await appendEvent(job.eventsPath, {
 		ts: new Date().toISOString(),
 		type: "loop.terminal",
 		job_id: job.jobId,
-		round,
+		round: numberValue(job.state.round, 0),
 		node: stringValue(job.state.node, "control-plane"),
-		status: "BLOCKED",
+		status: "STOPPED",
 		reason: "operator stop",
 	});
-	const stoppedState: RunState = { ...job.state, status: "BLOCKED" };
+	const stoppedState: RunState = { ...job.state, status: "STOPPED", reason: "operator stop" };
 	await atomicWrite(job.statePath, `${JSON.stringify(stoppedState, null, 2)}\n`);
 	forgetJob(job.eventsPath);
 	await installWidget(ctx, dependencies);
-	ctx.ui.notify(`K-π job ${job.jobId} BLOCKED`, "warning");
+	ctx.ui.notify(`K-π job ${job.jobId} STOPPED (resume with /kpi ${job.jobId})`, "info");
 }
 
 /**
@@ -633,7 +919,7 @@ async function handleKpiCommand(
 ): Promise<void> {
 	const command = args.trim();
 	if (command === "" || command === "status") {
-		await showStatus(ctx);
+		await showStatus(ctx, dependencies);
 		return;
 	}
 	if (command === "stop") {
@@ -652,37 +938,83 @@ async function handleKpiCommand(
 		return;
 	}
 
-	try {
-		const onStateChange = async () => {
-			await installWidget(ctx, dependencies);
-		};
-		// Only something shaped like a job id is probed as one. A goal is free
-		// text, and turning it into a path is how a long message once died with
-		// ENAMETOOLONG before the loop ever started.
-		const resume = JOB_ID_PATTERN.test(command) && (await isRunDirectory(ctx.cwd, command));
-		const outcome: LoopOutcome = resume
-			? await resumeLoop(command, ctx, { ...dependencies, onStateChange })
-			: await runLoop(parseLoopInvocation(command), ctx, { ...dependencies, onStateChange });
-		const reason = outcome.reason === undefined ? "" : `: ${outcome.reason}`;
-		ctx.ui.notify(
-			`K-π job ${outcome.jobId} ${outcome.status}${reason}`,
-			outcome.status === "DONE" ? "info" : "warning",
-		);
-		if (outcome.status === "NEEDS_HUMAN" && ctx.hasUI && outcome.recovery === "provider") {
-			const resumeAfterFix = await ctx.ui.confirm(
-				"K-π provider recovery",
-				`${outcome.reason ?? "The provider account is unavailable."}\n\nResolve the account or choose another model, then resume this job?`,
-			);
-			ctx.ui.notify(
-				resumeAfterFix
-					? `After resolving the provider, run /kpi ${outcome.jobId}`
-					: `K-π job ${outcome.jobId} remains at NEEDS_HUMAN`,
-				"info",
-			);
+	if (live !== undefined) {
+		ctx.ui.notify(`K-π job ${live.jobId} is still running: /kpi status shows it, /kpi stop stops it`, "warning");
+		return;
+	}
+	// Only something shaped like a job id is probed as one. A goal is free
+	// text, and turning it into a path is how a long message once died with
+	// ENAMETOOLONG before the loop ever started.
+	const resume = JOB_ID_PATTERN.test(command) && (await isRunDirectory(ctx.cwd, command));
+	let invocation: LoopInvocation | undefined;
+	if (!resume) {
+		try {
+			invocation = parseLoopInvocation(command);
+		} catch (error) {
+			ctx.ui.notify(`K-π loop failed: ${error instanceof Error ? error.message : String(error)}`, "error");
+			return;
 		}
-	} catch (error) {
-		const message = error instanceof Error ? error.message : String(error);
-		ctx.ui.notify(`K-π loop failed: ${message}`, "error");
+	}
+	const jobId = invocation === undefined ? command : (dependencies.jobId ?? makeJobId(invocation.goal));
+	const controller = new AbortController();
+	const loopDependencies: LoopDependencies = {
+		...dependencies,
+		jobId,
+		signal: controller.signal,
+		onStateChange: async () => {
+			await installWidget(ctx, dependencies);
+		},
+	};
+	// The loop runs detached: the handler returns once it is started, which is
+	// what keeps `/kpi status`, `/kpi stop`, `/agents` and chat usable mid-run.
+	// The captured ctx stays valid (it is marked stale only on a session
+	// replacement), and every rejection is caught here: nothing is unhandled.
+	const handle: LiveLoop = {
+		jobId,
+		controller,
+		done: (async () => {
+			try {
+				const outcome: LoopOutcome =
+					invocation === undefined
+						? await resumeLoop(jobId, ctx, loopDependencies)
+						: await runLoop(invocation, ctx, loopDependencies);
+				await reportOutcome(ctx, outcome);
+			} catch (error) {
+				ctx.ui.notify(`K-π loop failed: ${error instanceof Error ? error.message : String(error)}`, "error");
+			} finally {
+				releaseLive(controller);
+			}
+			try {
+				await installWidget(ctx, dependencies);
+			} catch (error) {
+				ctx.ui.notify(
+					`K-π board refresh failed: ${(error as NodeJS.ErrnoException | undefined)?.code ?? String(error)}`,
+					"warning",
+				);
+			}
+		})(),
+	};
+	live = handle;
+}
+
+/** The outcome notice, and the provider recovery prompt an interactive session gets. */
+async function reportOutcome(ctx: ExtensionCommandContext, outcome: LoopOutcome): Promise<void> {
+	const reason = outcome.reason === undefined ? "" : `: ${outcome.reason}`;
+	ctx.ui.notify(
+		`K-π job ${outcome.jobId} ${outcome.status}${reason}`,
+		outcome.status === "NEEDS_HUMAN" ? "warning" : "info",
+	);
+	if (outcome.status === "NEEDS_HUMAN" && ctx.hasUI && outcome.recovery === "provider") {
+		const resumeAfterFix = await ctx.ui.confirm(
+			"K-π provider recovery",
+			`${outcome.reason ?? "The provider account is unavailable."}\n\nResolve the account or choose another model, then resume this job?`,
+		);
+		ctx.ui.notify(
+			resumeAfterFix
+				? `After resolving the provider, run /kpi ${outcome.jobId}`
+				: `K-π job ${outcome.jobId} remains at NEEDS_HUMAN`,
+			"info",
+		);
 	}
 }
 
@@ -692,10 +1024,12 @@ export function registerControlPlane(pi: ExtensionAPI, dependencies: ControlPlan
 	});
 
 	const command = {
-		description:
-			"Control the K-π coding loop: <goal>, status, stop, verify, auto|always|off routing (--max-cost-usd / --timeout-ms / --max-rounds freeze onto task.limits)",
+		description: "Control the K-π coding loop: <goal>, status, stop, verify, auto|always|off routing",
 		handler: async (args: string, ctx: ExtensionCommandContext) => {
-			await handleKpiCommand(args, ctx, dependencies);
+			await handleKpiCommand(args, ctx, {
+				sendUserMessage: (text) => pi.sendUserMessage(text),
+				...dependencies,
+			});
 		},
 	};
 	pi.registerCommand("kpi", command);

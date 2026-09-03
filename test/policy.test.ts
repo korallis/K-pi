@@ -1265,7 +1265,8 @@ test("attempts are ordered against the run's own terminal record", async () => {
 			job_id: "2026-09-02-order",
 			round: 2,
 			node: "implement",
-			status: "UNSAFE",
+			status: "NEEDS_HUMAN",
+			recovery: "stack",
 			reason: "stack.json is missing; implement has no frozen map to read",
 		});
 		await hook(write("infra/after.sh"), attendant.context);
@@ -1275,7 +1276,7 @@ test("attempts are ordered against the run's own terminal record", async () => {
 			.filter((line) => line.length > 0)
 			.map((line) => JSON.parse(line) as Record<string, unknown>);
 		const sequence = records.map((record) => `${record.type}:${record.decision ?? record.status}`);
-		assert.deepEqual(sequence, ["tool.request:allow", "loop.terminal:UNSAFE", "tool.request:deny"]);
+		assert.deepEqual(sequence, ["tool.request:allow", "loop.terminal:NEEDS_HUMAN", "tool.request:deny"]);
 		// The chain is what makes the order non-repudiable.
 		assert.equal(await verifyChain(eventsPath), true);
 	});

@@ -46,7 +46,7 @@ function setPath(values: JsonObject, path: string, value: unknown): void {
 
 /**
  * Resolves the edges a node takes for a given state, mirroring the engine: a
- * list of conditions is a conjunction, and a terminal target ends the run.
+ * list of conditions is a conjunction, and a pause target parks the run.
  */
 function fired(definition: GraphDefinition, from: string, values: JsonObject): string[] {
 	const nodes = new Map(definition.nodes.map((node) => [node.id, node]));
@@ -63,7 +63,7 @@ function fired(definition: GraphDefinition, from: string, values: JsonObject): s
 			return current === condition.equals;
 		});
 		if (matches) {
-			targets.push(nodes.get(edge.to)?.type === "terminal" ? `${edge.to}!` : edge.to);
+			targets.push(nodes.get(edge.to)?.type === "pause" ? `${edge.to}!` : edge.to);
 		}
 	}
 	return targets;
@@ -122,10 +122,40 @@ const gatedCases: RoutingCase[] = [
 		expect: ["implement"],
 	},
 	{
-		name: "red tests go back to implement",
+		name: "red tests with fresh evidence go back to implement",
 		from: "test",
-		facts: { "bounds.held": true, "test.passed": false },
+		facts: { "bounds.held": true, "test.passed": false, "progress.repeated": false },
 		expect: ["implement"],
+	},
+	{
+		name: "red tests over repeated evidence re-plan while a re-plan is still allowed",
+		from: "test",
+		facts: {
+			"bounds.held": true,
+			"test.passed": false,
+			"progress.repeated": true,
+			"plan.repair_tried": false,
+			"plan.provided": false,
+		},
+		expect: ["plan"],
+	},
+	{
+		name: "red tests over repeated evidence after the re-plans pause for the operator",
+		from: "test",
+		facts: { "bounds.held": true, "test.passed": false, "progress.repeated": true, "plan.repair_tried": true },
+		expect: ["no-progress!"],
+	},
+	{
+		name: "red tests over repeated evidence never re-plan an operator-provided plan",
+		from: "test",
+		facts: {
+			"bounds.held": true,
+			"test.passed": false,
+			"progress.repeated": true,
+			"plan.repair_tried": false,
+			"plan.provided": true,
+		},
+		expect: ["no-progress!"],
 	},
 	{
 		name: "green tests inside bounds reach review",
@@ -134,7 +164,7 @@ const gatedCases: RoutingCase[] = [
 		expect: ["review"],
 	},
 	{
-		name: "a write outside bounds is UNSAFE, whatever the tests said",
+		name: "a write outside bounds pauses for the operator, whatever the tests said",
 		from: "test",
 		facts: { "bounds.held": false, "test.passed": true },
 		expect: ["unsafe!"],
@@ -158,10 +188,48 @@ const gatedCases: RoutingCase[] = [
 		expect: ["needs-human!"],
 	},
 	{
-		name: "a testable red review revises",
+		name: "a testable red review with fresh output revises",
 		from: "review",
-		facts: { "bounds.held": true, "review.approved": false, "review.status": "REVISE" },
+		facts: { "bounds.held": true, "review.approved": false, "review.status": "REVISE", "progress.repeated": false },
 		expect: ["implement"],
+	},
+	{
+		name: "a testable red review that repeats a witness re-plans while a re-plan is still allowed",
+		from: "review",
+		facts: {
+			"bounds.held": true,
+			"review.approved": false,
+			"review.status": "REVISE",
+			"progress.repeated": true,
+			"plan.repair_tried": false,
+			"plan.provided": false,
+		},
+		expect: ["plan"],
+	},
+	{
+		name: "a repeated witness after the automatic re-plans pauses for the operator",
+		from: "review",
+		facts: {
+			"bounds.held": true,
+			"review.approved": false,
+			"review.status": "REVISE",
+			"progress.repeated": true,
+			"plan.repair_tried": true,
+		},
+		expect: ["no-progress!"],
+	},
+	{
+		name: "a repeated witness never re-plans an operator-provided plan",
+		from: "review",
+		facts: {
+			"bounds.held": true,
+			"review.approved": false,
+			"review.status": "REVISE",
+			"progress.repeated": true,
+			"plan.repair_tried": false,
+			"plan.provided": true,
+		},
+		expect: ["no-progress!"],
 	},
 	{
 		name: "an untestable red review needs a human",
@@ -170,7 +238,7 @@ const gatedCases: RoutingCase[] = [
 		expect: ["needs-human!"],
 	},
 	{
-		name: "bounds broken by the time review ran is still UNSAFE",
+		name: "bounds broken by the time review ran still pause for the operator",
 		from: "review",
 		facts: { "bounds.held": false, "review.approved": true, "test.passed": true, "fingerprints.fresh": true },
 		expect: ["unsafe!"],
@@ -203,13 +271,24 @@ const gatedCases: RoutingCase[] = [
 
 const autoCases: RoutingCase[] = [
 	{
-		name: "red tests go back to implement",
+		name: "red tests with fresh evidence go back to implement",
 		from: "test",
-		facts: { "bounds.held": true, "test.passed": false },
+		facts: { "bounds.held": true, "test.passed": false, "progress.repeated": false },
 		expect: ["implement"],
 	},
 	{
-		name: "a write outside bounds is UNSAFE",
+		name: "red tests over repeated evidence re-plan, then pause",
+		from: "test",
+		facts: {
+			"bounds.held": true,
+			"test.passed": false,
+			"progress.repeated": true,
+			"plan.repair_tried": true,
+		},
+		expect: ["no-progress!"],
+	},
+	{
+		name: "a write outside bounds pauses for the operator",
 		from: "test",
 		facts: { "bounds.held": false, "test.passed": true },
 		expect: ["unsafe!"],
@@ -248,10 +327,23 @@ const autoCases: RoutingCase[] = [
 		expect: ["needs-human!"],
 	},
 	{
-		name: "a testable red review revises",
+		name: "a testable red review with fresh output revises",
 		from: "review",
-		facts: { "bounds.held": true, "review.approved": false, "review.status": "REVISE" },
+		facts: { "bounds.held": true, "review.approved": false, "review.status": "REVISE", "progress.repeated": false },
 		expect: ["implement"],
+	},
+	{
+		name: "a testable red review that repeats a witness re-plans while a re-plan is still allowed",
+		from: "review",
+		facts: {
+			"bounds.held": true,
+			"review.approved": false,
+			"review.status": "REVISE",
+			"progress.repeated": true,
+			"plan.repair_tried": false,
+			"plan.provided": false,
+		},
+		expect: ["plan"],
 	},
 	{
 		name: "an untestable red review needs a human",
@@ -347,7 +439,9 @@ test("an autopilot graph cannot contain a human node", async () => {
 
 test("a terminal node is a sink and cannot be scheduled past", async () => {
 	const definition = await graph("coding-loop.gated");
-	for (const node of definition.nodes.filter((candidate) => candidate.type === "terminal")) {
+	const pauses = definition.nodes.filter((candidate) => candidate.type === "pause");
+	assert.ok(pauses.length > 0, "the gated graph parks somewhere");
+	for (const node of pauses) {
 		assert.equal(
 			definition.edges.some((edge) => edge.from === node.id),
 			false,
@@ -361,7 +455,7 @@ test("a terminal node is a sink and cannot be scheduled past", async () => {
 				...definition,
 				edges: [...definition.edges, { from: "unsafe", to: "implement" }],
 			}),
-		/terminal node unsafe cannot have outgoing edges/u,
+		/pause node unsafe cannot have outgoing edges/u,
 	);
 });
 
@@ -379,6 +473,8 @@ test("every fact a shipped graph routes on is one the loop supplies", async () =
 		"release.approved",
 		"review.approved",
 		"review.status",
+		"progress.repeated",
+		"plan.repair_tried",
 	]);
 	for (const name of ["coding-loop.gated", "coding-loop.auto"]) {
 		for (const path of conditionPaths(await graph(name))) {
@@ -387,12 +483,12 @@ test("every fact a shipped graph routes on is one the loop supplies", async () =
 	}
 });
 
-test("a routed terminal stops the run with one terminal event and a durable record", async () => {
-	const directory = await mkdtemp(join(tmpdir(), "kpi-terminal-"));
+test("a routed pause parks the run with one terminal event and a durable record", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "kpi-pause-"));
 	try {
 		const definition: GraphDefinition = {
 			schemaVersion: 2,
-			id: "terminal-route",
+			id: "pause-route",
 			entry: "work",
 			nodes: [
 				{
@@ -404,14 +500,14 @@ test("a routed terminal stops the run with one terminal event and a durable reco
 					readOnly: true,
 				},
 				{ id: "next", type: "set", assignments: { reached: true } },
-				{ id: "stop", type: "terminal", status: "UNSAFE", reason: "bounds left the task" },
+				{ id: "stop", type: "pause", recovery: "bounds", reason: "bounds left the task", resume: ["work"] },
 			],
 			edges: [
 				{ from: "work", to: "stop", when: { path: "bounds.held", equals: false } },
 				{ from: "work", to: "next", when: { path: "bounds.held", equals: true } },
 				{ from: "next", to: "__end__" },
 			],
-			limits: { maxSteps: 8, maxNodeRuns: 4, maxConcurrency: 1, maxCostUsd: 5, timeoutMs: 60_000 },
+			limits: { maxConcurrency: 1 },
 			policy: {
 				allowNonInteractive: true,
 				allowNonInteractiveMutations: false,
@@ -423,7 +519,7 @@ test("a routed terminal stops the run with one terminal event and a durable reco
 		const terminals: unknown[] = [];
 		const engine = new GraphEngine(definition, {
 			projectRoot: directory,
-			jobId: "terminal-job",
+			jobId: "pause-job",
 			createAgentSession: async () => ({
 				session: {
 					sessionId: "s",
@@ -433,19 +529,21 @@ test("a routed terminal stops the run with one terminal event and a durable reco
 				},
 			}),
 			resolveFacts: async () => ({ "bounds.held": false }),
-			emitTerminal: async (terminal) => {
-				terminals.push(terminal);
+			emitTerminal: async (pause) => {
+				terminals.push(pause);
 			},
 		});
 
 		const stopped = await engine.runUntilPause();
 		engine.dispose();
 
-		assert.equal(stopped.status, "terminated");
-		assert.equal(stopped.terminal?.status, "UNSAFE");
-		assert.equal(stopped.terminal?.reason, "bounds left the task");
+		assert.equal(stopped.status, "paused");
+		assert.equal(stopped.pause?.recovery, "bounds");
+		assert.equal(stopped.pause?.reason, "bounds left the task");
+		assert.deepEqual(stopped.pause?.resume, ["work"]);
 		assert.equal(terminals.length, 1, "exactly one terminal event");
-		assert.equal(stopped.nodes.next.runs, 0, "the run never scheduled past its own end");
+		assert.deepEqual(terminals[0], stopped.pause);
+		assert.equal(stopped.nodes.next.runs, 0, "the run never scheduled past its own park");
 		assert.equal(stopped.values.reached, undefined);
 	} finally {
 		await rm(directory, { recursive: true, force: true });
@@ -471,7 +569,7 @@ test("a node whose branches all miss fails instead of reporting success", async 
 				{ id: "next", type: "set", assignments: { reached: true } },
 			],
 			edges: [{ from: "work", to: "next", when: { path: "never.true", equals: true } }],
-			limits: { maxSteps: 8, maxNodeRuns: 4, maxConcurrency: 1, maxCostUsd: 5, timeoutMs: 60_000 },
+			limits: { maxConcurrency: 1 },
 			policy: {
 				allowNonInteractive: true,
 				allowNonInteractiveMutations: false,
@@ -492,13 +590,15 @@ test("a node whose branches all miss fails instead of reporting success", async 
 			}),
 		});
 
-		// `fail` throws after writing the durable record: a routing gap is a defect
-		// in the graph, not a product outcome.
-		await assert.rejects(engine.runSuperstep(), /no graph edge from work matched/u);
-		const stopped = engine.state;
+		// `fail` parks the run after writing the durable record: a routing gap is
+		// a defect in the graph the operator must fix, never reported as success.
+		const stopped = await engine.runSuperstep();
 		engine.dispose();
-		assert.equal(stopped.status, "failed");
+		assert.equal(stopped.status, "paused");
+		assert.equal(stopped.pause?.recovery, "contract");
+		assert.match(stopped.pause?.reason ?? "", /no graph edge from work matched/u);
 		assert.match(stopped.nodes.work.error ?? "", /no graph edge from work matched/u);
+		assert.deepEqual(stopped.pause?.resume, ["work"]);
 		assert.equal(stopped.values.reached, undefined);
 	} finally {
 		await rm(directory, { recursive: true, force: true });
@@ -533,4 +633,80 @@ test("the gated graph gates implement on plan approval and routes a change reque
 		auto.nodes.some((node) => node.id === "plan-approval"),
 		false,
 	);
+});
+
+test("the shipped graphs carry only maxConcurrency and route no-progress through plan before pausing", async () => {
+	const loops = ["coding-loop.gated", "coding-loop.auto"] as const;
+	for (const name of [...loops, "spec-first"] as const) {
+		const definition = await graph(name);
+		assert.deepEqual(Object.keys(definition.limits), ["maxConcurrency"], `${name} carries only maxConcurrency`);
+	}
+
+	const pauses: Record<string, { recovery: string; resume: string[] }> = {
+		unsafe: { recovery: "bounds", resume: ["test"] },
+		"needs-human": { recovery: "review", resume: ["implement"] },
+		"no-progress": { recovery: "no_progress", resume: ["plan"] },
+	};
+	for (const name of loops) {
+		const definition = await graph(name);
+		for (const [id, expected] of Object.entries(pauses)) {
+			const node = definition.nodes.find((candidate) => candidate.id === id);
+			assert.equal(node?.type, "pause", `${name}: ${id} is a pause node`);
+			if (node?.type !== "pause") throw new Error("unreachable");
+			assert.equal(node.recovery, expected.recovery, `${name}: ${id} recovery`);
+			assert.deepEqual(node.resume, expected.resume, `${name}: ${id} resume`);
+			assert.ok(node.reason.length > 0, `${name}: ${id} states a reason`);
+		}
+
+		// Over every combination of the three facts, exactly one REVISE edge
+		// from review fires and exactly one red-test edge from test fires: the
+		// engine unions every firing edge, so two would schedule two targets.
+		for (const repeated of [true, false]) {
+			for (const repairTried of [true, false]) {
+				for (const provided of [true, false]) {
+					const facts = {
+						"progress.repeated": repeated,
+						"plan.repair_tried": repairTried,
+						"plan.provided": provided,
+					};
+					const label = `${name} repeated=${repeated} repair_tried=${repairTried} provided=${provided}`;
+					const expected = !repeated ? ["implement"] : repairTried || provided ? ["no-progress!"] : ["plan"];
+					assert.deepEqual(
+						fired(
+							definition,
+							"review",
+							state({ "bounds.held": true, "review.approved": false, "review.status": "REVISE", ...facts }),
+						),
+						expected,
+						`review REVISE: ${label}`,
+					);
+					assert.deepEqual(
+						fired(definition, "test", state({ "bounds.held": true, "test.passed": false, ...facts })),
+						expected,
+						`red test: ${label}`,
+					);
+				}
+			}
+		}
+
+		// A --plan job never routes to plan: the operator's frozen plan is theirs.
+		for (const from of ["review", "test"]) {
+			for (const repairTried of [true, false]) {
+				const targets = fired(
+					definition,
+					from,
+					state({
+						"bounds.held": true,
+						"review.approved": false,
+						"review.status": "REVISE",
+						"test.passed": false,
+						"progress.repeated": true,
+						"plan.repair_tried": repairTried,
+						"plan.provided": true,
+					}),
+				);
+				assert.equal(targets.includes("plan"), false, `${name}: a --plan job never routes ${from} to plan`);
+			}
+		}
+	}
 });

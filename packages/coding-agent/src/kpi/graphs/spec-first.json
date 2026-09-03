@@ -25,11 +25,7 @@
     { "from": "plan", "to": "__end__" }
   ],
   "limits": {
-    "maxSteps": 4,
-    "maxNodeRuns": 2,
-    "maxConcurrency": 1,
-    "maxCostUsd": 2,
-    "timeoutMs": 900000
+    "maxConcurrency": 1
   },
   "policy": {
     "allowNonInteractive": false,

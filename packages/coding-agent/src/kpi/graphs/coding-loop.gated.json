@@ -36,7 +36,7 @@
 		{
 			"id": "plan",
 			"type": "agent",
-			"prompt": "Produce an implementation plan and a Dune stack.json of module boundaries from the frozen task, research, and specification. Return only JSON matching stack.schema.json (the graph engine writes stack.json). Do not change production files.",
+			"prompt": "Produce an implementation plan and a Dune stack.json of module boundaries from the frozen task, research, and specification. Return only JSON matching stack.schema.json (the graph engine writes stack.json). Do not change production files. If repair.json exists in the run directory, read it first: the previous plan did not deliver; it names the round, the failing acceptance criteria, the verdict or evidence and any operator guidance. Produce a materially different stack.json and plan that addresses them.",
 			"context": {
 				"mode": "isolated"
 			},
@@ -96,7 +96,8 @@
 				"edit",
 				"write"
 			],
-			"readOnly": false
+			"readOnly": false,
+			"feedbackPath": "release.feedback"
 		},
 		{
 			"id": "test",
@@ -150,7 +151,8 @@
 			"type": "human",
 			"title": "Approve gated release",
 			"question": "All quality gates and isolated review are green. Approve this change for a commit on the job branch, a push of that branch to origin, and a pull request?",
-			"statePath": "release.approved"
+			"statePath": "release.approved",
+			"feedbackPath": "release.feedback"
 		},
 		{
 			"id": "ship",
@@ -167,15 +169,30 @@
 		},
 		{
 			"id": "unsafe",
-			"type": "terminal",
-			"status": "UNSAFE",
-			"reason": "a write left the task's declared bounds"
+			"type": "pause",
+			"recovery": "bounds",
+			"reason": "a write left the task's declared bounds",
+			"resume": [
+				"test"
+			]
 		},
 		{
 			"id": "needs-human",
-			"type": "terminal",
-			"status": "NEEDS_HUMAN",
-			"reason": "the review reported an untestable blocking issue, or the receipts are no longer fresh"
+			"type": "pause",
+			"recovery": "review",
+			"reason": "the review reported an untestable blocking issue, or the receipts are no longer fresh",
+			"resume": [
+				"implement"
+			]
+		},
+		{
+			"id": "no-progress",
+			"type": "pause",
+			"recovery": "no_progress",
+			"reason": "the loop repeated the same evidence or review outcome after its automatic re-plans",
+			"resume": [
+				"plan"
+			]
 		}
 	],
 	"edges": [
@@ -246,6 +263,84 @@
 				{
 					"path": "test.passed",
 					"equals": false
+				},
+				{
+					"path": "progress.repeated",
+					"equals": false
+				}
+			]
+		},
+		{
+			"from": "test",
+			"to": "plan",
+			"when": [
+				{
+					"path": "bounds.held",
+					"equals": true
+				},
+				{
+					"path": "test.passed",
+					"equals": false
+				},
+				{
+					"path": "progress.repeated",
+					"equals": true
+				},
+				{
+					"path": "plan.repair_tried",
+					"equals": false
+				},
+				{
+					"path": "plan.provided",
+					"equals": false
+				}
+			]
+		},
+		{
+			"from": "test",
+			"to": "no-progress",
+			"when": [
+				{
+					"path": "bounds.held",
+					"equals": true
+				},
+				{
+					"path": "test.passed",
+					"equals": false
+				},
+				{
+					"path": "progress.repeated",
+					"equals": true
+				},
+				{
+					"path": "plan.repair_tried",
+					"equals": true
+				}
+			]
+		},
+		{
+			"from": "test",
+			"to": "no-progress",
+			"when": [
+				{
+					"path": "bounds.held",
+					"equals": true
+				},
+				{
+					"path": "test.passed",
+					"equals": false
+				},
+				{
+					"path": "progress.repeated",
+					"equals": true
+				},
+				{
+					"path": "plan.repair_tried",
+					"equals": false
+				},
+				{
+					"path": "plan.provided",
+					"equals": true
 				}
 			]
 		},
@@ -344,6 +439,96 @@
 				{
 					"path": "review.status",
 					"equals": "REVISE"
+				},
+				{
+					"path": "progress.repeated",
+					"equals": false
+				}
+			]
+		},
+		{
+			"from": "review",
+			"to": "plan",
+			"when": [
+				{
+					"path": "bounds.held",
+					"equals": true
+				},
+				{
+					"path": "review.approved",
+					"equals": false
+				},
+				{
+					"path": "review.status",
+					"equals": "REVISE"
+				},
+				{
+					"path": "progress.repeated",
+					"equals": true
+				},
+				{
+					"path": "plan.repair_tried",
+					"equals": false
+				},
+				{
+					"path": "plan.provided",
+					"equals": false
+				}
+			]
+		},
+		{
+			"from": "review",
+			"to": "no-progress",
+			"when": [
+				{
+					"path": "bounds.held",
+					"equals": true
+				},
+				{
+					"path": "review.approved",
+					"equals": false
+				},
+				{
+					"path": "review.status",
+					"equals": "REVISE"
+				},
+				{
+					"path": "progress.repeated",
+					"equals": true
+				},
+				{
+					"path": "plan.repair_tried",
+					"equals": true
+				}
+			]
+		},
+		{
+			"from": "review",
+			"to": "no-progress",
+			"when": [
+				{
+					"path": "bounds.held",
+					"equals": true
+				},
+				{
+					"path": "review.approved",
+					"equals": false
+				},
+				{
+					"path": "review.status",
+					"equals": "REVISE"
+				},
+				{
+					"path": "progress.repeated",
+					"equals": true
+				},
+				{
+					"path": "plan.repair_tried",
+					"equals": false
+				},
+				{
+					"path": "plan.provided",
+					"equals": true
 				}
 			]
 		},
@@ -427,11 +612,7 @@
 		}
 	],
 	"limits": {
-		"maxSteps": 24,
-		"maxNodeRuns": 16,
-		"maxConcurrency": 2,
-		"maxCostUsd": 5,
-		"timeoutMs": 1800000
+		"maxConcurrency": 2
 	},
 	"policy": {
 		"allowNonInteractive": false,

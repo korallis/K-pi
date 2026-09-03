@@ -1,0 +1,43 @@
+{
+  "job_id": "20260903-fix-claude-model-requests-failin-42986cfa",
+  "task_hash": "sha256:0d2c9670d358085a1a89f2658828a51e290bf153eaea1a38e5c4fdcafbbd964f",
+  "mode": "local",
+  "network": {
+    "state": "online",
+    "failures": []
+  },
+  "sources": [
+    {
+      "kind": "local",
+      "ref": "AGENTS.md",
+      "title": "AGENTS.md",
+      "service": null,
+      "observed_at": "2026-09-03T09:12:46.902Z",
+      "excerpt": "# K-π agent guide\n\nRead docs/remediation-plan.md first: it is the only work queue."
+    },
+    {
+      "kind": "local",
+      "ref": "README.md",
+      "title": "README.md",
+      "service": null,
+      "observed_at": "2026-09-03T09:12:46.903Z",
+      "excerpt": "# K-π\n\nA graph-driven coding loop with a human gate before every commit."
+    },
+    {
+      "kind": "local",
+      "ref": "package.json",
+      "title": "package.json",
+      "service": null,
+      "observed_at": "2026-09-03T09:12:46.903Z",
+      "excerpt": "{\n  \"name\": \"k-pi\",\n  \"private\": true,\n  \"workspaces\": [\"packages/*\"]\n}"
+    },
+    {
+      "kind": "local",
+      "ref": "docs/spec.md",
+      "title": "docs/spec.md",
+      "service": null,
+      "observed_at": "2026-09-03T09:12:46.904Z",
+      "excerpt": "# K-π specification\n\n## 1 Accounts\n\nThe official slot refreshes its OAuth token before a request is retried."
+    }
+  ]
+}

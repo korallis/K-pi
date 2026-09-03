@@ -1,0 +1,92 @@
+{
+  "graphId": "coding-loop.gated",
+  "jobId": "20260903-fix-claude-model-requests-failin-42986cfa",
+  "status": "running",
+  "superstep": 1,
+  "active": [
+    "specify"
+  ],
+  "values": {
+    "policy": {
+      "onHumanDeny": "revise"
+    },
+    "plan": {
+      "provided": false
+    },
+    "test": {
+      "passed": false
+    },
+    "bounds": {
+      "held": true
+    },
+    "fingerprints": {
+      "fresh": false
+    },
+    "ship": {
+      "shipped": false
+    }
+  },
+  "nodes": {
+    "ac-compiler": {
+      "status": "completed",
+      "runs": 1,
+      "sessionId": "6f1c2d4e-9b7a-4c33-8a1e-2d5f7b9c0a11"
+    },
+    "specify": {
+      "status": "pending",
+      "runs": 0
+    },
+    "plan": {
+      "status": "pending",
+      "runs": 0
+    },
+    "plan-check": {
+      "status": "pending",
+      "runs": 0
+    },
+    "implement": {
+      "status": "pending",
+      "runs": 0
+    },
+    "test": {
+      "status": "pending",
+      "runs": 0
+    },
+    "review": {
+      "status": "pending",
+      "runs": 0
+    },
+    "human": {
+      "status": "pending",
+      "runs": 0
+    },
+    "ship": {
+      "status": "pending",
+      "runs": 0
+    },
+    "unsafe": {
+      "status": "pending",
+      "runs": 0
+    },
+    "needs-human": {
+      "status": "pending",
+      "runs": 0
+    }
+  },
+  "budget": {
+    "limits": {
+      "maxSteps": 24,
+      "maxNodeRuns": 16,
+      "maxConcurrency": 2,
+      "maxCostUsd": 5,
+      "timeoutMs": 1800000,
+      "maxRounds": 3,
+      "maxTransientRetries": 2
+    },
+    "startedAtMs": 1788426724318,
+    "elapsedMs": 39612,
+    "costUsd": 0.318,
+    "round": 1,
+    "batches": 1
+  }
+}

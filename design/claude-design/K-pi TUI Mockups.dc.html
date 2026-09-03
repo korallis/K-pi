@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet data-dc-atomics><meta name="design_doc_mode" content="canvas"><link rel="preconnect" href="https://fonts.googleapis.com"><link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet"><style>body{margin:0;background:#e9e6df;font-family:"IBM Plex Sans",system-ui,sans-serif;color:#1a1a1a}a{color:#1a1a1a}a:hover{color:#ff6a1a}.dv-turn{padding:40px 44px 32px;border-bottom:1px solid rgba(0,0,0,.08);scroll-margin-top:16px}.dv-thd{display:flex;align-items:baseline;gap:10px;margin:0 0 20px}.dv-tid{font:600 10px "JetBrains Mono",monospace;padding:3px 7px;background:#1a1a1a;color:#fff;border-radius:4px;text-decoration:none}.dv-tname{font:600 13px/1.2 "IBM Plex Sans",sans-serif;color:#1a1a1a}.dv-opts{display:flex;flex-wrap:wrap;gap:28px;align-items:flex-start}.dv-opt{flex:none;display:flex;flex-direction:column;gap:9px;scroll-margin-top:16px}.dv-oid{font:600 10.5px "JetBrains Mono",monospace;padding:3px 7px;background:rgba(0,0,0,.08);color:#1a1a1a;border-radius:5px;text-decoration:none}.dv-olabel{display:flex;align-items:baseline;gap:8px;font:400 11px/1.3 "IBM Plex Sans",sans-serif;color:rgba(0,0,0,.6);max-width:1264px}.dv-card{max-width:100%;border:1px solid rgba(0,0,0,.12);border-radius:6px;box-shadow:0 1px 3px rgba(0,0,0,.08);overflow:hidden}.dv-opt:target .dv-oid{background:#ff6a1a;color:#fff}.dv-next{margin:22px 0 0;font:12px/1.5 "IBM Plex Sans",sans-serif;color:rgba(0,0,0,.5)}.term{font:13px/19px "JetBrains Mono","DejaVu Sans Mono",Menlo,monospace;padding:12px 8px;font-variant-ligatures:none;width:1248px;box-sizing:content-box}.row{height:19px;white-space:pre}.row span{white-space:pre}</style></helmet>
+<section class="dv-turn" id="t1">
+<div class="dv-thd"><a class="dv-tid" href="#t1">1</a><span class="dv-tname">K-π always-on widget · 160 columns · strict cell grid</span></div>
+<div style="max-width:1264px;margin:0 0 24px;font:13px/1.55 'IBM Plex Sans',sans-serif;color:rgba(0,0,0,.72)">
+<div style="font-weight:600;margin-bottom:6px">Assumptions and reasoning</div>
+<div>Source of truth: <span style="font-family:'JetBrains Mono',monospace;font-size:12px">board.ts · board-frame.ts · segments.ts · brand.ts · renderers.ts · loop-amber.json · protocol-blue.json · coding-loop.gated.json</span>. Everything below is drawn from the two theme palettes and the real stop/stage/file vocabulary; nothing that cannot be produced with box-drawing, braille, block characters and truecolor.</div>
+<div style="margin-top:6px"><a href="#1a">1a</a> is the widget as <span style="font-family:'JetBrains Mono',monospace;font-size:12px">paintCompact</span> renders it today at 160 columns. <a href="#1b">1b</a>–<a href="#1f">1f</a> are one proposal seen through its tabs and states: a framed widget whose top border carries the tabs (BOARD · GRAPH · FILES · EVENTS · ACCOUNTS), a one-line stage rail with per-stage elapsed time, and a <b>NOW</b> line that always names the node, the tool and the command that is running right now. All spinners, timers, sparklines and edge flow are live.</div>
+</div>
+<div class="dv-opts">
+<div class="dv-opt" id="1a"><div class="dv-olabel"><a class="dv-oid" href="#1a">1a</a>Current widget, recreated · compact layout at 160 cols · running, round 0, stage 01</div><div class="dv-card"><div class="term" style="background:#0d0e0e"><sc-for list="{{ s1a }}" as="row" hint-placeholder-count="20"><div class="row"><sc-for list="{{ row }}" as="sp" hint-placeholder-count="1"><span style="color:{{ sp.color }};background:{{ sp.bg }}">{{ sp.t }}</span></sc-for></div></sc-for></div></div></div>
+<div class="dv-opt" id="1b"><div class="dv-olabel"><a class="dv-oid" href="#1b">1b</a>BOARD tab · running · stage rail with elapsed per stage, NOW line, budget sparklines</div><div class="dv-card"><div class="term" style="background:#0d0e0e"><sc-for list="{{ s1b }}" as="row" hint-placeholder-count="16"><div class="row"><sc-for list="{{ row }}" as="sp" hint-placeholder-count="1"><span style="color:{{ sp.color }};background:{{ sp.bg }}">{{ sp.t }}</span></sc-for></div></sc-for></div></div></div>
+<div class="dv-opt" id="1c"><div class="dv-olabel"><a class="dv-oid" href="#1c">1c</a>GRAPH tab · FAIL → retry · the coding-loop.gated graph itself, walked edges lit, retry edge flowing, the WHY spelled out</div><div class="dv-card"><div class="term" style="background:#0d0e0e"><sc-for list="{{ s1c }}" as="row" hint-placeholder-count="18"><div class="row"><sc-for list="{{ row }}" as="sp" hint-placeholder-count="1"><span style="color:{{ sp.color }};background:{{ sp.bg }}">{{ sp.t }}</span></sc-for></div></sc-for></div></div></div>
+<div class="dv-opt" id="1d"><div class="dv-olabel"><a class="dv-oid" href="#1d">1d</a>EVENTS tab · no-network research (engine) + account failover · streaming events.jsonl beside live cost / context / token / round charts</div><div class="dv-card"><div class="term" style="background:#0d0e0e"><sc-for list="{{ s1d }}" as="row" hint-placeholder-count="18"><div class="row"><sc-for list="{{ row }}" as="sp" hint-placeholder-count="1"><span style="color:{{ sp.color }};background:{{ sp.bg }}">{{ sp.t }}</span></sc-for></div></sc-for></div></div></div>
+<div class="dv-opt" id="1e"><div class="dv-olabel"><a class="dv-oid" href="#1e">1e</a>Paused on operator · protocol-blue · question, diff, verdict and hotkeys in one panel; stop states and three laws kept</div><div class="dv-card"><div class="term" style="background:#0a0e12"><sc-for list="{{ s1e }}" as="row" hint-placeholder-count="18"><div class="row"><sc-for list="{{ row }}" as="sp" hint-placeholder-count="1"><span style="color:{{ sp.color }};background:{{ sp.bg }}">{{ sp.t }}</span></sc-for></div></sc-for></div></div></div>
+<div class="dv-opt" id="1f"><div class="dv-olabel"><a class="dv-oid" href="#1f">1f</a>Terminal states · DONE, EXHAUSTED, and idle with no job (widget collapses to one line)</div><div class="dv-card"><div class="term" style="background:#0d0e0e"><sc-for list="{{ s1f }}" as="row" hint-placeholder-count="18"><div class="row"><sc-for list="{{ row }}" as="sp" hint-placeholder-count="1"><span style="color:{{ sp.color }};background:{{ sp.bg }}">{{ sp.t }}</span></sc-for></div></sc-for></div></div></div>
+</div>
+<p class="dv-next">Try next: "make <a class="dv-oid" href="#1b">1b</a> the default and fold the charts of <a class="dv-oid" href="#1d">1d</a> into it" · "show <a class="dv-oid" href="#1c">1c</a> at 80 columns" · "design the FILES and ACCOUNTS tabs" · "a version without tabs that cycles views automatically"</p>
+</section>
+</x-dc>
+<script type="text/x-dc" data-dc-script>
+class Component extends DCLogic {
+  state = { tick: 0 };
+  componentDidMount() { this.timer = setInterval(() => this.setState(s => ({ tick: s.tick + 1 })), 100); }
+  componentWillUnmount() { clearInterval(this.timer); }
+
+  lib() {
+    if (this._lib) return this._lib;
+    const W = 160;
+    const AMBER = { accent: '#ff6a1a', success: '#3dff6a', error: '#ff3b3b', warning: '#ffb020', text: '#ddd7ce', muted: '#948b80', dim: '#625c54', border: '#78401f', borderAccent: '#ff6a1a', bg: '#0d0e0e', userBg: '#2b211b', selBg: '#3a2519' };
+    const BLUE = { accent: '#3da9fc', success: '#3dff6a', error: '#ff3b3b', warning: '#ffb020', text: '#d8e1e8', muted: '#8493a0', dim: '#56636e', border: '#245f8c', borderAccent: '#3da9fc', bg: '#0a0e12', userBg: '#172632', selBg: '#17334a' };
+    const SP = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+    const BARS = '▁▂▃▄▅▆▇█';
+    const JOB = '20260903-add-get-health-returning-status-ae4a7049';
+    const JOBS = '20260903-add-get-health-…-ae4a7049';
+    const len = s => [...s].length;
+    const rep = (ch, n) => ch.repeat(Math.max(0, n));
+    const fmt = s => { s = Math.max(0, Math.floor(s)); const m = Math.floor(s / 60), r = s % 60; return m > 0 ? `${m}m${String(r).padStart(2, '0')}s` : `${r}s`; };
+    const spark = vals => vals.map(v => BARS[Math.max(0, Math.min(7, Math.round(v * 7)))]).join('');
+    const meter = (p, n = 10) => { const k = Math.round(p * n); return rep('█', k) + rep('░', n - k); };
+
+    class Canvas {
+      constructor(h, th) { this.w = W; this.h = h; this.th = th; this.g = Array.from({ length: h }, () => Array.from({ length: W }, () => ({ ch: ' ', c: 'text', bg: null }))); }
+      put(x, y, s, c = 'text', bg = null) { let i = 0; for (const ch of s) { const xx = x + i; if (y >= 0 && y < this.h && xx >= 0 && xx < this.w) this.g[y][xx] = { ch, c, bg }; i++; if (ch === '📁' && xx + 1 < this.w && y >= 0 && y < this.h) { this.g[y][xx + 1] = { ch: '', c, bg }; i++; } } return x + i; }
+      putR(xr, y, s, c, bg) { return this.put(xr - len(s), y, s, c, bg); }
+      putC(x, w, y, s, c, bg) { return this.put(x + Math.floor((w - len(s)) / 2), y, s, c, bg); }
+      box(x, y, w, h, c) { this.put(x, y, '┌' + rep('─', w - 2) + '┐', c); for (let i = 1; i < h - 1; i++) { this.put(x, y + i, '│', c); this.put(x + w - 1, y + i, '│', c); } this.put(x, y + h - 1, '└' + rep('─', w - 2) + '┘', c); }
+      fill(y, bg, x0 = 0, x1 = W) { for (let x = x0; x < x1; x++) this.g[y][x].bg = bg; }
+      rows() {
+        return this.g.map(row => {
+          const spans = [];
+          for (const cell of row) { const l = spans[spans.length - 1]; if (l && l.c === cell.c && l.bg === cell.bg) l.t += cell.ch; else spans.push({ t: cell.ch, c: cell.c, bg: cell.bg }); }
+          return spans.map(s => ({ t: s.t, color: this.th[s.c] || s.c, bg: s.bg ? (this.th[s.bg] || s.bg) : 'transparent' }));
+        });
+      }
+    }
+
+    // ---- chrome shared by every screen (chat tail · editor · footer) ----
+    const userMsg = (cv, y, text) => { cv.fill(y, 'userBg'); cv.put(1, y, text, 'text', 'userBg'); };
+    const editor = (cv, y, t, th, text = '') => {
+      cv.put(0, y, rep('─', W), 'border');
+      let x = cv.put(0, y + 1, '> ' + text, 'text');
+      if (Math.floor(t / 5) % 2 === 0) cv.put(x, y + 1, ' ', 'bg', 'text');
+      cv.put(0, y + 2, rep('─', W), 'border');
+    };
+    const footer = (cv, y, t, o) => {
+      const sep = '  >  ';
+      const brand = o.working ? `K-π ${SP[t % 10]} ${Math.floor(t / 10) + (o.base || 0)}s` : 'K-π';
+      const segs = [[brand, 'accent'], [`⬡ ${o.model || 'claude-opus-4'}`, 'accent'], [`● ${o.thinking || 'high'}`, 'text'], ['📁 K-pi', 'text'], [`⎇ ${o.branch || 'main'}`, 'success'], [o.ctx || '▦ 12%/200k', o.ctxTone || 'success'], [o.cost || '(sub)', 'warning']];
+      let x = 0;
+      segs.forEach((s, i) => { if (i) x = cv.put(x, y, sep, 'dim'); x = cv.put(x, y, s[0], s[1]); });
+      if (o.request && W - x - len(o.request) >= 4) cv.putR(W, y, o.request, 'muted');
+      if (o.status) cv.put(0, y + 1, o.status, 'muted');
+    };
+
+    // ---- v2 widget primitives ----
+    const tabBar = (cv, y, title, active, right) => {
+      const tabs = ['BOARD', 'GRAPH', 'FILES', 'EVENTS', 'ACCOUNTS'];
+      let x = cv.put(0, y, '┌─', 'border');
+      x = cv.put(x, y, ` ${title} `, 'accent');
+      x = cv.put(x, y, '─', 'border');
+      tabs.forEach((tb, i) => {
+        if (i === active) { x = cv.put(x, y, '┤', 'border'); x = cv.put(x, y, ` ${i + 1} ${tb} `, 'bg', 'accent'); x = cv.put(x, y, '├', 'border'); }
+        else { x = cv.put(x, y, '─', 'border'); x = cv.put(x, y, ` ${i + 1} ${tb} `, 'muted'); x = cv.put(x, y, '─', 'border'); }
+      });
+      cv.put(x, y, rep('─', W - x), 'border');
+      const r = ` ${right} `;
+      cv.put(W - 2 - len(r), y, r, 'text');
+      cv.put(W - 1, y, '┐', 'border');
+    };
+    const frame = (cv, y0, y1, hints) => {
+      for (let y = y0 + 1; y < y1; y++) { cv.put(0, y, '│', 'border'); cv.put(W - 1, y, '│', 'border'); }
+      cv.put(0, y1, '└─', 'border');
+      let x = cv.put(2, y1, ` ${hints} `, 'dim');
+      cv.put(x, y1, rep('─', W - 1 - x) + '┘', 'border');
+    };
+    const stopBox = (cv, x, y, text, tone) => { cv.box(x, y, len(text) + 4, 3, tone); cv.put(x + 2, y + 1, text, tone); };
+    const STAGES = ['ac-compile', 'specify', 'plan', 'implement', 'test', 'bounds', 'review', 'ship'];
+    // status: 'done' | 'current' | 'pending' | 'fail'
+    const rail = (cv, x, y, t, items) => {
+      items.forEach((it, i) => {
+        if (i) { const prev = items[i - 1]; const tone = prev.s === 'done' ? 'success' : prev.s === 'fail' ? 'error' : 'dim'; x = cv.put(x, y, tone === 'dim' ? ' ╌ ' : ' ━ ', tone); }
+        const g = it.s === 'done' ? '✓' : it.s === 'current' ? SP[t % 10] : it.s === 'fail' ? '✕' : it.s === 'human' ? (Math.floor(t / 6) % 2 ? '◉' : '○') : '○';
+        const tone = it.s === 'done' ? 'success' : it.s === 'current' || it.s === 'human' ? 'accent' : it.s === 'fail' ? 'error' : 'dim';
+        x = cv.put(x, y, `${g} ${it.l}`, tone);
+        if (it.t) x = cv.put(x, y, ` ${it.t}`, it.s === 'current' ? 'accent' : 'muted');
+      });
+      return x;
+    };
+    const lamps = (cv, x, y, lit) => {
+      x = cv.put(x, y, 'FILES ', 'text');
+      ['task.json', 'context.md', 'candidate.json', 'evidence.json', 'verdict.json', 'events.jsonl'].forEach((f, i) => { const on = lit[i]; x = cv.put(x, y, `${i ? ' ' : ''}${on ? '●' : '○'} ${f}`, on ? 'accent' : 'dim'); });
+      return x;
+    };
+    const kv = (cv, x, y, pairs) => { pairs.forEach(([k, v, tone], i) => { if (i) x = cv.put(x, y, '  ', 'text'); x = cv.put(x, y, k + ' ', 'muted'); x = cv.put(x, y, v, tone || 'text'); }); return x; };
+
+    this._lib = { W, AMBER, BLUE, SP, JOB, JOBS, len, rep, fmt, spark, meter, Canvas, userMsg, editor, footer, tabBar, frame, stopBox, STAGES, rail, lamps, kv };
+    return this._lib;
+  }
+
+  // 1a — paintCompact as shipped, width 160
+  build1a(t) {
+    const L = this.lib(); const { Canvas, AMBER, JOB, rep, len } = L;
+    const cv = new Canvas(23, AMBER);
+    L.userMsg(cv, 1, `/kpi Add GET /health returning status 200 and JSON {"status":"ok"}; cmd npm test exits 0; writes only src/health/** and test/health/**`);
+    cv.put(0, 3, `K-π handoff.created job=${JOB} r0`);
+    cv.put(0, 4, `K-π research.started job=${JOB} r0 mode=local net=no-network`);
+    cv.put(0, 5, `K-π research.completed job=${JOB} r0 mode=local net=no-network n=3`);
+    // header strip
+    let y = 7, x = 0;
+    [['K-π GRAPH CONTROL', 'accent'], ['MODE gated', 'text'], [`JOB ${JOB}`, 'text'], ['ROUND 0/3', 'text']].forEach((s, i) => { if (i) x = cv.put(x, y, ' │ ', 'dim'); x = cv.put(x, y, s[0], s[1]); });
+    // stage cells: cellInner 18, 8 per row (cellLayout at width 160)
+    const inner = 18, cur = 0;
+    const cells = L.STAGES.map((s, i) => ({ id: String(i + 1).padStart(2, '0'), label: s, st: i === cur ? 'CURRENT' : i < cur ? 'DONE' : 'PENDING' }));
+    const toneOf = c => c.st === 'CURRENT' ? 'accent' : c.st === 'DONE' ? 'success' : 'dim';
+    const bTone = c => c.st === 'CURRENT' ? 'borderAccent' : 'border';
+    const jt = (l, r) => r && r.st === 'CURRENT' ? 'borderAccent' : l && l.st === 'CURRENT' ? 'borderAccent' : 'border';
+    const border = (yy, o, j, c) => { x = cv.put(0, yy, o, jt(undefined, cells[0])); cells.forEach((cell, i) => { x = cv.put(x, yy, rep('─', inner), bTone(cell)); const n = cells[i + 1]; x = cv.put(x, yy, n ? j : c, jt(cell, n)); }); };
+    const text = (yy, f) => { x = cv.put(0, yy, '│', jt(undefined, cells[0])); cells.forEach((cell, i) => { cv.putC(x, inner, yy, f(cell), toneOf(cell)); x += inner; x = cv.put(x, yy, '│', jt(cell, cells[i + 1])); }); };
+    border(8, '┌', '┬', '┐'); text(9, c => `${c.id} ${c.label}`); text(10, c => c.st); border(11, '└', '┴', '┘');
+    L.lamps(cv, 1, 12, [true, true, false, false, false, true]); cv.put(0, 12, 'FILES  ', 'text');
+    // telemetry beside STOP box (leftWidth 142, gap 2)
+    x = 0; y = 13;
+    [[`LOOP ${JOB}`, 'text'], ['STAGE 01 ac-compile', 'accent'], ['NODE ac-compiler', 'text'], ['GATE machine', 'text']].forEach((s, i) => { if (i) x = cv.put(x, y, '  '); x = cv.put(x, y, s[0], s[1]); });
+    x = 0; y = 14;
+    [['ROUND 0/3', 'text'], ['PASS/FAIL PENDING', 'dim'], ['FINGERPRINT —', 'muted']].forEach((s, i) => { if (i) x = cv.put(x, y, '  '); x = cv.put(x, y, s[0], s[1]); });
+    x = cv.put(0, 15, 'CONTEXT ', 'muted');
+    [['product ●', 'text'], ['structure ●', 'text'], ['tech ○', 'dim']].forEach((s, i) => { if (i) x = cv.put(x, 15, '  '); x = cv.put(x, 15, s[0], s[1]); });
+    x = cv.put(x, 15, '  AGENTS 0  ', 'text'); x = cv.put(x, 15, 'BUS ○', 'dim'); cv.put(x, 15, '  ROUTE anthropic/home', 'text');
+    L.stopBox(cv, 144, 13, 'STOP RUNNING', 'warning');
+    L.editor(cv, 17, t, AMBER);
+    L.footer(cv, 20, t, { working: true, base: 4, request: '/kpi Add GET /health returning status 200 and JSON {"status":"ok"}; cmd n…', status: 'K-π LOOP gated r0/3 STAGE ac-compile GATE machine ROUTE anthropic/home' });
+    return cv.rows();
+  }
+
+  // 1b — BOARD tab, running r1 implement
+  build1b(t) {
+    const L = this.lib(); const { Canvas, AMBER, JOB, JOBS, fmt, spark, meter } = L;
+    const cv = new Canvas(17, AMBER);
+    const sec = Math.floor(t / 10);
+    cv.put(0, 1, `K-π tool.request job=${JOB} r1 status=ok`, 'muted');
+    cv.put(0, 2, `K-π checkpoint job=${JOB} r1 graph/checkpoint-000007.json`, 'muted');
+    const y0 = 4;
+    L.tabBar(cv, y0, 'K-π GRAPH CONTROL', 0, `MODE gated · JOB ${JOBS} · ROUND 1/3`);
+    L.rail(cv, 2, y0 + 1, t, [
+      { l: '01 ac-compile', s: 'done', t: '4s' }, { l: '02 specify', s: 'done', t: '41s' }, { l: '03 plan', s: 'done', t: '22s' },
+      { l: '04 implement', s: 'current', t: fmt(72 + sec) }, { l: '05 test', s: 'pending' }, { l: '06 bounds', s: 'pending' }, { l: '07 review', s: 'pending' }, { l: '08 ship', s: 'pending' }]);
+    // NOW line — what is happening this second
+    let x = cv.put(2, y0 + 2, 'NOW  ', 'accent');
+    x = cv.put(x, y0 + 2, 'implement', 'text'); x = cv.put(x, y0 + 2, ' › ', 'dim'); x = cv.put(x, y0 + 2, 'bash', 'text'); x = cv.put(x, y0 + 2, '  npm test -- --filter health', 'warning');
+    x = cv.put(x, y0 + 2, `  ${fmt(12 + sec)}`, 'accent');
+    x = cv.put(x, y0 + 2, '   step 7/24 · writes 3 files', 'muted'); x = cv.put(x, y0 + 2, ' in bounds', 'success'); cv.put(x, y0 + 2, ' · next: 05 test', 'muted');
+    L.kv(cv, 2, y0 + 3, [['ROUND', '1/3'], ['PASS/FAIL', 'PENDING', 'dim'], ['FINGERPRINT', '—', 'dim'], ['GATE', 'machine'], ['NODE', 'implement'], ['AC', '2/3 ██░', 'text'], ['BOUNDS', 'held', 'success'], ['RESEARCH', 'local 3 src']]);
+    x = L.lamps(cv, 2, y0 + 4, [true, true, true, false, false, true]);
+    L.kv(cv, x + 3, y0 + 4, [['CONTEXT', 'product ● structure ● tech ●'], ['AGENTS', '1'], ['BUS', '●']]);
+    // budgets
+    const ph = Math.floor(t / 10);
+    const cost = 0.84 + sec * 0.0011;
+    const cs = Array.from({ length: 12 }, (_, i) => Math.min(1, (i + ph % 3) / 14));
+    const ctx = Array.from({ length: 12 }, (_, i) => Math.min(1, 0.15 + (i + ph % 4) / 20));
+    const tok = Array.from({ length: 12 }, (_, i) => 0.3 + 0.7 * Math.abs(Math.sin((i + ph) * 1.3)));
+    x = cv.put(2, y0 + 5, 'COST ', 'muted'); x = cv.put(x, y0 + 5, `$${cost.toFixed(2)}/$5.00 `, 'warning'); x = cv.put(x, y0 + 5, spark(cs) + ' ' + meter(cost / 5) + ` ${Math.round(cost / 5 * 100)}%`, 'warning');
+    x = cv.put(x, y0 + 5, '   CTX ', 'muted'); x = cv.put(x, y0 + 5, '42%/200k ' + spark(ctx), 'success');
+    x = cv.put(x, y0 + 5, '   TOK ', 'muted'); x = cv.put(x, y0 + 5, `${(38.2 + sec * 0.05).toFixed(1)}k ` + spark(tok), 'text');
+    x = cv.put(x, y0 + 5, '   TIME ', 'muted'); x = cv.put(x, y0 + 5, `${fmt(401 + sec)}/30m`, 'text');
+    x = cv.put(x, y0 + 5, '   ROUNDS ', 'muted'); x = cv.put(x, y0 + 5, 'r0 ▇▇▇▇▇ 2m03s ', 'success'); cv.put(x, y0 + 5, `r1 ▇▇▇${L.SP[t % 10]} ${fmt(101 + sec)}`, 'accent');
+    L.stopBox(cv, 141, y0 + 1, 'STOP RUNNING', 'warning');
+    L.frame(cv, y0, y0 + 6, 'tab/shift+tab switch · 1-5 jump · ctrl+k full board · esc interrupt');
+    L.editor(cv, 12, t, AMBER);
+    L.footer(cv, 15, t, { working: true, base: 401, ctx: '▦ 42%/200k', request: 'add healthcheck', status: 'K-π LOOP gated r1/3 STAGE implement GATE machine ROUTE anthropic/home' });
+    return cv.rows();
+  }
+
+  // 1c — GRAPH tab, FAIL → retry
+  build1c(t) {
+    const L = this.lib(); const { Canvas, AMBER, JOB, JOBS, fmt, len } = L;
+    const cv = new Canvas(20, AMBER);
+    const sec = Math.floor(t / 10);
+    cv.put(0, 1, `K-π review.verdict job=${JOB} r1 FAIL not-approved blocking=2 fp=e19fa3fb0278a1c4`, 'muted');
+    cv.put(0, 2, `K-π tool.request job=${JOB} r2 status=ok`, 'muted');
+    const y0 = 4;
+    L.tabBar(cv, y0, 'K-π GRAPH CONTROL', 1, `MODE gated · JOB ${JOBS} · ROUND 2/3`);
+    // main path
+    const nodes = [['ac-compiler', 'done'], ['specify', 'done'], ['plan', 'done'], ['implement', 'current'], ['test', 'fail'], ['review', 'pending'], ['human', 'pending'], ['ship', 'pending'], ['__end__', 'pending']];
+    const yM = y0 + 3, xs = [];
+    let x = 3;
+    nodes.forEach(([n, s], i) => {
+      if (i) { const p = nodes[i - 1][1]; const tone = p === 'done' ? 'success' : p === 'fail' ? 'error' : 'dim'; x = cv.put(x, yM, p === 'done' ? ' ━━▶ ' : p === 'fail' ? ' ╌╌▶ ' : ' ╌╌▶ ', tone); }
+      const g = s === 'done' ? '✓' : s === 'current' ? L.SP[t % 10] : s === 'fail' ? '✕' : '○';
+      const tone = s === 'done' ? 'success' : s === 'current' ? 'accent' : s === 'fail' ? 'error' : 'dim';
+      xs.push([x, x + len(n) + 4]);
+      if (s === 'current') { cv.put(x, yM, `[ ${n} ${g} ]`, 'bg', 'accent'); x += len(n) + 6; xs[xs.length - 1][1] = x; }
+      else x = cv.put(x, yM, `[${n} ${g}]`, tone);
+    });
+    const mid = i => Math.floor((xs[i][0] + xs[i][1]) / 2);
+    // retry loop test → implement (flowing)
+    const a = xs[3][0] + 1, b = xs[4][1] - 2;
+    cv.put(a, yM - 1, '▼', 'accent'); cv.put(b, yM - 1, '│', 'accent');
+    const loopW = b - a - 1;
+    let flow = ''; for (let i = 0; i < loopW; i++) flow += ((i + Math.floor(t / 2)) % 5 === 0) ? '◀' : '━';
+    cv.put(a, yM - 2, '┌', 'accent'); cv.put(a + 1, yM - 2, flow, 'accent'); cv.put(b, yM - 2, '┐', 'accent');
+    cv.put(b + 3, yM - 2, 'retry #1 · test.passed=false', 'accent');
+    // branches
+    const c0 = mid(0), c3 = mid(3), c4 = mid(4), c5 = mid(5);
+    cv.put(c0, yM + 1, '│', 'dim'); cv.put(c3, yM + 1, '▲', 'dim');
+    x = cv.put(c0, yM + 2, '└╌▶ [plan-check ○] ', 'dim'); cv.put(x, yM + 2, L.rep('╌', c3 - x) + '┘', 'dim');
+    cv.put(c4, yM + 1, '│', 'dim'); cv.put(c4, yM + 2, '└╌▶ [unsafe ○]', 'dim');
+    const c5r = xs[5][1] + 1;
+    cv.put(c5r, yM + 1, '│', 'dim'); cv.put(c5r, yM + 2, '└╌▶ [needs-human ○]', 'dim');
+    x = cv.put(c3, yM + 3, '└', 'dim'); x = cv.put(x, yM + 3, L.rep('╌', c5 - x - 20), 'dim'); x = cv.put(x, yM + 3, ' review REVISE ', 'dim'); cv.put(x, yM + 3, L.rep('╌', c5 - x) + '┘', 'dim');
+    // why + now
+    let y = yM + 4;
+    x = cv.put(2, y, 'EDGE ', 'accent'); x = cv.put(x, y, 'test ━▶ implement', 'text'); x = cv.put(x, y, '   when ', 'muted'); x = cv.put(x, y, 'bounds.held=true ∧ test.passed=false', 'text');
+    x = cv.put(x, y, '   ROUND 2/3   ', 'text'); x = cv.put(x, y, 'FAIL ● last verifier', 'error'); x = cv.put(x, y, '  npm test exit 1 · 2/3 acceptance red ', 'muted'); cv.put(x, y, '(AC-02 AC-03)', 'error');
+    y++;
+    x = cv.put(2, y, 'NOW  ', 'accent'); x = cv.put(x, y, 'implement', 'text'); x = cv.put(x, y, ' › ', 'dim'); x = cv.put(x, y, 'edit', 'text'); x = cv.put(x, y, '  src/health/index.ts', 'warning'); x = cv.put(x, y, `  ${fmt(34 + sec)}`, 'accent');
+    x = cv.put(x, y, '   next: test ▶ review ▶ human   ', 'muted'); x = cv.put(x, y, 'retries left 1', 'text'); cv.put(x, y, ' · same fingerprint twice ends NO_PROGRESS', 'muted');
+    L.stopBox(cv, 141, y0 + 1, 'STOP RUNNING', 'warning');
+    y++;
+    L.frame(cv, y0, y, '← → walk nodes · enter open transcript · tab next');
+    L.editor(cv, y + 2, t, AMBER);
+    L.footer(cv, y + 5, t, { working: true, base: 34, ctx: '▦ 58%/200k', ctxTone: 'warning', request: 'add healthcheck', status: 'K-π LOOP gated r2/3 STAGE implement GATE machine ROUTE anthropic/home' });
+    return cv.rows();
+  }
+
+  // 1d — EVENTS tab, no-network + failover
+  build1d(t) {
+    const L = this.lib(); const { Canvas, AMBER, JOB, JOBS, fmt, spark, meter } = L;
+    const cv = new Canvas(25, AMBER);
+    const sec = Math.floor(t / 10);
+    cv.put(0, 1, `K-π accounts.failover job=${JOB} r1 anthropic/home → anthropic/work (quota 5% remaining)`, 'muted');
+    cv.put(0, 2, `K-π agent.spawned job=${JOB} r1 reviewer reviewer-01 pid=48122`, 'muted');
+    const y0 = 4;
+    L.tabBar(cv, y0, 'K-π GRAPH CONTROL', 3, `MODE gated · JOB ${JOBS} · ROUND 1/3`);
+    // research + route status row (the degraded state must not blend in)
+    let x = cv.put(2, y0 + 1, 'RESEARCH ', 'muted'); x = cv.put(x, y0 + 1, 'local · no-network engine · provider failures', 'text'); x = cv.put(x, y0 + 1, '   EXA ✕  PPLX ✕', 'error');
+    x = cv.put(x, y0 + 1, '     ROUTE ', 'muted'); x = cv.put(x, y0 + 1, 'anthropic/work', 'text'); x = cv.put(x, y0 + 1, '  via work 71% 5h', 'muted'); x = cv.put(x, y0 + 1, '   home 4% cd 58m', 'warning'); cv.put(x, y0 + 1, '   AGENTS 1  BUS ●', 'text');
+    // feed (left, 100 cols) — window slides to simulate streaming
+    const pool = [
+      ['11:45:58', 'research.started', 'r1 mode=exa net=online q=express healthcheck endpoint pattern…', 'text'],
+      ['11:46:07', 'research.failed', 'svc=exa 503 after 3 attempts', 'error'],
+      ['11:46:14', 'research.failed', 'svc=perplexity timeout 8000ms', 'error'],
+      ['11:46:14', 'research.completed', 'r1 mode=local net=no-network n=3 reason=provider failures', 'warning'],
+      ['11:46:31', 'accounts.failover', 'anthropic/home → anthropic/work (quota 5% remaining)', 'warning'],
+      ['11:46:31', 'tool.request', 'implement bash  npm test -- --filter health', 'text'],
+      ['11:46:44', 'tool.request', 'implement edit  src/health/index.ts (+9/-1)', 'text'],
+      ['11:47:02', 'checkpoint', 'graph/checkpoint-000009.json', 'muted'],
+      ['11:47:05', 'tool.request', 'test bash  npm test', 'text'],
+      ['11:47:19', 'agent.spawned', 'reviewer reviewer-01 pid=48122', 'text'],
+      ['11:47:20', 'tool.request', 'review read  evidence.json', 'text'],
+      ['11:47:33', 'review.verdict', 'PASS approved blocking=0 fp=e19fa3fb0278', 'success'],
+    ];
+    const off = Math.floor(t / 35) % 6, rows = pool.slice(off, off + 6);
+    const yF = y0 + 2;
+    cv.put(2, yF, 'EVENTS.JSONL', 'accent'); cv.put(15, yF, `· ${14 + off} records chained ✓ · follow`, 'muted');
+    rows.forEach((r, i) => { const y = yF + 1 + i; x = cv.put(2, y, r[0], 'dim'); x = cv.put(x + 2, y, r[1].padEnd(19), r[3] === 'text' ? 'text' : r[3]); cv.put(x + 1, y, r[2], r[3] === 'muted' ? 'muted' : 'text'); });
+    const yL = yF + 7; x = cv.put(2, yL, '▸ live   ', 'accent'); x = cv.put(x, yL, 'tool.request'.padEnd(19), 'text'); x = cv.put(x + 1, yL, 'implement bash  npm test -- --filter health  ', 'text'); cv.put(x, yL, `${L.SP[t % 10]} ${fmt(sec)}`, 'accent');
+    // charts (right)
+    const cx = 104, cw = 55;
+    cv.box(cx - 2, yF, cw, 9, 'border'); cv.put(cx, yF, ' TELEMETRY ', 'accent');
+    const ph = Math.floor(t / 10);
+    const cost = 1.42 + sec * 0.001;
+    const cs = Array.from({ length: 14 }, (_, i) => Math.min(1, (i + ph % 3) / 16));
+    const ct = Array.from({ length: 14 }, (_, i) => Math.min(1, 0.3 + (i + ph % 4) / 22));
+    const tk = Array.from({ length: 14 }, (_, i) => 0.25 + 0.75 * Math.abs(Math.sin((i + ph) * 1.1)));
+    x = cv.put(cx, yF + 1, 'COST     ', 'muted'); x = cv.put(x, yF + 1, `$${cost.toFixed(2)}/$5.00  `, 'warning'); cv.put(x, yF + 1, meter(cost / 5) + ` ${Math.round(cost / 5 * 100)}%`, 'warning');
+    cv.put(cx + 9, yF + 2, spark(cs) + '  +$0.06/min · ~57m to cap', 'muted');
+    x = cv.put(cx, yF + 3, 'CONTEXT  ', 'muted'); x = cv.put(x, yF + 3, '61%/200k        ', 'warning'); cv.put(x, yF + 3, meter(0.61) + '  ' + spark(ct), 'warning');
+    x = cv.put(cx, yF + 4, 'TOKENS   ', 'muted'); x = cv.put(x, yF + 4, `in ${(31.4 + sec * 0.02).toFixed(1)}k  out 6.8k  `, 'text'); cv.put(x, yF + 4, spark(tk), 'text');
+    x = cv.put(cx, yF + 5, 'ROUNDS   ', 'muted'); x = cv.put(x, yF + 5, 'r0 ▇▇▇▇▇▇ 2m03s  ', 'success'); x = cv.put(x, yF + 5, `r1 ▇▇▇▇${L.SP[t % 10]} ${fmt(101 + sec)}`, 'accent');
+    x = cv.put(cx, yF + 6, 'TIME     ', 'muted'); x = cv.put(x, yF + 6, `${fmt(517 + sec)}/30m       `, 'text'); cv.put(x, yF + 6, meter((517 + sec) / 1800), 'text');
+    x = cv.put(cx, yF + 7, 'STEPS    ', 'muted'); x = cv.put(x, yF + 7, '9/24            ', 'text'); cv.put(x, yF + 7, meter(9 / 24) + '  workers 1/2', 'text');
+    const yB = yF + 9; // row after the TELEMETRY box (box spans yF..yF+8)
+    x = L.lamps(cv, 2, yB, [true, true, true, false, false, true]);
+    L.kv(cv, x + 3, yB, [['STAGE', '04 implement', 'accent'], ['ROUND', '1/3']]);
+    cv.putR(L.W - 3, yB, 'STOP RUNNING', 'warning');
+    L.frame(cv, y0, yB + 1, 'j/k scroll · f follow · enter open record · tab next');
+    L.editor(cv, yB + 3, t, AMBER);
+    L.footer(cv, yB + 6, t, { working: true, base: 517, ctx: '▦ 61%/200k', ctxTone: 'warning', request: 'add healthcheck', status: 'K-π LOOP gated r1/3 STAGE implement GATE machine ROUTE anthropic/work' });
+    return cv.rows();
+  }
+
+  // 1e — paused on operator, protocol-blue
+  build1e(t) {
+    const L = this.lib(); const { Canvas, BLUE, JOB, JOBS, fmt } = L;
+    const cv = new Canvas(21, BLUE);
+    const sec = Math.floor(t / 10);
+    cv.put(0, 1, `K-π review.verdict job=${JOB} r1 PASS approved blocking=0 nonblocking=1 fp=e19fa3fb0278a1c4`, 'muted');
+    cv.put(0, 2, `K-π approval.requested job=${JOB} r1 node=human`, 'muted');
+    const y0 = 4;
+    L.tabBar(cv, y0, 'K-π PROTOCOL', 0, `MODE gated · JOB ${JOBS} · ROUND 1/3 · GATE approval`);
+    L.rail(cv, 2, y0 + 1, t, [
+      { l: '01 ac-compile', s: 'done', t: '4s' }, { l: '02 specify', s: 'done', t: '41s' }, { l: '03 plan', s: 'done', t: '22s' }, { l: '04 implement', s: 'done', t: '3m12s' },
+      { l: '05 test', s: 'done', t: '38s' }, { l: '06 bounds', s: 'done', t: '1s' }, { l: '07 review', s: 'done', t: '54s' }, { l: 'human', s: 'human', t: fmt(42 + sec) }, { l: '08 ship', s: 'pending' }]);
+    // waiting panel
+    const px = 2, pw = 112, py = y0 + 2;
+    cv.box(px, py, pw, 6, 'borderAccent'); cv.put(px + 2, py, ' WAITING ON OPERATOR ', 'accent');
+    cv.put(px + 2, py + 1, 'All quality gates and isolated review are green. Approve this change for a commit on the job branch,', 'text');
+    cv.put(px + 2, py + 2, 'a push of that branch to origin, and a pull request?', 'text');
+    let x = cv.put(px + 2, py + 3, 'diff ', 'accent'); x = cv.put(x, py + 3, '+12', 'success'); x = cv.put(x, py + 3, '/', 'text'); x = cv.put(x, py + 3, '-3', 'error'); x = cv.put(x, py + 3, '  src/health/index.ts  test/health/health.test.ts', 'text');
+    x = cv.put(x, py + 3, '     PASS ● reviewer', 'success'); cv.put(x, py + 3, '  fp e19fa3fb0278  1 note', 'muted');
+    x = cv.put(px + 2, py + 4, '[y]', 'bg', 'accent'); x = cv.put(x, py + 4, ' approve   ', 'text');
+    x = cv.put(x, py + 4, '[n]', 'text', 'selBg'); x = cv.put(x, py + 4, ' deny → revise   ', 'text');
+    x = cv.put(x, py + 4, '[d]', 'text', 'selBg'); x = cv.put(x, py + 4, ' show diff   ', 'text');
+    x = cv.put(x, py + 4, '[v]', 'text', 'selBg'); x = cv.put(x, py + 4, ' verdict.json   ', 'text');
+    x = cv.put(x, py + 4, '[e]', 'text', 'selBg'); cv.put(x, py + 4, ' evidence.json', 'text');
+    // stop states
+    const sx = 118, sy = py;
+    cv.box(sx, sy, 19, 5, 'border'); cv.put(sx + 2, sy, ' STOP STATES ', 'accent');
+    cv.put(sx + 2, sy + 1, 'DONE      ○', 'dim'); cv.put(sx + 2, sy + 2, 'BLOCKED   ○', 'dim'); cv.put(sx + 2, sy + 3, `APPROVAL  ${Math.floor(t / 6) % 2 ? '●' : '◉'}`, 'accent');
+    L.stopBox(cv, 141, sy, 'STOP RUNNING', 'warning');
+    cv.put(141, sy + 3, `GATE human`, 'accent'); cv.put(141, sy + 4, `waiting ${fmt(42 + sec)}`, 'muted');
+    // lamps + laws
+    L.lamps(cv, 2, py + 6, [true, true, true, true, true, true]);
+    x = cv.put(2, py + 7, 'THREE LAWS ', 'accent'); cv.put(x, py + 7, '1 outer loop owns the return path · 2 shared files are the contract · 3 irreversible effects stay outside the worker', 'muted');
+    L.frame(cv, y0, py + 8, 'y approve · n deny · d diff · tab next · ctrl+k full board');
+    L.editor(cv, py + 10, t, BLUE);
+    L.footer(cv, py + 13, t, { working: false, ctx: '▦ 47%/200k', request: 'add healthcheck', status: 'K-π LOOP gated r1/3 STAGE human GATE human ROUTE anthropic/home' });
+    return cv.rows();
+  }
+
+  // 1f — DONE · EXHAUSTED · idle
+  build1f(t) {
+    const L = this.lib(); const { Canvas, AMBER, JOB, JOBS, fmt } = L;
+    const cv = new Canvas(19, AMBER);
+    const done = ['01 ac-compile', '02 specify', '03 plan', '04 implement', '05 test', '06 bounds', '07 review', '08 ship'].map(l => ({ l, s: 'done' }));
+    // DONE
+    let y0 = 0;
+    L.tabBar(cv, y0, 'K-π GRAPH CONTROL', 0, `MODE gated · JOB ${JOBS} · ROUND 1/3`);
+    let x = L.rail(cv, 2, y0 + 1, t, done); cv.put(x + 2, y0 + 1, '12m08s total', 'muted');
+    x = cv.put(2, y0 + 2, 'SHIPPED ', 'success'); x = cv.put(x, y0 + 2, 'cfcda90', 'warning'); x = cv.put(x, y0 + 2, ' feat: healthcheck endpoint', 'text'); x = cv.put(x, y0 + 2, ` · kpi/${JOBS} pushed · PR #42 opened · 14 records chained ✓`, 'muted');
+    L.kv(cv, 2, y0 + 3, [['COST', '$1.86/$5.00', 'warning'], ['TOKENS', '61.3k'], ['ROUNDS', '1/3'], ['PASS', '● reviewer', 'success'], ['FINGERPRINT', '59106f5dc44b', 'muted']]);
+    cv.putR(139, y0 + 3, '/kpi verify · /kpi status · any key dismisses', 'dim');
+    L.stopBox(cv, 143, y0 + 1, 'STOP DONE', 'success');
+    L.frame(cv, y0, y0 + 4, 'DONE');
+    // EXHAUSTED
+    y0 = 6;
+    L.tabBar(cv, y0, 'K-π GRAPH CONTROL', 0, `MODE autopilot · JOB 20260903-migrate-logger-…-1f0b2c77 · ROUND 3/3`);
+    L.rail(cv, 2, y0 + 1, t, [{ l: '01 ac-compile', s: 'done' }, { l: '02 specify', s: 'done' }, { l: '03 plan', s: 'done' }, { l: '04 implement', s: 'done' }, { l: '05 test', s: 'fail', t: '×3' }, { l: '06 bounds', s: 'pending' }, { l: '07 review', s: 'pending' }, { l: '08 ship', s: 'pending' }]);
+    x = cv.put(2, y0 + 2, 'BUDGET ', 'error'); x = cv.put(x, y0 + 2, 'maxCostUsd 5.00 crossed at $5.02', 'text'); cv.put(x, y0 + 2, ' in round 3/3 · elapsed 27m50s/30m · steps 22/24 · no commit made', 'muted');
+    x = cv.put(2, y0 + 3, 'WHY    ', 'error'); x = cv.put(x, y0 + 3, 'test failed 3 rounds', 'text'); x = cv.put(x, y0 + 3, ' · AC-03 red each time · fingerprints differed so not NO_PROGRESS · ', 'muted'); cv.put(x, y0 + 3, 'FAIL ● last verifier', 'error');
+    x = cv.put(2, y0 + 4, 'NEXT   ', 'accent'); x = cv.put(x, y0 + 4, 'read task.json limits + state.json cost_usd', 'text'); cv.put(x, y0 + 4, ' · /kpi --max-cost-usd 8 <goal> resumes with a larger budget · /kpi verify checks the chain', 'muted');
+    L.stopBox(cv, 138, y0 + 1, 'STOP EXHAUSTED', 'error');
+    L.frame(cv, y0, y0 + 5, 'EXHAUSTED');
+    // idle
+    y0 = 13;
+    x = cv.put(0, y0, 'K-π ', 'accent'); x = cv.put(x, y0, 'no active job', 'muted'); x = cv.put(x, y0, `  ·  last ${JOBS} `, 'dim'); x = cv.put(x, y0, 'DONE', 'success'); cv.put(x, y0, ' 2h ago  ·  /kpi <goal> starts a gated loop  ·  /kpi status redraws the last board', 'dim');
+    L.editor(cv, y0 + 1, t, AMBER);
+    L.footer(cv, y0 + 4, t, { working: false, ctx: '▦ 12%/200k', request: '/kpi verify' });
+    return cv.rows();
+  }
+
+  renderVals() {
+    const t = this.state.tick;
+    return { s1a: this.build1a(t), s1b: this.build1b(t), s1c: this.build1c(t), s1d: this.build1d(t), s1e: this.build1e(t), s1f: this.build1f(t) };
+  }
+}
+</script>
+</body>
+</html>

@@ -107,7 +107,6 @@ export function formatUsage(remainingPercent: number | undefined, slotKind: Slot
 export interface KpiJobFields {
 	mode: string;
 	round: number;
-	maxRounds: number;
 	stage: string;
 	gate: "human" | "machine";
 	/** e.g. `4/5` when known */
@@ -118,14 +117,7 @@ export interface KpiJobFields {
 
 /** Second-line / full-preset job summary. */
 export function formatKpiJob(fields: KpiJobFields): string {
-	const parts = [
-		"K-π",
-		"LOOP",
-		fields.mode,
-		`r${fields.round}/${fields.maxRounds}`,
-		`STAGE ${fields.stage}`,
-		`GATE ${fields.gate}`,
-	];
+	const parts = ["K-π", "LOOP", fields.mode, `r${fields.round}`, `STAGE ${fields.stage}`, `GATE ${fields.gate}`];
 	if (fields.ac !== undefined && fields.ac.length > 0) {
 		parts.push(`AC ${fields.ac}`);
 	}

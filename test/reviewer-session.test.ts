@@ -15,7 +15,6 @@ import { BackgroundBus, createWorkerAdmission } from "../packages/coding-agent/s
 import {
 	type GraphAgentSessionFactory,
 	GraphEngine,
-	GraphNodeContractError,
 } from "../packages/coding-agent/src/kpi/extensions/graph/engine.ts";
 import type { GraphDefinition } from "../packages/coding-agent/src/kpi/extensions/graph/schema.ts";
 import { reviewerBusDependencies } from "./helpers/reviewer-bus.ts";
@@ -68,13 +67,7 @@ function reviewGraph(): GraphDefinition {
 			{ from: "review", to: "__end__" },
 			{ from: "implement", to: "__end__" },
 		],
-		limits: {
-			maxSteps: 4,
-			maxNodeRuns: 4,
-			maxConcurrency: 1,
-			maxCostUsd: 1,
-			timeoutMs: 10_000,
-		},
+		limits: { maxConcurrency: 1 },
 		policy: {
 			allowNonInteractive: false,
 			allowNonInteractiveMutations: false,
@@ -182,16 +175,14 @@ test("transcript saying PASS without a receipt-backed verdict fails closed", asy
 			jobId,
 			busDependencies: bus,
 		});
-		await assert.rejects(
-			() => engine.runUntilPause(),
-			(error: unknown) => {
-				assert.ok(
-					error instanceof GraphNodeContractError ||
-						(error instanceof Error && /receipt-backed|did not publish/u.test(error.message)),
-				);
-				return true;
-			},
-		);
+		// Failing closed is a contract defect: the run parks for the operator with
+		// the reason on record instead of reporting the transcript as a verdict.
+		const state = await engine.runUntilPause();
+		assert.equal(state.status, "paused");
+		assert.equal(state.pause?.recovery, "contract");
+		assert.match(state.pause?.reason ?? "", /receipt-backed|did not publish/u);
+		assert.equal(state.nodes.review.status, "failed");
+		assert.equal(state.values.review, undefined, "no verdict was committed");
 	} finally {
 		await rm(directory, { recursive: true, force: true });
 	}
@@ -294,7 +285,10 @@ test("shared admission blocks a graph reviewer when parent bus already holds max
 			jobId,
 			busDependencies: bus,
 		});
-		await assert.rejects(() => engine.runUntilPause(), /Background worker limit is 2/u);
+		const state = await engine.runUntilPause();
+		assert.equal(state.status, "paused");
+		assert.equal(state.pause?.recovery, "contract");
+		assert.match(state.pause?.reason ?? "", /Background worker limit is 2/u);
 
 		await parent.stopAll();
 		assert.equal(admission.counts().workers, 0);

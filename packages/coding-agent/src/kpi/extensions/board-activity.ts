@@ -317,8 +317,9 @@ function narrationLabel(node: string): string {
 const NARRATED_ERROR_CHARS = 80;
 
 /**
- * One chat line for a node start, finish, or route change — never for a
- * tool.request. Everything else narrates nothing.
+ * One chat line for a node start, finish, retry, gate answer, route change or
+ * the run's terminal — never for a tool.request. Everything else narrates
+ * nothing.
  */
 export function narrateRecord(record: EventRecord): { text: string; level: "info" | "warning" } | undefined {
 	if (record.type === "node.started") {
@@ -345,10 +346,29 @@ export function narrateRecord(record: EventRecord): { text: string; level: "info
 		if (result !== undefined) parts.push(`· ${result}`);
 		return { text: parts.join(" "), level: "info" };
 	}
+	if (record.type === "node.retry") {
+		const attempt = numberField(record, "attempt") ?? 1;
+		const reason = stringField(record, "reason") ?? "transient";
+		const seconds = Math.ceil((numberField(record, "delay_ms") ?? 0) / 1000);
+		return {
+			text: `K-π ↻ ${narrationLabel(record.node)} retry ${attempt} · ${reason} · next ${seconds}s`,
+			level: "warning",
+		};
+	}
+	if (record.type === "approval.result") {
+		const verdict = record.approved === true ? "approved" : "changes requested";
+		return { text: `K-π ⚑ ${narrationLabel(record.node)} gate ${verdict}`, level: "info" };
+	}
 	if (record.type === "accounts.failover") {
 		const from = stringField(record, "from") ?? "?";
 		const to = stringField(record, "to") ?? "?";
 		return { text: `K-π ⇄ route ${from} → ${to}`, level: "warning" };
+	}
+	if (record.type === "loop.terminal") {
+		const status = stringField(record, "status") ?? "NEEDS_HUMAN";
+		const recovery = stringField(record, "recovery");
+		const text = recovery === undefined ? `K-π ■ job ${status}` : `K-π ■ job ${status} ${recovery}`;
+		return { text, level: status === "DONE" ? "info" : "warning" };
 	}
 	return undefined;
 }

@@ -73,7 +73,6 @@ const RUNNING = {
 	job_id: JOB,
 	mode: "gated",
 	round: 2,
-	maxRounds: 3,
 	stage: "implement",
 	node: "implement",
 	status: "RUNNING",
@@ -85,7 +84,6 @@ const PAUSED = {
 	job_id: JOB,
 	mode: "gated",
 	round: 2,
-	maxRounds: 3,
 	stage: "review",
 	node: "human",
 	status: "RUNNING",
@@ -136,10 +134,16 @@ const checks = [
 	check(
 		"header-regions",
 		"amber/frame.raw",
-		["K-π", `MODE ${RUNNING.mode}`, `JOB ${JOB}`, `ROUND ${RUNNING.round}/${RUNNING.maxRounds}`].every((cell) =>
+		["K-π", `MODE ${RUNNING.mode}`, `JOB ${JOB}`, `ROUND ${RUNNING.round}`].every((cell) =>
 			amberRun.raw.includes(bytesOf(cell)),
 		),
 		(amberRun.text.match(/K-π\s+LOOP[^\n]*/u) ?? ["absent"])[0].replace(/\r/gu, "").trim(),
+	),
+	check(
+		"header-round-unbounded",
+		"amber/frame.txt",
+		new RegExp(`ROUND ${RUNNING.round}(?![\\d/])`, "u").test(amberRun.text.replace(/\r/gu, "")),
+		(amberRun.text.match(/ROUND[^\n]*/u) ?? ["absent"])[0].replace(/\r/gu, "").trim(),
 	),
 	check(
 		"context-layer-lamps",

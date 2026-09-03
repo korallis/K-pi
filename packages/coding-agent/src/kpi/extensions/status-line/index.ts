@@ -36,7 +36,6 @@ function kpiJobSnapshotEqual(left: KpiJobFields | undefined, right: KpiJobFields
 	return (
 		left.mode === right.mode &&
 		left.round === right.round &&
-		left.maxRounds === right.maxRounds &&
 		left.stage === right.stage &&
 		left.gate === right.gate &&
 		left.ac === right.ac
@@ -53,7 +52,6 @@ export function kpiJobWithLiveRoute(job: KpiJobFields | undefined): KpiJobFields
 	const next: KpiJobFields = {
 		mode: job.mode,
 		round: job.round,
-		maxRounds: job.maxRounds,
 		stage: job.stage,
 		gate: job.gate,
 		...(job.ac === undefined ? {} : { ac: job.ac }),
@@ -91,12 +89,6 @@ async function loadKpiJobFields(ctx: ExtensionContext): Promise<KpiJobFields | u
 	const runState = job.state;
 	const mode = typeof runState.mode === "string" ? runState.mode : "gated";
 	const round = typeof runState.round === "number" ? runState.round : 0;
-	const maxRounds =
-		typeof runState.maxRounds === "number"
-			? runState.maxRounds
-			: typeof (runState.limits as { maxRounds?: number } | undefined)?.maxRounds === "number"
-				? (runState.limits as { maxRounds: number }).maxRounds
-				: 3;
 	const stage = typeof runState.stage === "string" ? runState.stage : "unknown";
 	const paused =
 		runState.graph_status === "interrupted" ||
@@ -105,7 +97,6 @@ async function loadKpiJobFields(ctx: ExtensionContext): Promise<KpiJobFields | u
 	return {
 		mode,
 		round,
-		maxRounds,
 		stage,
 		gate: paused ? "human" : "machine",
 	};

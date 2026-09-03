@@ -2,7 +2,8 @@ import { createHash } from "node:crypto";
 import { open, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
-import type { TerminalStatus } from "./graph/stop.ts";
+import type { TransientReason } from "./graph/stop.ts";
+import type { LoopRecovery, RunStatus } from "./run-store.ts";
 
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 
@@ -32,6 +33,7 @@ export const EVENT_TYPES = [
 	"agent.denied",
 	"node.started",
 	"node.finished",
+	"node.retry",
 ] as const;
 
 export type EventType = (typeof EVENT_TYPES)[number];
@@ -89,7 +91,7 @@ export type EventInput =
 	| Event<"approval.result", { approved: boolean; question?: string; feedback?: string }>
 	| Event<"ac.refused", { quality: "executable" | "partial" | "narrative"; reason: string }>
 	| Event<"accounts.failover", { from: string; to: string; reason?: string }>
-	| Event<"loop.terminal", { status: TerminalStatus; reason?: string }>
+	| Event<"loop.terminal", { status: Exclude<RunStatus, "RUNNING">; reason?: string; recovery?: LoopRecovery }>
 	| Event<
 			"tool.request",
 			{
@@ -163,6 +165,10 @@ export type EventInput =
 				session?: string;
 				error?: string;
 			}
+	  >
+	| Event<
+			"node.retry",
+			{ attempt: number; reason: TransientReason; delay_ms: number; status?: number; message?: string }
 	  >;
 
 /** One graph node run starting or settling, as the board reads it back. */

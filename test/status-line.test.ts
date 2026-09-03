@@ -85,7 +85,6 @@ test("end-to-end footer assembly covers every account kind presets job route usa
 		kpiJob: {
 			mode: "gated",
 			round: 2,
-			maxRounds: 3,
 			stage: "implement",
 			gate: "human",
 			route: "anthropic/home",
@@ -95,7 +94,7 @@ test("end-to-end footer assembly covers every account kind presets job route usa
 	assert.match(oauth.line, /^K-π/);
 	assert.match(oauth.line, /\(sub\)/);
 	assert.doesNotMatch(oauth.line, /\$1\.50/);
-	assert.match(oauth.jobLine ?? "", /LOOP gated r2\/3 STAGE implement GATE human/);
+	assert.match(oauth.jobLine ?? "", /LOOP gated r2 STAGE implement GATE human/);
 	assert.match(oauth.jobLine ?? "", /ROUTE anthropic\/home/);
 	// usage not on default left rail
 	assert.equal(oauth.segments.usage, "55%");
@@ -125,7 +124,6 @@ test("end-to-end footer assembly covers every account kind presets job route usa
 		kpiJob: {
 			mode: "autopilot",
 			round: 1,
-			maxRounds: 5,
 			stage: "test",
 			gate: "machine",
 			ac: "4/5",
@@ -144,7 +142,7 @@ test("end-to-end footer assembly covers every account kind presets job route usa
 		cost: 0,
 		slotKind: "oauth",
 		preset: "compact",
-		kpiJob: { mode: "gated", round: 0, maxRounds: 3, stage: "plan", gate: "machine" },
+		kpiJob: { mode: "gated", round: 0, stage: "plan", gate: "machine" },
 	});
 	assert.doesNotMatch(compact.line, /thinking|git|context/i);
 	assert.match(compact.line, /\(sub\)/);
@@ -161,13 +159,12 @@ test("formatKpiJob is the documented second line shape", () => {
 		formatKpiJob({
 			mode: "gated",
 			round: 2,
-			maxRounds: 3,
 			stage: "implement",
 			gate: "human",
 			ac: "4/5",
 			route: "anthropic/home",
 		}),
-		"K-π LOOP gated r2/3 STAGE implement GATE human AC 4/5 ROUTE anthropic/home",
+		"K-π LOOP gated r2 STAGE implement GATE human AC 4/5 ROUTE anthropic/home",
 	);
 });
 
@@ -181,7 +178,6 @@ test("registered footer full preset embeds kpi job fields and refreshes after st
 			job_id: "footer-job",
 			mode: "gated",
 			round: 1,
-			maxRounds: 3,
 			stage: "implement",
 			status: "RUNNING",
 			graph_status: "running",
@@ -261,7 +257,7 @@ test("registered footer full preset embeds kpi job fields and refreshes after st
 		component = footerFactory!(tui, theme, footerData);
 		const line = component.render(200).join("\n");
 		assert.match(line, /LOOP gated/);
-		assert.match(line, /r1\/3/);
+		assert.match(line, /r1(?![\d/])/);
 		assert.match(line, /STAGE implement/);
 		assert.match(line, /GATE machine/);
 		assert.match(line, /ROUTE anthropic\/home/);
@@ -274,7 +270,6 @@ test("registered footer full preset embeds kpi job fields and refreshes after st
 				job_id: "footer-job",
 				mode: "gated",
 				round: 2,
-				maxRounds: 3,
 				stage: "test",
 				status: "RUNNING",
 				graph_status: "interrupted",
@@ -285,7 +280,7 @@ test("registered footer full preset embeds kpi job fields and refreshes after st
 		await new Promise((r) => setTimeout(r, 40));
 		assert.ok(renderCalls >= 1, "job field change should request render");
 		const updated = component.render(200).join("\n");
-		assert.match(updated, /r2\/3/);
+		assert.match(updated, /r2(?![\d/])/);
 		assert.match(updated, /STAGE test/);
 		assert.match(updated, /GATE human/);
 		assert.match(updated, /ROUTE anthropic\/home/);
@@ -299,7 +294,7 @@ test("registered footer full preset embeds kpi job fields and refreshes after st
 		assert.match(afterRoute, /ROUTE openai\/work/);
 		assert.doesNotMatch(afterRoute, /ROUTE anthropic\/home/);
 		assert.match(afterRoute, /\$|12%|openai/);
-		assert.match(afterRoute, /r2\/3/);
+		assert.match(afterRoute, /r2(?![\d/])/);
 		assert.match(afterRoute, /GATE human/);
 	} finally {
 		component?.dispose?.();
@@ -361,7 +356,7 @@ test("the registered footer draws the extension statuses it took over", async ()
 			getExtensionStatuses: () =>
 				new Map([
 					["accounts", "ACCOUNTS\n  ANTHROPIC default 40%\nROUTE   anthropic/home via default"],
-					["kpi", "K-π LOOP gated r2/3 STAGE implement GATE human ROUTE anthropic/home"],
+					["kpi", "K-π LOOP gated r2 STAGE implement GATE human ROUTE anthropic/home"],
 				]),
 			getExtensionStatusLine: () => "unused",
 		};
@@ -369,7 +364,7 @@ test("the registered footer draws the extension statuses it took over", async ()
 		const lines = component.render(200);
 		assert.equal(lines.length, 2, `expected the rail and one status row, got ${lines.length} line(s)`);
 		assert.ok(lines[0]?.includes("K-π"), "the first row is still the K-π rail");
-		assert.match(lines[1] ?? "", /LOOP gated r2\/3 STAGE implement GATE human/u);
+		assert.match(lines[1] ?? "", /LOOP gated r2 STAGE implement GATE human/u);
 		assert.equal((lines[1]?.match(/ROUTE/gu) ?? []).length, 1, "ROUTE prints once");
 		assert.doesNotMatch(lines[1] ?? "", /ACCOUNTS/u, "the accounts summary stays off the default row");
 
@@ -391,15 +386,15 @@ test("the registered footer draws the extension statuses it took over", async ()
 
 test("formatStatusRow keeps one job line by default and the accounts summary under full", () => {
 	const statuses = new Map([
-		["kpi", "K-π LOOP gated r0/3 STAGE plan GATE machine"],
+		["kpi", "K-π LOOP gated r0 STAGE plan GATE machine"],
 		["accounts", "ACCOUNTS\n  ANTHROPIC default ?%"],
 		["zeta", " trailing \n"],
 	]);
-	assert.equal(formatStatusRow(statuses, "default"), "K-π LOOP gated r0/3 STAGE plan GATE machine trailing");
-	assert.equal(formatStatusRow(statuses, "compact"), "K-π LOOP gated r0/3 STAGE plan GATE machine trailing");
+	assert.equal(formatStatusRow(statuses, "default"), "K-π LOOP gated r0 STAGE plan GATE machine trailing");
+	assert.equal(formatStatusRow(statuses, "compact"), "K-π LOOP gated r0 STAGE plan GATE machine trailing");
 	assert.equal(
 		formatStatusRow(statuses, "full"),
-		"ACCOUNTS ANTHROPIC default ?% K-π LOOP gated r0/3 STAGE plan GATE machine trailing",
+		"ACCOUNTS ANTHROPIC default ?% K-π LOOP gated r0 STAGE plan GATE machine trailing",
 	);
 	assert.equal(formatStatusRow(new Map(), "default"), undefined);
 	assert.equal(formatStatusRow(new Map([["accounts", "ACCOUNTS"]]), "default"), undefined);
@@ -411,7 +406,7 @@ test("the job line is hidden when the newest job is finished", async () => {
 	await mkdir(run, { recursive: true });
 	await writeFile(
 		join(run, "state.json"),
-		JSON.stringify({ job_id: "done-job", mode: "gated", round: 3, maxRounds: 3, stage: "ship", status: "DONE" }),
+		JSON.stringify({ job_id: "done-job", mode: "gated", round: 3, stage: "ship", status: "DONE" }),
 	);
 	let sessionStart: ((event: unknown, ctx: ExtensionContext) => void) | undefined;
 	const statuses = new Map<string, string | undefined>();
