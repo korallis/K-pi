@@ -937,6 +937,59 @@ test("two same-provider requests that finish in reverse order each cool only the
 	}
 });
 
+test("an assistant error pairs only with the one failed response still pending", async () => {
+	const subject = await routingHarness();
+	try {
+		await subject.command("login anthropic home", subject.context);
+		await subject.command("login anthropic work", subject.context);
+		await subject.command("login anthropic spare", subject.context);
+		const beforeHeaders = subject.hooks.get("before_provider_headers")!;
+		const afterResponse = subject.hooks.get("after_provider_response")!;
+		const messageEnd = subject.hooks.get("message_end")!;
+		const context = () => subject.hookContext(anthropicModel(), [anthropicModel()]);
+		const quotaError = {
+			role: "assistant",
+			stopReason: "error",
+			errorMessage: '400 {"error":{"message":"You are out of extra usage"}}',
+		};
+
+		// A on `work` answers 400 with no headers to classify; B on `spare` answers
+		// 200 and is still streaming when A's assistant error ends.
+		await subject.command("pin anthropic/work", subject.context);
+		await beforeHeaders({ type: "before_provider_headers", headers: {}, requestId: "A" }, context());
+		await subject.command("pin anthropic/spare", subject.context);
+		await beforeHeaders({ type: "before_provider_headers", headers: {}, requestId: "B" }, context());
+		await afterResponse({ type: "after_provider_response", requestId: "B", status: 200, headers: {} }, context());
+		await afterResponse({ type: "after_provider_response", requestId: "A", status: 400, headers: {} }, context());
+		// The route is on `spare` now, so A's failure cools `work` without moving
+		// the route (and without a failover diagnostic): attribution, not routing.
+		await messageEnd({ type: "message_end", message: quotaError }, context());
+		const afterA = subject.status.at(-1) ?? "";
+		assert.match(afterA, /work \?% cd/u, "the failed response's slot cooled");
+		assert.doesNotMatch(afterA, /spare \?% cd/u, "the response still streaming was never charged");
+
+		// Two failed responses pending at once is ambiguous: neither is charged,
+		// and the pair is dropped rather than guessed at.
+		await subject.command("pin anthropic/spare", subject.context);
+		await beforeHeaders({ type: "before_provider_headers", headers: {}, requestId: "C" }, context());
+		await subject.command("pin anthropic/home", subject.context);
+		await beforeHeaders({ type: "before_provider_headers", headers: {}, requestId: "D" }, context());
+		await afterResponse({ type: "after_provider_response", requestId: "C", status: 400, headers: {} }, context());
+		await afterResponse({ type: "after_provider_response", requestId: "D", status: 400, headers: {} }, context());
+		assert.equal(await messageEnd({ type: "message_end", message: quotaError }, context()), undefined);
+		const afterAmbiguous = subject.status.at(-1) ?? "";
+		assert.doesNotMatch(afterAmbiguous, /spare \?% cd/u);
+		assert.doesNotMatch(afterAmbiguous, /home \?% cd/u);
+		assert.equal(
+			await messageEnd({ type: "message_end", message: quotaError }, context()),
+			undefined,
+			"nothing left",
+		);
+	} finally {
+		await rm(subject.directory, { recursive: true, force: true });
+	}
+});
+
 test("a request that never answers leaks no attribution and blocks nothing", async () => {
 	const subject = await routingHarness();
 	try {

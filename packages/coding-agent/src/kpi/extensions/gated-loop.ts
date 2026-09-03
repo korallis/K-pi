@@ -627,16 +627,40 @@ export class ShipDeliveryError extends Error {
 	}
 }
 
+/** A thrown value as a sentence: an Error's message, a string as is, anything else serialized. */
+function describeError(error: unknown): string {
+	if (error instanceof Error) return error.message;
+	if (typeof error === "string") return error;
+	try {
+		return JSON.stringify(error) ?? String(error);
+	} catch {
+		return String(error);
+	}
+}
+
+/**
+ * The one place a NEEDS_HUMAN recovery is worded: the real reason, what the
+ * operator does about it, and the exact resume command. `recovery` is the
+ * signal the control plane keys off; this text is for the person reading it.
+ */
+function recoveryReason(kind: LoopRecovery, message: string, jobId: string): string {
+	const advice =
+		kind === "provider"
+			? "Select a healthy model or resolve that provider account"
+			: "Push the branch or open the pull request as named";
+	return `${message}. ${advice}, then resume with /kpi ${jobId}`;
+}
+
 /** The terminal a failed ship finalization writes, and how the operator gets past it. */
 function shipFailure(
 	error: unknown,
 	jobId: string,
 ): { terminalStatus: TerminalStatus; reason: string; recovery?: LoopRecovery } {
-	const message = error instanceof Error ? error.message : String(error);
+	const message = describeError(error);
 	if (error instanceof ShipDeliveryError) {
 		return {
 			terminalStatus: "NEEDS_HUMAN",
-			reason: `${message}. Put that right, then resume with /kpi ${jobId}`,
+			reason: recoveryReason("delivery", message, jobId),
 			recovery: "delivery",
 		};
 	}
@@ -1317,7 +1341,7 @@ async function driveUntilPause(
 					stopState: currentStopState,
 					shippedThisRun,
 					terminalStatus: "NEEDS_HUMAN",
-					reason: `${error.message}. Select a healthy model or resolve that provider account, then resume this job.`,
+					reason: recoveryReason("provider", error.message, task.job_id),
 					recovery: "provider",
 				};
 			}

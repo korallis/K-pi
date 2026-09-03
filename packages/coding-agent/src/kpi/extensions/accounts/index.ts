@@ -684,17 +684,49 @@ export function registerAccounts(pi: ExtensionAPI, dependencies: AccountsDepende
 		return moved;
 	};
 
-	let lastResponse:
-		| { served: SelectedSlot; status: number; classificationHandled: boolean; retryOnMovedRoute: boolean }
-		| undefined;
+	/**
+	 * Responses whose assistant message has not ended yet, by request id. The
+	 * `message_end` event carries no request id, so pairing is by elimination
+	 * rather than by claim: an assistant error pairs with the one failed
+	 * response still pending, and when that is ambiguous nothing is paired.
+	 * Requests may interleave (see the reverse-order routing test), so a single
+	 * slot would pair the wrong two; a map bounded at MAX_PENDING_RESPONSES
+	 * cannot grow on a request whose message never ends.
+	 */
+	interface PendingResponse {
+		served: SelectedSlot;
+		status: number;
+		classificationHandled: boolean;
+		retryOnMovedRoute: boolean;
+	}
+	const MAX_PENDING_RESPONSES = 8;
+	const pendingResponses = new Map<string, PendingResponse>();
+	const rememberResponse = (requestId: string, response: PendingResponse): void => {
+		pendingResponses.delete(requestId);
+		pendingResponses.set(requestId, response);
+		while (pendingResponses.size > MAX_PENDING_RESPONSES) {
+			const oldest = pendingResponses.keys().next().value;
+			if (oldest === undefined) break;
+			pendingResponses.delete(oldest);
+		}
+	};
+	/**
+	 * The one pending response an assistant error can belong to. A failed
+	 * transport status is the strongest evidence; with none, a lone pending
+	 * response is the only candidate. Two candidates are no candidate: the
+	 * ambiguous set is dropped so neither slot is charged for the other's error.
+	 */
+	const takeErroredResponse = (): PendingResponse | undefined => {
+		const failed = [...pendingResponses].filter(([, response]) => response.status >= 400);
+		const candidates = failed.length > 0 ? failed : [...pendingResponses];
+		for (const [requestId] of candidates) {
+			pendingResponses.delete(requestId);
+		}
+		return candidates.length === 1 ? candidates[0][1] : undefined;
+	};
 
 	if (typeof pi.on === "function") {
 		pi.on("before_provider_headers", async (event, context) => {
-			// A session's requests are sequential, so the response slot below always
-			// pairs with the request that just started; a slot left by an earlier
-			// request (aborted mid-stream, or answered with no assistant message)
-			// is dropped here rather than paired with this request's outcome.
-			lastResponse = undefined;
 			const modelProvider = context.model?.provider;
 			// `llama` is served by Pi's built-in `llama.cpp`, so the pool a request
 			// belongs to is not always the provider id it carries.
@@ -790,14 +822,15 @@ export function registerAccounts(pi: ExtensionAPI, dependencies: AccountsDepende
 				event.status < 400 &&
 				snapshot?.remainingPercent !== undefined &&
 				snapshot.remainingPercent <= LOW_QUOTA_REMAINING_PERCENT;
-			lastResponse = {
+			const pending: PendingResponse = {
 				served,
 				status: event.status,
 				classificationHandled: classification !== undefined || lowQuota,
 				retryOnMovedRoute: false,
 			};
+			rememberResponse(event.requestId, pending);
 			if (classification !== undefined) {
-				lastResponse.retryOnMovedRoute = await applyFailure(served, classification.until, context);
+				pending.retryOnMovedRoute = await applyFailure(served, classification.until, context);
 				return;
 			}
 			if (lowQuota && snapshot !== undefined) {
@@ -808,10 +841,17 @@ export function registerAccounts(pi: ExtensionAPI, dependencies: AccountsDepende
 		});
 		pi.on("message_end", async (event, context) => {
 			if (event.message.role !== "assistant") return;
-			const response = lastResponse;
-			lastResponse = undefined;
 			const message = event.message as AssistantMessage;
-			if (response === undefined || message.stopReason !== "error" || message.errorMessage === undefined) return;
+			if (message.stopReason !== "error" || message.errorMessage === undefined) {
+				// A message that ended well belongs to a response that succeeded;
+				// those have nothing left to pair with and are released.
+				for (const [requestId, response] of pendingResponses) {
+					if (response.status < 400) pendingResponses.delete(requestId);
+				}
+				return;
+			}
+			const response = takeErroredResponse();
+			if (response === undefined) return;
 			let moved = response.retryOnMovedRoute;
 			if (!response.classificationHandled) {
 				// The provider stream has already been consumed into this assistant error,

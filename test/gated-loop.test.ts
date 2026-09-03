@@ -626,10 +626,10 @@ test("a ship that never pushed its job branch is NEEDS_HUMAN naming that branch"
 		await harness.commands.get("loop")!(await readFile(join(directory, "task.txt"), "utf8"), harness.context);
 		const state = await runDocument(directory, jobId, "state.json");
 		assert.equal(state.status, "NEEDS_HUMAN");
-		assert.equal(
-			state.reason,
-			`Job branch ${branch} was not pushed to origin. Put that right, then resume with /kpi ${jobId}`,
-		);
+		// The invariant, not the phrasing: the reason names the branch that is
+		// missing and the command that resumes the job.
+		assert.ok(String(state.reason).includes(`${branch} was not pushed to origin`), String(state.reason));
+		assert.ok(String(state.reason).includes(`/kpi ${jobId}`), String(state.reason));
 		assert.equal(await git(directory, "branch", "--show-current"), branch);
 	} finally {
 		await rm(directory, { recursive: true, force: true });
