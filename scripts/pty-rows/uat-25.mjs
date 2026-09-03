@@ -77,7 +77,9 @@ async function capture(label, { state, cols, outDir }) {
 		rows: 50,
 		script: [
 			{ expect: paused ? "WAITING ON OPERATOR" : "STOP RUNNING", send: "/kpi status\r", timeout: 40 },
-			{ expect: paused ? "THREE LAWS" : "NODE implement", timeout: 30, drain: 3, after: 2.5 },
+			// `/kpi status` opens the Command Centre: the paused review stage reads
+			// ◉ WAITING and the running LIVE panel names 04 implement.
+			{ expect: paused ? "◉ WAITING" : "LIVE › 04 implement", timeout: 30, drain: 3, after: 2.5 },
 		],
 		outDir,
 	});

@@ -1545,6 +1545,7 @@ async function driveUntilPause(
 	task: Task,
 	facts: LoopFacts,
 	stopState: StopState,
+	signal: AbortSignal | undefined,
 	onStateChange?: () => Promise<void>,
 ): Promise<DriveResult> {
 	let state = engine.state;
@@ -1586,6 +1587,7 @@ async function driveUntilPause(
 						eventsPath: join(jobDirectory, "events.jsonl"),
 						round: currentStopState.round,
 						node: state.active[0],
+						signal,
 					});
 				} catch (error) {
 					if (!(error instanceof ResearchShortfallError)) {
@@ -1684,7 +1686,8 @@ async function driveUntilPause(
 			event = await verifierEventOnDisk(jobDirectory, "test");
 		}
 		if (event !== undefined) {
-			const witness = repeatedWitness(currentStopState, event);
+			// A green round repeats nothing: only a failed round can be no progress.
+			const witness = event.passed ? undefined : repeatedWitness(currentStopState, event);
 			currentStopState = recordVerifier(currentStopState, event);
 			if (witness !== undefined) {
 				currentStopState = await recordNoProgress(
@@ -2127,13 +2130,50 @@ async function settleNoProgress(run: JobRun): Promise<DriveResult | undefined> {
 		reason,
 	});
 	for (;;) {
-		let choice: string | undefined;
 		try {
-			choice = await untilStop(
+			const choice = await untilStop(
 				ctx.ui.select(`K-π no progress after ${MAX_AUTOMATIC_REPLANS} re-plans`, [...NO_PROGRESS_OPTIONS]),
 				dependencies.signal,
 			);
+			if (choice === undefined || choice === NO_PROGRESS_OPTIONS[2]) {
+				return stopped(`stopped by the operator after no progress (resume with /kpi ${jobId})`);
+			}
+			if (choice === NO_PROGRESS_OPTIONS[0]) {
+				const repair = run.stopState.repair;
+				if (repair === undefined) {
+					// Nothing to guide: the state that paused carries no repair record.
+					ctx.ui.notify(
+						`K-π job ${jobId} has no ${REPAIR_FILE_NAME} to guide; choose Keep going or Stop`,
+						"warning",
+					);
+					continue;
+				}
+				const text = await untilStop(
+					ctx.ui.editor("Guidance for the planner", repair.guidance ?? ""),
+					dependencies.signal,
+				);
+				if (text === undefined) {
+					// A dismissed editor is not a decision: back to the select.
+					continue;
+				}
+				const guidance = text.trim();
+				if (guidance.length === 0) {
+					ctx.ui.notify(
+						"K-π guidance is required to give guidance; choose Keep going to continue without it",
+						"warning",
+					);
+					continue;
+				}
+				const guided: PlanRepair = { ...repair, guidance };
+				await atomicWrite(join(jobDirectory, REPAIR_FILE_NAME), `${JSON.stringify(guided, null, 2)}\n`);
+				run.stopState = { ...run.stopState, repair: guided, repaired: [] };
+			} else if (choice === NO_PROGRESS_OPTIONS[1]) {
+				run.stopState = { ...run.stopState, repaired: [] };
+			} else {
+				throw new Error(`the no-progress prompt was answered with an option it did not offer: ${choice}`);
+			}
 		} catch (error) {
+			// The operator's stop lands while the select or the editor is open.
 			if (error instanceof OperatorStopError) {
 				return {
 					...stopped("operator stop"),
@@ -2141,40 +2181,6 @@ async function settleNoProgress(run: JobRun): Promise<DriveResult | undefined> {
 				};
 			}
 			throw error;
-		}
-		if (choice === undefined || choice === NO_PROGRESS_OPTIONS[2]) {
-			return stopped(`stopped by the operator after no progress (resume with /kpi ${jobId})`);
-		}
-		if (choice === NO_PROGRESS_OPTIONS[0]) {
-			const repair = run.stopState.repair;
-			if (repair === undefined) {
-				// Nothing to guide: the state that paused carries no repair record.
-				ctx.ui.notify(`K-π job ${jobId} has no ${REPAIR_FILE_NAME} to guide; choose Keep going or Stop`, "warning");
-				continue;
-			}
-			const text = await untilStop(
-				ctx.ui.editor("Guidance for the planner", repair.guidance ?? ""),
-				dependencies.signal,
-			);
-			if (text === undefined) {
-				// A dismissed editor is not a decision: back to the select.
-				continue;
-			}
-			const guidance = text.trim();
-			if (guidance.length === 0) {
-				ctx.ui.notify(
-					"K-π guidance is required to give guidance; choose Keep going to continue without it",
-					"warning",
-				);
-				continue;
-			}
-			const guided: PlanRepair = { ...repair, guidance };
-			await atomicWrite(join(jobDirectory, REPAIR_FILE_NAME), `${JSON.stringify(guided, null, 2)}\n`);
-			run.stopState = { ...run.stopState, repair: guided, repaired: [] };
-		} else if (choice === NO_PROGRESS_OPTIONS[1]) {
-			run.stopState = { ...run.stopState, repaired: [] };
-		} else {
-			throw new Error(`the no-progress prompt was answered with an option it did not offer: ${choice}`);
 		}
 		engine.rearm();
 		await writeState(jobDirectory, task, engine.state, run.stopState);
@@ -2206,6 +2212,7 @@ async function driveWithOperator(run: JobRun): Promise<DriveResult> {
 			run.task,
 			run.facts,
 			run.stopState,
+			run.dependencies.signal,
 			run.dependencies.onStateChange,
 		);
 		run.stopState = result.stopState;
@@ -2434,6 +2441,11 @@ export async function runLoop(
 					),
 				}),
 	};
+	// A stop that landed while the contract was being prepared: nothing has
+	// been written yet, so nothing is created and there is nothing to resume.
+	if (dependencies.signal?.aborted === true) {
+		return { jobId, status: "STOPPED", reason: "operator stop before the run was created" };
+	}
 	const job = await createJob(ctx.cwd, task, contextFor(invocation, gates, plan));
 	if (plan !== undefined) {
 		await writePlanSnapshot(job.directory, plan);

@@ -1,8 +1,14 @@
 /**
  * UAT-16 — US-16 Graph-engineering TUI (Avid boards).
  *
- * Action: capture the amber board mid-run and the protocol-blue board while a
- * human node is paused; delete one run file and capture again.
+ * Action: capture the amber widget mid-run and open the Command Centre over it;
+ * capture the protocol-blue widget while a human node is paused and open the
+ * centre again; delete one run file and capture again.
+ *
+ * `/kpi status` opens the Command Centre (STAGES 01–08, LIVE › <stage>,
+ * TELEMETRY, SHARED RUN STATE, CONTEXT LAYER, EVENTS). The pty is driven at
+ * 140×50 so the two-column HOME carries SHARED RUN STATE and CONTEXT LAYER
+ * with the full STAGES detail lines.
  *
  * The dark lamp is made real: `verdict.json` is written and then removed, so the
  * lamp is dark because the file is absent, not because it was never named.
@@ -58,9 +64,12 @@ async function capture(label, { state, outDir, darkFile }) {
 		env: box.env,
 		cwd: box.project,
 		cols: 140,
+		rows: 50,
 		script: [
 			{ expect: paused ? "WAITING ON OPERATOR" : "STOP RUNNING", send: "/kpi status\r", timeout: 40 },
-			{ expect: paused ? "THREE LAWS" : "NODE implement", timeout: 30, drain: 3, after: 2.5 },
+			// The centre: the paused review stage reads ◉ WAITING; the running
+			// LIVE panel names 04 implement.
+			{ expect: paused ? "◉ WAITING" : "LIVE › 04 implement", timeout: 30, drain: 3, after: 2.5 },
 		],
 		outDir,
 	});
@@ -146,6 +155,14 @@ const checks = [
 		(amberRun.text.match(/ROUND[^\n]*/u) ?? ["absent"])[0].replace(/\r/gu, "").trim(),
 	),
 	check(
+		"centre-stages-live-telemetry",
+		"amber/frame.txt",
+		/STAGES 01–08/u.test(amberRun.text) && /LIVE › 04 implement/u.test(amberRun.text) && /TELEMETRY/u.test(amberRun.text),
+		["STAGES 01–08", "LIVE › 04 implement", "TELEMETRY"]
+			.map((cell) => `${cell}: ${amberRun.text.includes(cell) ? "painted" : "absent"}`)
+			.join(", "),
+	),
+	check(
 		"context-layer-lamps",
 		"amber/frame.txt",
 		/CONTEXT LAYER/u.test(amberRun.text) && /AGENTS \d+/u.test(amberRun.text) && /BUS/u.test(amberRun.text),
@@ -196,10 +213,10 @@ const checks = [
 		(pausedRun.text.match(/STOP STATES[^\n]*/u) ?? ["absent"])[0].replace(/\r/gu, "").trim(),
 	),
 	check(
-		"paused-three-laws",
+		"paused-stage-waiting-in-centre",
 		"paused/frame.raw",
-		pausedRun.raw.includes(bytesOf("THREE LAWS")),
-		"THREE LAWS",
+		pausedRun.raw.includes(bytesOf("◉ WAITING")),
+		(pausedRun.text.match(/07 review[^\n]*/u) ?? ["absent"])[0].replace(/\r/gu, "").trim().slice(0, 70),
 	),
 	check(
 		"paused-waiting-on-operator-with-question",
@@ -229,13 +246,13 @@ const checks = [
 
 const verdict = writeRow(EVIDENCE, "UAT-16", {
 	checks,
-	notes: `Driven against \`dist/bundle/cli.js\` over a real PTY at 140 columns, clean HOME, scratch git repo, loopback stub, egress guard.
+	notes: `Driven against \`dist/bundle/cli.js\` over a real PTY at 140×50, clean HOME, scratch git repo, loopback stub, egress guard.
 
-Three captures: the amber running board, the protocol-blue paused board, and a running board whose \`verdict.json\` was written and then deleted.
+Three captures: the amber running widget with the Command Centre opened over it, the protocol-blue paused widget with the centre opened over it, and a running widget whose \`verdict.json\` was written and then deleted.
 
 Colour is graded on truecolor SGR bytes. Region and lamp claims are graded on the literal cells, with the lamp order read from the painted row so a reordering in the source would fail here rather than agree with itself.
 
-The paused board's full form is reached through \`/kpi status\`, which is the row's own action ("\`/kpi status\` expands it"); the always-on widget carries the fitted board.`,
+\`/kpi status\` is the row's own action ("\`/kpi status\` expands it"): it opens the Command Centre (STAGES 01–08, LIVE, TELEMETRY, SHARED RUN STATE, CONTEXT LAYER); the always-on widget carries the fitted board, WAITING ON OPERATOR and the STOP STATES lamps. THREE LAWS is the non-TUI board's text and is proven by test/operator-ui.test.ts.`,
 });
 
 console.log(JSON.stringify(verdict.checks.map((entry) => `${entry.ok ? "ok" : "FAIL"} ${entry.id}: ${entry.observed.slice(0, 70)}`), null, 1));

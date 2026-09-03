@@ -1075,7 +1075,9 @@ test("the board shows ROUND without a maximum and a retry row while a node backs
 	assert.equal(stopBoxTone(stopped, "full", "STOP STOPPED"), "error", "an operator stop is error");
 	assert.equal(stopBoxTone(boardModel({ stop: "DONE" }), "full", "STOP DONE"), "success", "DONE is success");
 
-	// Board B: the stop-state cells are DONE / STOPPED / APPROVAL, and only the current one is lit.
+	// Board B: the stop-state cells are DONE / STOPPED / APPROVAL. APPROVAL is the
+	// pause lamp (Board B only paints while a human node is paused); DONE and
+	// STOPPED light for the run state.
 	const pausedStopped = boardModel({
 		paused: true,
 		stage: "ship",

@@ -256,6 +256,7 @@ function harness(stop: RunStatus = "RUNNING"): Harness {
 		sources: {
 			jobId: JOB,
 			runDirectory: `.kpi/runs/${JOB}`,
+			workerCap: 2,
 			async readModel() {
 				h.calls.readModel += 1;
 				if (h.failure !== undefined) {
@@ -458,7 +459,28 @@ test("the command centre paints home and session views from run files at 200, 16
 		}
 	}
 
-	// A shorter terminal keeps every stage and the events, giving up the detail lines first.
+	// A 40-row terminal (the pty default) keeps SHARED RUN STATE and CONTEXT
+	// LAYER by giving up the stage detail lines first; a shorter one keeps
+	// every stage and the events.
+	const forty = open(h, 40);
+	await forty.settled();
+	const fortyLines = forty.render(140);
+	assertFits(fortyLines, 140, "home@140x40");
+	assert.equal(fortyLines.length, 37);
+	const fortyText = fortyLines.join("\n");
+	for (const token of [
+		"SHARED RUN STATE",
+		"CONTEXT LAYER",
+		"● task.json",
+		"TELEMETRY",
+		"EVENTS",
+		"01 ac-compile",
+		"08 ship",
+	]) {
+		assert.ok(fortyText.includes(token), `home@140x40 keeps ${token}`);
+	}
+	assert.doesNotMatch(fortyText, /41s · 1 calls/u, "the stage detail lines are what a 40-row terminal gives up");
+	forty.dispose();
 	const short = open(h, 30);
 	await short.settled();
 	const lines = short.render(160);
@@ -591,6 +613,30 @@ test("the command centre follows a running job on the injected tick and stops ti
 	assert.equal(live.ticker.stopCount, 1);
 	live.ticker.fire();
 	assert.equal(live.calls.readModel, 1, "a disposed view never reads again");
+
+	// A read that fails on open is painted, and is not terminal: the ticker
+	// starts anyway and the next tick brings the board up.
+	const late = harness();
+	late.failure = Object.assign(new Error("boom"), { code: "EIO" });
+	const lateView = open(late);
+	await lateView.settled();
+	const lateLines = lateView.render(160);
+	assert.match(
+		lateLines[0] ?? "",
+		/K-π reading run files {2}· {2}EVENTS ✕ EIO/u,
+		"the open failure paints in the header",
+	);
+	assert.ok(
+		lateLines.some((line) => line.includes("K-π reading run files ✕ EIO · r to retry")),
+		"the empty body says why and how to retry",
+	);
+	assert.ok(late.ticker.running(), "an open failure starts the ticker so the read is retried");
+	late.ticker.fire();
+	await lateView.settled();
+	const recovered = lateView.render(160).join("\n");
+	assert.doesNotMatch(recovered, /EVENTS ✕/u, "the retry clears the failure");
+	assert.ok(recovered.includes("▸ 04 implement"), "the retry paints the board on the current stage");
+	lateView.dispose();
 });
 
 test("the command centre selects stages, opens a session, and routes stop, verify and chat through its sources", async () => {
@@ -609,10 +655,12 @@ test("the command centre selects stages, opens a session, and routes stop, verif
 	await view.settled();
 	assert.ok(view.render(160).join("\n").includes("▸ 07 review"), "tab/shift+tab/↓ move the selection");
 
+	type(view, " ");
 	view.handleInput?.(KEY.enter);
 	await view.settled();
 	assert.deepEqual(h.calls.readNodeDetail, [6], "enter on an empty prompt opens the session of the selected stage");
 	assert.ok(view.render(160).join("\n").includes("SESSION › 07 review"));
+	assert.doesNotMatch(view.render(160).join("\n"), /> +▌/u, "a whitespace-only prompt is cleared, not kept");
 	view.handleInput?.(KEY.escape);
 	assert.ok(view.render(160).join("\n").includes("LIVE › 07 review"), "esc goes back home");
 	assert.equal(h.closed, 0);
@@ -723,8 +771,10 @@ test("the status overlay selects stages with arrow keys, opens the node detail o
 	view.handleInput?.(KEY.right);
 	assert.equal(h.closed, 1, "a closed view ignores input");
 
-	const other = open(harness());
+	const otherH = harness();
+	const other = open(otherH);
 	await other.settled();
 	other.handleInput?.(KEY.ctrlC);
-	assert.equal(other.settled !== undefined, true);
+	assert.equal(otherH.closed, 1, "ctrl+c closes");
+	assert.equal(otherH.ticker.stopCount, 1, "ctrl+c stops the ticker");
 });

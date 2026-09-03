@@ -17,6 +17,8 @@ export type { RunFileRow, TranscriptEntry } from "./command-centre.ts";
 export interface CommandCentreSources {
 	jobId: string;
 	runDirectory: string;
+	/** The live-worker cap the `WORKERS <w>/<cap>` row is drawn against. */
+	workerCap: number;
 	/** Same builder the widget ticks (control-plane buildBoardModel with the job's activity reader, surface "overlay"); undefined when the job is gone. */
 	readModel(): Promise<BoardModel | undefined>;
 	/** The activity snapshot produced by the latest readModel(). */
@@ -94,11 +96,12 @@ export function createCommandCentre(options: CommandCentreOptions): CommandCentr
 		spinner: 0,
 		costRates: [],
 		nowMs: sources.now(),
+		workerCap: sources.workerCap,
 	};
 	let version = 0;
 	let cache: { width: number; rows: number; version: number; lines: string[] } | undefined;
 	let disposed = false;
-	let busy = false;
+	let inFlight = 0;
 	let ticks = 0;
 	let stopTicker: (() => void) | undefined;
 	let pending: Promise<void> = Promise.resolve();
@@ -109,16 +112,16 @@ export function createCommandCentre(options: CommandCentreOptions): CommandCentr
 		options.requestRender();
 	}
 
-	/** Serialises every read behind the previous one; the ticker skips while one is in flight. */
+	/** Serialises every read behind the previous one; the ticker skips while any is in flight. */
 	function enqueue(work: () => Promise<void>): void {
-		busy = true;
+		inFlight += 1;
 		pending = pending
 			.then(work)
 			.catch((error: unknown) => {
 				state.refreshError = errorCode(error);
 			})
 			.finally(() => {
-				busy = false;
+				inFlight -= 1;
 				if (!disposed) repaint();
 			});
 	}
@@ -160,7 +163,11 @@ export function createCommandCentre(options: CommandCentreOptions): CommandCentr
 		stopTicker = undefined;
 	}
 
-	/** One read of everything the view shows; `full` adds the run files and a cost sample. */
+	/**
+	 * One read of everything the view shows; `full` adds the run files and a
+	 * cost sample. The first read that succeeds (the open read, or the tick
+	 * that recovers from an open failure) also lands on the current stage.
+	 */
 	async function refresh(full: boolean): Promise<void> {
 		state.nowMs = sources.now();
 		const model = await sources.readModel();
@@ -170,12 +177,14 @@ export function createCommandCentre(options: CommandCentreOptions): CommandCentr
 			endTicker();
 			return;
 		}
+		const first = state.model === undefined;
 		state.jobGone = false;
 		state.model = model;
 		state.activity = sources.activity();
 		state.route = sources.route();
 		state.refreshError = undefined;
-		if (full) {
+		if (first) state.selected = resolveCurrentStageIndex(model.stage, model.node);
+		if (full || first) {
 			state.files = await sources.readRunFiles();
 			sampleCost(model, state.nowMs);
 		}
@@ -187,7 +196,7 @@ export function createCommandCentre(options: CommandCentreOptions): CommandCentr
 	function startTicker(): void {
 		if (stopTicker !== undefined || disposed) return;
 		stopTicker = sources.tick(() => {
-			if (busy || disposed) return;
+			if (inFlight > 0 || disposed) return;
 			ticks += 1;
 			state.spinner += 1;
 			enqueue(() => refresh(ticks % FULL_REFRESH_EVERY === 0));
@@ -262,22 +271,19 @@ export function createCommandCentre(options: CommandCentreOptions): CommandCentr
 		pending = pending.then(() => sources.chat(line)).catch(() => undefined);
 	}
 
-	// Open: one read of everything, then the ticker while the job runs.
+	// Open: one read of everything, then the ticker while the job runs. A read
+	// that fails on open is painted like any refresh failure and is not
+	// terminal: the job is presumed RUNNING, so the ticker retries it.
 	enqueue(async () => {
-		const model = await sources.readModel();
-		if (disposed) return;
-		if (model === undefined) {
-			state.jobGone = true;
+		try {
+			await refresh(true);
+		} catch (error) {
+			if (disposed) return;
+			state.refreshError = errorCode(error);
+			startTicker();
 			return;
 		}
-		state.model = model;
-		state.activity = sources.activity();
-		state.route = sources.route();
-		state.selected = resolveCurrentStageIndex(model.stage, model.node);
-		state.files = await sources.readRunFiles();
-		sampleCost(model, state.nowMs);
-		await readTranscript();
-		if (model.stop === "RUNNING") startTicker();
+		if (state.model?.stop === "RUNNING") startTicker();
 	});
 
 	return {
@@ -320,7 +326,7 @@ export function createCommandCentre(options: CommandCentreOptions): CommandCentr
 					select(key.stage);
 					return;
 				case "refresh":
-					if (!busy) enqueue(() => refresh(true));
+					if (inFlight === 0) enqueue(() => refresh(true));
 					return;
 				case "backspace":
 					state.input = [...state.input].slice(0, -1).join("");
@@ -336,12 +342,15 @@ export function createCommandCentre(options: CommandCentreOptions): CommandCentr
 						submit(line);
 						return;
 					}
+					// Whitespace alone is no message; it must not linger and turn
+					// q/r/1–8 into typed text.
+					state.input = "";
 					if (state.view === "home") {
 						state.view = "session";
 						state.hint = undefined;
 						enqueue(readDetail);
-						repaint();
 					}
+					repaint();
 					return;
 				}
 			}

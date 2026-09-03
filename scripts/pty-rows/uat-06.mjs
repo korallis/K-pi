@@ -78,18 +78,21 @@ async function capture(outDir, state, { stubDown = false } = {}) {
 	const script = stubDown
 		? [
 				{ expect: anchor, send: "/kpi status\r", timeout: 40 },
-				{ expect: "NODE implement", timeout: 30, drain: 3, after: 2.5 },
+				// `/kpi status` opens the Command Centre; its LIVE panel names the current stage.
+				{ expect: "LIVE › 04 implement", timeout: 30, drain: 3, after: 2.5 },
 			]
 		: [
 				{ expect: anchor, send: "/kpi off\r", timeout: 40 },
-				{ expect: "goal wrapping off", send: "say ok\r", timeout: 30 },
-				// The accounts widget publishes when a request is credentialed, and
-				// the status area is shared with the K-π status - so wait for the
-				// paint rather than hoping the drain catches it.
-				{ expect: "LOCAL-OPENAI", timeout: 45 },
+				{ expect: "K-π routing off", send: "say ok\r", timeout: 30 },
+				// The footer's cost cell is published once a request is credentialed,
+				// and the status area is shared with the K-π status - so wait for the
+				// paint rather than hoping the drain catches it. The accounts summary
+				// (LOCAL-OPENAI …) stays off the default footer row; the cell is the
+				// footer's own.
+				{ expect: "\\(local\\) \\$0", timeout: 45 },
 				{ expect: "TURNDONE", send: "/kpi status\r", timeout: 45 },
 				{
-					expect: state === PAUSED ? "THREE LAWS|STOP STATES" : "NODE implement",
+					expect: state === PAUSED ? "◉ WAITING" : "LIVE › 04 implement",
 					timeout: 30,
 					drain: 3,
 					after: 2.5,
@@ -152,12 +155,13 @@ const checks = [
 		paused.raw.includes(bytesOf("Approve gated release?")),
 		paused.raw.includes(bytesOf("Approve gated release?")) ? "the operator is told what they are deciding" : "question absent",
 	),
-	// AC-06.4: remaining % per slot, and never a percentage for a local slot.
+	// AC-06.4 / AC-27.6: the footer's cost cell for a local slot is exactly
+	// `(local) $0` and never carries a quota percentage.
 	check(
 		"accounts-local-slot-has-no-percentage",
 		"running/frame.txt",
-		/\ba \(local\) \$0\b/u.test(running.text) && !/\ba \(local\) \$0\s*\d+%/u.test(running.text),
-		(running.text.match(/LOCAL-OPENAI[^\n]*/u) ?? ["absent"])[0].trim(),
+		/\(local\) \$0\b/u.test(running.text) && !/\(local\) \$0\s*\d+%/u.test(running.text),
+		(running.text.match(/\(local\) \$0[^\n]{0,12}/u) ?? ["absent"])[0].trim(),
 	),
 	check(
 		"board-draws-with-provider-unreachable",

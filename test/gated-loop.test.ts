@@ -24,6 +24,7 @@ import {
 	PLAN_GATE_OPTIONS,
 	type PullRequestRecord,
 	RELEASE_GATE_OPTIONS,
+	runLoop,
 	verifyShippedCommit,
 } from "../packages/coding-agent/src/kpi/extensions/gated-loop.ts";
 import {
@@ -292,6 +293,8 @@ interface GateScript {
 	selections?: string[];
 	/** Select answers in order; an explicit `undefined` is a dismissed dialog. Spent: Approve plan. */
 	answers?: (string | undefined)[];
+	/** Replaces `feedbacks`: what the editor does with every title it is shown. */
+	onEditor?: (title: string) => Promise<string | undefined>;
 	/** Editor answers in order; spent: a dismissed editor. */
 	feedbacks?: (string | undefined)[];
 	/** Release gate answers in order; spent: Approve. */
@@ -384,7 +387,7 @@ function commandHarness(
 			},
 			async editor(title: string) {
 				assert.ok(hasUI(), `editor(${title}) requested without dialog UI`);
-				return gate.feedbacks?.shift();
+				return gate.onEditor === undefined ? gate.feedbacks?.shift() : gate.onEditor(title);
 			},
 			notify(message: string) {
 				notifications.push(message);
@@ -1931,6 +1934,109 @@ test("no progress after a re-plan pauses NEEDS_HUMAN offering guidance, keep goi
 		);
 	} finally {
 		await rm(unattended, { recursive: true, force: true });
+	}
+});
+
+test("a stop while the guidance editor is open records one STOPPED terminal and no failure", async () => {
+	const directory = await fixture();
+	const jobId = "20260903-no-progress-editor-stop";
+	const executed: string[] = [];
+	const witness = `sha256:${"e".repeat(64)}`;
+	try {
+		const harness = commandHarness(
+			directory,
+			loopSessions(directory, executed, { jobId }),
+			jobId,
+			[],
+			reviewerBusDependencies({
+				verdicts: [reviseVerdict("e"), reviseVerdict("e"), reviseVerdict("e"), reviseVerdict("e"), passVerdict],
+			}),
+			{},
+			{
+				executed,
+				noProgressAnswers: ["Give guidance"],
+				// The operator types `/kpi stop` with the editor open; the editor never answers.
+				onEditor: async (title) => {
+					assert.equal(title, "Guidance for the planner");
+					void harness.commands.get("kpi")!("stop", harness.context);
+					return Promise.withResolvers<string | undefined>().promise;
+				},
+			},
+		);
+		await harness.commands.get("loop")!(await readFile(join(directory, "task.txt"), "utf8"), harness.context);
+
+		const state = await runDocument(directory, jobId, "state.json");
+		assert.equal(state.status, "STOPPED", `${state.reason}\n${harness.notifications.join("\n")}`);
+		assert.equal(state.reason, "operator stop");
+		assert.deepEqual(
+			(await terminalEvents(directory, jobId)).map((record) => record.status),
+			["NEEDS_HUMAN", "STOPPED"],
+			"the pause, then exactly one STOPPED",
+		);
+		const marker = await runDocument(directory, jobId, "stop.json");
+		assert.equal(marker.recorded, false);
+		assert.equal(
+			harness.notifications.some((message) => message.includes("loop failed")),
+			false,
+			harness.notifications.join("\n"),
+		);
+		assert.ok(harness.notifications.includes(`K-π job ${jobId} STOPPED (resume with /kpi ${jobId})`));
+		assert.deepEqual(state.repaired, [witness, witness], "the stop resets nothing");
+		assert.equal(await verifyChain(join(directory, ".kpi", "runs", jobId, "events.jsonl")), true);
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("an approved review that repeats an earlier fingerprint is progress, not a re-plan", async () => {
+	const directory = await fixture();
+	const jobId = "20260903-pass-repeat";
+	const executed: string[] = [];
+	try {
+		// REVISE once, then PASS twice with the same output fingerprint: the
+		// release gate sends the first PASS back to implement; the second PASS
+		// repeats the fingerprint on a green round.
+		const repeatedPass = { ...passVerdict, output_fingerprint: `sha256:${"f".repeat(64)}` };
+		const harness = commandHarness(
+			directory,
+			loopSessions(directory, executed, { jobId }),
+			jobId,
+			[],
+			reviewerBusDependencies({ verdicts: [repeatedPass, repeatedPass] }),
+			{},
+			{ executed, releaseAnswers: ["Request changes"], feedbacks: ["tighten the response headers"] },
+		);
+		await harness.commands.get("loop")!(await readFile(join(directory, "task.txt"), "utf8"), harness.context);
+
+		const state = await runDocument(directory, jobId, "state.json");
+		assert.equal(state.status, "DONE", `${state.reason}\n${harness.notifications.join("\n")}`);
+		await assert.rejects(readFile(join(directory, ".kpi", "runs", jobId, "repair.json"), "utf8"), { code: "ENOENT" });
+		assert.equal(state.plan_repair, undefined);
+		assert.deepEqual(state.repaired, []);
+		assert.equal((await runDocument(directory, jobId, "task.json")).current_module_id, "health");
+		assert.equal(executed.filter((node) => node === "plan").length, 1, executed.join(", "));
+		assert.equal(state.round, 2, "both green rounds were rounds");
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("a stop that lands before the run is created creates nothing and says so", async () => {
+	const directory = await fixture();
+	const jobId = "20260903-stop-before-create";
+	try {
+		const controller = new AbortController();
+		const harness = commandHarness(directory, loopSessions(directory, [], { jobId }), jobId, []);
+		controller.abort();
+		const outcome = await runLoop({ goal: "add a healthcheck endpoint", mode: "gated" }, harness.context, {
+			jobId,
+			signal: controller.signal,
+		});
+		assert.equal(outcome.status, "STOPPED");
+		assert.equal(outcome.reason, "operator stop before the run was created");
+		await assert.rejects(readdir(join(directory, ".kpi", "runs", jobId)), { code: "ENOENT" });
+	} finally {
+		await rm(directory, { recursive: true, force: true });
 	}
 });
 

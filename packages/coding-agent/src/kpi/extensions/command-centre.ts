@@ -27,7 +27,6 @@ import {
 } from "./board.ts";
 import type { ActivitySnapshot } from "./board-activity.ts";
 import { type BoardPalette, sideBySide } from "./board-frame.ts";
-import { MAX_LIVE_WORKERS } from "./bus/spawn.ts";
 
 /** One line of a node session, as the transcript reader hands it to the view. */
 export interface TranscriptEntry {
@@ -72,6 +71,8 @@ export interface CentreState {
 	/** Cost per minute, oldest first, at most ten samples. */
 	costRates: readonly number[];
 	nowMs: number;
+	/** The live-worker cap the WORKERS row is drawn against (from the sources). */
+	workerCap: number;
 }
 
 export const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
@@ -398,12 +399,15 @@ const BASE_FIELDS: Record<string, true> = {
 
 /** One line for an events.jsonl record: the fields an operator reads it by. */
 export function eventSummary(record: EventRecord): { text: string; tone: Tone } {
+	// A log read back stays open: a seeded or hand-written line may lack the
+	// envelope fields, and "undefined" is never something an operator reads.
+	const node = stringField(record, "node") ?? "?";
 	switch (record.type) {
 		case "node.started": {
 			const run = numberField(record, "run");
 			const model = stringField(record, "model");
 			return {
-				text: `${record.node}${run === undefined ? "" : ` run ${run}`}${model === undefined ? "" : ` · ${model}`}`,
+				text: `${node}${run === undefined ? "" : ` run ${run}`}${model === undefined ? "" : ` · ${model}`}`,
 				tone: "text",
 			};
 		}
@@ -413,7 +417,7 @@ export function eventSummary(record: EventRecord): { text: string; tone: Tone } 
 			const cost = numberField(record, "cost_usd");
 			const error = stringField(record, "error");
 			return {
-				text: `${record.node} ${failed ? "failed" : "done"} · ${elapsed}${cost === undefined ? "" : ` · ${formatCost(cost)}`}${
+				text: `${node} ${failed ? "failed" : "done"} · ${elapsed}${cost === undefined ? "" : ` · ${formatCost(cost)}`}${
 					failed && error !== undefined ? ` · ${error}` : ""
 				}`,
 				tone: failed ? "error" : "success",
@@ -423,7 +427,7 @@ export function eventSummary(record: EventRecord): { text: string; tone: Tone } 
 			const attempt = numberField(record, "attempt") ?? 1;
 			const reason = stringField(record, "reason") ?? "transient";
 			const seconds = Math.ceil((numberField(record, "delay_ms") ?? 0) / 1000);
-			return { text: `${record.node} retry ${attempt} · ${reason} · next ${seconds}s`, tone: "warning" };
+			return { text: `${node} retry ${attempt} · ${reason} · next ${seconds}s`, tone: "warning" };
 		}
 		case "tool.request": {
 			const tool = stringField(record, "tool") ?? "?";
@@ -431,12 +435,12 @@ export function eventSummary(record: EventRecord): { text: string; tone: Tone } 
 			const decision = stringField(record, "decision");
 			const denied = decision === "deny";
 			return {
-				text: `${record.node} ${tool}${path === undefined ? "" : ` ${path}`}${denied ? " denied" : ""}`,
+				text: `${node} ${tool}${path === undefined ? "" : ` ${path}`}${denied ? " denied" : ""}`,
 				tone: denied ? "warning" : "text",
 			};
 		}
 		case "checkpoint":
-			return { text: stringField(record, "detail") ?? `superstep checkpoint · ${record.node}`, tone: "muted" };
+			return { text: stringField(record, "detail") ?? `superstep checkpoint · ${node}`, tone: "muted" };
 		case "loop.terminal": {
 			const status = stringField(record, "status") ?? "?";
 			const reason = stringField(record, "reason");
@@ -465,7 +469,11 @@ export function eventSummary(record: EventRecord): { text: string; tone: Tone } 
 				tone: "warning",
 			};
 		default: {
-			const parts: string[] = [`r${record.round} node=${record.node}`];
+			const round = numberField(record, "round");
+			const parts: string[] = [
+				...(round === undefined ? [] : [`r${round}`]),
+				...(stringField(record, "node") === undefined ? [] : [`node=${node}`]),
+			];
 			for (const [key, value] of Object.entries(record)) {
 				if (BASE_FIELDS[key] === true || parts.length > 4) continue;
 				if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
@@ -589,13 +597,13 @@ function header(
 /** The home header's right side, longest form first. */
 function homeHeaderRight(state: CentreState): Row[] {
 	const model = state.model;
-	if (state.jobGone) return [[text("K-π no active job", "error")]];
-	if (model === undefined) return [[text("K-π reading run files", "dim")]];
 	const sep = text("  ·  ", "dim");
+	const problem: Row = state.refreshError === undefined ? [] : [sep, text(`EVENTS ✕ ${state.refreshError}`, "error")];
+	if (state.jobGone) return [[text("K-π no active job", "error"), ...problem]];
+	if (model === undefined) return [[text("K-π reading run files", "dim"), ...problem]];
 	const stop: Row = [text("STOP ", "muted"), text(stopText(model), stopTone(model.stop))];
 	if (model.stop === "RUNNING") stop.push(text(` ${spinner(state.spinner)} ${runElapsed(state)}`, "accent"));
 	else stop.push(text(` ${runElapsed(state)}`, "muted"));
-	const problem: Row = state.refreshError === undefined ? [] : [sep, text(`EVENTS ✕ ${state.refreshError}`, "error")];
 	const mode: Row = [text("MODE ", "muted"), text(model.mode)];
 	const round: Row = [text("ROUND ", "muted"), text(String(model.round))];
 	const gate: Row = [text("GATE ", "muted"), text(model.gate ?? (model.paused ? "human" : "machine"))];
@@ -712,7 +720,7 @@ export function telemetryRows(state: CentreState, model: BoardModel): Row[] {
 	const workers = model.sessions?.workers ?? 0;
 	const stepsRow: Row = [
 		text(String(steps)),
-		text(`   NODE RUNS ${nodeRuns}   WORKERS ${workers}/${MAX_LIVE_WORKERS}`, "muted"),
+		text(`   NODE RUNS ${nodeRuns}   WORKERS ${workers}/${state.workerCap}`, "muted"),
 	];
 	if (model.retry !== undefined) stepsRow.push(text(`   ${retryText(model.retry)}`, "warning"));
 	return [
@@ -782,7 +790,7 @@ function contextPanel(state: CentreState, model: BoardModel, height: number): Pa
 		text(`BUS ${model.busLit ? LIT : DARK}`, model.busLit ? "text" : "dim"),
 		...(model.sessions === undefined
 			? []
-			: [text(` · workers ${model.sessions.workers}/${MAX_LIVE_WORKERS} · nodes ${model.sessions.nodes}`, "muted")]),
+			: [text(` · workers ${model.sessions.workers}/${state.workerCap} · nodes ${model.sessions.nodes}`, "muted")]),
 	];
 	const gate: Row = model.paused
 		? [
@@ -1137,13 +1145,32 @@ function homeBody(state: CentreState, model: BoardModel, body: number, width: nu
 	if (width >= COLUMNS_MIN_WIDTH) {
 		const leftWidth = Math.floor(width * 0.475);
 		const rightWidth = width - leftWidth - 1;
-		let stagesH = STAGES_FULL_HEIGHT;
-		if (body - stagesH < EVENTS_MIN_HEIGHT) stagesH = STAGES_COMPACT_HEIGHT;
-		let remaining = body - stagesH;
-		const sharedH = remaining - SHARED_HEIGHT >= EVENTS_MIN_HEIGHT ? SHARED_HEIGHT : 0;
-		remaining -= sharedH;
-		const eventsH = remaining;
-		const liveH = Math.max(3, stagesH - TELEMETRY_HEIGHT);
+		// Two columns. The full STAGES panel (a detail line per stage) beside
+		// LIVE + TELEMETRY, then SHARED beside CONTEXT, then EVENTS: the mockup
+		// at 50 rows. Short of that, the STAGES detail lines go before SHARED
+		// and CONTEXT do — a 40-row terminal keeps both panels; only then does
+		// the second row of panels go, and last the detail lines again.
+		const fullColumns = STAGES_FULL_HEIGHT + SHARED_HEIGHT;
+		const compactColumns = Math.max(
+			STAGES_COMPACT_HEIGHT + SHARED_HEIGHT,
+			LIVE_STACKED_HEIGHT + TELEMETRY_HEIGHT + CONTEXT_HEIGHT,
+		);
+		let stagesH: number;
+		let liveH: number;
+		let second: boolean;
+		if (body - fullColumns >= EVENTS_MIN_HEIGHT) {
+			[stagesH, liveH, second] = [STAGES_FULL_HEIGHT, STAGES_FULL_HEIGHT - TELEMETRY_HEIGHT, true];
+		} else if (body - compactColumns >= EVENTS_MIN_HEIGHT) {
+			[stagesH, liveH, second] = [STAGES_COMPACT_HEIGHT, LIVE_STACKED_HEIGHT, true];
+		} else if (body - STAGES_FULL_HEIGHT >= EVENTS_MIN_HEIGHT) {
+			[stagesH, liveH, second] = [STAGES_FULL_HEIGHT, STAGES_FULL_HEIGHT - TELEMETRY_HEIGHT, false];
+		} else {
+			[stagesH, liveH, second] = [
+				STAGES_COMPACT_HEIGHT,
+				Math.max(3, STAGES_COMPACT_HEIGHT - TELEMETRY_HEIGHT),
+				false,
+			];
+		}
 		const left = [paint(stagesPanel(state, model, stagesH, leftWidth), leftWidth)];
 		const right = [
 			paint(livePanel(state, model, liveH), rightWidth),
@@ -1152,11 +1179,12 @@ function homeBody(state: CentreState, model: BoardModel, body: number, width: nu
 				rightWidth,
 			),
 		];
-		if (sharedH > 0) {
-			left.push(paint(sharedPanel(state, model, sharedH, leftWidth), leftWidth));
+		if (second) {
+			left.push(paint(sharedPanel(state, model, SHARED_HEIGHT, leftWidth), leftWidth));
 			right.push(paint(contextPanel(state, model, CONTEXT_HEIGHT), rightWidth));
 		}
 		const columns = sideBySide(left.flat(), right.flat(), leftWidth, 1);
+		const eventsH = body - columns.length;
 		const events = eventsH >= 3 ? paint(eventsPanel(state, model, eventsH), width) : [];
 		return stack([columns, events], body, width);
 	}
@@ -1272,11 +1300,12 @@ export function renderCommandCentre(state: CentreState, width: number, rows: num
 	const showPath = !session && width >= ESSENTIALS_MIN_WIDTH && model !== undefined;
 	const body = height - top.length - bottom.length - (showPath ? 1 : 0);
 	if (model === undefined) {
-		return [
-			...top,
-			...emptyBody(state.jobGone ? "K-π no active job" : "K-π reading run files", body, width, palette),
-			...bottom,
-		];
+		const message = state.jobGone
+			? "K-π no active job"
+			: state.refreshError === undefined
+				? "K-π reading run files"
+				: `K-π reading run files ✕ ${state.refreshError} · r to retry`;
+		return [...top, ...emptyBody(message, body, width, palette), ...bottom];
 	}
 	const middle = session
 		? sessionBody(state, model, body, width, palette)

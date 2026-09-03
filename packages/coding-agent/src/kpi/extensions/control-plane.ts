@@ -27,6 +27,7 @@ import {
 	type TranscriptEntry,
 } from "./board-overlay.ts";
 import { sessionsSnapshot } from "./bus/sessions-snapshot.ts";
+import { MAX_LIVE_WORKERS } from "./bus/spawn.ts";
 import {
 	type LoopDependencies,
 	type LoopInvocation,
@@ -739,6 +740,7 @@ function commandCentreSources(
 	return {
 		jobId: job.jobId,
 		runDirectory: job.directory,
+		workerCap: MAX_LIVE_WORKERS,
 		readModel: () => buildBoardModel(ctx.cwd, { now, activity: reader, surface: "overlay" }),
 		activity: () => reader.last(),
 		readNodeDetail: async (stage) => {
@@ -835,10 +837,20 @@ async function showStatus(ctx: ExtensionCommandContext, dependencies: ControlPla
 async function stopJob(ctx: ExtensionCommandContext, dependencies: ControlPlaneDependencies): Promise<void> {
 	const handle = live;
 	if (handle !== undefined) {
-		await writeStopMarker(join(ctx.cwd, CONFIG_DIR_NAME, "runs", handle.jobId), false);
+		// The marker goes into a run that exists; a loop still preparing its
+		// contract sees the abort before it creates one and creates nothing.
+		const runDirectory = join(ctx.cwd, CONFIG_DIR_NAME, "runs", handle.jobId);
+		if (await isRunDirectory(ctx.cwd, handle.jobId)) {
+			await writeStopMarker(runDirectory, false);
+		}
 		handle.controller.abort();
 		await handle.done;
-		ctx.ui.notify(`K-π job ${handle.jobId} STOPPED (resume with /kpi ${handle.jobId})`, "info");
+		ctx.ui.notify(
+			(await isRunDirectory(ctx.cwd, handle.jobId))
+				? `K-π job ${handle.jobId} STOPPED (resume with /kpi ${handle.jobId})`
+				: `K-π job ${handle.jobId} stopped before its run was created; nothing to resume`,
+			"info",
+		);
 		return;
 	}
 	const job = await readLiveJob(ctx.cwd);
@@ -973,16 +985,25 @@ async function handleKpiCommand(
 		jobId,
 		controller,
 		done: (async () => {
+			let outcome: LoopOutcome | undefined;
 			try {
-				const outcome: LoopOutcome =
+				outcome =
 					invocation === undefined
 						? await resumeLoop(jobId, ctx, loopDependencies)
 						: await runLoop(invocation, ctx, loopDependencies);
-				await reportOutcome(ctx, outcome);
 			} catch (error) {
 				ctx.ui.notify(`K-π loop failed: ${error instanceof Error ? error.message : String(error)}`, "error");
 			} finally {
+				// The loop has settled: a new goal may start and a stop has nothing
+				// to abort, whatever the outcome report goes on to ask.
 				releaseLive(controller);
+			}
+			if (outcome !== undefined) {
+				try {
+					await reportOutcome(ctx, outcome);
+				} catch (error) {
+					ctx.ui.notify(`K-π loop failed: ${error instanceof Error ? error.message : String(error)}`, "error");
+				}
 			}
 			try {
 				await installWidget(ctx, dependencies);
