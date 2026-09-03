@@ -648,6 +648,7 @@ export class ShipIntegrityError extends Error {
 function describeError(error: unknown): string {
 	if (error instanceof Error) return error.message;
 	if (typeof error === "string") return error;
+	if (error === undefined) return "an undefined value was thrown";
 	try {
 		return JSON.stringify(error) ?? String(error);
 	} catch {
@@ -982,6 +983,7 @@ export async function readPullRequestWithGh(
 				.split(/\r?\n/u)
 				.map((line) => line.trim())
 				.find((line) => line.length > 0) ?? "gh gave no reason";
+		// At most 160 characters shown, the ellipsis counted among them.
 		const shown = firstLine.length > 160 ? `${firstLine.slice(0, 159)}…` : firstLine;
 		throw new PullRequestLookupError(
 			`No pull request could be verified for ${branch}: gh pr view failed (${shown})`,

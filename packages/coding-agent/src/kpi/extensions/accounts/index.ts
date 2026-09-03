@@ -733,12 +733,20 @@ export function registerAccounts(pi: ExtensionAPI, dependencies: AccountsDepende
 	 * and a guess could release the one still streaming. The rest wait for
 	 * their own end, the run's end, or the cap.
 	 */
-	const releaseSucceededResponse = (): void => {
+	const releaseSucceededResponse = (context: ExtensionContext): void => {
 		// The sole pending response of any status is the one that ended: a failed
 		// transport the runtime recovered from ends well too, and left pending it
-		// would only make a later error look ambiguous.
+		// would only make a later error look ambiguous. A failed status released
+		// this way is said out loud: it was never charged.
 		if (pendingResponses.size === 1) {
+			const [, only] = pendingResponses.entries().next().value ?? [];
 			pendingResponses.clear();
+			if (only !== undefined && only.status >= 400) {
+				context.ui.notify(
+					`K-π accounts: the ${only.status} response on ${slotName(only)} ended without an assistant error and was not cooled`,
+					"info",
+				);
+			}
 			return;
 		}
 		const succeeded = [...pendingResponses].filter(([, response]) => response.status < 400);
@@ -883,7 +891,7 @@ export function registerAccounts(pi: ExtensionAPI, dependencies: AccountsDepende
 			if (event.message.role !== "assistant") return;
 			const message = event.message as AssistantMessage;
 			if (message.stopReason !== "error" || message.errorMessage === undefined) {
-				releaseSucceededResponse();
+				releaseSucceededResponse(context);
 				return;
 			}
 			const taken = takeErroredResponse();
