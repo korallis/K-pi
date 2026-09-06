@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["proposal", "rationale", "tradeoffs", "risks", "evidenceRefs"],
+  "properties": {
+    "proposal": { "type": "string", "minLength": 1 },
+    "rationale": { "type": "string", "minLength": 1 },
+    "tradeoffs": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
+    "risks": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
+    "evidenceRefs": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+  }
+}

@@ -1,19 +1,17 @@
 import type { Model } from "@earendil-works/pi-ai";
 
-import { type AccountSlot, type AccountsDocument, isLocalPool, isPoolId, type PoolId } from "./store.ts";
+import {
+	type AccountSlot,
+	type AccountsDocument,
+	isLocalPool,
+	type PoolId,
+	poolIdForProvider,
+	providerIdForPool,
+} from "./store.ts";
 import type { UsageView } from "./usage/types.ts";
 
 /** A plan at 95% used yields before another healthy sibling is exhausted. */
 export const LOW_QUOTA_REMAINING_PERCENT = 5;
-
-export const DEFAULT_FALLBACK_CHAIN: readonly PoolId[] = [
-	"anthropic",
-	"openai-codex",
-	"xai",
-	"zai",
-	"kimi-coding",
-	"cursor",
-];
 
 export interface SelectedSlot {
 	poolId: PoolId;
@@ -130,7 +128,10 @@ export class AccountBalancer {
 		}
 		// A slot that needs a login has no grant to send: it is never selected,
 		// whatever its cooldown says, until `/accounts login` rewrites it.
-		const healthy = pool.slots.filter((slot) => slot.needsLogin === undefined && this.isHealthy(poolId, slot.id));
+		const healthy = pool.slots.filter(
+			(slot) =>
+				slot.needsLogin === undefined && (slot.cooldownUntil ?? 0) <= this.now() && this.isHealthy(poolId, slot.id),
+		);
 		if (healthy.length === 0) {
 			return undefined;
 		}
@@ -244,17 +245,27 @@ export class AccountBalancer {
 		preferredModelSlugs?: readonly string[],
 	): FailoverPlan | undefined {
 		const sibling = this.selectInFamily(from.poolId, accounts, usage);
-		if (sibling !== undefined && sibling.slot.id !== from.slot.id) {
+		if (
+			sibling !== undefined &&
+			sibling.slot.id !== from.slot.id &&
+			(!isLocalPool(from.poolId) || sibling.slot.baseUrl === source?.baseUrl)
+		) {
 			return { from, to: sibling, sameFamily: true };
 		}
 
 		if (preferredModelSlugs !== undefined) {
 			for (const slug of preferredModelSlugs) {
 				const slash = slug.indexOf("/");
-				const poolName = slash < 1 ? undefined : slug.slice(0, slash);
-				if (poolName === undefined || !isPoolId(poolName) || poolName === from.poolId) continue;
+				const provider = slug.slice(0, slash);
+				const poolName = slash < 1 ? undefined : poolIdForProvider(provider);
+				if (
+					poolName === undefined ||
+					poolName === from.poolId ||
+					!this.poolOrder(from.poolId, accounts).includes(poolName)
+				)
+					continue;
 				const model = available.find(
-					(candidate) => candidate.provider === poolName && candidate.id === slug.slice(slash + 1),
+					(candidate) => candidate.provider === provider && candidate.id === slug.slice(slash + 1),
 				);
 				if (model === undefined) continue;
 				const to = this.selectInFamily(poolName, accounts, usage);
@@ -263,21 +274,14 @@ export class AccountBalancer {
 			return undefined;
 		}
 
-		const to = this.select(from.poolId, accounts, usage);
-		if (to === undefined || to.poolId === from.poolId) return undefined;
-		const model = source === undefined ? undefined : this.findFallbackModel(source, to.poolId, available);
-		return { from, to, sameFamily: false, model };
-	}
-
-	findFallbackModel(source: Model<any>, poolId: PoolId, available: readonly Model<any>[]): Model<any> | undefined {
-		const candidates = available.filter((model) => model.provider === poolId);
-		if (candidates.length === 0) return undefined;
-		const tier = /opus|pro|max/iu.test(source.id)
-			? /opus|pro|max/iu
-			: /sonnet|medium|flash/iu.test(source.id)
-				? /sonnet|medium|flash/iu
-				: undefined;
-		return (tier === undefined ? undefined : candidates.find((model) => tier.test(model.id))) ?? candidates[0];
+		for (const poolId of this.poolOrder(from.poolId, accounts)) {
+			if (poolId === from.poolId) continue;
+			const model = available.find((candidate) => candidate.provider === providerIdForPool(poolId));
+			if (!model) continue;
+			const to = this.selectInFamily(poolId, accounts, usage);
+			if (to) return { from, to, sameFamily: false, model };
+		}
+		return undefined;
 	}
 
 	/**

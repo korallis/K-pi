@@ -261,6 +261,14 @@ Valid pool ids are `anthropic`, `openai`, `openai-codex`, `xai`, `zai`,
 `lmstudio`, `local-openai`. The slot name is yours: `home`, `work`, anything
 matching a lowercase identifier.
 
+**Cursor** uses browser subscription login: `/accounts login cursor home`.
+K-π implements Cursor's CLI protocol directly; it does not install OMP or
+provision Cursor Cloud Agents. After login, run `kpi update --models` and select
+a discovered Cursor model. Native tools and approval hooks remain in control.
+Protocol compatibility and seat eligibility can change independently of K-π.
+Unknown model limits and subscription prices are not advertised as measured
+values; use native `models.json` overrides when you have explicit limit data.
+
 **Anthropic** shows the extra-usage confirmation before OAuth, and will not
 proceed until you answer:
 

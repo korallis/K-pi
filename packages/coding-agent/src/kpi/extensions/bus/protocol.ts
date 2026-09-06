@@ -273,17 +273,10 @@ export class WorkerProtocol {
 		assertAccepted(response, "prompt");
 	}
 
-	/**
-	 * Live delivery into a running worker. `steer` interrupts after the current
-	 * tool; `followUp` waits for the turn to end. Both are their own protocol
-	 * commands, and a prompt carrying `streamingBehavior` is the documented
-	 * equivalent.
-	 */
+	/** Prompt atomically wakes idle sessions and queues correctly while streaming. */
 	async deliver(message: string, deliverAs: DeliverAs): Promise<void> {
-		const response = await this.request(
-			deliverAs === "steer" ? { type: "steer", message } : { type: "follow_up", message },
-		);
-		assertAccepted(response, deliverAs === "steer" ? "steer" : "follow_up");
+		const response = await this.request({ type: "prompt", message, streamingBehavior: deliverAs });
+		assertAccepted(response, "prompt");
 	}
 
 	/**

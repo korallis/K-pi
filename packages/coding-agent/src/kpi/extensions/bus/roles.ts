@@ -12,17 +12,28 @@ export const MUTATION_TOOLS = new Set(["write", "edit", "apply_patch", "multi_ed
 /**
  * What each role may hold.
  *
- * Reviewer and tester never get `write` or `edit`. They publish through
- * `write_contract`, which reaches exactly one declared path and does not make
- * them the writer. `claim_path`/`release_path` belong to roles that can write:
- * a lease is meaningless without the tool it protects.
+ * Reviewer and tester never get `write` or `edit`. Reviewers publish verdicts
+ * through `write_contract`; execution evidence belongs exclusively to the host
+ * verification executor. `claim_path`/`release_path` belong to writer roles.
  */
 export const ROLE_TOOLS: Record<WorkerRole, readonly string[]> = {
-	implementer: ["read", "grep", "find", "ls", "bash", "write", "edit", "claim_path", "release_path"],
-	reviewer: ["read", "grep", "find", "ls", "bash", "write_contract"],
-	tester: ["read", "grep", "find", "ls", "bash", "write_contract"],
-	arena: ["read", "grep", "find", "ls", "bash", "write", "edit", "claim_path", "release_path"],
-	explorer: ["read", "grep", "find", "ls", "bash"],
+	implementer: [
+		"read",
+		"grep",
+		"find",
+		"ls",
+		"bash",
+		"write",
+		"edit",
+		"claim_path",
+		"release_path",
+		"communicate",
+		"peers",
+	],
+	reviewer: ["read", "grep", "find", "ls", "bash", "write_contract", "communicate", "peers"],
+	tester: ["read", "grep", "find", "ls", "bash", "communicate", "peers"],
+	arena: ["read", "grep", "find", "ls", "bash", "write", "edit", "claim_path", "release_path", "communicate", "peers"],
+	explorer: ["read", "grep", "find", "ls", "bash", "communicate", "peers"],
 };
 
 /**
@@ -65,23 +76,21 @@ export function hasReadOnlyShell(role: WorkerRole): boolean {
  */
 export const ROLE_CONTRACT_FILE: Partial<Record<WorkerRole, { file: string; schema: string }>> = {
 	reviewer: { file: "verdict.json", schema: "verdict.schema.json" },
-	tester: { file: "evidence.json", schema: "evidence.schema.json" },
 };
 
 /**
  * The file `expect: "result"` waits for, for a role that produces one.
  *
- * A reviewer and a tester publish through `write_contract`, so their result is
- * proven by a publication receipt. An implementer and an arena worker are the
+ * A reviewer publishes through `write_contract`, so its result is proven by a
+ * publication receipt. An implementer and an arena worker are the
  * writer: they write `candidate.json` with the `write` tool they legitimately
  * hold, and what makes that attributable is the enforced single-writer slot -
  * one writer worker at a time, and the parent's own mutation tools denied while
- * it lives - rather than a receipt. An explorer produces no result file and
- * refuses `expect: "result"`.
+ * it lives - rather than a receipt. Explorer and tester peers have no model
+ * result-file authority; verification evidence is host-published.
  */
 export const ROLE_RESULT_FILE: Partial<Record<WorkerRole, string>> = {
 	reviewer: "verdict.json",
-	tester: "evidence.json",
 	implementer: "candidate.json",
 	arena: "candidate.json",
 };
@@ -105,7 +114,10 @@ export function resolveRoleTools(role: WorkerRole, requested?: readonly string[]
 	return [...new Set(requested)];
 }
 
-/** Whether this tool set makes its holder the single writer. */
-export function isWriterToolSet(tools: readonly string[]): boolean {
-	return tools.some((tool) => MUTATION_TOOLS.has(tool));
+/** A general shell is mutation authority, even when write/edit were narrowed away. */
+export function isWriterToolSet(tools: readonly string[], role?: WorkerRole): boolean {
+	return (
+		tools.some((tool) => MUTATION_TOOLS.has(tool)) ||
+		(tools.includes("bash") && (role === undefined || (!hasTestShellOnly(role) && !hasReadOnlyShell(role))))
+	);
 }

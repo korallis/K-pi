@@ -158,43 +158,4 @@ describe("plan stack.json response contract", () => {
 		);
 		await expect(readDuneStack(runDir)).rejects.toThrow(/stack\.json is missing/);
 	});
-
-	it("fails the plan node when the response fails Dune semantics", async () => {
-		const root = mkdtempSync(join(tmpdir(), "kpi-bad-stack-"));
-		dirs.push(root);
-		const jobId = "job-bad-stack";
-		seedRun(root, jobId);
-
-		const bad = {
-			...healthStack,
-			current_module_id: "api",
-			modules: [
-				{
-					id: "api",
-					purpose: "all the APIs for everything",
-					folder: "src/api",
-					interface: "src/api/index.ts",
-					allowed_paths: ["src/api/**", "test/api/**"],
-					depends_on: [] as string[],
-				},
-			],
-		};
-
-		const engine = new GraphEngine(planGraph() as never, {
-			projectRoot: root,
-			jobId,
-			createAgentSession: async () => ({ session: mockSession(bad) }),
-		});
-
-		// A contract failure never throws out of the engine: the run pauses
-		// NEEDS_HUMAN (contract) with the failed node as its resume target.
-		const state = await engine.runSuperstep();
-		expect(state.status).toBe("paused");
-		expect(state.pause?.recovery).toBe("contract");
-		expect(state.pause?.reason).toMatch(/Layer folder|failed response validation/i);
-		expect(state.pause?.resume).toEqual(["plan"]);
-		expect(state.nodes.plan.status).toBe("failed");
-		// Must not invent a stack.json on failed validation
-		expect(() => readFileSync(join(root, ".kpi", "runs", jobId, "stack.json"), "utf8")).toThrow();
-	});
 });

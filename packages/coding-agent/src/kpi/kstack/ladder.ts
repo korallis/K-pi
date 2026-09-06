@@ -54,9 +54,9 @@ function patternsFrom(cell: string): string[] {
 	let match = regex.exec(cell);
 	while (match !== null) {
 		const value = match[1].trim();
-		// "(not flash)" style asides are prose, not a pattern.
 		if (value.length > 0 && !value.startsWith("(")) {
-			found.push(value);
+			const exclusion = /^\s*\(not ([^)]+)\)/u.exec(cell.slice(regex.lastIndex));
+			found.push(exclusion ? `${value}!${exclusion[1]}` : value);
 		}
 		match = regex.exec(cell);
 	}
@@ -161,8 +161,21 @@ export interface RoleSuggestion {
 	readonly matched?: string;
 }
 
-function family(slug: string): string {
-	return slug.split("/")[0];
+/** Conservative model-id identities, not provider identities or quality scores. */
+export function modelFamily(slug: string): string | undefined {
+	const id = slug.slice(slug.indexOf("/") + 1).toLowerCase();
+	if (/(?:^|[/. -])claude(?:-|$)|^(?:opus|sonnet|haiku|fable)-/u.test(id)) return "claude";
+	if (/^(?:gpt-|o[134](?:-|$))/u.test(id)) return "gpt";
+	if (/^glm-/u.test(id)) return "glm";
+	if (/^kimi-/u.test(id)) return "kimi";
+	if (/^grok-/u.test(id)) return "grok";
+	return undefined;
+}
+
+function matches(slug: string, pattern: string): boolean {
+	const [include, exclude] = pattern.toLowerCase().split("!");
+	if (include === "any-local") return ["llama.cpp", "ollama", "lmstudio", "local-openai"].includes(slug.split("/")[0]);
+	return slug.toLowerCase().includes(include) && (!exclude || !slug.toLowerCase().includes(exclude));
 }
 
 /**
@@ -181,7 +194,7 @@ export function suggestForRole(
 	const ranked: { slug: string; pattern: string }[] = [];
 	for (const pattern of entry.prefer) {
 		const hits = candidates
-			.filter((slug) => slug.toLowerCase().includes(pattern.toLowerCase()))
+			.filter((slug) => matches(slug, pattern))
 			.filter((slug) => !ranked.some((found) => found.slug === slug))
 			.sort((left, right) => tieBreak(left, right, workingOrder));
 		for (const slug of hits) {
@@ -241,18 +254,20 @@ export function suggestPanel(
 	const seen = new Set<string>();
 	for (const pattern of entry.prefer) {
 		for (const slug of candidates
-			.filter((candidate) => candidate.toLowerCase().includes(pattern.toLowerCase()))
+			.filter((candidate) => matches(candidate, pattern))
 			.sort((left, right) => tieBreak(left, right, workingOrder))) {
-			if (!seen.has(family(slug)) && panel.length < cap) {
-				seen.add(family(slug));
+			const identity = modelFamily(slug) ?? "unknown";
+			if (!seen.has(identity) && panel.length < cap) {
+				seen.add(identity);
 				panel.push(slug);
 			}
 		}
 	}
 	if (panel.length === 0) {
 		for (const slug of [...candidates].sort((left, right) => tieBreak(left, right, workingOrder))) {
-			if (!seen.has(family(slug)) && panel.length < cap) {
-				seen.add(family(slug));
+			const identity = modelFamily(slug) ?? "unknown";
+			if (!seen.has(identity) && panel.length < cap) {
+				seen.add(identity);
 				panel.push(slug);
 			}
 		}

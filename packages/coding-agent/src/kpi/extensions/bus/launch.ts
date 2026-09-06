@@ -4,6 +4,7 @@ import { basename, dirname, isAbsolute, join, parse, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { descriptorEnv, type WorkerDescriptor } from "./identity.ts";
+import { PEER_ENDPOINT_ENV, type PeerEndpoint } from "./peer-runtime.ts";
 import { WORKER_SHUTDOWN_TIMEOUT_MS, WORKER_STARTUP_TIMEOUT_MS, WorkerProtocol } from "./protocol.ts";
 
 export interface WorkerLaunchRequest {
@@ -19,6 +20,7 @@ export interface WorkerLaunchRequest {
 	/** The interpreter that runs it. Defaults to this process's own node. */
 	execPath?: string;
 	startupTimeoutMs?: number;
+	peerEndpoint?: PeerEndpoint;
 }
 
 export interface WorkerLaunch {
@@ -137,27 +139,36 @@ export const launchWorkerProcess: WorkerLauncher = async (request) => {
 		cwd: request.cwd,
 		stdio: ["pipe", "pipe", "pipe"],
 		shell: false,
-		env: { ...process.env, ...descriptorEnv(request.descriptor) },
+		env: {
+			...process.env,
+			...descriptorEnv(request.descriptor),
+			...(request.peerEndpoint === undefined ? {} : { [PEER_ENDPOINT_ENV]: JSON.stringify(request.peerEndpoint) }),
+		},
 	});
 
 	const startupTimeoutMs = request.startupTimeoutMs ?? WORKER_STARTUP_TIMEOUT_MS;
-	await new Promise<void>((resolvePromise, reject) => {
-		const timer = setTimeout(() => {
-			child.kill("SIGKILL");
-			reject(new Error(`worker did not start within ${startupTimeoutMs}ms`));
-		}, startupTimeoutMs);
-		child.once("spawn", () => {
-			clearTimeout(timer);
-			resolvePromise();
-		});
-		child.once("error", (error) => {
-			clearTimeout(timer);
-			reject(new Error(`worker failed to start: ${error.message}`));
-		});
+	const started = Promise.withResolvers<void>();
+	const startupTimer = setTimeout(() => {
+		// Do not report a launch failure (which releases admission) while its
+		// process could still run. A stuck kernel exit retains the reservation.
+		child.once("exit", () => started.reject(new Error(`worker did not start within ${startupTimeoutMs}ms`)));
+		child.kill("SIGKILL");
+	}, startupTimeoutMs);
+	child.once("spawn", () => {
+		clearTimeout(startupTimer);
+		started.resolve();
 	});
+	child.once("error", (error) => {
+		clearTimeout(startupTimer);
+		started.reject(new Error(`worker failed to start: ${error.message}`));
+	});
+	await started.promise;
 
 	if (child.stdin === null || child.stdout === null) {
+		const stopped = Promise.withResolvers<void>();
+		child.once("exit", () => stopped.resolve());
 		child.kill("SIGKILL");
+		await stopped.promise;
 		throw new Error("worker was started without piped stdio");
 	}
 	const protocol = new WorkerProtocol({
@@ -171,6 +182,8 @@ export const launchWorkerProcess: WorkerLauncher = async (request) => {
 		exited = true;
 		protocol.close();
 	});
+	child.on("error", (error) => protocol.close(error));
+	child.stdin.on("error", (error) => protocol.close(error));
 
 	return {
 		pid: child.pid ?? -1,
@@ -197,7 +210,19 @@ export const launchWorkerProcess: WorkerLauncher = async (request) => {
 				child.kill("SIGTERM");
 			});
 			if (!exitedCleanly) {
+				const killed = Promise.withResolvers<void>();
+				const onExit = (): void => {
+					clearTimeout(timer);
+					killed.resolve();
+				};
+				const timer = setTimeout(() => {
+					child.off("exit", onExit);
+					killed.reject(new Error("worker did not exit after SIGKILL; ownership remains held"));
+				}, WORKER_SHUTDOWN_TIMEOUT_MS);
+				child.once("exit", onExit);
 				child.kill("SIGKILL");
+				if (exited) onExit();
+				await killed.promise;
 			}
 		},
 	};

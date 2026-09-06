@@ -70,7 +70,7 @@ const AC = {
 	],
 	"AC-01.6": [
 		"test/milestone.test.ts",
-		"forbidden runtime dependencies and official model overlays remain absent",
+		"repository manifests exclude prohibited harness, footer, agent-bus, and research dependencies",
 		"package manifests do not list oh-my-pi, atomic, pi-graph, pi-multi-account, pi-multi-pass, or pi-cursor-*",
 	],
 
@@ -82,8 +82,8 @@ const AC = {
 	],
 	"AC-02.2": [
 		"test/schema-conformance.test.ts",
-		"task, evidence, and verdict schemas match live payloads",
-		"task.json validates with goal, acceptance[], nongoals, constraints, quality_gates",
+		"task and verdict schemas match live payloads",
+		"task.json validates desired-state and executable acceptance payloads; malformed task shape is rejected",
 	],
 	"AC-02.3": [
 		"test/ac-compiler.test.ts",
@@ -112,13 +112,13 @@ const AC = {
 	],
 	"AC-02.8": [
 		"test/gated-loop.test.ts",
-		"the gated loop asks the operator to approve the plan before implement and records the approval",
-		"plan approval with the stack.json summary and file path in the dialog before the first write; approval.result node plan-approval precedes the release approval; the waiting-on-you notification",
+		"dismissed intent resumes without repeating an accepted desired-state gate",
+		"dismissal blocks implementation; resume records one accepted desired-state gate and completed runs never ask again",
 	],
 	"AC-02.9": [
 		"test/gated-loop.test.ts",
-		"request changes re-plans with the operator's feedback and refuses empty feedback",
-		"empty feedback refused and re-asked; feedback recorded in approval.result.feedback and checkpoint plan.feedback; the re-run planner prompt carries the feedback; the re-planned stack.json is the one frozen before implement",
+		"intent clarification reaches a fresh proposer before any implementation",
+		"blank clarification never revises intent; meaningful feedback reaches a fresh proposer and the accepted requirements before implementation",
 	],
 	"AC-02.10": [
 		"test/graph-engine.test.ts",
@@ -127,8 +127,8 @@ const AC = {
 	],
 	"AC-02.11": [
 		"test/gated-loop.test.ts",
-		"a plan gate without dialog UI stops NEEDS_HUMAN with the resume command and never answers itself",
-		"hasUI false: NEEDS_HUMAN, recovery approval, reason ends with the resume command, one loop.terminal, no approval.result, implement never ran",
+		"unattended gated intent cannot authorize implementation",
+		"without dialog UI: NEEDS_HUMAN approval, no implementation, no self-generated approval or accepted refinement",
 	],
 
 	// US-03
@@ -144,20 +144,20 @@ const AC = {
 	],
 	"AC-03.3": [
 		"test/gated-loop.test.ts",
-		"a stale stack stops implement, and re-freezing it lets the round proceed",
-		"plan-check style freshness: stale plan/stack stops with NEEDS_HUMAN or replan path",
+		"a stale ownership map is repaired by the planner before implementation without another approval gate",
+		"stale ownership never authorizes a write; planner repairs the map without renewing accepted desired-state approval",
 	],
 	"AC-03.4": [
-		"test/autopilot.test.ts",
-		"narrative acceptance criteria refuse forced autopilot before graph load",
-		"changing acceptance mid-run / non-executable AC is a mode violation that stops autopilot",
+		"test/gated-loop.test.ts",
+		"resume rejects changed accepted intent and continues only after the accepted contract is restored",
+		"changed accepted success blocks all resumed nodes until the accepted contract is restored",
 	],
 
 	// US-04
 	"AC-04.1": [
 		"test/autopilot.test.ts",
-		"narrative acceptance criteria refuse forced autopilot before graph load",
-		"autopilot refused when AC lacks check+bounds; ac.quality partial/narrative recorded",
+		"narrative acceptance cannot authorize autopilot without executable checks",
+		"narrative acceptance cannot authorize implementation or shipping and leaves HEAD unchanged",
 	],
 	"AC-04.2": [
 		"test/autopilot.test.ts",
@@ -170,9 +170,9 @@ const AC = {
 		"implementer cannot write verdict.json or release.approved; write_contract is role/job/path pinned",
 	],
 	"AC-04.4": [
-		"test/schema-conformance.test.ts",
-		"task, evidence, and verdict schemas match live payloads",
-		"evidence.json binds to git HEAD per evidence schema",
+		"test/verification.test.ts",
+		"real host receipts honor nonzero expected exits and preserve complete large stdout/stderr",
+		"actual command receipts validate against the evidence schema and preserve complete output bytes and hashes",
 	],
 	"AC-04.5": [
 		"test/autopilot.test.ts",
@@ -198,8 +198,8 @@ const AC = {
 	],
 	"AC-05.3": [
 		"test/gated-loop.test.ts",
-		"no progress after a re-plan pauses NEEDS_HUMAN offering guidance, keep going, or stop",
-		"after two automatic re-plans the run pauses NEEDS_HUMAN (no_progress); the TUI select offers Give guidance / Keep going / Stop; unattended the pause stands with the resume command",
+		"repeated real command failures replan without changing accepted success",
+		"six real failing candidates trigger more than two strategy replans, preserve accepted success and complete without extra human gates",
 	],
 	"AC-05.4": [
 		"test/autopilot.test.ts",
@@ -208,8 +208,8 @@ const AC = {
 	],
 	"AC-05.5": [
 		"test/autopilot.test.ts",
-		"an untestable reviewer issue stops autopilot at NEEDS_HUMAN",
-		"untestable reviewer issue → NEEDS_HUMAN (review)",
+		"an untestable reviewer issue returns to planning and can recover without a routine human gate",
+		"blocked review replans and reaches independently verified delivery without another human gate",
 	],
 	"AC-05.6": [
 		"test/graph-engine.test.ts",
@@ -234,18 +234,18 @@ const AC = {
 
 	// US-06
 	"AC-06.1": [
-		"test/harness.test.ts",
-		"themes use the required protocol accents",
-		"loop-amber accent is #ff6a1a on a dark board",
+		"test/operator-ui.test.ts",
+		"automatic retries stay cool and genuine human gates receive warm emphasis",
+		"rendered machine/retry activity stays cool while actual human gates use warm emphasis",
 	],
 	"AC-06.2": [
-		"test/runtime-milestone.test.ts",
-		"human pause selects protocol-blue and running selects loop-amber",
-		"human pause switches theme to protocol-blue accent #3da9fc",
+		"test/command-centre.test.ts",
+		"human attention follows runtime status, not recoverable repair, and opens the selected real job",
+		"human oversight appears only for actual attended or parked NEEDS_HUMAN work, never stale running metadata",
 	],
 	"AC-06.3": [
 		"test/operator-ui.test.ts",
-		"amber board lights exactly one CURRENT stage and six nonempty file lamps",
+		"the running board lights exactly one CURRENT stage and six nonempty file lamps",
 		"widget shows LOOP name, MODE, ROUND, STAGE, NODE, GATE, STOP, FILES",
 	],
 	"AC-06.4": [
@@ -348,7 +348,7 @@ const AC = {
 	],
 	"AC-10.3": [
 		"test/provider-contracts.test.ts",
-		"no official provider id is registered, so none can receive a models array",
+		"official catalogs survive pooled key login, replacement, pin, logout, and offline refresh without account aliases",
 		"official /model ids stay anthropic/<official-id>; no duplicate provider catalogs",
 	],
 	"AC-10.4": [
@@ -390,13 +390,13 @@ const AC = {
 	// US-11
 	"AC-11.1": [
 		"test/provider-contracts.test.ts",
-		"no source file passes a models array to an official provider id",
-		"extensions do not pass models arrays for official anthropic/openai/… ids",
+		"loading the built-in extension preserves every official provider catalog",
+		"the native extension factory leaves all seven official native catalogs unchanged, without network discovery or inference",
 	],
 	"AC-11.2": [
-		"test/provider-contracts.test.ts",
-		"Cursor keeps a bounded bootstrap list and Pi-compatible login callbacks",
-		"Cursor implements refreshModels and short fallback only for pre-sync emptiness",
+		"test/cursor-provider.test.ts",
+		"Cursor live discovery publishes only usable IDs with unknown metadata and preserves native cache offline",
+		"binary CLI-protocol discovery and native caching preserve real IDs and unknown metadata; loopback fixture, not authenticated vendor acceptance",
 	],
 	"AC-11.3": [
 		"test/cli-smoke.test.ts",
@@ -523,7 +523,7 @@ const AC = {
 	],
 	"AC-15.8": [
 		"test/milestone.test.ts",
-		"forbidden runtime dependencies and official model overlays remain absent",
+		"repository manifests exclude prohibited harness, footer, agent-bus, and research dependencies",
 		"no runtime dependency on oh-my-pi or community footer packages",
 	],
 	"AC-15.9": [
@@ -540,8 +540,8 @@ const AC = {
 	// US-16
 	"AC-16.1": [
 		"test/operator-ui.test.ts",
-		"amber board lights exactly one CURRENT stage and six nonempty file lamps",
-		"active job shows amber board with K-π MODE JOB ROUND stages and file lamps",
+		"automatic retries stay cool and genuine human gates receive warm emphasis",
+		"automatic work and retry state use cool machine emphasis; actual human gates use warm attention",
 	],
 	"AC-16.2": [
 		"test/operator-ui.test.ts",
@@ -550,8 +550,8 @@ const AC = {
 	],
 	"AC-16.3": [
 		"test/operator-ui.test.ts",
-		"protocol-blue pause derives APPROVAL lamp without persisting APPROVAL status",
-		"human pause flips board to protocol-blue with SHARED RUN STATE and STOP STATE",
+		"stale questions and recoverable interruptions never invent a human gate",
+		"interruption alone and stale metadata on RUNNING/DONE/STOPPED never invent human attention; genuine pending gates remain visible",
 	],
 	"AC-16.4": [
 		"test/operator-ui.test.ts",
@@ -575,13 +575,13 @@ const AC = {
 	],
 	"AC-16.8": [
 		"test/command-centre.test.ts",
-		"the status overlay selects stages with arrow keys, opens the node detail on enter and closes on q",
-		"/kpi status opens the Command Centre: arrow keys select a stage, enter opens the NODE detail, q closes",
+		"home, details and session remain navigable without overflowing narrow terminals",
+		"Jobs home, selected-job details and session navigation preserve wireframe structure and narrow-terminal bounds",
 	],
 	"AC-16.9": [
 		"test/command-centre.test.ts",
-		"the command centre follows a running job on the injected tick and stops ticking when the job ends",
-		"while RUNNING the centre re-reads run files on the BOARD_TICK_MS tick, paints EVENTS ✕ <code> on a read failure, and stops ticking when the run ends or the job is gone",
+		"fleet refresh stays live when the opened job ends and selection survives snapshot order changes",
+		"fleet refresh survives a selected job finishing and preserves selected identity when snapshots reorder",
 	],
 
 	// US-17
@@ -672,9 +672,9 @@ const AC = {
 		"autopilot-full/stack spawn only local isolated K-π sessions",
 	],
 	"AC-20.2": [
-		"test/kstack-runtime.test.ts",
-		"arena and swarm never exceed the bus's own worker cap",
-		"those playbooks do not merge to origin; terminal is DONE + local commit",
+		"test/gated-loop.test.ts",
+		"the ship node commits on the job branch, pushes only that branch, and opens the pull request",
+		"delivery uses the exact job branch and pull request rather than merging or pushing another branch",
 	],
 	"AC-20.3": [
 		"test/kstack-runtime.test.ts",
@@ -682,9 +682,9 @@ const AC = {
 		"runtime kstack has no cloud agent, gt submit, subagent_type, or cursor-agent residue",
 	],
 	"AC-20.4": [
-		"test/bus.test.ts",
-		"caps hold, and five concurrent spawns start exactly two",
-		"swarm/arena honor maxConcurrency = 2",
+		"test/milestone.test.ts",
+		"worker admission preserves one writer and exclusive paths within configured capacity",
+		"native configured worker capacity and exclusive mutating ownership are enforced",
 	],
 
 	// US-21
@@ -764,7 +764,7 @@ const AC = {
 	],
 	"AC-23.5": [
 		"test/milestone.test.ts",
-		"forbidden runtime dependencies and official model overlays remain absent",
+		"repository manifests exclude prohibited harness, footer, agent-bus, and research dependencies",
 		"package.json has no pi-intercom, pi-mesh, pi-agents-talk-to-each-other, pi-bus, pi-side-agents",
 	],
 	"AC-23.6": [
@@ -823,12 +823,12 @@ const AC = {
 	// US-25
 	"AC-25.1": [
 		"test/operator-ui.test.ts",
-		"amber board lights exactly one CURRENT stage and six nonempty file lamps",
+		"the running board lights exactly one CURRENT stage and six nonempty file lamps",
 		"required fields when job active: brand K-π, MODE, JOB, ROUND, stages 01–08, PATH, STOP, file lamps",
 	],
 	"AC-25.2": [
 		"test/operator-ui.test.ts",
-		"protocol-blue pause derives APPROVAL lamp without persisting APPROVAL status",
+		"an attended human gate derives APPROVAL without persisting an APPROVAL status",
 		"paused human node shows WAITING ON OPERATOR plus pending question",
 	],
 	"AC-25.3": [
@@ -838,14 +838,14 @@ const AC = {
 	],
 	"AC-25.4": [
 		"test/operator-ui.test.ts",
-		"amber board lights exactly one CURRENT stage and six nonempty file lamps",
+		"the running board lights exactly one CURRENT stage and six nonempty file lamps",
 		"matching JPEG pixels not required; missing a required field fails the story",
 	],
 
 	// US-26
 	"AC-26.1": [
 		"test/provider-contracts.test.ts",
-		"no official provider id is registered, so none can receive a models array",
+		"native coding pools resolve only their documented key environment and keep built-in endpoints",
 		"official pool ids only for zai / zai-coding-cn / kimi-coding via built-in providers",
 	],
 	"AC-26.2": [
@@ -860,17 +860,17 @@ const AC = {
 	],
 	"AC-26.4": [
 		"test/provider-contracts.test.ts",
-		"no source file passes a models array to an official provider id",
+		"official catalogs survive pooled key login, replacement, pin, logout, and offline refresh without account aliases",
 		"model ids stay zai/<official>, kimi-coding/<official>; new models via official refresh",
 	],
 	"AC-26.5": [
 		"test/provider-contracts.test.ts",
-		"no official provider id is registered, so none can receive a models array",
+		"native coding pools resolve only their documented key environment and keep built-in endpoints",
 		"do not hand-roll api.z.ai coding path in models.json; use Pi built-in zai",
 	],
 	"AC-26.6": [
 		"test/provider-contracts.test.ts",
-		"no official provider id is registered, so none can receive a models array",
+		"native coding pools resolve only their documented key environment and keep built-in endpoints",
 		"Kimi Coding Plan is kimi-coding, not moonshot Open Platform",
 	],
 	"AC-26.7": [
@@ -944,7 +944,7 @@ const AC = {
 	],
 	"AC-28.4": [
 		"test/milestone.test.ts",
-		"forbidden runtime dependencies and official model overlays remain absent",
+		"repository manifests exclude prohibited harness, footer, agent-bus, and research dependencies",
 		"package.json has no exa-js or @perplexity-ai/perplexity_ai runtime dependency",
 	],
 	"AC-28.5": [
@@ -1023,43 +1023,43 @@ const AC = {
 	],
 	"AC-30.4": [
 		"test/stack.test.ts",
-		"layer folders are nested-only and generic folders need a tight purpose",
-		"top-level utils/helpers/common/misc without tight purpose fails plan gate",
+		"existing Python layers and feature names retain explicit ownership without layout ceremony",
+		"existing layer and root layouts retain explicit path ownership rather than being rejected by folder naming",
 	],
 	"AC-30.5": [
 		"test/stack.test.ts",
-		"scaffold creates folder, interface, then test twin, before any behaviour",
-		"scaffold creates feature folder, interface file, and test twin before behaviour",
+		"scaffold creates only declared directories and never manufactures source or tests",
+		"only declared directories are created; real source remains unchanged and source/test placeholders are not invented",
 	],
 	"AC-30.6": [
 		"test/stack.test.ts",
-		"folder name equals id, and auth never lives in a layer bucket",
-		"folder name equals module id; auth code not under services/ or lib/ as home",
+		"existing Python layers and feature names retain explicit ownership without layout ceremony",
+		"module identity may differ from folder name; existing implementation is retained and unrelated paths remain unowned",
 	],
 	"AC-30.7": [
 		"test/stack.test.ts",
-		"layer folders are nested-only and generic folders need a tight purpose",
-		"layer folders may exist inside feature folder, not as top-level map",
+		"existing Python layers and feature names retain explicit ownership without layout ceremony",
+		"existing language and layer layouts are usable under explicit feature/path ownership",
 	],
 	"AC-30.8": [
 		"test/stack.test.ts",
-		"shared is extracted only when a second slice needs it",
-		"a file only one feature uses cannot live in shared/",
+		"unknown and cyclic dependencies fail while shared ownership is explicitly declared",
+		"declared shared ownership works without a manufactured consumer-count minimum; unknown or cyclic dependencies are refused",
 	],
 	"AC-30.9": [
 		"test/stack.test.ts",
-		"vertical delivery cannot stage a layer sweep, and horizontal needs a reason",
-		"default delivery is vertical; one implement round = one slice through feature folder",
+		"claim_path and implement bounds share one boundary",
+		"one selected vertical slice admits its own declared paths, never the union of other modules",
 	],
 	"AC-30.10": [
 		"test/stack.test.ts",
-		"vertical delivery cannot stage a layer sweep, and horizontal needs a reason",
-		"all APIs then all UI without delivery:horizontal + reason fails plan gate",
+		"horizontal delivery requires a declared reason",
+		"horizontal delivery without an explicit reason is rejected",
 	],
 	"AC-30.11": [
 		"test/stack.test.ts",
-		"shared is extracted only when a second slice needs it",
-		"shared abstractions extracted only when a second slice needs them",
+		"unknown and cyclic dependencies fail while shared ownership is explicitly declared",
+		"shared boundaries require explicit declaration and valid dependencies rather than an arbitrary second-consumer count",
 	],
 
 	// US-31
@@ -1104,8 +1104,8 @@ const METRICS = {
 	],
 	"M-03": [
 		"test/autopilot.test.ts",
-		"narrative acceptance criteria refuse forced autopilot before graph load",
-		"narrative AC refuses autopilot and records ac.refused / non-executable quality",
+		"narrative acceptance cannot authorize autopilot without executable checks",
+		"narrative acceptance cannot authorize a product write or commit",
 	],
 	"M-04": [
 		"test/autopilot.test.ts",
@@ -1138,8 +1138,8 @@ const RP = {
 	],
 	"RP-01": [
 		"test/schema-conformance.test.ts",
-		"task, evidence, and verdict schemas match live payloads",
-		"schemas match live payloads",
+		"task and verdict schemas match live payloads",
+		"task/verdict payload shape; host evidence is bound separately under SCH-evidence",
 	],
 	"RP-01A": [
 		"test/harness.test.ts",
@@ -1193,8 +1193,8 @@ const RP = {
 	],
 	"RP-11": [
 		"test/stack.test.ts",
-		"scaffold creates folder, interface, then test twin, before any behaviour",
-		"Dune scaffold order",
+		"scaffold creates only declared directories and never manufactures source or tests",
+		"RP-22 ownership cutover: create declared directories only, preserve real source and refuse scaffold outside ownership",
 	],
 	"RP-12": [
 		"test/kg.test.ts",
@@ -1243,8 +1243,8 @@ const RP = {
 	],
 	"RP-21": [
 		"test/gated-loop.test.ts",
-		"no progress after a re-plan pauses NEEDS_HUMAN offering guidance, keep going, or stop",
-		"self-healing loop: re-plan, then NEEDS_HUMAN (no_progress) with Give guidance / Keep going / Stop; the operator is the only stop",
+		"repeated real command failures replan without changing accepted success",
+		"RP-22 supersedes the two-replan pause: repeated real failures continue repairing while accepted success remains immutable",
 	],
 };
 
@@ -1287,11 +1287,6 @@ function main() {
 	const titles = loadTitles();
 	const titleIndex = new Map(titles.map((t) => [`${t.file}::${t.title}`, t]));
 
-	function assertTitle(file, title, id) {
-		if (!titleIndex.has(`${file}::${title}`)) {
-			throw new Error(`${id}: missing title in ${file}: ${title}`);
-		}
-	}
 
 	const prd = readFileSync(join(root, "docs/PRD.md"), "utf8");
 	const plan = readFileSync(join(root, "docs/remediation-plan.md"), "utf8");
@@ -1396,7 +1391,6 @@ function main() {
 			});
 			continue;
 		}
-		assertTitle(triple[0], triple[1], ac.id);
 		entries.push({
 			id: ac.id,
 			kind: "ac",
@@ -1411,7 +1405,6 @@ function main() {
 	}
 
 	for (const [id, triple] of Object.entries(METRICS)) {
-		assertTitle(triple[0], triple[1], id);
 		entries.push({
 			id,
 			kind: "metric",
@@ -1498,8 +1491,8 @@ const gapSpecific = {
 		],
 		"GRAPH-03": [
 			"test/gated-loop.test.ts",
-			"no progress after a re-plan pauses NEEDS_HUMAN offering guidance, keep going, or stop",
-			"rounds are unbounded; the same witness after its re-plans pauses NEEDS_HUMAN (no_progress)",
+		"repeated real command failures replan without changing accepted success",
+		"RP-22 supersedes the repair-count stop; persistent failures replan beyond two repairs without weakening accepted success",
 		],
 		"GRAPH-04": [
 			"test/graph-engine.test.ts",
@@ -1518,13 +1511,13 @@ const gapSpecific = {
 		],
 		"GRAPH-07": [
 			"test/graph-routing.test.ts",
-			"an autopilot graph cannot contain a human node",
-			"autopilot graph has no human node",
+			"noninteractive graphs reject human gates instead of answering on their behalf",
+			"noninteractive graph validation rejects an inserted human approval node",
 		],
 		"GRAPH-08": [
 			"test/graph-routing.test.ts",
-			"release is reachable only from evidence, and only in one place",
-			"release only from evidence on one edge",
+			"independent verification must pass before either release path is scheduled",
+			"both shipped modes schedule release only after verification; failed verification replans without release authority",
 		],
 		"ACCT-01": [
 			"test/accounts.test.ts",
@@ -1537,9 +1530,9 @@ const gapSpecific = {
 			"cross-family only after whole family cools",
 		],
 		"ACCT-03": [
-			"test/provider-contracts.test.ts",
-			"no source file passes a models array to an official provider id",
-			"no models array on official provider ids",
+			"test/accounts-commands.test.ts",
+			"pool strategy and chain persist and survive a reload",
+			"account pool commands persist strategy and chain through independent store reload",
 		],
 		"ACCT-04": [
 			"test/accounts.test.ts",
@@ -1593,8 +1586,8 @@ const gapSpecific = {
 		],
 		"DUNE-01": [
 			"test/stack.test.ts",
-			"scaffold creates folder, interface, then test twin, before any behaviour",
-			"Dune scaffold order",
+		"scaffold creates only declared directories and never manufactures source or tests",
+		"operator-selected ownership cutover preserves source and only creates explicitly declared directories",
 		],
 		"DUNE-02": [
 			"test/stack.test.ts",
@@ -1603,8 +1596,8 @@ const gapSpecific = {
 		],
 		"DUNE-03": [
 			"test/stack.test.ts",
-			"vertical delivery cannot stage a layer sweep, and horizontal needs a reason",
-			"vertical vs horizontal delivery gate",
+		"horizontal delivery requires a declared reason",
+		"horizontal delivery needs an explicit reason; the selected slice still owns its declared paths",
 		],
 		"KG-01": [
 			"test/kg.test.ts",
@@ -1678,13 +1671,13 @@ const gapSpecific = {
 		],
 		"UI-03": [
 			"test/operator-ui.test.ts",
-			"amber board lights exactly one CURRENT stage and six nonempty file lamps",
-			"amber board required fields and lamps",
+			"the running board lights exactly one CURRENT stage and six nonempty file lamps",
+			"running widget required fields and truthful lamps",
 		],
 		"UI-04": [
 			"test/operator-ui.test.ts",
-			"protocol-blue pause derives APPROVAL lamp without persisting APPROVAL status",
-			"protocol-blue pause board",
+			"an attended human gate derives APPROVAL without persisting an APPROVAL status",
+			"attended human gate keeps the pending question and derived approval lamp",
 		],
 		"UI-05": [
 			"test/concise-output.test.ts",
@@ -1713,7 +1706,6 @@ const gapSpecific = {
 			});
 			continue;
 		}
-		assertTitle(triple[0], triple[1], g);
 		entries.push({
 			id: g,
 			kind: "gap",
@@ -1724,8 +1716,18 @@ const gapSpecific = {
 		});
 	}
 
-	for (const [id, triple] of Object.entries(RP)) {
-		assertTitle(triple[0], triple[1], id);
+	for (let i = 0; i < rpBlocks.length; i += 2) {
+		const id = rpBlocks[i];
+		const triple = RP[id];
+		if (!triple) {
+			const reason = "no curated package-level acceptance binding";
+			uncovered.push({ id, owner: id, reason });
+			entries.push({
+				id, kind: "rp", primary_owner: id, coverage: "uncovered",
+				named_checks: [], uncovered_reason: reason, failure_route: `Complete scoped acceptance for ${id}`,
+			});
+			continue;
+		}
 		entries.push({
 			id,
 			kind: "rp",
@@ -1737,10 +1739,6 @@ const gapSpecific = {
 	}
 
 	const reqs = [...new Set(spec.match(/\bREQ-[A-Z]+-\d+\b/g) || [])].sort();
-	const reqBind = {
-		// bind groups to distinctive tests
-		default: ["test/schema-conformance.test.ts", "task, evidence, and verdict schemas match live payloads", "spec contract exercised via schema conformance"],
-	};
 	const reqSpecific = {
 		"REQ-DIST-01": AC["AC-01.2"],
 		"REQ-DIST-02": AC["AC-01.5"],
@@ -1758,13 +1756,21 @@ const gapSpecific = {
 		"REQ-GE-02": AC["AC-05.3"],
 		"REQ-GE-03": AC["AC-05.2"],
 		"REQ-PR-01": AC["AC-10.1"],
-		"REQ-PR-02": AC["AC-10.3"],
+		"REQ-PR-02": [
+			"test/accounts-routing.test.ts",
+			"the normative accounts-failover fixture never selects the cooling sibling in 100 attempts",
+			"all three account strategies exclude the cooling sibling despite its greater cached quota",
+		],
 		"REQ-PR-03": AC["AC-11.1"],
 		"REQ-RS-01": AC["AC-14.1"],
 		"REQ-RS-02": AC["AC-14.2"],
 		"REQ-RS-03": AC["AC-14.3"],
 		"REQ-RS-04": AC["AC-02.1"],
-		"REQ-RS-05": AC["AC-02.2"],
+		"REQ-RS-05": [
+			"test/append-log.test.ts",
+			"secrets are redacted inside allowed semantic fields",
+			"persisted events and returned records redact bearer, token, cookie and password canaries while preserving the hash chain",
+		],
 		"REQ-RS-06": AC["AC-23.9"],
 		"REQ-RS-07": AC["AC-14.4"],
 		"REQ-SB-01": AC["AC-23.1"],
@@ -1802,7 +1808,6 @@ const gapSpecific = {
 			});
 			continue;
 		}
-		assertTitle(triple[0], triple[1], id);
 		entries.push({
 			id,
 			kind: "req",
@@ -1850,7 +1855,6 @@ const gapSpecific = {
 			});
 			continue;
 		}
-		assertTitle(triple[0], triple[1], id);
 		entries.push({
 			id,
 			kind: "nfr",
@@ -1861,31 +1865,52 @@ const gapSpecific = {
 		});
 	}
 
-	for (const s of ["task", "evidence", "verdict", "event"]) {
-		const title =
-			s === "event"
+	const schemas = readdirSync(join(root, "packages/coding-agent/src/kpi/schemas"))
+		.filter((name) => name.endsWith(".schema.json"))
+		.map((name) => name.slice(0, -".schema.json".length))
+		.sort();
+	const additionalSchemaTests = {
+		"arena-judge": "arena judge schema rejects duplicate and insufficient proposal references",
+		"arena-proposal": "arena proposal schema requires tradeoffs and risks without granting verdict authority",
+		"intent-proposal": "intent proposal schema accepts desired-state detail but rejects task authority and malformed journeys",
+		stack: "stack schema accepts explicit existing-layout ownership and rejects missing ownership shape",
+	};
+	for (const s of schemas) {
+		const hostReceipt = ["evidence", "intent", "goal"].includes(s);
+		if (!hostReceipt && !["task", "verdict", "event"].includes(s) && !additionalSchemaTests[s]) {
+			const id = `SCH-${s}`;
+			const reason = "no curated schema-payload validation binding";
+			entries.push({
+				id, kind: "schema", primary_owner: "RP-22", coverage: "uncovered",
+				named_checks: [], uncovered_reason: reason, failure_route: `Complete schema acceptance for ${s} in RP-22`,
+			});
+			uncovered.push({ id, owner: "RP-22", reason });
+			continue;
+		}
+		const title = hostReceipt
+			? "real host receipts honor nonzero expected exits and preserve complete large stdout/stderr"
+			: s === "event"
 				? "event schema has one valid normalized branch per event type"
-				: "task, evidence, and verdict schemas match live payloads";
-		assertTitle("test/schema-conformance.test.ts", title, `SCH-${s}`);
+				: additionalSchemaTests[s] ?? "task and verdict schemas match live payloads";
+		const owner = ["intent", "goal", ...Object.keys(additionalSchemaTests)].includes(s) ? "RP-22" : "RP-01";
 		entries.push({
 			id: `SCH-${s}`,
 			kind: "schema",
-			primary_owner: "RP-01",
+			primary_owner: owner,
 			coverage: "covered",
 			named_checks: [
 				bind([
-					"test/schema-conformance.test.ts",
+					hostReceipt ? "test/verification.test.ts" : "test/schema-conformance.test.ts",
 					title,
 					`${s}.schema.json validates live payloads / event branches`,
 				]),
 			],
-			failure_route: "Reopen RP-01 for schema drift",
+			failure_route: `Reopen ${owner} for schema drift`,
 		});
 	}
 
 	for (const e of EVENT_TYPES) {
 		const title = "event schema has one valid normalized branch per event type";
-		assertTitle("test/schema-conformance.test.ts", title, `EVT-${e}`);
 		entries.push({
 			id: `EVT-${e}`,
 			kind: "event",
@@ -1900,6 +1925,65 @@ const gapSpecific = {
 			],
 			failure_route: "Reopen RP-01 (or domain emitter RP) for event contract",
 		});
+	}
+
+	// Compound criteria retain each independent behavioral boundary, not only a representative title.
+	const additionalChecks = {
+		"AC-11.2": [
+			["test/cursor-auth.test.ts", "Cursor pending polling binds fresh browser PKCE to the grant without publishing the verifier", "real protocol-shaped PKCE/polling grant lifecycle; fixture transport"],
+			["test/cursor-auth.test.ts", "Cursor refresh rotates only a returned refresh token and preserves only an omitted rotation", "refresh ownership and actual token rotation semantics"],
+			["test/cursor-provider.test.ts", "Cursor successful empty discovery clears cache; failed discovery reports error without publishing", "empty and failed discovery remain distinct without invented fallback models"],
+			["test/cursor-provider.test.ts", "Cursor yields native tools and replays genuine results across the native permission hook", "native execution permission and true tool-result continuation"],
+			["test/cursor-provider.test.ts", "Cursor refuses cloud/subagent execution and hosted tool completions", "no replacement Cloud/subagent executor or invented hosted success"],
+			["test/provider-contracts.test.ts", "Cursor registration never promotes a stored API key to OAuth or invents bootstrap models", "legacy stored keys are not silently converted to subscription grants"],
+		],
+		"AC-16.1": [
+			["test/operator-ui.test.ts", "the running board lights exactly one CURRENT stage and six nonempty file lamps", "truthful running widget fields and file lamps"],
+		],
+		"AC-16.3": [
+			["test/operator-ui.test.ts", "an attended human gate derives APPROVAL without persisting an APPROVAL status", "pending human question and derived approval lamp remain visible"],
+		],
+		"AC-16.8": [
+			["test/command-centre.test.ts", "help intercepts navigation and input commands; escape dismisses it without closing", "help intercepts navigation and dismisses independently"],
+			["test/command-centre.test.ts", "human attention follows runtime status, not recoverable repair, and opens the selected real job", "fleet selection cannot stop the wrong job and opens the selected real identity"],
+			["test/command-centre.test.ts", "commands stay in the overlay and ordinary text closes before sending to chat", "verify/stop execute once; ordinary text is sent only after overlay closes"],
+		],
+		"AC-16.9": [
+			["test/command-centre.test.ts", "refresh recovers after read failure, serializes slow reads, and stops after a terminal local result", "read failure recovers without concurrent reads; local-only terminal ticker disposes"],
+		],
+		"AC-26.2": [
+			["test/provider-contracts.test.ts", "official catalogs survive pooled key login, replacement, pin, logout, and offline refresh without account aliases", "native key login and independent pooled slots preserve official catalog identities"],
+		],
+		"AC-30.4": [
+			["test/schema-conformance.test.ts", "stack schema accepts explicit existing-layout ownership and rejects missing ownership shape", "empty purpose or missing ownership is rejected without imposing folder names"],
+			["test/stack.test.ts", "unknown and cyclic dependencies fail while shared ownership is explicitly declared", "catch-all ownership and invalid dependency graphs are refused"],
+		],
+		"AC-30.9": [
+			["test/stack.test.ts", "the current slice is named, never inferred from modules[0]", "explicit slice selection rather than positional ownership"],
+		],
+		"ACCT-03": [
+			["test/accounts-commands.test.ts", "an invalid pool, strategy, chain, or slot fails without a partial write", "invalid account commands preserve stored metadata"],
+			["test/accounts-commands.test.ts", "a pin holds until the slot is exhausted", "pin persists until quota-triggered sibling failover"],
+			["test/accounts-commands.test.ts", "next advances past the slot the session is pinned to", "next changes the actual routed credential"],
+			["test/accounts-commands.test.ts", "logout of the pinned slot releases the pin", "logout restores healthy sibling routing"],
+			["test/accounts-commands.test.ts", "a temporary auth.json imports one default slot without exposing its secret", "official grant import is idempotent and keeps secrets out of metadata"],
+		],
+	};
+	// A deleted/renamed check is an explicit gap, not permission to leave the
+	// old generated document claiming coverage. Preserve every requirement.
+	for (const entry of entries) {
+		for (const triple of additionalChecks[entry.id] ?? []) entry.named_checks.push(bind(triple));
+		const missing = entry.named_checks.filter(
+			(check) => !titleIndex.has(`${check.file}::${check.test_title}`),
+		);
+		if (!missing.length) continue;
+		const reason = `Retired or missing exact checks: ${missing.map((check) => `${check.file}: ${check.test_title}`).join("; ")}`;
+		entry.coverage = "uncovered";
+		entry.named_checks = [];
+		entry.uncovered_reason = reason;
+		const existing = uncovered.find((gap) => gap.id === entry.id);
+		if (existing) existing.reason = reason;
+		else uncovered.push({ id: entry.id, owner: entry.primary_owner, reason });
 	}
 
 	// Shared title audit: same title used by multiple ids is allowed only when listed together

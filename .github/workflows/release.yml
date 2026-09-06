@@ -105,6 +105,16 @@ jobs:
             echo "releasing @korallis/k-pi ${version} from tag ${GITHUB_REF_NAME}"
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
+          case "$version" in
+            *-*)
+              echo "npm_tag=next" >> "$GITHUB_OUTPUT"
+              echo "prerelease=true" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "npm_tag=latest" >> "$GITHUB_OUTPUT"
+              echo "prerelease=false" >> "$GITHUB_OUTPUT"
+              ;;
+          esac
 
       - name: Install from the committed lockfile
         run: npm ci --ignore-scripts --no-audit --fund=false
@@ -139,6 +149,7 @@ jobs:
         if: ${{ !inputs.dry_run }}
         env:
           VERSION: ${{ steps.version.outputs.version }}
+          NPM_TAG: ${{ steps.version.outputs.npm_tag }}
         run: |
           TARBALL=$(jq -r '.tarball' "${RUNNER_TEMP}/release/pack-meta.json")
           test -f "$TARBALL"
@@ -147,7 +158,7 @@ jobs:
           else
             # Verbose so the OIDC exchange (trusted publisher match or mismatch)
             # is visible in the run log; npm redacts credentials in its output.
-            npm publish --provenance --access public --loglevel verbose "$TARBALL"
+            npm publish --provenance --access public --tag "$NPM_TAG" --loglevel verbose "$TARBALL"
           fi
 
       - name: Publish the GitHub release
@@ -157,13 +168,18 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ steps.version.outputs.version }}
+          PRERELEASE: ${{ steps.version.outputs.prerelease }}
         run: |
           TARBALL=$(jq -r '.tarball' "${RUNNER_TEMP}/release/pack-meta.json")
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             gh release upload "$GITHUB_REF_NAME" "$TARBALL" --clobber
           else
+            release_flags=()
+            if [ "$PRERELEASE" = "true" ]; then
+              release_flags+=(--prerelease --latest=false)
+            fi
             gh release create "$GITHUB_REF_NAME" "$TARBALL" \
               --title "K-π ${VERSION}" \
               --generate-notes \
-              --verify-tag
+              --verify-tag "${release_flags[@]}"
           fi

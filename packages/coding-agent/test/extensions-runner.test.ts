@@ -590,6 +590,20 @@ describe("ExtensionRunner", () => {
 			expect(errors[0].error).toContain("Handler error!");
 			expect(errors[0].event).toBe("context");
 		});
+
+		it("refuses inference when mandatory context is explicitly blocked", async () => {
+			fs.writeFileSync(
+				path.join(extensionsDir, "mandatory.ts"),
+				`
+				export default function(pi) {
+					pi.on("context", () => ({ block: true, reason: "protected intent does not fit" }));
+				}
+			`,
+			);
+			const result = await discoverAndLoadExtensions([], tempDir, tempDir);
+			const runner = new ExtensionRunner(result.extensions, result.runtime, tempDir, sessionManager, modelRegistry);
+			await expect(runner.emitContext([])).rejects.toThrow("protected intent does not fit");
+		});
 	});
 
 	describe("message and entry renderers", () => {

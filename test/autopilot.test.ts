@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile as execFileCallback } from "node:child_process";
-import { cp, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, cp, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -8,12 +8,14 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import type { ExtensionCommandContext } from "../packages/coding-agent/src/core/extensions/types.ts";
-
+import { registeredBuses } from "../packages/coding-agent/src/kpi/extensions/bus/sessions-snapshot.ts";
 import type { BusDependencies } from "../packages/coding-agent/src/kpi/extensions/bus/spawn.ts";
 import { liveLoopSettled, registerControlPlane } from "../packages/coding-agent/src/kpi/extensions/control-plane.ts";
 import type { GraphAgentSessionFactory } from "../packages/coding-agent/src/kpi/extensions/graph/engine.ts";
 import type { GraphRunState } from "../packages/coding-agent/src/kpi/extensions/graph/schema.ts";
-import { isFinishedRunStatus } from "../packages/coding-agent/src/kpi/extensions/run-store.ts";
+import type { HostEvidence } from "../packages/coding-agent/src/kpi/extensions/graph/verification.ts";
+import { isFinishedRunStatus, readTaskForJob } from "../packages/coding-agent/src/kpi/extensions/run-store.ts";
+import { stackTaskHash } from "../packages/coding-agent/src/kpi/extensions/stack.ts";
 import { reviewerBusDependencies } from "./helpers/reviewer-bus.ts";
 
 const execFile = promisify(execFileCallback);
@@ -73,6 +75,22 @@ async function latestCheckpoint(directory: string, jobId: string): Promise<Graph
 	return JSON.parse(await readFile(join(graphDirectory, names.at(-1) as string), "utf8")) as GraphRunState;
 }
 
+async function cleanupFixture(root: string): Promise<void> {
+	const runs = join(root, ".kpi", "runs");
+	for (const bus of registeredBuses()) {
+		if (bus.runDirectory.startsWith(`${runs}/`)) await bus.stopAll();
+	}
+	// Unlock only this fixture's sealed verification directories, after shutdown.
+	for (const run of await readdir(runs, { withFileTypes: true }).catch(() => [])) {
+		if (!run.isDirectory()) continue;
+		const verification = join(runs, run.name, "verification");
+		for (const entry of await readdir(verification, { withFileTypes: true }).catch(() => [])) {
+			if (entry.isDirectory()) await chmod(join(verification, entry.name), 0o700);
+		}
+	}
+	await rm(root, { recursive: true, force: true });
+}
+
 async function fixture(name: string): Promise<string> {
 	const source = fileURLToPath(new URL(`../fixtures/${name}/`, import.meta.url));
 	const directory = await mkdtemp(join(tmpdir(), `k-pi-${name}-`));
@@ -87,13 +105,12 @@ async function fixture(name: string): Promise<string> {
 }
 
 function nodeId(prompt: string): string {
-	if (prompt.includes("Check the frozen task")) return "ac-compiler";
-	if (prompt.includes("spec-first skill")) return "specify";
+	if (prompt.includes("intent-proposal.schema.json")) {
+		return prompt.includes("frozen requirements/design/tasks") ? "plan-check" : "specify";
+	}
 	if (prompt.includes("tdd-cycle skill")) return "implement";
-	if (prompt.includes("quality-gates skill")) return "test";
 	if (prompt.includes("isolated-review skill")) return "review";
 	if (prompt.includes("conventional-commit skill")) return "ship";
-	if (prompt.includes("frozen plan still matches")) return "plan-check";
 	if (
 		prompt.includes("implementation plan") ||
 		prompt.includes("stack.schema.json") ||
@@ -117,7 +134,7 @@ const healthStack = JSON.stringify(
 				id: "health",
 				purpose: "healthcheck endpoint and its tests",
 				folder: "src/health",
-				interface: "src/health/api.ts",
+				interface: "src/health/server.js",
 				allowed_paths: ["src/health/**", "test/health/**"],
 				depends_on: [],
 			},
@@ -132,11 +149,11 @@ function autoSessions(
 	directory: string,
 	executed: string[],
 	behavior: {
-		reviewResponse?: string;
 		violateBounds?: boolean;
-		jobId?: string;
-		stack?: string;
-	} = {},
+		jobId: string;
+		ship?: (trailer: string) => Promise<void>;
+		plan?: () => Promise<void>;
+	},
 ): GraphAgentSessionFactory {
 	let sessionNumber = 0;
 	return async (sessionOptions) => {
@@ -151,26 +168,40 @@ function autoSessions(
 					if (detected !== "retry") currentNode = detected;
 					executed.push(currentNode || detected);
 					lastAssistantText = undefined;
-					if (currentNode === "plan" || currentNode === "plan-check") {
-						// Plan returns stack JSON; the graph engine validates and writes it.
-						lastAssistantText = behavior.stack ?? healthStack;
+					if (currentNode === "specify" || currentNode === "plan-check") {
+						const original = await readTaskForJob(directory, behavior.jobId);
+						lastAssistantText = JSON.stringify({
+							users: ["healthcheck client"],
+							journeys: [
+								{
+									id: "health",
+									actor: "healthcheck client",
+									entry: "GET /health",
+									steps: ["request the health endpoint", "receive status 200 and healthy JSON"],
+									acceptance_ids: original.acceptance.map((criterion) => criterion.id),
+								},
+							],
+							acceptance: original.acceptance,
+							nongoals: original.nongoals,
+							testing_criteria: ["Exercise the endpoint through the fixture HTTP client"],
+							questions: [],
+						});
+					} else if (currentNode === "plan") {
+						await behavior.plan?.();
+						const contract = await readTaskForJob(directory, behavior.jobId);
+						lastAssistantText = JSON.stringify({
+							...JSON.parse(healthStack),
+							task_hash: stackTaskHash(contract),
+						});
 					} else if (currentNode === "implement") {
-						if (behavior.jobId !== undefined) {
-							await writeFile(
-								join(directory, ".kpi", "runs", behavior.jobId, "candidate.json"),
-								MINIMALIST_CANDIDATE,
-							);
-						}
+						await writeFile(
+							join(directory, ".kpi", "runs", behavior.jobId, "candidate.json"),
+							MINIMALIST_CANDIDATE,
+						);
 						await writeFile(join(directory, "src", "health", "server.js"), implementedServer);
 						if (behavior.violateBounds === true) {
 							await writeFile(join(directory, "outside.txt"), "not allowed\n");
 						}
-					} else if (currentNode === "test") {
-						lastAssistantText = JSON.stringify({
-							head: await git(directory, "rev-parse", "HEAD"),
-							commands: [{ cmd: "npm test", exit: 0 }],
-							ac_results: ["AC-01", "AC-02", "AC-03", "AC-04", "AC-05"].map((id) => ({ id, passed: true })),
-						});
 					} else if (currentNode === "review") {
 						// Review is a bus worker; transcript is not the verdict.
 						lastAssistantText = undefined;
@@ -178,8 +209,12 @@ function autoSessions(
 						// The commit carries the trailer the prompt asked for: that is how
 						// the control plane recognises this job's own commit.
 						const trailer = /^KPI-Job: [^\s`]+$/mu.exec(prompt)?.[0] ?? "";
-						await git(directory, "add", "-A");
-						await git(directory, "commit", "-m", `feat(health): add healthcheck endpoint\n\n${trailer}`);
+						if (behavior.ship !== undefined) {
+							await behavior.ship(trailer);
+						} else {
+							await git(directory, "add", "-A");
+							await git(directory, "commit", "-m", `feat(health): add healthcheck endpoint\n\n${trailer}`);
+						}
 					}
 				},
 				getLastAssistantText: () => lastAssistantText,
@@ -250,31 +285,26 @@ async function state(directory: string, jobId: string): Promise<Record<string, u
 	>;
 }
 
-test("narrative acceptance criteria refuse forced autopilot before graph load", async () => {
+test("narrative acceptance cannot authorize autopilot without executable checks", async () => {
 	const directory = await fixture("narrative-ac");
 	const jobId = "20260831-narrative-refused";
-	let sessions = 0;
-	const harness = commandHarness(
-		directory,
-		async () => {
-			sessions += 1;
-			throw new Error("auto graph must not start");
-		},
-		jobId,
-	);
+	const initialHead = await git(directory, "rev-parse", "HEAD");
+	const executed: string[] = [];
+	const harness = commandHarness(directory, autoSessions(directory, executed, { jobId }), jobId);
 	try {
 		const task = await readFile(join(directory, "task.txt"), "utf8");
 		await harness.command(`--mode autopilot ${task}`, harness.context);
 
-		assert.equal(sessions, 0);
 		const document = await state(directory, jobId);
 		assert.equal(document.status, "NEEDS_HUMAN");
 		assert.deepEqual(document.ac, { quality: "narrative" });
-		const events = await readFile(join(directory, ".kpi", "runs", jobId, "events.jsonl"), "utf8");
-		assert.match(events, /"type":"ac\.refused"/u);
-		await assert.rejects(readdir(join(directory, ".kpi", "runs", jobId, "graph")), { code: "ENOENT" });
+		assert.equal(document.recovery, "ac_quality");
+		assert.equal(executed.includes("implement"), false, "narrative intent never authorizes a product write");
+		assert.equal(executed.includes("ship"), false);
+		assert.equal(await git(directory, "rev-parse", "HEAD"), initialHead);
+		assert.deepEqual(harness.confirmations, []);
 	} finally {
-		await rm(directory, { recursive: true, force: true });
+		await cleanupFixture(directory);
 	}
 });
 
@@ -283,42 +313,53 @@ test("autopilot healthcheck reaches DONE with one commit and no human node", asy
 	const jobId = "20260831-healthcheck-auto";
 	const initialHead = await git(directory, "rev-parse", "HEAD");
 	const executed: string[] = [];
-	const harness = commandHarness(directory, autoSessions(directory, executed, { jobId }), jobId);
+	const harness = commandHarness(
+		directory,
+		autoSessions(directory, executed, { jobId }),
+		jobId,
+		reviewerBusDependencies({ executed }),
+	);
 	try {
 		const task = await readFile(join(directory, "task.txt"), "utf8");
 		await harness.command(`--mode autopilot ${task}`, harness.context);
 
 		assert.deepEqual(harness.confirmations, []);
-		assert.equal(executed.includes("human"), false);
 		assert.ok(executed.includes("ship"));
 		const document = await state(directory, jobId);
 		assert.equal(document.status, "DONE");
 		assert.deepEqual(document.release, { approved: true });
-		const taskDocument = JSON.parse(await readFile(join(directory, ".kpi", "runs", jobId, "task.json"), "utf8")) as {
-			acceptance: Array<{ bounds?: unknown; check?: unknown }>;
-			constraints: string[];
-		};
-		assert.equal(taskDocument.acceptance.length, 5);
-		assert.ok(
-			taskDocument.acceptance.every((criterion) => criterion.check !== undefined && criterion.bounds !== undefined),
+		const evidence = JSON.parse(
+			await readFile(join(directory, ".kpi", "runs", jobId, "evidence.json"), "utf8"),
+		) as HostEvidence;
+		assert.equal(evidence.passed, true, "host acceptance commands passed before release");
+		assert.ok(evidence.commands.every((receipt) => receipt.exit === 0 && receipt.passed));
+		assert.deepEqual(
+			evidence.ac_results.filter((result) => result.passed).map((result) => result.id),
+			["AC-01", "AC-02", "AC-03", "AC-04", "AC-05"],
 		);
-		// The contract names the one branch the job may push and forbids the rest;
-		// "Never push" is no longer a constraint a new job freezes.
-		assert.equal(taskDocument.constraints.includes("Never push"), false);
-		assert.ok(taskDocument.constraints.some((constraint) => constraint.includes(`kpi/${jobId}`)));
+		assert.ok(
+			evidence.commands.some((receipt) => receipt.stdout.excerpt.includes("GET /health reports service health")),
+			"the host command actually ran the HTTP acceptance test",
+		);
+		assert.ok(executed.includes("review"), "a receipt-backed reviewer ran before shipping");
 		assert.equal(await git(directory, "rev-parse", "--abbrev-ref", "HEAD"), `kpi/${jobId}`);
 		assert.equal(await git(directory, "rev-list", "--count", `${initialHead}..HEAD`), "1");
 	} finally {
-		await rm(directory, { recursive: true, force: true });
+		await cleanupFixture(directory);
 	}
 });
 
 test("an autopilot write outside bounds pauses NEEDS_HUMAN without a commit", async () => {
-	const directory = await fixture("bounds-violation");
+	const directory = await fixture("healthcheck-auto");
 	const jobId = "20260831-bounds-unsafe";
 	const initialHead = await git(directory, "rev-parse", "HEAD");
 	const executed: string[] = [];
-	const harness = commandHarness(directory, autoSessions(directory, executed, { violateBounds: true, jobId }), jobId);
+	const harness = commandHarness(
+		directory,
+		autoSessions(directory, executed, { violateBounds: true, jobId }),
+		jobId,
+		reviewerBusDependencies({ executed }),
+	);
 	try {
 		const task = await readFile(join(directory, "task.txt"), "utf8");
 		await harness.command(`--mode autopilot ${task}`, harness.context);
@@ -345,11 +386,11 @@ test("an autopilot write outside bounds pauses NEEDS_HUMAN without a commit", as
 		assert.equal(executed.includes("ship"), false);
 		assert.equal(await git(directory, "rev-parse", "HEAD"), initialHead);
 	} finally {
-		await rm(directory, { recursive: true, force: true });
+		await cleanupFixture(directory);
 	}
 });
 
-test("an untestable reviewer issue stops autopilot at NEEDS_HUMAN", async () => {
+test("an untestable reviewer issue returns to planning and can recover without a routine human gate", async () => {
 	const directory = await fixture("healthcheck-auto");
 	const jobId = "20260831-review-needs-human";
 	const initialHead = await git(directory, "rev-parse", "HEAD");
@@ -358,20 +399,19 @@ test("an untestable reviewer issue stops autopilot at NEEDS_HUMAN", async () => 
 		directory,
 		autoSessions(directory, executed, { jobId }),
 		jobId,
-		reviewerBusDependencies({ verdict: JSON.parse(blockedVerdict) as Record<string, unknown> }),
+		reviewerBusDependencies({ verdicts: [JSON.parse(blockedVerdict), JSON.parse(verdict)] }),
 	);
 	try {
 		const task = await readFile(join(directory, "task.txt"), "utf8");
 		await harness.command(`--mode autopilot ${task}`, harness.context);
 
 		const document = await state(directory, jobId);
-		assert.equal(document.status, "NEEDS_HUMAN");
-		assert.equal(document.recovery, "review");
-		assert.match(String(document.reason), /untestable blocking issue/u);
-		assert.equal(executed.includes("ship"), false);
-		assert.equal(await git(directory, "rev-parse", "HEAD"), initialHead);
+		assert.equal(document.status, "DONE", String(document.reason));
+		assert.ok(executed.filter((node) => node === "plan").length >= 2, "blocked review returns to planning");
+		assert.deepEqual(harness.confirmations, []);
+		assert.equal(await git(directory, "rev-list", "--count", `${initialHead}..HEAD`), "1");
 	} finally {
-		await rm(directory, { recursive: true, force: true });
+		await cleanupFixture(directory);
 	}
 });
 
@@ -410,7 +450,7 @@ test("shipping twice for one job leaves one marker and one commit", async () => 
 		const afterReplay = JSON.parse(await readFile(markerPath, "utf8")) as Record<string, unknown>;
 		assert.deepEqual(afterReplay, marker, "the marker records one decision, not two");
 	} finally {
-		await rm(directory, { recursive: true, force: true });
+		await cleanupFixture(directory);
 	}
 });
 
@@ -419,15 +459,40 @@ test("a replay whose checkpoint predates the commit still refuses a second one",
 	const jobId = "20260831-healthcheck-crash";
 	const initialHead = await git(directory, "rev-parse", "HEAD");
 	const executed: string[] = [];
-	const harness = commandHarness(directory, autoSessions(directory, executed, { jobId }), jobId);
+	let beforeShip: GraphRunState | undefined;
+	const harness = commandHarness(
+		directory,
+		autoSessions(directory, executed, {
+			jobId,
+			ship: async (trailer) => {
+				beforeShip = await latestCheckpoint(directory, jobId);
+				await git(directory, "add", "-A");
+				await git(directory, "commit", "-m", `feat(health): add healthcheck endpoint\n\n${trailer}`);
+			},
+		}),
+		jobId,
+	);
 	try {
 		const task = await readFile(join(directory, "task.txt"), "utf8");
 		await harness.command(`--mode autopilot ${task}`, harness.context);
 		const shipped = await git(directory, "rev-parse", "HEAD");
+		assert.equal((await state(directory, jobId)).status, "DONE");
+		assert.ok(beforeShip, "the crash snapshot was captured before the commit");
 
 		// The window a crash can land in: the commit exists, the marker does not.
 		const runDirectory = join(directory, ".kpi", "runs", jobId);
 		await rm(join(runDirectory, "ship.json"));
+		const graphDirectory = join(runDirectory, "graph");
+		for (const name of await readdir(graphDirectory)) {
+			const checkpoint = /^checkpoint-(\d{6})\.json$/u.exec(name);
+			if (checkpoint !== null && Number(checkpoint[1]) > beforeShip.superstep) {
+				await rm(join(graphDirectory, name));
+			}
+		}
+		await writeFile(
+			join(graphDirectory, `checkpoint-${String(beforeShip.superstep).padStart(6, "0")}.json`),
+			`${JSON.stringify(beforeShip, null, 2)}\n`,
+		);
 		const document = JSON.parse(await readFile(join(runDirectory, "state.json"), "utf8")) as Record<string, unknown>;
 		document.status = "RUNNING";
 		await writeFile(join(runDirectory, "state.json"), `${JSON.stringify(document, null, 2)}\n`);
@@ -444,8 +509,9 @@ test("a replay whose checkpoint predates the commit still refuses a second one",
 		assert.equal(await git(directory, "rev-parse", "HEAD"), shipped, "HEAD is untouched");
 		assert.equal(await git(directory, "rev-list", "--count", `${initialHead}..HEAD`), "1", "still one commit");
 		assert.equal(resumeExecuted.includes("ship"), false, "the ship node never ran again");
+		assert.equal((await state(directory, jobId)).status, "DONE", "recovery completed the interrupted decision");
 	} finally {
-		await rm(directory, { recursive: true, force: true });
+		await cleanupFixture(directory);
 	}
 });
 
@@ -454,62 +520,44 @@ test("autopilot cannot release from model prose alone", async () => {
 	const jobId = "20260831-healthcheck-prose";
 	const initialHead = await git(directory, "rev-parse", "HEAD");
 	const executed: string[] = [];
-	// The reviewer approves in prose while the receipts say nothing passed. The
-	// release decision is data, so no edge to `release.set` can fire.
-	const factory: GraphAgentSessionFactory = async (sessionOptions) => {
-		let currentNode = "";
-		let lastAssistantText: string | undefined;
-		return {
-			session: {
-				sessionId: "prose-session",
-				async prompt(prompt) {
-					const detected = nodeId(prompt);
-					if (detected !== "retry") currentNode = detected;
-					executed.push(currentNode || detected);
-					lastAssistantText = undefined;
-					if (currentNode === "plan" || currentNode === "plan-check") {
-						lastAssistantText = healthStack;
-					} else if (currentNode === "implement") {
-						await writeFile(join(directory, ".kpi", "runs", jobId, "candidate.json"), MINIMALIST_CANDIDATE);
-						await writeFile(join(directory, "src", "health", "server.js"), implementedServer);
-					} else if (currentNode === "test") {
-						lastAssistantText = JSON.stringify({
-							head: await git(directory, "rev-parse", "HEAD"),
-							commands: [{ cmd: "npm test", exit: 1 }],
-							ac_results: ["AC-01", "AC-02", "AC-03", "AC-04", "AC-05"].map((id) => ({ id, passed: false })),
-						});
-					} else if (currentNode === "review") {
-						// Transcript alone must never approve; bus publishes nothing.
-						lastAssistantText = verdict;
-					} else if (currentNode === "ship") {
-						await git(directory, "add", "-A");
-						await git(directory, "commit", "-m", "feat(health): should never happen");
-					}
-				},
-				getLastAssistantText: () => lastAssistantText,
-				getActiveToolNames: () => [...(sessionOptions.tools ?? [])],
-				dispose() {},
-			},
-		};
-	};
+	// Host checks pass, but an approving reviewer transcript is not a verdict.
+	const factory = autoSessions(directory, executed, {
+		jobId,
+		plan: async () => {
+			if (executed.includes("review")) {
+				await writeFile(
+					join(directory, ".kpi", "runs", jobId, "stop.json"),
+					JSON.stringify({
+						reason: "operator stop after observing review repair",
+						at: new Date().toISOString(),
+						recorded: false,
+					}),
+				);
+			}
+		},
+	});
 	const harness = commandHarness(
 		directory,
 		factory,
 		jobId,
-		reviewerBusDependencies({ verdict: null, transcript: verdict }),
+		reviewerBusDependencies({ verdict: null, transcript: verdict, executed }),
 	);
 	try {
 		const task = await readFile(join(directory, "task.txt"), "utf8");
-		await harness.command(`--mode autopilot ${task}`, harness.context).catch(() => undefined);
+		await harness.command(`--mode autopilot ${task}`, harness.context);
 
+		assert.ok(executed.includes("review"), "the run reached the reviewer with real host evidence");
 		assert.equal(executed.includes("ship"), false, "prose cannot reach the ship node");
 		assert.equal(await git(directory, "rev-parse", "HEAD"), initialHead, "no commit was created");
 		const document = await state(directory, jobId);
-		assert.notEqual(document.status, "DONE");
+		assert.equal(document.status, "STOPPED");
+		await assert.rejects(readFile(join(directory, ".kpi", "runs", jobId, "verdict.json"), "utf8"), {
+			code: "ENOENT",
+		});
 		assert.equal(document.release, undefined, "release was never approved");
 		assert.deepEqual(harness.confirmations, [], "and autopilot never asked a human");
 	} finally {
-		await rm(directory, { recursive: true, force: true });
+		await cleanupFixture(directory);
 	}
 });
 
@@ -530,44 +578,15 @@ test("an unrelated conventional commit never counts as this job shipping", async
 	const directory = await fixture("healthcheck-auto");
 	const jobId = "20260831-healthcheck-unrelated";
 	const executed: string[] = [];
-	// The ship node commits nothing. Something else does - a hook, another
-	// operator, a stray fix - with a perfectly conventional subject.
-	const factory: GraphAgentSessionFactory = async (sessionOptions) => {
-		let currentNode = "";
-		let lastAssistantText: string | undefined;
-		return {
-			session: {
-				sessionId: "unrelated-session",
-				async prompt(prompt) {
-					const detected = nodeId(prompt);
-					if (detected !== "retry") currentNode = detected;
-					executed.push(currentNode || detected);
-					lastAssistantText = undefined;
-					if (currentNode === "plan" || currentNode === "plan-check") {
-						lastAssistantText = healthStack;
-					} else if (currentNode === "implement") {
-						await writeFile(join(directory, ".kpi", "runs", jobId, "candidate.json"), MINIMALIST_CANDIDATE);
-						await writeFile(join(directory, "src", "health", "server.js"), implementedServer);
-						await writeFile(join(directory, "src", "unrelated.js"), "export const x = 1;\n");
-						await git(directory, "add", "src/unrelated.js");
-						await git(directory, "commit", "-m", "chore(deps): unrelated housekeeping");
-					} else if (currentNode === "test") {
-						lastAssistantText = JSON.stringify({
-							head: await git(directory, "rev-parse", "HEAD"),
-							commands: [{ cmd: "npm test", exit: 0 }],
-							ac_results: ["AC-01", "AC-02", "AC-03", "AC-04", "AC-05"].map((id) => ({ id, passed: true })),
-						});
-					} else if (currentNode === "review") {
-						lastAssistantText = undefined;
-					}
-					// The ship node deliberately commits nothing.
-				},
-				getLastAssistantText: () => lastAssistantText,
-				getActiveToolNames: () => [...(sessionOptions.tools ?? [])],
-				dispose() {},
-			},
-		};
-	};
+	// An external actor commits the candidate with a conventional subject but no
+	// job trailer. It cannot satisfy the ship node's exactly-once decision.
+	const factory = autoSessions(directory, executed, {
+		jobId,
+		ship: async () => {
+			await git(directory, "add", "-A");
+			await git(directory, "commit", "-m", "chore(deps): unrelated housekeeping");
+		},
+	});
 	const harness = commandHarness(directory, factory, jobId);
 	try {
 		const task = await readFile(join(directory, "task.txt"), "utf8");
@@ -582,7 +601,7 @@ test("an unrelated conventional commit never counts as this job shipping", async
 		await assert.rejects(readFile(join(directory, ".kpi", "runs", jobId, "ship.json"), "utf8"), { code: "ENOENT" });
 		assert.deepEqual(await markedCommits(directory, jobId), [], "no commit claims this job");
 	} finally {
-		await rm(directory, { recursive: true, force: true });
+		await cleanupFixture(directory);
 	}
 });
 
@@ -606,10 +625,8 @@ test("a crash after the marked commit recovers exactly once, even behind later c
 		document.status = "RUNNING";
 		await writeFile(join(runDirectory, "state.json"), `${JSON.stringify(document, null, 2)}\n`);
 
-		// Life went on: unrelated commits landed on top of the job's commit.
-		await writeFile(join(directory, "later.txt"), "later\n");
-		await git(directory, "add", "later.txt");
-		await git(directory, "commit", "-m", "docs(notes): unrelated follow-up");
+		// A later commit is not this job's decision; accepted candidate bytes stay unchanged.
+		await git(directory, "commit", "--allow-empty", "-m", "docs(notes): unrelated follow-up");
 		const headBeforeReplay = await git(directory, "rev-parse", "HEAD");
 
 		const resumeExecuted: string[] = [];
@@ -634,7 +651,7 @@ test("a crash after the marked commit recovers exactly once, even behind later c
 			"one ship commit plus the unrelated follow-up",
 		);
 	} finally {
-		await rm(directory, { recursive: true, force: true });
+		await cleanupFixture(directory);
 	}
 });
 
@@ -643,45 +660,14 @@ test("two commits claiming one job fail closed", async () => {
 	const jobId = "20260831-healthcheck-duplicate";
 	const executed: string[] = [];
 	// A confused ship node makes its commit twice, both carrying the trailer.
-	const factory: GraphAgentSessionFactory = async (sessionOptions) => {
-		let currentNode = "";
-		let lastAssistantText: string | undefined;
-		return {
-			session: {
-				sessionId: "duplicate-session",
-				async prompt(prompt) {
-					const detected = nodeId(prompt);
-					if (detected !== "retry") currentNode = detected;
-					executed.push(currentNode || detected);
-					lastAssistantText = undefined;
-					if (currentNode === "plan" || currentNode === "plan-check") {
-						lastAssistantText = healthStack;
-					} else if (currentNode === "implement") {
-						await writeFile(join(directory, ".kpi", "runs", jobId, "candidate.json"), MINIMALIST_CANDIDATE);
-						await writeFile(join(directory, "src", "health", "server.js"), implementedServer);
-					} else if (currentNode === "test") {
-						lastAssistantText = JSON.stringify({
-							head: await git(directory, "rev-parse", "HEAD"),
-							commands: [{ cmd: "npm test", exit: 0 }],
-							ac_results: ["AC-01", "AC-02", "AC-03", "AC-04", "AC-05"].map((id) => ({ id, passed: true })),
-						});
-					} else if (currentNode === "review") {
-						lastAssistantText = undefined;
-					} else if (currentNode === "ship") {
-						const trailer = /^KPI-Job: [^\s`]+$/mu.exec(prompt)?.[0] ?? "";
-						await git(directory, "add", "-A");
-						await git(directory, "commit", "-m", `feat(health): first attempt\n\n${trailer}`);
-						await writeFile(join(directory, "src", "again.js"), "export const y = 2;\n");
-						await git(directory, "add", "-A");
-						await git(directory, "commit", "-m", `feat(health): second attempt\n\n${trailer}`);
-					}
-				},
-				getLastAssistantText: () => lastAssistantText,
-				getActiveToolNames: () => [...(sessionOptions.tools ?? [])],
-				dispose() {},
-			},
-		};
-	};
+	const factory = autoSessions(directory, executed, {
+		jobId,
+		ship: async (trailer) => {
+			await git(directory, "add", "-A");
+			await git(directory, "commit", "-m", `feat(health): first attempt\n\n${trailer}`);
+			await git(directory, "commit", "--allow-empty", "-m", `feat(health): second attempt\n\n${trailer}`);
+		},
+	});
 	const harness = commandHarness(directory, factory, jobId);
 	try {
 		const task = await readFile(join(directory, "task.txt"), "utf8");
@@ -692,9 +678,10 @@ test("two commits claiming one job fail closed", async () => {
 		assert.equal(document.status, "NEEDS_HUMAN");
 		assert.equal(document.recovery, "ship");
 		assert.match(String(document.reason), /2 commits instead of one|Ambiguous ship commits/u);
+		assert.equal((await markedCommits(directory, jobId)).length, 2, "both real commits claimed the job");
 		await assert.rejects(readFile(join(directory, ".kpi", "runs", jobId, "ship.json"), "utf8"), { code: "ENOENT" });
 	} finally {
-		await rm(directory, { recursive: true, force: true });
+		await cleanupFixture(directory);
 	}
 });
 
@@ -750,6 +737,34 @@ test("a forged or mismatched ship marker is ignored and never skips shipping", a
 			assert.equal(rewritten.subject, genuine.subject, `${forgery.name}: with the real subject`);
 		}
 	} finally {
-		await rm(directory, { recursive: true, force: true });
+		await cleanupFixture(directory);
+	}
+});
+
+test("a transport failure after the approved commit never repeats the commit action", async () => {
+	const directory = await fixture("healthcheck-auto");
+	const jobId = "20260905-commit-transport-retry";
+	const initialHead = await git(directory, "rev-parse", "HEAD");
+	let commitAttempts = 0;
+	const harness = commandHarness(
+		directory,
+		autoSessions(directory, [], {
+			jobId,
+			ship: async (trailer) => {
+				commitAttempts += 1;
+				await git(directory, "add", "-A");
+				await git(directory, "commit", "--allow-empty", "-m", `feat(health): verified endpoint\n\n${trailer}`);
+				if (commitAttempts === 1)
+					throw Object.assign(new Error("provider disconnected after git commit"), { status: 503 });
+			},
+		}),
+		jobId,
+	);
+	try {
+		await harness.command(`--mode autopilot ${await readFile(join(directory, "task.txt"), "utf8")}`, harness.context);
+		assert.equal((await state(directory, jobId)).status, "DONE");
+		assert.equal(await git(directory, "rev-list", "--count", `${initialHead}..HEAD`), "1");
+	} finally {
+		await cleanupFixture(directory);
 	}
 });

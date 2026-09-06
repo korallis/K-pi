@@ -131,14 +131,35 @@ export class KnowledgeGraphProposals {
 		return { sources, nodes, edges };
 	}
 
-	/** Node claims whose JSON contains `text`. */
+	/** Latest active, source-backed claims. Historical revisions remain in read(). */
 	async query(text = ""): Promise<KnowledgeGraphNode[]> {
-		const { nodes } = await this.read();
-		if (text.length === 0) {
-			return nodes;
+		const { nodes, sources } = await this.read();
+		const latest = new Map<string, KnowledgeGraphNode>();
+		const currentSources = new Map<string, KnowledgeGraphSource>();
+		for (const source of sources) {
+			if ((currentSources.get(source.id)?.rev ?? 0) < source.rev) currentSources.set(source.id, source);
 		}
+		for (const node of nodes) {
+			if ((latest.get(node.id)?.rev ?? 0) < node.rev) latest.set(node.id, node);
+		}
+		const now = this.now();
+		const active = (claim: KnowledgeGraphNode): boolean =>
+			claim.status !== "rejected" &&
+			claim.status !== "superseded" &&
+			(claim.valid_from === undefined || Date.parse(claim.valid_from) <= now) &&
+			(claim.valid_to === undefined || Date.parse(claim.valid_to) > now);
 		const needle = text.toLowerCase();
-		return nodes.filter((node) => JSON.stringify(node).toLowerCase().includes(needle));
+		return [...latest.values()]
+			.filter(
+				(node) =>
+					active(node) &&
+					node.source_ids.every((id) => {
+						const source = currentSources.get(id);
+						return source !== undefined && active(source);
+					}) &&
+					JSON.stringify(node).toLowerCase().includes(needle),
+			)
+			.sort((a, b) => a.id.localeCompare(b.id, "en"));
 	}
 }
 

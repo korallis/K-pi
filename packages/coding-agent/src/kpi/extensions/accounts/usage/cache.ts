@@ -28,15 +28,24 @@ export class UsageCache implements UsageView {
 	}
 
 	get(poolId: PoolId, slotId: string): UsageSnapshot | undefined {
-		return this.snapshots.get(`${poolId}/${slotId}`);
+		const key = `${poolId}/${slotId}`;
+		const snapshot = this.snapshots.get(key);
+		if (snapshot?.resetAt !== undefined && snapshot.resetAt <= this.now()) {
+			this.snapshots.delete(key);
+			return undefined;
+		}
+		return snapshot;
 	}
 
 	remainingPercent(poolId: PoolId, slotId: string): number | undefined {
-		return this.snapshots.get(`${poolId}/${slotId}`)?.remainingPercent;
+		return this.get(poolId, slotId)?.remainingPercent;
 	}
 
 	entries(): readonly UsageSnapshot[] {
-		return [...this.snapshots.values()];
+		const now = this.now();
+		return [...this.snapshots.values()].filter(
+			(snapshot) => snapshot.resetAt === undefined || snapshot.resetAt > now,
+		);
 	}
 
 	/** True when a documented reader exists for this pool. */

@@ -11,6 +11,21 @@ import {
 	createWorkerAdmission,
 } from "../../packages/coding-agent/src/kpi/extensions/bus/spawn.ts";
 import { mintContractPin, writeContract } from "../../packages/coding-agent/src/kpi/extensions/bus/write-contract.ts";
+import { createJob, type Job } from "../../packages/coding-agent/src/kpi/extensions/run-store.ts";
+
+/** Host-owned fixture setup accepts intent before any worker is admitted. */
+export function createReviewerJob(projectRoot: string, jobId: string): Promise<Job> {
+	return createJob(projectRoot, {
+		job_id: jobId,
+		goal: "review",
+		mode: "gated",
+		nongoals: [],
+		acceptance: [],
+		constraints: [],
+		quality_gates: ["npm test"],
+		ac: { quality: "executable" },
+	});
+}
 
 const defaultVerdict = {
 	status: "PASS",
@@ -34,6 +49,7 @@ export function fakeReviewerLauncher(
 ): {
 	launcher: WorkerLauncher;
 	launches: WorkerLaunchRequest[];
+	isProcessAlive: (pid: number) => boolean;
 	lastArgv: string[] | undefined;
 	prompts: string[];
 } {
@@ -132,6 +148,8 @@ export function fakeReviewerLauncher(
 			stop: async () => {
 				alive.delete(pid);
 				protocol.close();
+				toWorker.destroy();
+				toParent.destroy();
 			},
 		};
 		lastArgv = launch.argv;
@@ -141,6 +159,7 @@ export function fakeReviewerLauncher(
 	return {
 		launcher,
 		launches,
+		isProcessAlive: (pid) => alive.has(pid),
 		prompts,
 		get lastArgv() {
 			return lastArgv;
@@ -156,7 +175,7 @@ export function reviewerBusDependencies(options: Parameters<typeof fakeReviewerL
 	const fake = fakeReviewerLauncher(options);
 	return {
 		launcher: fake.launcher,
-		isProcessAlive: () => true,
+		isProcessAlive: fake.isProcessAlive,
 		contractPollIntervalMs: 1,
 		contractWaitTimeoutMs: 2_000,
 		lockRetryMs: 2,

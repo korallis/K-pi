@@ -42,6 +42,23 @@ export interface LocalSlotOrigin {
 	secretRef?: string;
 }
 
+/** Native model fields that a server or operator can explicitly supply. */
+export type LocalModelMetadata = Partial<
+	Pick<ProviderModelConfig, "contextWindow" | "maxTokens" | "reasoning" | "input">
+>;
+type MetadataSource = "discovery" | "operator";
+type MetadataSources = Partial<Record<keyof LocalModelMetadata, MetadataSource>>;
+
+export interface LocalProviderModel extends ProviderModelConfig {
+	baseUrl: string;
+	/** An absent field is unknown, not a capability inferred from the model id. */
+	metadataSources: MetadataSources;
+}
+
+function positiveCapacity(value: unknown): value is number {
+	return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+}
+
 /**
  * A locally served model, pinned to the origin of the slot that serves it.
  *
@@ -53,8 +70,14 @@ export interface LocalSlotOrigin {
  * Cost is zero in every direction: AC-27.6's `(local) $0` is only truthful if
  * nothing on this path is ever priced.
  */
-export function localModel(id: string, baseUrl: string, name = id): ProviderModelConfig {
-	return {
+export function localModel(
+	id: string,
+	baseUrl: string,
+	name = id,
+	metadata: LocalModelMetadata = {},
+	sources: MetadataSources = {},
+): LocalProviderModel {
+	const model: LocalProviderModel = {
 		id,
 		name,
 		api: "openai-completions",
@@ -62,54 +85,99 @@ export function localModel(id: string, baseUrl: string, name = id): ProviderMode
 		reasoning: false,
 		input: ["text"],
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-		contextWindow: 32_768,
-		maxTokens: 4_096,
+		contextWindow: 0,
+		maxTokens: 0,
+		metadataSources: {},
 	};
+	for (const field of ["contextWindow", "maxTokens"] as const) {
+		if (positiveCapacity(metadata[field])) {
+			model[field] = metadata[field];
+			model.metadataSources[field] = sources[field] ?? "operator";
+		}
+	}
+	if (typeof metadata.reasoning === "boolean") {
+		model.reasoning = metadata.reasoning;
+		model.metadataSources.reasoning = sources.reasoning ?? "operator";
+	}
+	if (
+		Array.isArray(metadata.input) &&
+		metadata.input.length > 0 &&
+		metadata.input.every((value) => value === "text" || value === "image")
+	) {
+		model.input = [...metadata.input];
+		model.metadataSources.input = sources.input ?? "operator";
+	}
+	return model;
 }
 
 export function storedLocalModelsPath(poolId: LocalProviderId, agentDirectory = getAgentDir()): string {
 	return join(agentDirectory, `${poolId}-models.json`);
 }
 
-interface StoredLocalModel {
-	id: string;
-	name: string;
-	baseUrl: string;
-}
-
-function readStoredEntries(poolId: LocalProviderId, agentDirectory?: string): StoredLocalModel[] {
+function readStoredCatalog(
+	poolId: LocalProviderId,
+	agentDirectory?: string,
+): { models: LocalProviderModel[]; origins: Map<string, string> } {
 	try {
 		const parsed: unknown = JSON.parse(readFileSync(storedLocalModelsPath(poolId, agentDirectory), "utf8"));
-		if (!Array.isArray(parsed)) {
-			return [];
+		const catalog = parsed as { version?: unknown; models?: unknown; origins?: unknown } | null;
+		const current = !Array.isArray(parsed) && catalog?.version === 2;
+		const entries = current ? catalog?.models : parsed;
+		if (!Array.isArray(entries)) {
+			return { models: [], origins: new Map() };
 		}
-		return parsed.flatMap((entry) => {
+		const models = entries.flatMap((entry) => {
 			if (typeof entry !== "object" || entry === null) {
 				return [];
 			}
-			const candidate = entry as { id?: unknown; name?: unknown; baseUrl?: unknown };
+			const candidate = entry as Record<string, unknown>;
 			if (typeof candidate.id !== "string" || candidate.id.length === 0) {
 				return [];
 			}
 			if (typeof candidate.baseUrl !== "string" || candidate.baseUrl.length === 0) {
 				return [];
 			}
+			const metadata: Record<string, unknown> = {};
+			const sources: MetadataSources = {};
+			// Legacy arrays included generated defaults. Only the versioned cache
+			// with explicit provenance is allowed to restore capability metadata.
+			if (current && typeof candidate.metadataSources === "object" && candidate.metadataSources !== null) {
+				const recorded = candidate.metadataSources as Record<string, unknown>;
+				for (const field of ["contextWindow", "maxTokens", "reasoning", "input"] as const) {
+					const source = recorded[field];
+					if (source === "discovery" || source === "operator") {
+						metadata[field] = candidate[field];
+						sources[field] = source;
+					}
+				}
+			}
 			return [
-				{
-					id: candidate.id,
-					name: typeof candidate.name === "string" ? candidate.name : candidate.id,
-					baseUrl: candidate.baseUrl,
-				},
+				localModel(
+					candidate.id,
+					candidate.baseUrl,
+					typeof candidate.name === "string" ? candidate.name : candidate.id,
+					metadata,
+					sources,
+				),
 			];
 		});
+		const origins = new Map(models.map((model) => [model.id, model.baseUrl]));
+		if (current && typeof catalog?.origins === "object" && catalog.origins !== null) {
+			for (const [id, baseUrl] of Object.entries(catalog.origins)) {
+				if (id.length > 0 && typeof baseUrl === "string" && baseUrl.length > 0) {
+					origins.set(id, baseUrl);
+				}
+			}
+		}
+		return { models: models.filter((model) => origins.get(model.id) === model.baseUrl), origins };
 	} catch {
-		return [];
+		return { models: [], origins: new Map() };
 	}
 }
 
 /**
- * The last known catalog, rehydrated through the current defaults and bound
- * only to origins that are still configured.
+ * The last known catalog, retaining only sourced metadata and origins that
+ * are still configured.
  *
  * A stored entry whose server the operator has since removed is dropped rather
  * than pointed at a different one: an inference request must never be silently
@@ -119,30 +187,25 @@ export function readStoredLocalModels(
 	poolId: LocalProviderId,
 	agentDirectory?: string,
 	slots?: readonly LocalSlotOrigin[],
-): ProviderModelConfig[] | undefined {
-	const entries = readStoredEntries(poolId, agentDirectory);
+): LocalProviderModel[] | undefined {
+	const { models: entries } = readStoredCatalog(poolId, agentDirectory);
 	const allowed = slots === undefined ? undefined : new Set(slots.map((slot) => slot.baseUrl));
-	const models = entries
-		.filter((entry) => allowed === undefined || allowed.has(entry.baseUrl))
-		.map((entry) => localModel(entry.id, entry.baseUrl, entry.name));
+	const models = entries.filter((entry) => allowed === undefined || allowed.has(entry.baseUrl));
 	return models.length === 0 ? undefined : models;
 }
 
 function writeStoredLocalModels(
 	poolId: LocalProviderId,
-	models: readonly ProviderModelConfig[],
+	models: readonly LocalProviderModel[],
+	origins: ReadonlyMap<string, string>,
 	agentDirectory?: string,
 ): void {
 	const path = storedLocalModelsPath(poolId, agentDirectory);
 	const temporaryPath = `${path}.${process.pid}.tmp`;
-	const entries: StoredLocalModel[] = models.map((entry) => ({
-		id: entry.id,
-		name: entry.name,
-		baseUrl: entry.baseUrl ?? "",
-	}));
+	const catalog = { version: 2, models, origins: Object.fromEntries(origins) };
 	try {
 		mkdirSync(dirname(path), { recursive: true });
-		writeFileSync(temporaryPath, `${JSON.stringify(entries, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+		writeFileSync(temporaryPath, `${JSON.stringify(catalog, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
 		renameSync(temporaryPath, path);
 	} catch {
 		// A catalog cache that cannot be written must never fail discovery.
@@ -158,26 +221,54 @@ interface OllamaTagList {
 }
 
 /**
- * Exact server ids only. An entry without a usable string id is malformed
- * identity and is rejected rather than renamed or guessed at; extra fields are
- * ignored, and an empty list is a valid answer meaning "nothing is loaded".
+ * Only explicit fields on the existing discovery response are used. OpenAI's
+ * standard list and Ollama tags do not specify capacities; native model-config
+ * extensions and LM Studio's documented max_context_length can supply them.
  */
-function readModelIds(entries: unknown, idField: "id" | "name"): string[] | undefined {
+function readDiscoveredModels(
+	entries: unknown,
+	idField: "id" | "name",
+	baseUrl: string,
+): LocalProviderModel[] | undefined {
 	if (!Array.isArray(entries)) {
 		return undefined;
 	}
-	const ids: string[] = [];
+	const models: LocalProviderModel[] = [];
 	for (const entry of entries) {
 		if (typeof entry !== "object" || entry === null) {
 			return undefined;
 		}
-		const value = (entry as Record<string, unknown>)[idField];
-		if (typeof value !== "string" || value.length === 0) {
+		const candidate = entry as Record<string, unknown>;
+		const id = candidate[idField];
+		if (typeof id !== "string" || id.length === 0) {
 			return undefined;
 		}
-		ids.push(value);
+		// These entries cannot satisfy the local chat contract. In particular,
+		// Ollama explicitly labels remote models; they are not free local models.
+		if (
+			candidate.type === "embedding" ||
+			candidate.type === "embeddings" ||
+			candidate.remote_host ||
+			candidate.remote_model
+		) {
+			continue;
+		}
+		const metadata = {
+			contextWindow: candidate.contextWindow ?? candidate.max_context_length,
+			maxTokens: candidate.maxTokens,
+			reasoning: candidate.reasoning,
+			input: candidate.input ?? (candidate.type === "vlm" ? ["text", "image"] : undefined),
+		} as LocalModelMetadata;
+		models.push(
+			localModel(id, baseUrl, typeof candidate.name === "string" ? candidate.name : id, metadata, {
+				contextWindow: "discovery",
+				maxTokens: "discovery",
+				reasoning: "discovery",
+				input: "discovery",
+			}),
+		);
 	}
-	return ids;
+	return models;
 }
 
 export interface LocalDiscoveryOptions {
@@ -232,16 +323,12 @@ function apiRoot(baseUrl: string): string {
 export async function discoverLocalModels(
 	poolId: LocalProviderId,
 	options: LocalDiscoveryOptions,
-): Promise<ProviderModelConfig[] | undefined> {
+): Promise<LocalProviderModel[] | undefined> {
 	const root = apiRoot(options.baseUrl);
 	const list = await fetchJson(`${root}/models`, options);
 	if (list.ok) {
-		const ids = readModelIds((list.payload as OpenAiModelList | undefined)?.data, "id");
-		if (ids !== undefined) {
-			return ids.map((id) => localModel(id, options.baseUrl));
-		}
 		// A reachable but malformed v1 list is a defect, not an absent endpoint.
-		return undefined;
+		return readDiscoveredModels((list.payload as OpenAiModelList | undefined)?.data, "id", options.baseUrl);
 	}
 
 	if (poolId !== "ollama") {
@@ -252,8 +339,7 @@ export async function discoverLocalModels(
 	if (!tags.ok) {
 		return undefined;
 	}
-	const ids = readModelIds((tags.payload as OllamaTagList | undefined)?.models, "name");
-	return ids === undefined ? undefined : ids.map((id) => localModel(id, options.baseUrl));
+	return readDiscoveredModels((tags.payload as OllamaTagList | undefined)?.models, "name", options.baseUrl);
 }
 
 export interface LocalProviderDependencies {
@@ -275,25 +361,37 @@ export interface LocalProviderDependencies {
  * with nothing loaded is authoritative for this turn but is not stored over a
  * catalog that may still be valid.
  *
- * A model id served by two configured origins is ambiguous, so the first slot
- * in configuration order keeps it: rerouting a request to the other host would
- * be exactly the silent redirect AC-27.8 forbids.
+ * A previously cached model id stays bound to its configured origin, even if
+ * that origin is unreachable or answers empty. New duplicate ids use the first
+ * configured slot; subsequent refreshes do not silently switch their origin.
  */
 export async function refreshLocalModels(
 	poolId: LocalProviderId,
 	context: { allowNetwork: boolean; signal?: AbortSignal },
 	dependencies: LocalProviderDependencies,
-): Promise<ProviderModelConfig[]> {
+): Promise<LocalProviderModel[]> {
 	const slots = await dependencies.resolveSlots(poolId);
-	const stored = readStoredLocalModels(poolId, dependencies.agentDirectory, slots) ?? [];
+	const catalog = readStoredCatalog(poolId, dependencies.agentDirectory);
+	const configuredOrigins = new Set(slots.map((slot) => slot.baseUrl));
+	const stored = catalog.models.filter((model) => configuredOrigins.has(model.baseUrl));
 	if (!context.allowNetwork || slots.length === 0) {
 		return stored;
 	}
 
-	const discovered: ProviderModelConfig[] = [];
+	// Retain identity bindings even when a successful catalog no longer lists a
+	// model: a later refresh must not revive the same id on another server.
+	const origins = new Map([...catalog.origins].filter(([, baseUrl]) => configuredOrigins.has(baseUrl)));
+	const discovered: LocalProviderModel[] = [];
+	const cached: LocalProviderModel[] = [];
 	const seen = new Set<string>();
-	let answered = false;
+	const visitedOrigins = new Set<string>();
+	let updated = false;
 	for (const slot of slots) {
+		if (visitedOrigins.has(slot.baseUrl)) {
+			continue;
+		}
+		visitedOrigins.add(slot.baseUrl);
+		const previous = stored.filter((model) => model.baseUrl === slot.baseUrl);
 		const models = await discoverLocalModels(poolId, {
 			baseUrl: slot.baseUrl,
 			signal: context.signal,
@@ -301,26 +399,23 @@ export async function refreshLocalModels(
 			timeoutMs: dependencies.timeoutMs,
 			token: await dependencies.resolveToken?.(poolId, slot.slotId),
 		});
-		if (models === undefined) {
-			continue;
-		}
-		answered = true;
-		for (const model of models) {
-			if (seen.has(model.id)) {
-				continue;
+		const selected = (models ?? previous).filter((model) => {
+			if (seen.has(model.id) || (origins.has(model.id) && origins.get(model.id) !== slot.baseUrl)) {
+				return false;
 			}
 			seen.add(model.id);
-			discovered.push(model);
-		}
+			origins.set(model.id, slot.baseUrl);
+			return true;
+		});
+		discovered.push(...selected);
+		// Empty is authoritative for this refresh, but does not erase an offline
+		// catalog. Failed origins keep their own entries, not another host's.
+		cached.push(...(models === undefined || models.length === 0 ? previous : selected));
+		updated ||= models !== undefined && models.length > 0;
 	}
-
-	if (!answered) {
-		return stored;
+	if (updated) {
+		writeStoredLocalModels(poolId, cached, origins, dependencies.agentDirectory);
 	}
-	if (discovered.length === 0) {
-		return [];
-	}
-	writeStoredLocalModels(poolId, discovered, dependencies.agentDirectory);
 	return discovered;
 }
 

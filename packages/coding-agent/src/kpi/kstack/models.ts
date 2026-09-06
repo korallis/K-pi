@@ -4,10 +4,9 @@ import { dirname, join } from "node:path";
 import type { Model } from "@earendil-works/pi-ai";
 import { getAgentDir } from "../../config.ts";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "../../core/extensions/types.ts";
-import { AccountsStore, POOL_IDS } from "../extensions/accounts/store.ts";
+import { AccountsStore, POOL_IDS, poolIdForProvider } from "../extensions/accounts/store.ts";
 import { promptResearchSetup } from "../extensions/research/setup.ts";
 import {
-	type KStackRole,
 	type ModelLadder,
 	orderCandidates,
 	PANEL_CAP,
@@ -26,6 +25,8 @@ export interface KStackModels {
 	roles: Record<string, string | string[]>;
 	/** Exact cross-provider fallback order selected from the live registry. */
 	fallback_models?: string[];
+	/** Explicit operator family identities; provider ids are not family identities. */
+	model_families?: Record<string, string>;
 	inherit_parent: false;
 }
 
@@ -46,7 +47,8 @@ export function liveCandidates(models: readonly Model<any>[], configuredPools: R
 	const seen = new Set<string>();
 	const candidates: string[] = [];
 	for (const model of models) {
-		if (!HEALTHY_POOLS.has(model.provider) || !configuredPools.has(model.provider)) {
+		const pool = poolIdForProvider(model.provider);
+		if (!pool || !HEALTHY_POOLS.has(pool) || !configuredPools.has(pool)) {
 			continue;
 		}
 		const slug = `${model.provider}/${model.id}`;
@@ -181,32 +183,30 @@ export async function readKStackModels(path = modelsPath()): Promise<KStackModel
 	if (source === undefined) {
 		return undefined;
 	}
-	const parsed = JSON.parse(source) as KStackModels;
-	const fallbackValid =
-		parsed.fallback_models === undefined ||
-		(Array.isArray(parsed.fallback_models) && parsed.fallback_models.every((value) => typeof value === "string"));
-	return parsed.version === 1 && typeof parsed.roles === "object" && fallbackValid ? parsed : undefined;
-}
-
-/**
- * Resolves one role to a model id, or `undefined` to inherit the parent.
- *
- * The only reader K-stack needs: a role is a model id at spawn time, and a slot
- * is still an accounts-balancer concern.
- */
-export async function resolveRoleModel(role: KStackRole | string, path = modelsPath()): Promise<string | undefined> {
-	const document = await readKStackModels(path);
-	const entry = document?.roles[role];
-	const value = Array.isArray(entry) ? entry[0] : entry;
-	return value === undefined || value === INHERIT_PARENT ? undefined : value;
-}
-
-/** Panel members in order, for the cross-family review panel. */
-export async function resolvePanel(path = modelsPath()): Promise<string[]> {
-	const document = await readKStackModels(path);
-	const entry = document?.roles.review_panel;
-	const values = Array.isArray(entry) ? entry : entry === undefined ? [] : [entry];
-	return values.filter((value) => value !== INHERIT_PARENT);
+	const parsed: unknown = JSON.parse(source);
+	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return undefined;
+	const document = parsed as KStackModels;
+	const strings = (value: unknown): value is string[] =>
+		Array.isArray(value) && value.every((entry) => typeof entry === "string" && entry.length > 0);
+	if (
+		document.version !== 1 ||
+		document.inherit_parent !== false ||
+		!document.roles ||
+		typeof document.roles !== "object" ||
+		Array.isArray(document.roles)
+	)
+		return undefined;
+	if (!Object.values(document.roles).every((value) => typeof value === "string" || strings(value))) return undefined;
+	if (document.fallback_models !== undefined && !strings(document.fallback_models)) return undefined;
+	if (
+		document.model_families !== undefined &&
+		(!document.model_families ||
+			typeof document.model_families !== "object" ||
+			Array.isArray(document.model_families) ||
+			!Object.values(document.model_families).every((value) => typeof value === "string" && value.length > 0))
+	)
+		return undefined;
+	return document;
 }
 
 export async function resolveFallbackModels(path = modelsPath()): Promise<string[] | undefined> {
@@ -312,12 +312,15 @@ export async function runKStackSetup(context: Pick<ExtensionContext, "ui" | "mod
 	const accounts = await new AccountsStore().read();
 	const configuredPools = new Set(
 		Object.entries(accounts.pools)
-			.filter(([, pool]) => (pool?.slots.length ?? 0) > 0)
+			.filter(([, pool]) => pool?.slots.some((slot) => !slot.needsLogin && (slot.cooldownUntil ?? 0) <= Date.now()))
 			.map(([poolId]) => poolId),
 	);
 	const candidates = liveCandidates(context.modelRegistry.getAvailable(), configuredPools);
 	if (candidates.length === 0) {
-		context.ui.notify("No live model in a K-π pool; K-stack roles will inherit the parent session model.", "warning");
+		context.ui.notify(
+			"No authenticated healthy model in a K-π pool; existing role preferences remain saved and will be rechecked at dispatch.",
+			"warning",
+		);
 		return;
 	}
 	const ladder = await readModelLadder();

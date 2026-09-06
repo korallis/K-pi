@@ -33,8 +33,8 @@ Most agent setups fail because nobody owns the return path, the shared state, or
 | G-01 | A user can start from a task and get specify → plan → implement → test → review → ship |
 | G-02 | A user can start from a frozen plan and skip specify |
 | G-03 | Gated mode is the default; human confirms commit |
-| G-04 | Autopilot mode reaches `DONE` without a human when every required AC is executable |
-| G-05 | Autopilot refuses to start when AC are narrative or partial |
+| G-04 | Explicit autopilot delegates initial non-weakening intent refinement and release; `DONE` still requires every protected AC, quality and journey goal verified for the exact candidate |
+| G-05 | Autopilot pauses before engineering when refined required AC lack executable checks/bounds or product decisions remain unresolved |
 | G-06 | TUI always shows stage, round, mode, gate, run files, and account route |
 | G-07 | Assistant replies are short; the board carries state |
 | G-08 | Multiple Anthropic / OpenAI / Codex / xAI / Cursor seats can be pooled and failed over |
@@ -42,12 +42,12 @@ Most agent setups fail because nobody owns the return path, the shared state, or
 | G-10 | First-party code only. Everything under `packages/` is our forked source; no Oh My Pi / Atomic / community multi-account / community Cursor at runtime |
 | G-11 | Anthropic subscription login shows the extra-usage warning once per new slot |
 | G-12 | Footer matches Oh My Pi’s status bar; leftmost brand is `K-π` |
-| G-13 | Always-on graph TUI matches the Avid boards so the operator is never guessing |
+| G-13 | Jobs-first terminal home with retained graph detail and widget; cool machine work, warm human intervention |
 | G-14 | K-stack (forked pstack) is embedded: `/setup-kstack` + `/k-mode` |
 | G-15 | K-stack workers use only k-pi-wired models. No Cursor Cloud agents |
 | G-16 | z.ai, Kimi Coding, and local llama/Ollama/LM Studio are first-class pools |
 | G-17 | Optional Exa, Perplexity, and Firecrawl research. Research.md required before implement |
-| G-18 | Folder-as-map + vertical slices. Auth lives in auth/ |
+| G-18 | Explicit feature/path ownership with vertical slices by default, preserving existing language and layout |
 | G-19 | `/setup-kstack` suggests a role map; frontend prefers Kimi K3 |
 | G-20 | Background Pi workers + communicate. No subagents |
 
@@ -59,7 +59,7 @@ Most agent setups fail because nobody owns the return path, the shared state, or
 | NG-02 | Depending on Oh My Pi, Atomic, pi-graph, pi-multi-account, pi-multi-pass, or community Cursor packages |
 | NG-03 | A native knowledge-graph database. File-backed JSONL is the v1 store |
 | NG-04 | OS sandboxing. Isolation is documented Docker/Gondolin, not promised in-process |
-| NG-05 | Autopilot push, deploy, production migrate, spend, or secret access |
+| NG-05 | Blanket autopilot permission for external effects, deploy, production migrate, spend or secret access; the narrowly approved job-branch delivery path is not general authority |
 | NG-06 | 128-way swarms or unbounded fan-out |
 | NG-07 | Pretending extra Anthropic usage is the in-app Max 5-hour bar |
 | NG-08 | Replacing Pi’s default system prompt via `SYSTEM.md` |
@@ -72,23 +72,25 @@ Most agent setups fail because nobody owns the return path, the shared state, or
 |---|---|
 | Operator | Starts a loop, watches the board, approves gated ships, attaches subscription seats |
 | Implementer node | Writes the smallest change that can go green |
-| Tester node | Runs executable AC commands against HEAD |
+| Host verifier | Executes exact protected AC/quality commands, seals full-output receipts and derives candidate-bound goal coverage |
 | Reviewer node | Isolated, read-only, schema-validated verdict |
 | Autopilot release | Deterministic `set` node, not a model |
-| Human | Irreversible external effects; untestable review issues; AC changes mid-run |
+| Human | Gated initial intent consent and release; unresolved product decisions, changed accepted success, credential access and external authority |
 
 ## 5. Modes
 
 | Mode | Entry | Ship gate | When allowed |
 |---|---|---|---|
 | `gated` | Default | Human confirm | Always |
-| `autopilot` | `--mode autopilot` or `--until-green` | Deterministic `release.set` | `ac.quality == executable` and risk class `repo-local` |
+| `autopilot` | Explicit `--mode autopilot` or `--until-green` | Deterministic `release.set`, after final host verification | Derived required AC executable with bounds, no unresolved product questions, retained policy authority |
 
-Print/CI may run the auto graph only with `policy.allowNonInteractive` and `allowNonInteractiveMutations` set on that graph file, and only for repo-local commit.
+Print/CI uses the auto graph's `policy.allowNonInteractive` and `allowNonInteractiveMutations`; these do not authorize arbitrary external actions. Ship makes the one job commit and, when `origin` exists and the scoped release/policy conditions allow it, delivers only the job branch and its pull request. Missing delivery prerequisites remain operator-visible rather than a successful `DONE`.
 
 ## 6. User stories and acceptance criteria
 
 Each AC is written so a later agent can turn it into a check. IDs are stable.
+
+RP-22 migrates the criteria below to rigid accepted intent and fluid execution. These descriptions are not checked completion claims for the full mandate. Scoped records in `.kpi/proof/RP-22` include successful offline build and built-harness startup smoke; they do not establish live provider/credential, external delivery or end-user journey proofs.
 
 ### US-01 — Build and run the harness
 
@@ -103,19 +105,19 @@ Each AC is written so a later agent can turn it into a check. IDs are stable.
 
 ### US-02 — Start from a task (gated)
 
-**Story.** As an operator, I type `/kpi <goal>` (or `/loop <goal>`) and the system compiles AC, specifies if needed, plans, shows me the plan and asks me to approve it or request changes, implements, tests, reviews, then asks me before commit.
+**Story.** As an operator, I type `/kpi <goal>` (or `/loop <goal>`), explicitly accept the derived desired state, and let execution adapt through planning, implementation, host verification and isolated review before I approve the exact candidate for release.
 
-- **AC-02.1** A directory `.kpi/runs/<job_id>/` is created containing `task.json`, `context.md`, `events.jsonl`.
-- **AC-02.2** `task.json` has `goal`, `acceptance[]`, `nongoals`, `constraints`, `quality_gates`.
-- **AC-02.3** If `ac.quality != executable`, mode stays `gated` even if autopilot was requested without `--mode autopilot` force.
-- **AC-02.4** Implementer tools include write/edit/bash. Planner, reviewer, and tester hold no general `write` or `edit`; their product tools are read-only (`read`,`grep`,`find`,`ls`). A read-only node publishes its run contract only through `write_contract` (`spec.md` §5 REQ-RS-06).
-- **AC-02.5** After isolated review `approved: true`, a human confirm dialog is shown before `git commit`.
-- **AC-02.6** The ship node commits on the job branch `kpi/<job_id>`, pushes only that branch to `origin` after release approval, and opens a pull request; it never pushes another branch, force-pushes, pushes tags, deletes a branch, or merges. Merging is the `auto-merge` workflow's after the required check passes.
+- **AC-02.1** A directory `.kpi/runs/<job_id>/` contains `task.json`, `intent.json`, `intent-history/revision-1.json`, `context.md` and `events.jsonl`. The host protects the original request before execution.
+- **AC-02.2** The task snapshot carries `goal`, `acceptance[]`, `nongoals`, `constraints` and `quality_gates`. Its protected intent hash excludes only the execution slice `current_module_id`; editing the snapshot cannot redefine completion.
+- **AC-02.3** Before planning/implementation, specify or plan-check proposes additive users, journeys, requirements, engineering constraints, testing criteria and definition of done. Existing acceptance and bounds cannot be weakened. Explicit autopilot may accept a question-free executable refinement by delegation; unresolved decisions or non-executable required AC pause rather than becoming green.
+- **AC-02.4** Implementer tools include write/edit/bash. Planner, specify/plan-check and reviewer are product-read-only. The engine publishes schema-validated proposal/plan responses; the review worker publishes only its declared `verdict.json` through `write_contract`. Host `verify` nodes, not a tester model, own trusted evidence and goal publication (`spec.md` §5 REQ-RS-06).
+- **AC-02.5** After isolated review approval and final host verification, gated release asks the operator to approve the exact candidate. `release-approval.json` binds the accepted intent and candidate tree hashes; changed candidate bytes cannot reuse the previous approval.
+- **AC-02.6** Ship creates exactly one conventional job commit on `kpi/<job_id>` with the job trailer. When `origin` exists, scoped release authorization permits pushing only that branch and opening its pull request; delivery is verified before `DONE`. It never authorizes another branch, force-push, tags, branch deletion or merging.
 - **AC-02.7** Board widget shows `MODE gated`, current `STAGE`, `ROUND n` (a count, never `n/max`), and which run files exist.
-- **AC-02.8** After plan writes `stack.json` the graph pauses on the human node `plan-approval` (operator plan approval, distinct from the Dune structural plan gate of US-30); its dialog shows a rendered summary of `stack.json` (delivery, current slice, every module with folder, interface, allowed-path count, dependencies) and the file path, and offers Approve plan / Request changes / Stop; implement never runs before an approval is recorded as `approval.result` with `node: plan-approval`.
-- **AC-02.9** Request changes requires non-empty feedback (at most 4000 characters), records it in `approval.result.feedback` and the run state `plan.feedback`, and re-runs plan with the feedback in its prompt; the re-planned `stack.json` replaces the old one and is frozen before implement.
-- **AC-02.10** Plan revisions are unbounded: the dialog shows `Revision N` and no cap; the operator is the only bound.
-- **AC-02.11** A human gate reached without dialog UI, or dismissed, ends `NEEDS_HUMAN` with recovery `approval` and the exact resume command; it is never answered by the harness. An answered gate is persisted with the checkpoint and is not asked again on resume.
+- **AC-02.8** Gated mode presents the derived desired-state summary before plan/implement and requires explicit **Accept intent / Request changes / Stop**; unresolved questions require **Provide decisions / Stop** instead. Acceptance records `approval.result` on `intent` and publishes a new protected revision. Routine plan changes do not require a new `plan-approval` gate.
+- **AC-02.9** Desired-state change requests or unresolved decisions collect non-empty clarification and rerun specify or plan-check. After detailed intent is accepted, planner repair may change the execution map and current slice but cannot replace the accepted desired state.
+- **AC-02.10** Execution revisions are unbounded and audited. Only planner/diagnostic roles may create, replace, split, supersede or reroute admissible tasks with revision compare-and-swap, a reason, real run-local evidence and affected task/goal/assumption IDs. Mutations cannot expand tools, roles or artifact authority, remove protected gates or redefine success.
+- **AC-02.11** Missing UI or dismissed gated intent/release confirmation pauses `NEEDS_HUMAN` (`approval`) with the resume command, never an invented answer. Checkpoints retain answered human gates, but release authority remains exact-candidate-bound and is rechecked before ship.
 
 ### US-03 — Start from a frozen plan
 
@@ -123,40 +125,40 @@ Each AC is written so a later agent can turn it into a check. IDs are stable.
 
 - **AC-03.1** Specify node is skipped.
 - **AC-03.2** Plan files are copied into the run store and hashed into `fingerprints.json`.
-- **AC-03.3** A `plan-check` node verifies the plan still matches the repo; if not, status is `NEEDS_HUMAN` in autopilot and a replan prompt in gated.
-- **AC-03.4** Changing acceptance criteria mid-run is a mode violation and stops autopilot.
+- **AC-03.3** `plan-check` reads the frozen plan and repository to produce the same additive desired-state proposal as specify. The host resolves initial intent consent/delegation before planning and implementation; supplied plans do not prohibit execution repair.
+- **AC-03.4** Changing accepted criteria, bounds, constraints or quality commands is not a repair operation. Protected-intent mismatch pauses for operator authority; the implemented initial refinement API cannot replace an already accepted detailed intent.
 
 ### US-04 — Autopilot when AC are executable
 
 **Story.** As an operator, I run `/kpi --mode autopilot` with fully executable AC and walk away.
 
-- **AC-04.1** Autopilot is refused if any required AC lacks `check` and `bounds`. Refusal writes `ac.quality` of `partial` or `narrative` and does not load `coding-loop.auto.json`.
-- **AC-04.2** Happy path has no `human` node. `release.approved` is written by a deterministic set node only when `test.passed && review.approved && bounds.held && fingerprints.fresh`.
-- **AC-04.3** Implementer does not write `verdict.json` or `release.approved`. `write_contract` is pinned to the calling agent, job, role, and declared contract path, so no other node can publish either file.
-- **AC-04.4** Tester binds `evidence.json` to `git rev-parse HEAD`.
-- **AC-04.5** On success, status is `DONE` and a conventional commit is created on the job feature branch.
-- **AC-04.6** Push/deploy/delete/new-dependency attempts are denied and do not execute; a job that reaches one shows `NEEDS_HUMAN` with its recovery.
+- **AC-04.1** Autopilot may perform initial desired-state discovery, but required acceptance must have executable checks and explicit bounds before engineering. Missing quality pauses as `ac_quality`; unresolved product questions pause as `contract`.
+- **AC-04.2** The auto graph has no human release node. Final host verification precedes deterministic `release.set`, reached only with passed tests, approved review, held bounds and fresh receipts. It sets `release.approved`, not `DONE`.
+- **AC-04.3** Implementer cannot publish verdict, host evidence, goal statuses or release authority. Planner graph mutation preserves safety-node reachability, protected goal identity and existing capability/artifact boundaries.
+- **AC-04.4** The host seals exact command/expectation, job, intent, candidate tree, verifier, cwd, timestamps, actual exit/signal and full stdout/stderr hashes. Re-reading validates immutable records and recomputes results; `HEAD` is metadata, not freshness authority. Missing, forged, stale, unsupported or blocked evidence cannot satisfy required goals.
+- **AC-04.5** `DONE` requires every required AC and quality gate plus every declared journey's linked AC to pass for the current accepted intent/candidate, release approval, and verified one-commit/delivery finalization. Cached graph/goal/run completion and graph exhaustion are not proof.
+- **AC-04.6** Policy hard denies, protected credential access and unavailable external authority remain boundaries. Only the scoped approved job-branch delivery path is permitted; broader push/deploy/delete or unauthorized new-dependency attempts cannot be laundered through autopilot.
 
 ### US-05 — Self-healing loop and the operator stop
 
 **Story.** As an operator, I need the loop to keep delivering my intent — retrying, re-planning — and to wait for me rather than end on its own; only I stop it.
 
 - **AC-05.1** Run states are exactly `RUNNING`, `NEEDS_HUMAN`, `DONE`, `STOPPED`; `NEEDS_HUMAN` carries a `recovery` reason and the resume command; `NEEDS_HUMAN` and `STOPPED` resume with `/kpi <job>`. Only `RUNNING` is live. A run an earlier release wrote as `BLOCKED`, `EXHAUSTED`, `NO_PROGRESS`, or `UNSAFE` reads as `NEEDS_HUMAN`, is finished, and keeps that token on disk until it is resumed.
-- **AC-05.2** A failed round that repeats a witness — a review whose `output_fingerprint` or failing-AC set was seen before, or a failed test round whose evidence is identical to the previous failed test round's — is no progress: the loop routes back to plan with `repair.json` (`round`, `reason`, `failing_ac`, `evidence_ref`, `witness`, optional `guidance`) as the planner's feedback. An approved review is progress even when it repeats a fingerprint.
-- **AC-05.3** Rounds are unbounded. Two automatic re-plans are allowed per operator touch; the same witness repeating after them pauses `NEEDS_HUMAN` (`no_progress`), offering Give guidance / Keep going / Stop in the TUI and the resume command unattended. Guidance reaches the planner through `repair.json`; guidance or Keep going starts a fresh re-plan allowance.
-- **AC-05.4** A write outside `write_allow` pauses `NEEDS_HUMAN` (`bounds`) without a commit; the resume re-runs test.
-- **AC-05.5** An untestable reviewer issue, or an approved review over failed or stale receipts, pauses `NEEDS_HUMAN` (`review`); the resume re-runs implement.
+- **AC-05.2** A repeated failed-test or review witness routes to plan with `repair.json` (round, reason, failing AC, evidence reference, witness, recovery decision and optional guidance). Contract/stack/routing defects use `execution-repair.json` and the authorized repair planner. Approved review is progress even when its fingerprint repeats.
+- **AC-05.3** Rounds and repair attempts are unbounded; there is no two-replan allowance or mandatory no-progress approval prompt. Recovery decisions advance through diagnosis, replanning, decomposition and reconsideration, asking for new diagnostic evidence or materially changed strategy. These briefs and audited mutations do not guarantee that a model's diagnosis is correct. The former allowance is explicitly superseded by the operator's [Architectural rebuild decision — 2026-09-05](remediation-plan.md#architectural-rebuild-decision--2026-09-05) and `spec.md` §6; counts are diagnostic history, not renewed product-consent gates.
+- **AC-05.4** A write outside accepted bounds routes to an `unsafe` blocker without ship. Its tasks and dependency descendants wait while independent ready work drains; resume re-runs test after compliant writes are restored. Editing `task.json` to widen bounds is not recovery.
+- **AC-05.5** Ordinary blocked/repeated review or approval over failed/stale receipts routes to planner repair. Stale release evidence or previously delivered proof still requires the named operator recovery. Branch-local graph blockers preserve independent work, but driver-level credential, research and intent refusals are not promised to be branch-local.
 - **AC-05.6** Retry of a transient 429 is not a new round. A new round requires new verifier evidence. A provider refusal that cannot fail over pauses `NEEDS_HUMAN` (`provider`) with the real reason and the exact resume command.
 - **AC-05.7** Transient failures (http 408/429/5xx, timeout, transport) retry the same node run for as long as it takes, with a backoff of 1 s doubling to a 60 s ceiling; every retry writes a checkpoint before the wait, appends one `node.retry` event, and notifies once (`K-π <job> retry <attempt> on <node>: <reason>; next in <s>s (/kpi stop stops it)`). A process killed mid-backoff resumes by finishing the wait, not by restarting the node.
 - **AC-05.8** No spend cap, clock, step, node-run, or round counter ends a run: `cost_usd` and `elapsed_ms` are report-only estimates, `maxConcurrency` is the only graph limit, a `/kpi` invocation naming a retired cap flag is refused with `K-π runs have no caps`, and a checkpoint written under a retired cap resumes with its recorded spend.
-- **AC-05.9** `/kpi stop` writes `stop.json` and `STOPPED`: a loop live in this process stops at once and issues no further prompt, a loop in another process stops at its next checkpoint or wait, and a stop that lands before the run directory exists creates nothing. A stop that lands inside a gate or the no-progress prompt is `STOPPED`, never a loop failure. `STOPPED` resumes with `/kpi <job>` into the same node.
+- **AC-05.9** `/kpi stop` writes `stop.json` and `STOPPED`: a loop live in this process stops at once and issues no further prompt, a loop in another process stops at its next checkpoint or wait, and a stop before the run directory exists creates nothing. Stop inside an intent/release gate is `STOPPED`, not loop failure. Resume uses the recorded topology and interrupted work.
 
 ### US-06 — Control-board TUI
 
 **Story.** As an operator, I always know stage, mode, gate, files, and account route without reading model prose.
 
-- **AC-06.1** Theme `loop-amber` uses accent `#ff6a1a` on a dark board.
-- **AC-06.2** While a human node is paused, theme switches to `protocol-blue` accent `#3da9fc`.
+- **AC-06.1** Historical theme registrations `loop-amber` and `protocol-blue` retain a dark, restrained palette; machine activity uses cool cyan (`#70ced1`), not amber-running semantics. See `visual-targets.md` §2.
+- **AC-06.2** Genuine human intervention uses warm peach (`#e9ad86`): a parked `NEEDS_HUMAN` run or an attended `RUNNING` gate with graph interruption and an explicit pending question. Resuming returns to cool machine emphasis. Automatic interruption/retry/repair, stale question/paused metadata on a running graph, and terminal DONE/STOPPED do not show human oversight.
 - **AC-06.3** Widget above the editor shows LOOP name, MODE, ROUND, STAGE, NODE, GATE, STOP, FILES.
 - **AC-06.4** Accounts widget shows per-slot remaining %, not one unlabeled aggregate. A `local` slot has no quota and shows no percentage.
 - **AC-06.5** Protocol events render as custom entries (`handoff.created`, `checkpoint`, `verdict`, `accounts.failover`), not as assistant markdown tables.
@@ -176,8 +178,8 @@ Each AC is written so a later agent can turn it into a check. IDs are stable.
 **Story.** As an operator, spec, TDD, isolated review, gates, and conventional commits happen because the graph says so.
 
 - **AC-08.1** Non-trivial tasks (not a one-line fix) write `specs/<id>/requirements.md`, `design.md`, `tasks.md` before implement.
-- **AC-08.2** Implementer on non-trivial work writes or updates a failing test and stores the red output in `evidence.json` before production code.
-- **AC-08.3** Quality gates are exact commands from project `AGENTS.md` (or `task.json.quality_gates`).
+- **AC-08.2** Implementer on non-trivial work writes or updates a failing test and captures red output before production code. This is development evidence, never permission to overwrite host-owned `evidence.json` or claim final verification.
+- **AC-08.3** Exact quality commands are discovered from the repository and frozen into protected intent (`task.json.quality_gates` mirrors it); a model cannot substitute easier commands to pass.
 - **AC-08.4** Reviewer runs in `context.mode: isolated`, read-only against product files. Its only mutation path is `write_contract` to the declared `verdict.json`.
 - **AC-08.5** Ship commit message matches Conventional Commits.
 
@@ -210,7 +212,7 @@ Each AC is written so a later agent can turn it into a check. IDs are stable.
 **Story.** As an operator, a new Anthropic/OpenAI/xAI model appears without a k-pi release.
 
 - **AC-11.1** Extensions do not pass a `models` array when touching official ids `anthropic`, `openai`, `openai-codex`, `xai`, `zai`, `zai-coding-cn`, `kimi-coding`.
-- **AC-11.2** Cursor provider implements `refreshModels` and a short fallback list only for pre-sync emptiness.
+- **AC-11.2** Cursor uses a first-party adapter for Cursor's CLI protocol: authenticated `GetUsableModels` discovery and `AgentService/Run`, not Cloud Agent provisioning or an OpenAI-compatible guess. Only discovered model ids or their native cached entries are selectable; an empty successful discovery clears stale entries and failed discovery is reported without inventing replacements. Missing capacities remain zero/unknown, modalities and reasoning are not inferred from names, and subscription price is unknown rather than advertised as free. Native `models.json` may supply explicit operator metadata. Browser PKCE login and real token renewal preserve account-pool ownership. Tools execute only through K-π's native tool/permission path; Cursor Cloud/subagent execution is forbidden. Protocol fixtures and built-artifact proof are required; authenticated live proof is recorded separately and an empty catalog is not completed integration.
 - **AC-11.3** README documents `kpi update --models` as the operator command for official refresh. There is no `pi` bin (AC-01.2), so no operator command is spelled `pi …`.
 
 ### US-12 — Anthropic extra-usage warning
@@ -240,7 +242,7 @@ Each AC is written so a later agent can turn it into a check. IDs are stable.
 - **AC-14.1** `events.jsonl` is append-only and hash-chained (`prev_hash`, `record_hash`).
 - **AC-14.2** State files are written `*.tmp` → fsync → rename.
 - **AC-14.3** No tokens, cookies, or raw secrets in events.
-- **AC-14.4** Kill mid-implementer leaves a checkpoint that `/kpi status` can read. Resume is in scope for M7.
+- **AC-14.4** Kill mid-implementer leaves a checkpoint with actual topology, revision audit, superseded-task history, blockers, recoveries and pending result routes. Resume uses that definition and retains unresolved node/retry state, never reconstructing today's named template. Legacy intent needs explicit operator adoption; a checkpoint missing its original topology requires a trusted backup or a newly confirmed job.
 - **AC-14.5** Every agent node run appends `node.started` {`run`, `model`?} and `node.finished` {`run`, `status` `completed | failed`, `elapsed_ms`, `cost_usd`?, `result`?, `session`?, `error`?} to `events.jsonl`, hash-chained and validated by `event.schema.json`; cost sums every attempt of the run and is omitted, never zeroed, when the node's session has no billing. Transient retries inside a run repeat neither event; each retry appends `node.retry` {`attempt`, `reason`, `delay_ms`, `status`?, `message`?} instead.
 
 ### US-15 — Oh My Pi status bar with K-π brand
@@ -260,19 +262,19 @@ Reference files: `visual/omp-statusbar-codemod.jpg`, `visual/omp-statusbar-colla
 - **AC-15.9** `/statusbar` toggles the custom footer. Off restores Pi’s default footer.
 - **AC-15.10** A `local` active slot renders one cost cell `(local) $0`. Never `(sub)`, never an estimated dollar figure, and no quota percentage.
 
-### US-16 — Graph-engineering TUI (Avid boards)
+### US-16 — Jobs-first terminal with graph detail
 
-**Story.** As an operator, I always know what the graph is doing. The industrial boards from https://x.com/av1dlive/status/2092622516544270781 are the TUI. In-repo reconstructions: `visual/kpi-board-amber-running.jpg`, `visual/kpi-board-protocol-pause.jpg`.
+**Story.** As an operator, I see which real jobs need me and what each is doing, then open technical detail when useful. The operator's RP-22 terminal decision preserves the styling and mentality of imported `visual/k-pi-design/K-pi Command Center Wireframes.dc.html` (4b–4k): Jobs first, cool machine work, warm human intervention. The Avid reconstructions (`visual/kpi-board-amber-running.jpg`, `visual/kpi-board-protocol-pause.jpg`) guide retained widget/detail geometry, not home layout or status colors. See [RP-22](remediation-plan.md#rp-22--autonomous-runtime-architectural-rebuild) and `visual-targets.md` §Command Centre; this contract migration is not runtime acceptance.
 
-- **AC-16.1** While a job is active, a widget above the editor shows the amber board: header (`K-π`, MODE, JOB, ROUND), context-layer lamps, stages 01–08 with current stage lit, iteration PASS/FAIL, six file lamps, STOP state.
+- **AC-16.1** While a job is active, the compact above-editor widget retains header (`K-π`, MODE, JOB, ROUND), context-layer lamps, stages 01–08 with current stage identified, iteration PASS/FAIL, six file lamps and STOP state. Machine work is cool; completed stages require recorded completed activity, never just an earlier position in the rail.
 - **AC-16.2** `/kpi status` opens the K-π Command Centre over that widget (AC-16.8); in print/rpc mode it prints the full board as text. No model call.
-- **AC-16.3** When a human node is paused, the board flips to protocol-blue and shows SHARED RUN STATE, STOP STATES with APPROVAL lit, THREE LAWS, and WAITING ON OPERATOR with the pending question.
+- **AC-16.3** Authoritative human intervention uses warm emphasis and shows the pending question with WAITING ON OPERATOR, SHARED RUN STATE and STOP STATES with derived APPROVAL lit; the printed board also shows THREE LAWS. Automatic repair/retry stays cool and must not appear as a human-action job merely because a pause flag is stale.
 - **AC-16.4** File lamps light only when the named file exists and is non-empty.
 - **AC-16.5** The assistant does not reprint the board as a markdown table. The TUI carries the state.
-- **AC-16.6** Pixel match to the JPEGs is not required. Required fields in US-25 are. Narrow terminals may wrap. See `visual-targets.md` §honesty.
+- **AC-16.6** Pixel matching is not required. The widget/printed board retain US-25's required fields, with current stage and STOP visible at narrow widths. Jobs home retains Now/Next/Done at the imported 80-column floor and at 108/120 columns; 60-column fallback and 160/200-column rendering must not overflow. Width coverage is acceptance to prove, not implied by imported HTML.
 - **AC-16.7** The widget carries a `NOW` row naming the running node, its run number, tool-call count, last tool and target, elapsed and cost (`NOW <node>  run <n>  <k> tools  ▸ <tool> <target>  <elapsed>  <cost>  MODEL <m>`; `no node.started yet` before the first record), refreshed from `state.json` + `events.jsonl` every second with no model call; optional spans drop before anything truncates. Stage cells carry a detail line in both layouts: DONE `<elapsed> · <n> calls · $<cost> est.`, CURRENT `<tool> <target>  <elapsed>`, PENDING `—`; the widget adds a `RETRY <attempt> · <reason> · next <s>s` row while a node backs off and shows `ROUND n` with no maximum. Elapsed reads `12s`, `3m12s`, `1h02m`, `4d04h`; cost is an estimate, never a bill, and is never fabricated.
-- **AC-16.8** `/kpi status` in the TUI opens the Command Centre as a full-width overlay with HOME (STAGES 01–08, LIVE › <NN stage>, TELEMETRY without cap tokens, SHARED RUN STATE, CONTEXT LAYER, EVENTS, an input line and key hints) and SESSION (STAGES rail, the node's transcript, NODE panel with status, elapsed, cost, model, route) views drawn from run files, responsive at 200, 160, 120, 80 and 60 columns with no framed line wider than the terminal. Keys: tab/↑↓/←→ and `1`–`8` select a stage, enter opens its session, esc returns home or closes, `q`/ctrl+c close, `r` refreshes. The input line routes `/kpi stop` to the job's stop exactly once, `/kpi verify` to the verify line, refuses any other `/kpi …` (`K-π /kpi <goal> is refused while a job runs; /kpi stop first`) and `!…` (`K-π bash is not available inside the command centre`), and hands any other text to chat after closing.
-- **AC-16.9** The Command Centre is live mid-run: while the run is `RUNNING` it re-reads the run files on the same 1 s tick as the widget (run files every fifth tick), paints `EVENTS ✕ <code>` in its header on a failed read without throwing (the ticker retries an open that failed), paints `K-π no active job` and stops ticking when the job is gone, and stops ticking when the run ends (`DONE`, `NEEDS_HUMAN`, `STOPPED`) or the view closes. The loop runs detached from the `/kpi` handler, so `/kpi status`, `/agents` and chat stay usable while a job runs.
+- **AC-16.8** `/kpi status` opens a full-width, model-free Command Centre: HOME groups actual Jobs as NEEDS YOU (`NEEDS_HUMAN`), RUNNING, DONE and separately STOPPED, with selected-job Now/Next/Done. Missing summaries or telemetry stay unknown; cancelled work is not done. Enter opens DETAILS (STAGES 01–08, LIVE transcript, TELEMETRY without run caps, SHARED RUN STATE, CONTEXT LAYER, EVENTS), then a stage's SESSION and NODE panel (status, elapsed, estimated cost, model, route). `j/k` or arrows navigate jobs on home and stages in details/session; `1`–`8` and `[ ]` select stages in details/session. Tab/shift-tab chooses the next/previous real human-action job in every view; `?` opens help that intercepts navigation; esc clears input, dismisses help, returns one level, then closes. `q`/ctrl+c closes; `r` refreshes. Empty-input shortcuts must not consume typed text. Labelled `command ›` accepts `/kpi stop` exactly once and `/kpi verify` for the opened job only; another selected job must first be opened. Other `/kpi …` and shell commands are refused. Labelled `chat ›` closes before sending ordinary text to the existing chat source. Direct steering, approval, new-job creation and bounds recovery from this input are not claimed.
+- **AC-16.9** The Command Centre refreshes on the 1 s ticker (run-file metadata every fifth tick), serializes slow reads and surfaces read errors without throwing; later ticks or `r` can recover. Native fleet discovery keeps refreshing after the opened job ends or disappears, preserving selection by job id across reordered snapshots. Without a fleet source, only the actual opened job appears and its terminal/gone result stops the ticker; closing always stops it. Opening another job closes the old overlay before its source opens the selected job and surfaces open failures. The detached loop leaves `/kpi status`, `/agents` and chat usable during work.
 
 ### US-17 — K-stack ships as built-in first-party skills
 
@@ -300,7 +302,7 @@ Reference files: `visual/omp-statusbar-codemod.jpg`, `visual/omp-statusbar-colla
 
 - **AC-19.1** The first todo names the four graph principles in `kstack.md` §6, which are always in force, plus only the principle skills whose frontmatter `description` matches the current node. No fixed principle count is asserted, and no todo list opens by reading the whole principle index.
 - **AC-19.2** Matched playbook name is stored on `task.json.playbook`.
-- **AC-19.3** Ship todo cannot complete unless `verdict.json.approved == true` and evidence is fresh.
+- **AC-19.3** Ship todo cannot complete from a verdict alone: required host goal coverage, fresh candidate proof, release authority and verified delivery are necessary.
 - **AC-19.4** Skipped steps remain listed with `skip: <reason>`.
 - **AC-19.5** `/k-mode` stays on for the session until `/k-mode off`.
 
@@ -309,9 +311,9 @@ Reference files: `visual/omp-statusbar-codemod.jpg`, `visual/omp-statusbar-colla
 **Story.** As an operator, K-stack never launches a Cursor Cloud agent or a Graphite cloud sleeper.
 
 - **AC-20.1** Autopilot-full / autopilot-stack rewrites spawn only local isolated K-π sessions.
-- **AC-20.2** Those playbooks do not merge to origin. Terminal is `DONE` + local commit per K-π mode.
+- **AC-20.2** These playbooks cannot merge to origin or bypass the graph's release and host-verification boundaries. `DONE` requires the same verified one-commit/delivery contract as any K-π run, not a local-commit-only exemption. `spec.md` §7 **Local blockers and operator gates** defines checkpointed host delivery; §12 retains exact job-branch release authority. The [RP-22 mandate](remediation-plan.md#architectural-rebuild-decision--2026-09-05) does not itself authorize external actions.
 - **AC-20.3** Source tree grep of runtime `kstack/` has no `cloud agent`, `gt submit`, `subagent_type`, or `cursor-team-kit` calls.
-- **AC-20.4** Swarm/arena honor `maxConcurrency = 2`.
+- **AC-20.4** Swarm/arena honor the configured graph concurrency and native worker admission limits, with one mutating owner per checkout. Static playbook wording cannot create a separate fixed-two-worker gate.
 
 ### US-21 — Upstream pstack stays the source; overlay replays
 
@@ -330,7 +332,7 @@ Reference files: `visual/omp-statusbar-codemod.jpg`, `visual/omp-statusbar-colla
 
 - **AC-22.1** `skills/minimalist/SKILL.md` is present and credited (Alireza Rezvani, MIT).
 - **AC-22.2** Implementer writes `candidate.json.ladder` before the first file change.
-- **AC-22.3** A new runtime dependency not named in `task.json` fails bounds and cannot ship.
+- **AC-22.3** A new runtime dependency outside protected intent fails bounds and cannot ship; declaring one in a mutable candidate/task artifact is not authorization.
 - **AC-22.4** Fixture: “add a helper class for one string concat” produces a one-liner, no new file.
 
 Source: https://github.com/alirezarezvani/claude-skills/blob/main/engineering/minimalist/SKILL.md
@@ -362,9 +364,9 @@ Source: https://github.com/alirezarezvani/claude-skills/blob/main/engineering/mi
 
 ### US-25 — TUI is information-complete, not pixel-perfect
 
-**Story.** As an operator, every lamp and label from the Avid boards is visible. Layout may wrap.
+**Story.** As an operator, the retained widget and printed board expose every required graph lamp and label. Jobs home prioritizes Now/Next/Done with technical detail one level deeper; required information is not deleted to make the home simpler. Layout may wrap.
 
-- **AC-25.1** Required fields always present when a job is active: brand `K-π`, MODE, JOB, ROUND, stages 01–08, PASS/FAIL, six file lamps, STOP.
+- **AC-25.1** The active-job widget and printed board retain brand `K-π`, MODE, JOB, ROUND, stages 01–08, PASS/FAIL, six file lamps and STOP. Jobs home/detail placement follows US-16, not an all-panels-on-home requirement.
 - **AC-25.2** Paused human node shows WAITING ON OPERATOR plus the pending question.
 - **AC-25.3** Narrow terminals may wrap or stack rows. Truncation keeps the current stage and STOP visible.
 - **AC-25.4** Matching JPEG pixels is not required. Missing a required field fails the story.
@@ -415,26 +417,26 @@ Source: https://github.com/alirezarezvani/claude-skills/blob/main/engineering/mi
 - **AC-29.1** Specify and plan cannot leave their nodes without `.kpi/runs/<job>/research.md` and `research.json`.
 - **AC-29.2** With an Exa, Perplexity, or Firecrawl key and `network.state: "online"`, `research.json` records at least two **distinct** external sources — different origins, deduplicated — from `exa_search`, `exa_contents`, `pplx_search`, or `firecrawl_search`.
 - **AC-29.3** Without a usable key, or under `no-network` from either origin, mode is `local` and sources are repository and frozen-plan files cited by repo-relative path. The lamp still lights. No external URL is recorded that this job did not fetch.
-- **AC-29.4** Implement pauses `NEEDS_HUMAN` (`research`) if research files are missing or older than the current `task.json` hash.
+- **AC-29.4** Research must bind to the accepted task/intent hash. The driver refreshes it before specification/planning and checks it before implement; missing or stale files cannot be used as current research. The current slice does not change the protected hash.
 - **AC-29.5** Assistant prose does not dump raw crawl pages. Citations live in research.md.
 - **AC-29.6** A healthy configured service that answers but supplies fewer than two distinct external sources ends the node `NEEDS_HUMAN`. Online shortfall is never downgraded to local research.
 - **AC-29.7** The engine may set effective `no-network` only after every configured service has failed its bounded attempts, writing `network.origin: "engine"`, a `network.reason` naming those services, and one recorded failure per attempt. An operator-flagged job uses `network.origin: "operator"`. `no-network` is a research state, never a stop state.
 
-### US-30 — Dune modular stack
+### US-30 — Feature ownership preserving existing layouts
 
-**Story.** As an operator, I can find auth in `auth/` and a feature in that feature’s folder. Agents use the same map.
+**Story.** As an operator, I can find the responsible feature and its exact writable paths without reorganizing a working repository. The operator's RP-22 **Preserve existing layouts** decision replaces folder=id, auth-home, nested-only-layer, mandatory interface/test scaffold and consumer-count restrictions. See [RP-22](remediation-plan.md#rp-22--autonomous-runtime-architectural-rebuild), `spec.md` §5 **SCH-stack**, and `dune-architecture.md` §§Ownership contract / Scaffold only what is needed. This migration preserves ownership safety, not the superseded layout ceremony.
 
-- **AC-30.1** Plan writes `stack.json` with `folder`, `interface`, `allowed_paths`, `scaffold_first` per module.
-- **AC-30.2** Implement `claim_path` outside the current module folder + test twin is refused as an `UNSAFE` claim and denied; that boundary is the implementer's `write_allow`, so a write that leaves it pauses the run `NEEDS_HUMAN` (`bounds`).
-- **AC-30.3** Feature playbooks copy the dune checklist. `no-stack` playbooks (typo, unslop) are exempt.
-- **AC-30.4** Top-level `utils`, `helpers`, `common`, or `misc` without a tight purpose fails the plan gate.
-- **AC-30.5** Scaffold creates the feature folder, interface file, and test twin before behaviour.
-- **AC-30.6** Folder name equals module `id`. Auth code is not written under `services/` or `lib/` as the home.
-- **AC-30.7** Layer folders (`components`, `hooks`) may exist inside a feature folder, not as the top-level map.
-- **AC-30.8** A file that only one feature uses cannot live in `shared/`.
-- **AC-30.9** Default `delivery` is `vertical`. One implement round = one slice through that feature folder.
-- **AC-30.10** A plan that schedules “all APIs then all UI” without `delivery: "horizontal"` and a reason fails the plan gate.
-- **AC-30.11** Shared abstractions are extracted only when a second slice needs them.
+- **AC-30.1** Plan writes version-1 `stack.json` with `shape: "dune"`, root, delivery and modules declaring `id`, non-empty `purpose`, `folder`, `interface`, `allowed_paths` and `depends_on`. Current module selection is explicit and frozen before implement; `scaffold_first` is optional stack metadata, not a per-module scaffold requirement.
+- **AC-30.2** Only the selected module's explicit `allowed_paths` grants writes or `claim_path`; a folder label or inferred test twin grants nothing. Claims and implement bounds share canonical segment/glob matching, reject traversal/prefix/symlink escapes, and stay inside protected task write bounds. An actual out-of-bounds write cannot ship and routes to the bounds blocker.
+- **AC-30.3** Feature work requires a fresh valid ownership map before writes. Only the named typo, unslop and comment-strip playbooks are exempt; planner repair cannot silently change the accepted playbook to gain exemption.
+- **AC-30.4** Every feature, including one mapped to an existing generic folder, declares a non-empty purpose and explicit ownership prefix. Empty purposes and catch-all ownership without a literal path prefix are rejected; directory names alone neither fail admission nor grant authority.
+- **AC-30.5** Optional `module.scaffold` creates only exact authorized directories needed by the task, preserving existing contents. It never manufactures interface source, a test twin, empty tests or placeholder behavior; real source/tests are written only as needed in project conventions.
+- **AC-30.6** Module identity need not equal folder name. Existing Python/Go/Rust, layered, `services/`, `lib/` and root-level layouts remain valid; `root` and `folder` may be `.` without granting the whole repository.
+- **AC-30.7** Existing top-level or nested layers and test locations are permitted. The interface must lie inside its declared folder and be admitted by `allowed_paths`; tests need their own explicit admitted paths, not a matching feature-folder name.
+- **AC-30.8** Shared code is owned explicitly, not inferred from a `shared/` label or consumer count. Dependencies name declared module identities; unknown dependencies, self-dependencies and cycles are rejected.
+- **AC-30.9** Vertical feature delivery remains the planning default. Each implement invocation owns its explicitly selected slice, never the union of every module; missing or conflicting selection blocks writes and cannot fall back to `modules[0]`.
+- **AC-30.10** Horizontal delivery is permitted only with `delivery: "horizontal"` and a non-empty reason. A plan that intentionally schedules all APIs before all UI must declare that choice rather than label it vertical.
+- **AC-30.11** Existing shared abstractions and necessary task-scoped changes are not forced through a second-consumer threshold or a folder migration. Shared ownership/dependencies remain explicit and selected-slice writes remain bounded; the minimalist ladder and accepted constraints still govern whether new abstraction is justified.
 
 ### US-31 — Onboarding
 
@@ -464,25 +466,25 @@ operator types: add a healthcheck and verify it
 
 ```
 operator /kpi <goal>
-  → ac-compiler → specify? → research → plan (stack.json) → plan-approval (operator: approve / request changes → plan / stop)
-  → implement → test → bounds → review → human (approve / request changes → implement / stop) → ship commit
-  fail edges: test/review → implement; a repeated witness → plan with repair.json; bounds/review/no-progress → NEEDS_HUMAN pause, resumable
+  → ac-compiler → specify/plan-check → host desired-state consent → plan (stack.json)
+  → implement → test (host) → review → verify (host) → human → ship + verified delivery
+  repair: repeated/blocked/stale outcomes and execution defects → diagnosis/plan; bounds → local blocker
 ```
 
 ### WF-02 Plan entry
 
 ```
 operator /kpi --plan specs/<id>/
-  → copy+hash plan → plan-check → implement → … (same as WF-01 from implement)
+  → copy+hash plan → plan-check → host desired-state consent → plan → … (same as WF-01)
 ```
 
 ### WF-03 Autopilot
 
 ```
 operator /kpi --mode autopilot <goal with executable AC>
-  → ac-compiler must return executable else refuse
-  → load coding-loop.auto.json
-  → … → review pass → release.set → ship commit
+  → load coding-loop.auto.json → specify/plan-check → additive intent refinement
+  → unresolved decisions or non-executable required AC: NEEDS_HUMAN before engineering
+  → delegated intent acceptance → plan → … → review → host verify → release.set → verified ship
 ```
 
 ### WF-04 Account failover mid-loop
@@ -522,7 +524,7 @@ operator /k-mode <goal>
 |---|---|---|
 | M-01 | Gated fixture: healthcheck feature reaches human confirm with green gates | 1/1 |
 | M-02 | Autopilot fixture with 5 executable AC reaches `DONE` and a commit | 1/1 |
-| M-03 | Narrative AC fixture is refused for autopilot | 1/1 |
+| M-03 | Narrative/unresolved required AC cannot enter autopilot engineering or count as verified success | 1/1 |
 | M-04 | Bounds-violation fixture pauses `NEEDS_HUMAN` (`bounds`) with zero commits | 1/1 |
 | M-05 | Two Anthropic slots: exhausted slot never selected while sibling healthy | 1/1 |
 | M-06 | Assistant visible reply on fixture verdict < 800 chars | 1/1 |
@@ -541,7 +543,7 @@ operator /k-mode <goal>
 | ID | Question | Default until answered |
 |---|---|---|
 | Q-01 | Distribution beyond a source build | `@korallis/k-pi` on npm, tag-driven release; install with `npm i -g @korallis/k-pi` or `bun add -g @korallis/k-pi`, or keep building from source |
-| Q-02 | Cursor stream transport: OpenAI-shaped vs `streamSimple` | try OpenAI-compatible first, fall back to `streamSimple` |
+| Q-02 | Cursor integration transport | Resolved by operator, 2026-09-06: implement the Cursor CLI-protocol adapter using OMP as a source reference, not a runtime dependency. Keep native K-π sessions, tools and approvals; no Cursor Cloud Agents. See spec §Cursor provider and RP-22. |
 | Q-03 | Worktree isolation per job | v1 same tree + one writer + `claim_path` (US-23.7/8) |
 | Q-04 | Cross-process in-flight cap across two K-π processes | v1 in-process only |
 

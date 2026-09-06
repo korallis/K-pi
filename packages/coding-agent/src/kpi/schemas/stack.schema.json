@@ -8,8 +8,7 @@
     "shape",
     "delivery",
     "root",
-    "modules",
-    "scaffold_first"
+    "modules"
   ],
   "properties": {
     "version": {
@@ -33,7 +32,7 @@
       "minLength": 1
     },
     "scaffold_first": {
-      "const": true
+      "type": "boolean"
     },
     "task_hash": {
       "type": "string",
@@ -79,6 +78,10 @@
         "interface": {
           "type": "string",
           "minLength": 1
+        },
+        "scaffold": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
         },
         "allowed_paths": {
           "type": "array",

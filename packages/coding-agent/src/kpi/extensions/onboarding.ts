@@ -8,14 +8,13 @@ import { promptResearchKeys } from "./research/setup.ts";
 export const ONBOARDING_COMMAND = "onboarding";
 
 /**
- * What a first-run operator needs to know before the wizard starts: the gated
- * graph's two operator confirmations, and that reviewer/tester work happens on
- * separate kpi processes, not inside this one.
+ * The operator approves accepted intent and external release, not routine
+ * execution revisions. Verification is runtime-owned; agents remain inspectable.
  */
 export const WELCOME_LINES: readonly string[] = [
 	"K-π is a standalone coding-agent harness you own.",
-	"A job runs a gated graph — specify → plan → implement → test → review → ship — with a plan gate and a release gate you confirm.",
-	"Reviewer and tester workers are separate kpi processes on the worker bus (see /agents).",
+	"A gated job asks you to approve its intent and its release. Planning and repair continue without routine approval gates.",
+	"The runtime executes acceptance checks independently. Inspect agent sessions with /agents and jobs with /kpi status.",
 ];
 
 const START_SETUP = "Start setup";

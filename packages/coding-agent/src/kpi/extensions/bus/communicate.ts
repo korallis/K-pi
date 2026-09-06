@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { Type } from "@earendil-works/pi-ai";
 import {
 	defineTool,
@@ -6,32 +7,29 @@ import {
 	type ToolCallEvent,
 } from "../../../core/extensions/types.ts";
 
-import { readActiveJob, readTaskForJob } from "../run-store.ts";
+import { readActiveJob } from "../run-store.ts";
 import { classifyShellCommand } from "../shell-classifier.ts";
-import { assertClaimInModule, canonicalProjectPath, freezeCurrentSlice, stackRequiredFor } from "../stack.ts";
-import { appendBusDenial } from "./denials.ts";
+import { authorizeWorkerTool, hasWorkerDescriptor, requireWorkerIdentity, type WorkerIdentity } from "./identity.ts";
 import {
-	authorizeWorkerTool,
-	hasWorkerDescriptor,
-	requireWorkerIdentity,
-	resolveWorkerIdentity,
-	type WorkerIdentity,
-} from "./identity.ts";
-import { claimLease, defaultIsProcessAlive, type LeaseDependencies, releaseLease } from "./leases.ts";
+	assertWriterAuthority,
+	defaultIsProcessAlive,
+	type LeaseOwner,
+	releaseWriterAuthority,
+	reserveWriterAuthority,
+	sessionWriterAuthority,
+} from "./leases.ts";
+import { PEER_ENDPOINT_ENV, PeerClient, type PeerEndpoint } from "./peer-runtime.ts";
 import {
 	hasReadOnlyShell,
 	hasTestShellOnly,
 	isWorkerRole,
-	isWriterToolSet,
 	MUTATION_TOOLS,
-	resolveRoleTools,
 	WORKER_ROLES,
 	type WorkerRole,
 } from "./roles.ts";
 import { registerSessionsCommand } from "./sessions-command.ts";
-import { registerLiveBus } from "./sessions-snapshot.ts";
-import { BackgroundBus, type BusDependencies, MAX_LIVE_WORKERS, MAX_LIVE_WRITERS } from "./spawn.ts";
-import { mintContractPin, writeContract } from "./write-contract.ts";
+import { registeredBuses } from "./sessions-snapshot.ts";
+import { type BackgroundBus, type BusDependencies, getOrCreateBackgroundBus } from "./spawn.ts";
 
 /**
  * Parent tools that mutate the tree, directly or through a shell.
@@ -44,6 +42,8 @@ const PARENT_WRITER_TOOLS = new Set(["write", "edit", "apply_patch", "multi_edit
 export interface BusRegistrationOptions extends BusDependencies {
 	/** The environment to read the worker descriptor from. Injected by tests. */
 	env?: NodeJS.ProcessEnv;
+	/** Graph sessions share the host bus; only exact-session writer hooks belong here. */
+	graphSession?: boolean;
 }
 
 /**
@@ -56,173 +56,160 @@ export interface BusRegistrationOptions extends BusDependencies {
  * from an argument, because an argument is something a model can choose.
  */
 export function registerBackgroundBus(pi: ExtensionAPI, options: BusRegistrationOptions = {}): void {
-	if (hasWorkerDescriptor(options.env)) {
+	if (!options.graphSession && hasWorkerDescriptor(options.env)) {
 		registerWorkerTools(pi, options);
 		return;
 	}
 	registerParentTools(pi, options);
 }
 
-function leaseDependenciesFrom(options: BusRegistrationOptions): LeaseDependencies {
-	return {
-		now: options.now,
-		isProcessAlive: options.isProcessAlive,
-		sleep: options.sleep,
-		lockTimeoutMs: options.lockTimeoutMs,
-		lockStaleMs: options.lockStaleMs,
-		lockRetryMs: options.lockRetryMs,
-	};
-}
-
-/**
- * The canonical lease key for a path, decided by RP-11's own predicate.
- *
- * The key is the repository-relative path the bytes land on, so `src/a/x`,
- * `./src/a/x`, an absolute path inside the root and a symlink alias are one
- * lease rather than four. Keying by the caller's spelling would let a second
- * worker claim the same file by writing its name differently.
- */
-async function canonicalClaimKey(cwd: string, jobId: string, runDirectory: string, path: string): Promise<string> {
-	const task = await readTaskForJob(cwd, jobId);
-	if (stackRequiredFor(task)) {
-		// The module boundary on top of the canonical key, and it returns that key.
-		const { module } = await freezeCurrentSlice(cwd, runDirectory, task);
-		return assertClaimInModule(cwd, path, module);
-	}
-	// A stackless playbook - typo, unslop, comment-strip - has no module to
-	// resolve against, but path identity does not depend on one. Keying by the
-	// caller's spelling here would let exactly those jobs hand out two leases for
-	// one file, which is the same defect the module path already closed.
-	return canonicalProjectPath(cwd, path);
-}
-
-/**
- * Tools that exist only inside a worker process.
- *
- * Each one derives its whole identity from the validated startup descriptor, so
- * there is no `agent_id` parameter to forge, and the parent's in-memory worker
- * table - which does not exist in this process - is not consulted.
- */
+/** Tools share one endpoint captured before model execution; sender is never an argument. */
 function registerWorkerTools(pi: ExtensionAPI, options: BusRegistrationOptions): void {
-	const leaseDependencies = leaseDependenciesFrom(options);
-	const identityFor = (cwd: string): Promise<WorkerIdentity> => requireWorkerIdentity(cwd, options.env);
-
+	const rawEndpoint = (options.env ?? process.env)[PEER_ENDPOINT_ENV];
+	let connection: Promise<PeerClient> | undefined;
+	let heartbeat: NodeJS.Timeout | undefined;
+	const client = async (): Promise<PeerClient> => {
+		if (!rawEndpoint) throw new Error("worker has no authenticated peer endpoint");
+		connection ??= PeerClient.connect(JSON.parse(rawEndpoint) as PeerEndpoint).catch((error) => {
+			connection = undefined;
+			throw error;
+		});
+		return connection;
+	};
+	const request = async (
+		cwd: string,
+		tool: string,
+		method: string,
+		params: Record<string, unknown>,
+	): Promise<unknown> => {
+		const identity = await requireWorkerIdentity(cwd, options.env);
+		authorizeWorkerTool(identity, tool);
+		return (await client()).request(method, params);
+	};
+	const result = (details: unknown) => ({
+		content: [{ type: "text" as const, text: JSON.stringify(details) }],
+		details,
+	});
 	if (typeof pi.registerTool === "function") {
+		pi.registerTool(
+			defineTool({
+				name: "communicate",
+				label: "Communicate",
+				description:
+					"Durably send a direct or room message. Sender is authenticated; acceptance is not task completion.",
+				parameters: Type.Object({
+					to: Type.Optional(Type.String()),
+					room: Type.Optional(Type.String()),
+					message: Type.String(),
+					id: Type.Optional(Type.String()),
+					replyTo: Type.Optional(Type.String()),
+					deliverAs: Type.Optional(Type.Union([Type.Literal("steer"), Type.Literal("followUp")])),
+				}),
+				async execute(_id, params, _signal, _update, context) {
+					return result(
+						await request(context.cwd, "communicate", "send", {
+							to: params.to,
+							room: params.room,
+							text: params.message,
+							id: params.id,
+							replyTo: params.replyTo,
+							deliverAs: params.deliverAs,
+						}),
+					);
+				},
+			}),
+		);
+		pi.registerTool(
+			defineTool({
+				name: "peers",
+				label: "Peers",
+				description:
+					"Discover peers, join/leave job rooms, replay your scoped inbox, or acknowledge its next handled message.",
+				parameters: Type.Object({
+					action: Type.Union(["discover", "join", "leave", "inbox", "ack"].map((value) => Type.Literal(value))),
+					room: Type.Optional(Type.String()),
+					after: Type.Optional(Type.Number()),
+					id: Type.Optional(Type.String()),
+				}),
+				async execute(_id, params, _signal, _update, context) {
+					const payload =
+						params.action === "join" || params.action === "leave"
+							? { room: params.room }
+							: params.action === "ack"
+								? { id: params.id }
+								: params.action === "inbox"
+									? { after: params.after }
+									: {};
+					return result(await request(context.cwd, "peers", params.action, payload));
+				},
+			}),
+		);
 		pi.registerTool(
 			defineTool({
 				name: "write_contract",
 				label: "Write Contract",
-				description: "Publish this worker's one declared run-contract file after schema validation",
-				parameters: Type.Object({
-					path: Type.String(),
-					content: Type.Object({}, { additionalProperties: true }),
+				description: "Ask the owning runtime to schema-validate and publish this peer role's declared contract.",
+				parameters: Type.Object({ path: Type.String(), content: Type.Object({}, { additionalProperties: true }) }),
+				async execute(_id, params, _signal, _update, context) {
+					return result(await request(context.cwd, "write_contract", "publish", params));
+				},
+			}),
+		);
+		for (const action of ["claim", "release"] as const) {
+			pi.registerTool(
+				defineTool({
+					name: `${action}_path`,
+					label: `${action} Path`,
+					description: `${action} this peer's exclusive canonical path ownership through the runtime.`,
+					parameters: Type.Object({ path: Type.String() }),
+					async execute(_id, params, _signal, _update, context) {
+						return result(await request(context.cwd, `${action}_path`, action, params));
+					},
 				}),
-				async execute(_id, params, _signal, _update, context) {
-					const identity = await identityFor(context.cwd);
-					authorizeWorkerTool(identity, "write_contract");
-					const pin = mintContractPin({
-						agentId: identity.agentId,
-						jobId: identity.jobId,
-						role: identity.role,
-						runDirectory: identity.runDirectory,
-						capabilityId: identity.capabilityId ?? "",
-					});
-					const result = await writeContract({
-						pin,
-						agentId: identity.agentId,
-						jobId: identity.jobId,
-						role: identity.role,
-						requestedPath: params.path,
-						payload: params.content,
-						now: options.now,
-					});
-					// The publication id identifies this publication; the capability id
-					// that authorised it is never returned.
-					const details = {
-						path: result.path,
-						agent_id: identity.agentId,
-						publication_id: result.receipt.publication_id,
-						content_sha256: result.receipt.content_sha256,
-					};
-					return { content: [{ type: "text", text: `published ${result.path}` }], details };
-				},
-			}),
-		);
-
-		pi.registerTool(
-			defineTool({
-				name: "claim_path",
-				label: "Claim Path",
-				description: "Acquire an exclusive same-tree path lease inside this job's frozen slice",
-				parameters: Type.Object({ path: Type.String() }),
-				async execute(_id, params, _signal, _update, context) {
-					const identity = await identityFor(context.cwd);
-					authorizeWorkerTool(identity, "claim_path");
-					// A lease is only meaningful for a worker that can write.
-					if (!identity.tools.some((tool) => MUTATION_TOOLS.has(tool))) {
-						throw new Error(`worker ${identity.agentId} (${identity.role}) holds no mutation tool to claim for`);
-					}
-					const key = await canonicalClaimKey(context.cwd, identity.jobId, identity.runDirectory, params.path);
-					let lease: Awaited<ReturnType<typeof claimLease>>;
-					try {
-						lease = await claimLease(
-							identity.runDirectory,
-							{ agentId: identity.agentId, pid: process.pid, key },
-							leaseDependencies,
-						);
-					} catch (error) {
-						// The lease rule is unchanged; only the record of hitting it is new.
-						const held = /^Path already claimed by (\S+):/u.exec(error instanceof Error ? error.message : "");
-						if (held !== null) {
-							await appendBusDenial(identity.runDirectory, identity.jobId, {
-								reason: "claim-held",
-								role: identity.role,
-								agent_id: identity.agentId,
-								key,
-								holder: held[1],
-							}).catch(() => undefined);
-						}
-						throw error;
-					}
-					const details = { path: params.path, key, agent_id: identity.agentId, at: lease.at };
-					return { content: [{ type: "text", text: `claimed ${key}` }], details };
-				},
-			}),
-		);
-
-		pi.registerTool(
-			defineTool({
-				name: "release_path",
-				label: "Release Path",
-				description: "Release a same-tree path lease held by this worker",
-				parameters: Type.Object({ path: Type.String() }),
-				async execute(_id, params, _signal, _update, context) {
-					const identity = await identityFor(context.cwd);
-					authorizeWorkerTool(identity, "release_path");
-					const key = await canonicalClaimKey(context.cwd, identity.jobId, identity.runDirectory, params.path);
-					const released = await releaseLease(
-						identity.runDirectory,
-						{ agentId: identity.agentId, key },
-						leaseDependencies,
-					);
-					return {
-						content: [{ type: "text", text: released ? `released ${key}` : `no lease on ${key}` }],
-						details: { path: params.path, key, released },
-					};
-				},
-			}),
-		);
+			);
+		}
 	}
-
 	if (typeof pi.on === "function") {
-		// The second half of tool isolation. `--tools` decides what a worker was
-		// given; this decides what it may do with what it was given.
-		pi.on("tool_call", async (event, ctx) => {
-			const identity = await resolveWorkerIdentity(ctx.cwd, options.env).catch(() => undefined);
-			if (identity === undefined) {
-				return;
+		pi.on("session_start", async (_event, context) => {
+			await requireWorkerIdentity(context.cwd, options.env);
+			await client();
+			clearInterval(heartbeat);
+			heartbeat = setInterval(() => {
+				void client()
+					.then((peer) => peer.request("heartbeat"))
+					.catch(() => undefined);
+			}, 20_000);
+			heartbeat.unref();
+		});
+		pi.on("session_shutdown", async () => {
+			clearInterval(heartbeat);
+			if (connection) (await connection).close();
+			connection = undefined;
+		});
+		pi.on("tool_call", async (event, context) => {
+			try {
+				const identity = await requireWorkerIdentity(context.cwd, options.env);
+				const rejection = evaluateWorkerToolCall(event, identity);
+				if (rejection) return rejection;
+				authorizeWorkerTool(identity, event.toolName);
+				if (
+					MUTATION_TOOLS.has(event.toolName) ||
+					(event.toolName === "bash" &&
+						!hasReadOnlyShell(identity.role) &&
+						!classifyShellCommand(String((event.input as Record<string, unknown>).command ?? "")).readOnly)
+				) {
+					const input = event.input as Record<string, unknown>;
+					const path =
+						typeof input.path === "string"
+							? input.path
+							: typeof input.file_path === "string"
+								? input.file_path
+								: undefined;
+					await (await client()).request("authorize_mutation", { path });
+				}
+			} catch (error) {
+				return { block: true, reason: error instanceof Error ? error.message : "invalid peer authority" };
 			}
-			return evaluateWorkerToolCall(event, identity);
 		});
 	}
 }
@@ -284,10 +271,8 @@ export function evaluateWorkerToolCall(
 
 /** Tools that manage workers. They exist only in a parent session. */
 function registerParentTools(pi: ExtensionAPI, options: BusRegistrationOptions): void {
-	const buses = new Map<string, BackgroundBus>();
-	/** Each bus's registration in the sessions registry, released at shutdown. */
-	const busReleases = new Map<string, () => void>();
-	registerSessionsCommand(pi, { admission: options.admission, now: options.now });
+	const buses = (): BackgroundBus[] => registeredBuses();
+	if (!options.graphSession) registerSessionsCommand(pi, { admission: options.admission, now: options.now });
 	/**
 	 * One parent-level queue for spawn and stop-all.
 	 *
@@ -318,13 +303,7 @@ function registerParentTools(pi: ExtensionAPI, options: BusRegistrationOptions):
 		if (job === undefined) {
 			throw new Error("No active K-π job");
 		}
-		let bus = buses.get(job.jobId);
-		if (bus === undefined) {
-			bus = new BackgroundBus(cwd, job.directory, job.jobId, options);
-			buses.set(job.jobId, bus);
-			busReleases.set(job.jobId, registerLiveBus(bus));
-		}
-		return bus;
+		return getOrCreateBackgroundBus(cwd, job.directory, job.jobId, options);
 	};
 
 	/**
@@ -336,89 +315,42 @@ function registerParentTools(pi: ExtensionAPI, options: BusRegistrationOptions):
 	 * could become unreachable, and unstoppable, by switching jobs.
 	 */
 	const busOwning = async (cwd: string, agentId: string): Promise<BackgroundBus> => {
-		for (const bus of buses.values()) {
-			if (bus.get(agentId) !== undefined) {
+		for (const bus of buses()) {
+			if (bus.get(agentId) !== undefined || (await bus.peers()).get(agentId) !== undefined) {
 				return bus;
 			}
 		}
-		return activeBus(cwd);
+		throw new Error(`Unknown peer ${agentId} in this runtime (${cwd})`);
 	};
 
-	/** Reap every registered bus, then count live workers and writers across jobs. */
-	const countLiveAcrossJobs = async (): Promise<{ workers: number; writers: number }> => {
-		let workers = 0;
-		let writers = 0;
-		for (const bus of buses.values()) {
-			await bus.reap();
-			for (const worker of bus.list()) {
-				workers += 1;
-				if (worker.isWriter) {
-					writers += 1;
-				}
-			}
-		}
-		return { workers, writers };
-	};
-
-	/**
-	 * Any live writer worker this session started, in any of its jobs.
-	 *
-	 * Deliberately not scoped to the active job: switching the active job in the
-	 * same checkout does not stop the worker the previous job started, and that
-	 * worker is still writing to the same working tree. Asking only about the
-	 * active job would hand the writer slot back by changing the subject.
-	 */
-	const liveWriter = async (): Promise<{ agentId: string; jobId: string } | undefined> => {
-		for (const bus of buses.values()) {
-			await bus.reap();
-			const writer = bus.list().find((worker) => worker.isWriter);
-			if (writer !== undefined && bus.hasLiveWriter()) {
-				return { agentId: writer.agentId, jobId: bus.jobId };
-			}
-		}
-		return undefined;
-	};
-
-	if (typeof pi.registerTool === "function") {
+	if (!options.graphSession && typeof pi.registerTool === "function") {
 		pi.registerTool(
 			defineTool({
 				name: "spawn_background",
 				label: "Spawn Background",
-				description: "Start one local background K-π worker; at most two workers and one writer",
+				description:
+					"Start or restart a logical local peer under configured concurrency and exclusive writer admission",
 				parameters: Type.Object({
 					role: Type.Union(WORKER_ROLES.map((role) => Type.Literal(role))),
 					prompt: Type.String(),
 					model: Type.Optional(Type.String()),
 					tools: Type.Optional(Type.Array(Type.String())),
+					agentId: Type.Optional(Type.String()),
+					writePaths: Type.Optional(Type.Array(Type.String())),
 				}),
 				async execute(_id, params, _signal, _update, context) {
 					if (!isWorkerRole(params.role)) {
 						throw new Error(`Unknown worker role: ${String(params.role)}`);
 					}
-					// Global same-tree caps live here: per-bus defenses still run inside
-					// `bus.spawn`, but the parent registry is what spans job switches.
 					const worker = await serializeParent(async () => {
-						const tools = resolveRoleTools(params.role, params.tools);
-						const wantsWriter = isWriterToolSet(tools);
-						const live = await countLiveAcrossJobs();
 						const bus = await activeBus(context.cwd);
-						if (live.workers >= MAX_LIVE_WORKERS) {
-							await bus
-								.logDenied({ reason: "worker-limit", role: params.role, limit: MAX_LIVE_WORKERS })
-								.catch(() => undefined);
-							throw new Error(`Background worker limit is ${MAX_LIVE_WORKERS}`);
-						}
-						if (wantsWriter && live.writers >= MAX_LIVE_WRITERS) {
-							await bus
-								.logDenied({ reason: "writer-live", role: params.role, limit: MAX_LIVE_WRITERS })
-								.catch(() => undefined);
-							throw new Error("A writer worker is already live");
-						}
 						return bus.spawn({
 							role: params.role,
 							prompt: params.prompt,
 							model: params.model,
 							tools: params.tools,
+							agentId: params.agentId,
+							writePaths: params.writePaths,
 						});
 					});
 					const details = {
@@ -479,7 +411,7 @@ function registerParentTools(pi: ExtensionAPI, options: BusRegistrationOptions):
 					// every job this session owns: a worker does not stop existing
 					// because the active job moved on.
 					await activeBus(context.cwd).catch(() => undefined);
-					const status = (await Promise.all([...buses.values()].map((bus) => bus.status()))).flat();
+					const status = (await Promise.all(buses().map((bus) => bus.status()))).flat();
 					return {
 						content: [{ type: "text", text: JSON.stringify({ agents: status.length, workers: status }) }],
 						details: { workers: status },
@@ -511,7 +443,7 @@ function registerParentTools(pi: ExtensionAPI, options: BusRegistrationOptions):
 								graced: boolean;
 								reason?: string;
 							}> = [];
-							for (const bus of buses.values()) {
+							for (const bus of buses()) {
 								const stopped = await bus.publishAndStopAll(params.graceMs);
 								for (const outcome of stopped) {
 									collected.push({
@@ -555,52 +487,64 @@ function registerParentTools(pi: ExtensionAPI, options: BusRegistrationOptions):
 	}
 
 	if (typeof pi.on === "function") {
-		/**
-		 * The single-writer rule, made executable in the direction that was prose.
-		 *
-		 * A live writer worker holds the writer slot; the parent that started it
-		 * does not get to keep writing at the same time. Otherwise "at most one
-		 * writer" counts only workers and quietly excludes the session that spawned
-		 * them, which is the one most likely to be editing. The slot returns when
-		 * that worker is stopped or its process dies.
-		 *
-		 * A shell is denied outright for that interval, not inspected. `bash` can
-		 * write any file in the tree, so leaving it open while denying `write` would
-		 * leave the rule true only of the tools that announce themselves; and
-		 * deciding which commands mutate is the endless denylist this deliberately
-		 * refuses to attempt. The boring rule is: while a writer worker lives, this
-		 * session does not run a shell.
-		 */
-		pi.on("tool_call", async (event) => {
-			if (!PARENT_WRITER_TOOLS.has(event.toolName)) {
+		// The reservation spans actual tool execution, not just the preflight
+		// check. Distinct owners in this process use the same durable boundary as
+		// owners in other processes. A PID alone never grants a sibling's lease.
+		const calls = new Map<string, { cwd: string; owner: LeaseOwner }>();
+		pi.on("tool_call", async (event, context) => {
+			if (!PARENT_WRITER_TOOLS.has(event.toolName)) return;
+			if (
+				event.toolName === "bash" &&
+				classifyShellCommand(String((event.input as Record<string, unknown>).command ?? "")).readOnly
+			)
 				return;
-			}
-			const writer = await liveWriter();
-			if (writer === undefined) {
-				return;
-			}
-			const holder = `${writer.agentId} (job ${writer.jobId})`;
-			return {
-				block: true,
-				reason:
+			try {
+				const input = event.input as Record<string, unknown>;
+				const path =
 					event.toolName === "bash" || event.toolName === "powershell"
-						? `worker ${holder} holds the single-writer slot; a shell can write anything, so it is closed until that worker stops`
-						: `worker ${holder} holds the single-writer slot; stop it before writing from this session`,
-			};
+						? undefined
+						: typeof input.path === "string"
+							? input.path
+							: typeof input.file_path === "string"
+								? input.file_path
+								: undefined;
+				const sessionId = context.sessionManager.getSessionId();
+				const bound = sessionWriterAuthority(sessionId);
+				if (bound) {
+					await assertWriterAuthority(context.cwd, bound, path, options, false);
+					return;
+				}
+				const owner: LeaseOwner = {
+					jobId: (await readActiveJob(context.cwd))?.jobId ?? "chat",
+					agentId: `session:${sessionId}:${event.toolCallId}`,
+					pid: process.pid,
+					incarnation: randomUUID(),
+				};
+				await reserveWriterAuthority(context.cwd, owner, path === undefined ? ["."] : [path], options);
+				calls.set(event.toolCallId, { cwd: context.cwd, owner });
+			} catch (error) {
+				return {
+					block: true,
+					reason: error instanceof Error ? error.message : "workspace writer authority unavailable",
+				};
+			}
+		});
+		pi.on("tool_execution_end", async (event) => {
+			const call = calls.get(event.toolCallId);
+			if (!call) return;
+			await releaseWriterAuthority(call.cwd, call.owner, options);
+			calls.delete(event.toolCallId);
 		});
 
 		// Workers belong to the session that started them. Shutdown stops every one
 		// of them, and stopping twice is a no-op.
-		pi.on("session_shutdown", async () => {
-			for (const bus of buses.values()) {
-				await bus.stopAll().catch(() => undefined);
-			}
-			for (const release of busReleases.values()) {
-				release();
-			}
-			busReleases.clear();
-			buses.clear();
-		});
+		if (!options.graphSession) {
+			pi.on("session_shutdown", async () => {
+				for (const bus of buses()) {
+					await bus.stopAll();
+				}
+			});
+		}
 	}
 }
 

@@ -3,4 +3,4 @@ description: Specify a task without implementing it
 argument-hint: "<goal>"
 ---
 
-Apply the `spec-first` skill to `$ARGUMENTS`. Research existing behavior and conventions first. Produce requirements, design, ordered vertical tasks, executable acceptance criteria, constraints, non-goals, and `stack.json` boundaries. Do not implement production code or claim narrative criteria are executable.
+Specify `$ARGUMENTS` from protected intent and observed repository behavior. Propose requirements, design, ordered tasks, executable acceptance checks, constraints and non-goals. Preserve required criteria; narrative checks are not executable. Do not implement or amend protected intent. Publish through the node's supplied response/artifact channel; without one, return a proposal, never claim durable publication.

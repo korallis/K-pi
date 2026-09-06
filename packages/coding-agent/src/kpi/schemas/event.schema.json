@@ -1374,6 +1374,13 @@
           "type": "integer",
           "minimum": 1
         },
+        "model_reason": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "model_family": {
+          "$ref": "#/$defs/identifier"
+        },
         "model": {
           "$ref": "#/$defs/identifier"
         }
@@ -1490,7 +1497,8 @@
           "enum": [
             "http",
             "timeout",
-            "transport"
+            "transport",
+            "resource"
           ]
         },
         "delay_ms": {

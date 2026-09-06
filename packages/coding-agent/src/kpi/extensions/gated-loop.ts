@@ -1,14 +1,15 @@
 import { execFile as execFileCallback } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { readdir, readFile, realpath, rm, stat } from "node:fs/promises";
+import { lstat, readdir, readFile, readlink, realpath, rm, stat } from "node:fs/promises";
 import { basename, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 
 import { CONFIG_DIR_NAME } from "../../config.ts";
-
 import type { ExtensionCommandContext } from "../../core/extensions/types.ts";
 import { kModeState, renderTodos } from "../kstack/mode.ts";
+import { recordEngineeringOutcome } from "../kstack/routing.ts";
 import { appendEvent } from "./append-log.ts";
+import { releaseWriterAuthority, reserveWriterAuthority } from "./bus/leases.ts";
 import type { BusDependencies } from "./bus/spawn.ts";
 import { compileAcceptanceCriteria } from "./graph/ac-compiler.ts";
 import {
@@ -20,6 +21,7 @@ import {
 	type NodeRetry,
 	OperatorStopError,
 } from "./graph/engine.ts";
+import { createGoalGraph } from "./graph/goals.ts";
 import {
 	type GraphDefinition,
 	type GraphRunState,
@@ -31,9 +33,11 @@ import {
 } from "./graph/schema.ts";
 import {
 	canonicalFingerprint,
+	classifyTransientFailure,
 	createStopState,
-	MAX_AUTOMATIC_REPLANS,
+	decideRecovery,
 	type PlanRepair,
+	type RecoveryDecision,
 	recordVerifier,
 	repeatedWitness,
 	type Sleeper,
@@ -42,29 +46,43 @@ import {
 	type TransientReason,
 	type VerifierEvent,
 } from "./graph/stop.ts";
+import {
+	assertVerificationFresh,
+	executeVerification,
+	HOST_VERIFIER_ID,
+	readVerification,
+	type VerificationResult,
+} from "./graph/verification.ts";
+import { readIntentRefinement } from "./intent.ts";
 import { assertMinimalistBounds, observedChangesFromSnapshots } from "./minimalist.ts";
 import { isWriteAllowed } from "./policy.ts";
 import { resolveResearchEndpoints } from "./research/endpoints.ts";
 import { assertResearchFresh, conductResearch } from "./research/gate.ts";
 import { ResearchShortfallError, resolveResearchKeys } from "./research/session.ts";
 import {
+	acceptIntentRefinement,
+	adoptLegacyIntent,
+	assertProtectedIntent,
 	atomicWrite,
+	contractHash,
 	createJob,
 	type LoopRecovery,
 	type RunStatus,
 	readTaskForJob,
+	reconcileIntentPublication,
 	type Task,
 	writeAllowForTask,
 } from "./run-store.ts";
 import { readKpiSettings } from "./settings.ts";
 import {
-	assertScaffoldedBeforeBehavior,
+	DuneStackError,
 	freezeCurrentSlice,
 	readDuneStack,
 	renderPlanSummary,
 	scaffoldModule,
 	stackRequiredFor,
 } from "./stack.ts";
+export const INTENT_GATE_OPTIONS = ["Accept intent", "Request changes", "Stop"] as const;
 
 const execFile = promisify(execFileCallback);
 const PLAN_FILES = ["requirements.md", "design.md", "tasks.md"] as const;
@@ -106,6 +124,8 @@ export interface LoopDependencies {
 	 * flag and not a way to skip the check.
 	 */
 	readPullRequest?: (projectRoot: string, branch: string) => Promise<PullRequestRecord | undefined>;
+	/** Native GitHub creation; injected only for isolated delivery fault scenarios. */
+	createPullRequest?: (projectRoot: string, branch: string) => Promise<void>;
 	/**
 	 * The operator's stop: `/kpi stop` aborts it. Every in-flight session,
 	 * backoff wait and open gate unwinds at once as an operator stop.
@@ -448,12 +468,12 @@ function stateDocument(
 	recovery?: LoopRecovery,
 ): Record<string, unknown> {
 	const node = activeNode(state);
-	// A paused graph is waiting on the operator; a completed one is done; the
-	// rest (running, interrupted at a gate) is a live run.
-	const status =
-		terminalStatus ?? (state.status === "paused" ? "NEEDS_HUMAN" : state.status === "completed" ? "DONE" : "RUNNING");
+	// Exhausting the execution graph is not project completion. Only driveJob
+	// publishes DONE explicitly after release and ship finalization succeed.
+	const status = terminalStatus ?? (state.status === "paused" ? "NEEDS_HUMAN" : "RUNNING");
 	return {
 		job_id: task.job_id,
+		goal: task.goal,
 		mode: task.mode,
 		round: stop.round,
 		stage: stageFor(node),
@@ -546,6 +566,25 @@ function parsePlanRepair(value: unknown): PlanRepair | undefined {
 	) {
 		return undefined;
 	}
+	const decision = value.decision;
+	if (
+		decision !== undefined &&
+		(!isJsonObject(decision) ||
+			!Number.isSafeInteger(decision.attempt) ||
+			typeof decision.attempt !== "number" ||
+			decision.attempt < 1 ||
+			typeof decision.witness !== "string" ||
+			typeof decision.kind !== "string" ||
+			typeof decision.action !== "string" ||
+			typeof decision.reason !== "string" ||
+			!isJsonObject(decision.failure) ||
+			typeof decision.failure.classification !== "string" ||
+			!Array.isArray(decision.failure.evidenceRefs) ||
+			!Array.isArray(decision.evidenceRefs) ||
+			!Array.isArray(decision.taskIds) ||
+			!Array.isArray(decision.goalIds))
+	)
+		throw new Error("Malformed persisted recovery decision");
 	return {
 		round: value.round,
 		reason: value.reason,
@@ -553,6 +592,7 @@ function parsePlanRepair(value: unknown): PlanRepair | undefined {
 		evidence_ref: value.evidence_ref as PlanRepair["evidence_ref"],
 		witness: value.witness,
 		...(typeof value.guidance === "string" ? { guidance: value.guidance } : {}),
+		...(decision === undefined ? {} : { decision: decision as unknown as RecoveryDecision }),
 	};
 }
 
@@ -638,15 +678,40 @@ async function hasRemote(projectRoot: string, remote: string): Promise<boolean> 
 	}
 }
 
-/** The ref a push of `branch` to `origin` leaves behind locally. */
-async function pushedHead(projectRoot: string, branch: string): Promise<string | undefined> {
+/** Read the actual remote ref, never a potentially stale local tracking ref. */
+async function pushedHead(projectRoot: string, branch: string, signal?: AbortSignal): Promise<string | undefined> {
+	const { stdout } = await deliveryCommand(
+		projectRoot,
+		"git",
+		["ls-remote", "--heads", "origin", `refs/heads/${branch}`],
+		signal,
+	);
+	return stdout.trim().split(/\s/u)[0] || undefined;
+}
+
+async function deliveryCommand(
+	projectRoot: string,
+	command: string,
+	args: string[],
+	signal?: AbortSignal,
+): Promise<{ stdout: string }> {
 	try {
-		const { stdout } = await execFile("git", ["rev-parse", "--verify", "--quiet", `refs/remotes/origin/${branch}`], {
-			cwd: projectRoot,
-		});
-		return stdout.trim() || undefined;
-	} catch {
-		return undefined;
+		return await execFile(command, args, { cwd: projectRoot, timeout: 60_000, signal });
+	} catch (error) {
+		if (signal?.aborted) throw new OperatorStopError();
+		const detail = error as NodeJS.ErrnoException & { stderr?: string; status?: number; killed?: boolean };
+		const text = detail.stderr ?? detail.message;
+		const http = /(?:HTTP(?:\/\S+)?\s+|returned error:\s*)([45]\d{2})\b/iu.exec(text);
+		if (http) detail.status = Number(http[1]);
+		if (/could not resolve host|failed to connect|connection refused|connection reset|error connecting/iu.test(text))
+			detail.code = "ECONNRESET";
+		if (detail.killed) detail.code = "ETIMEDOUT";
+		if (classifyTransientFailure(detail)) throw detail;
+		const shown = text.split(/\r?\n/u).find((line) => line.trim()) ?? `${command} failed`;
+		throw new ShipDeliveryError(
+			`${command} ${args.join(" ")}: ${shown.replace(/(https?:\/\/)[^/\s@]+@/gu, "$1[redacted]@")}`,
+			{ cause: error },
+		);
 	}
 }
 
@@ -718,11 +783,11 @@ function planStackRefusal(message: string): string | undefined {
 const RECOVERY_ADVICE: Record<LoopRecovery, string> = {
 	approval: "Answer it in an interactive K-π session",
 	provider: "Select a healthy model or resolve that provider account",
-	delivery: "Push the branch or open the pull request as named",
+	delivery: "Restore the named delivery access or configuration; the runtime reconciles remaining actions",
 	ship: "Put the job branch and its commit right in the repository",
-	bounds: "Revert the writes that left the declared bounds, or widen the task's bounds",
+	bounds: "Revert writes outside accepted bounds; a changed scope requires newly approved intent",
 	review: "Address the reviewer's blocking issue, or make the receipts fresh again",
-	no_progress: "Choose Give guidance, Keep going or Stop when the resume asks",
+	no_progress: "Resolve the recorded external prerequisite or provide new evidence for the next repair",
 	research: "Repair the research service, or run the job offline with --no-network",
 	stack: "Repair stack.json so implement has a valid frozen map",
 	contract: "Fix the contract defect the reason names",
@@ -784,10 +849,11 @@ function shipFailure(
 
 /**
  * Verifies that the job's commit reached where the ship node was told to take
- * it: on the job branch, pushed to `origin`, and in front of the merge queue as
- * a pull request. Each failure names what is missing, because the fix is the
- * operator's: push the branch, sign `gh` in, or open the pull request, then
- * resume the job and the recovered commit is finalized without a second commit.
+ * it. The host delivery node reconciles the existing commit, remote branch and
+ * pull request, executing only missing actions. Transient faults use the engine's
+ * persisted retry state; authentication/configuration failures name a prerequisite.
+ * Delivery publishes its commit record inside the checkpointed host action;
+ * final completion independently checks local commit and acceptance evidence.
  *
  * A repository with no `origin` has nowhere to push and nothing to verify: the
  * commit alone is the ship, exactly as before.
@@ -797,6 +863,9 @@ async function verifyShipDelivery(
 	jobId: string,
 	head: string,
 	readPullRequest: LoopDependencies["readPullRequest"],
+	createPullRequest?: LoopDependencies["createPullRequest"],
+	reconcile = false,
+	signal?: AbortSignal,
 ): Promise<ShipDelivery | undefined> {
 	if (!(await hasRemote(projectRoot, "origin"))) {
 		return undefined;
@@ -806,7 +875,12 @@ async function verifyShipDelivery(
 	if (checkedOut !== branch) {
 		throw new ShipDeliveryError(`Ship commit is on ${checkedOut ?? "a detached HEAD"}, not the job branch ${branch}`);
 	}
-	const remoteHead = await pushedHead(projectRoot, branch);
+	let remoteHead = await pushedHead(projectRoot, branch, signal);
+	if (reconcile && remoteHead !== head && !(remoteHead && (await isAncestor(projectRoot, head, remoteHead)))) {
+		// No force, other ref, tag or branch deletion can be expressed here.
+		await deliveryCommand(projectRoot, "git", ["push", "-u", "origin", `${head}:refs/heads/${branch}`], signal);
+		remoteHead = await pushedHead(projectRoot, branch, signal);
+	}
 	if (remoteHead === undefined) {
 		throw new ShipDeliveryError(`Job branch ${branch} was not pushed to origin`);
 	}
@@ -816,9 +890,16 @@ async function verifyShipDelivery(
 		);
 	}
 	let pullRequest: PullRequestRecord | undefined;
+	const readPr = readPullRequest ?? ((cwd: string, name: string) => readPullRequestWithGh(cwd, name, signal));
 	try {
-		pullRequest = await (readPullRequest ?? readPullRequestWithGh)(projectRoot, branch);
+		pullRequest = await readPr(projectRoot, branch);
+		if (pullRequest === undefined && reconcile) {
+			if (createPullRequest) await createPullRequest(projectRoot, branch);
+			else await deliveryCommand(projectRoot, "gh", ["pr", "create", "--head", branch, "--fill"], signal);
+			pullRequest = await readPr(projectRoot, branch);
+		}
 	} catch (error) {
+		if (classifyTransientFailure(error)) throw error;
 		// Only the reader's own named failure - gh missing, signed out, answering
 		// badly - is the operator's to fix. A reader that throws anything else
 		// has a fault of its own, and that is reported as the fault it is.
@@ -848,69 +929,49 @@ const SNAPSHOT_EXCLUDED_TREES = ["node_modules", ".git", CONFIG_DIR_NAME] as con
 /**
  * Every path in the worktree a node could have touched, with a content hash.
  *
- * Ignored files are included on purpose: `git status` hides them by default, so
- * a write to `dist/` or `.env.local` used to be invisible to the bounds check -
- * exactly the paths a policy would refuse. The harness's own trees are excluded
- * by pathspec instead, which also keeps `node_modules` out of the hashing.
+ * Include tracked, untracked and ignored files, not only `git status` changes:
+ * staging or committing the same candidate must not invalidate verification.
+ * Git enumerates ignored files individually so edits inside an ignored tree
+ * remain visible. Only the harness's exact root-owned trees are excluded.
  */
 async function worktreeSnapshot(projectRoot: string): Promise<Map<string, string>> {
-	const { stdout } = await execFile(
-		"git",
-		[
-			"status",
-			"--porcelain=v1",
-			"-z",
-			"--untracked-files=all",
-			"--ignored=matching",
-			"--",
-			".",
-			...SNAPSHOT_EXCLUDED_TREES.map((tree) => `:(exclude)${tree}`),
-		],
-		{ cwd: projectRoot },
-	);
-	const records = stdout.split("\0");
-	const paths = new Set<string>();
-	for (let index = 0; index < records.length; index += 1) {
-		const record = records[index];
-		if (record.length < 4) {
-			continue;
-		}
-		const status = record.slice(0, 2);
-		paths.add(record.slice(3));
-		if (/[RC]/u.test(status)) {
-			const source = records[index + 1];
-			if (source !== undefined && source.length > 0) {
-				paths.add(source);
-				index += 1;
-			}
-		}
-	}
-
-	const runsPrefix = `${CONFIG_DIR_NAME}/runs`;
+	const pathspec = [".", ...SNAPSHOT_EXCLUDED_TREES.map((tree) => `:(top,exclude,literal)${tree}`)];
+	const listings = await Promise.all([
+		execFile("git", ["ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", ...pathspec], {
+			cwd: projectRoot,
+		}),
+		execFile("git", ["ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--", ...pathspec], {
+			cwd: projectRoot,
+		}),
+	]);
+	const paths = new Set(listings.flatMap(({ stdout }) => stdout.split("\0").filter(Boolean)));
 	const snapshot = new Map<string, string>();
 	for (const path of paths) {
-		if (path === runsPrefix || path.startsWith(`${runsPrefix}/`)) {
-			continue;
-		}
+		if (SNAPSHOT_EXCLUDED_TREES.some((tree) => path === tree || path.startsWith(`${tree}/`))) continue;
+		const absolute = join(projectRoot, path);
 		try {
-			const content = await readFile(join(projectRoot, path));
-			snapshot.set(path, createHash("sha256").update(content).digest("hex"));
+			const metadata = await lstat(absolute);
+			if (metadata.isSymbolicLink()) {
+				snapshot.set(path, `symlink:${await readlink(absolute)}`);
+			} else if (metadata.isFile()) {
+				snapshot.set(
+					path,
+					createHash("sha256")
+						.update(await readFile(absolute))
+						.digest("hex"),
+				);
+			}
 		} catch (error) {
-			const code = (error as NodeJS.ErrnoException).code;
-			if (code === "ENOENT") {
-				snapshot.set(path, "<absent>");
-				continue;
-			}
-			if (code !== "EISDIR") {
-				throw error;
-			}
-			// git reports a wholly ignored directory as one entry. Its listing is the
-			// witness: a file appearing inside it is still a change to the worktree.
-			const entries = (await readdir(join(projectRoot, path))).sort();
-			snapshot.set(path, `<dir>${createHash("sha256").update(entries.join("\u0000")).digest("hex")}`);
+			// A tracked deletion is absence in the actual candidate, before and after
+			// its commit. The baseline comparison still observes the removed path.
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
 		}
 	}
 	return snapshot;
+}
+
+async function verificationTreeHash(projectRoot: string): Promise<string> {
+	return canonicalFingerprint(Object.fromEntries(await worktreeSnapshot(projectRoot)));
 }
 
 function changedPaths(before: ReadonlyMap<string, string>, after: ReadonlyMap<string, string>): string[] {
@@ -948,7 +1009,25 @@ async function readEvidenceWitness(runDirectory: string): Promise<EvidenceWitnes
 		return { fingerprint: `sha256:${createHash("sha256").update(content).digest("hex")}`, failingAcIds: [] };
 	}
 	return {
-		fingerprint: canonicalFingerprint(evidence),
+		fingerprint: canonicalFingerprint(
+			isJsonObject(evidence)
+				? {
+						tree_hash: evidence.tree_hash,
+						ac_results: Array.isArray(evidence.ac_results)
+							? evidence.ac_results.map((result) =>
+									isJsonObject(result)
+										? { id: result.id, passed: result.passed, status: result.status }
+										: result,
+								)
+							: evidence.ac_results,
+						commands: Array.isArray(evidence.commands)
+							? evidence.commands.map((command) =>
+									isJsonObject(command) ? { cmd: command.cmd, exit: command.exit } : command,
+								)
+							: evidence.commands,
+					}
+				: evidence,
+		),
 		failingAcIds:
 			isJsonObject(evidence) && Array.isArray(evidence.ac_results)
 				? evidence.ac_results.flatMap((result) =>
@@ -1001,32 +1080,6 @@ async function verifierEventOnDisk(
 		outputFingerprint: verdict.output_fingerprint,
 		failingAcIds: evidence.failingAcIds,
 	};
-}
-
-function evidencePasses(task: Task, evidence: unknown): boolean {
-	if (!isJsonObject(evidence)) {
-		return false;
-	}
-	const commands = evidence.commands;
-	const acResults = evidence.ac_results;
-	if (!Array.isArray(commands) || !Array.isArray(acResults)) {
-		return false;
-	}
-	const latestCommandExit = new Map<string, number>();
-	for (const command of commands) {
-		if (isJsonObject(command) && typeof command.cmd === "string" && typeof command.exit === "number") {
-			latestCommandExit.set(command.cmd, command.exit);
-		}
-	}
-	if (latestCommandExit.size === 0 || [...latestCommandExit.values()].some((exit) => exit !== 0)) {
-		return false;
-	}
-	const passedIds = new Set(
-		acResults.flatMap((result) =>
-			isJsonObject(result) && typeof result.id === "string" && result.passed === true ? [result.id] : [],
-		),
-	);
-	return task.acceptance.filter((criterion) => criterion.required).every((criterion) => passedIds.has(criterion.id));
 }
 
 /**
@@ -1084,12 +1137,16 @@ export class PullRequestLookupError extends Error {
 export async function readPullRequestWithGh(
 	projectRoot: string,
 	branch: string,
+	signal?: AbortSignal,
 ): Promise<PullRequestRecord | undefined> {
 	let stdout: string;
 	try {
-		({ stdout } = await execFile("gh", ["pr", "view", branch, "--json", "url,state"], { cwd: projectRoot }));
+		({ stdout } = await deliveryCommand(projectRoot, "gh", ["pr", "view", branch, "--json", "url,state"], signal));
 	} catch (error) {
-		const detail = error as NodeJS.ErrnoException & { stderr?: string };
+		if (error instanceof OperatorStopError || classifyTransientFailure(error)) throw error;
+		const detail = (error instanceof ShipDeliveryError ? error.cause : error) as NodeJS.ErrnoException & {
+			stderr?: string;
+		};
 		if (/no pull requests found/iu.test(detail.stderr ?? "")) {
 			return undefined;
 		}
@@ -1335,6 +1392,8 @@ async function writeShipMarker(
  * the run goes next.
  */
 interface LoopFacts {
+	/** The driver invocation's commit boundary, before any new ship action. */
+	shipInvocation?: { previousHead: string | undefined; runs: number };
 	resolve: () => Promise<JsonObject>;
 	/** Why bounds were last judged broken, for the terminal record. */
 	boundsReason: () => string | undefined;
@@ -1361,18 +1420,23 @@ function loopFacts(
 			observed = { stop, active };
 		},
 		resolve: async (): Promise<JsonObject> => {
-			let evidence: unknown;
-			try {
-				evidence = JSON.parse(await readFile(join(jobDirectory, "evidence.json"), "utf8"));
-			} catch {
-				evidence = undefined;
-			}
-			const testPassed = evidence !== undefined && evidencePasses(task, evidence);
-			const evidenceHead = isJsonObject(evidence) && typeof evidence.head === "string" ? evidence.head : undefined;
-			const fresh = evidenceHead !== undefined && evidenceHead === (await gitHead(projectRoot));
-
-			boundsReason = undefined;
+			await assertProtectedIntent(jobDirectory, task);
 			const current = await worktreeSnapshot(projectRoot);
+			let verified: VerificationResult | undefined;
+			try {
+				verified = await readVerification({
+					runDirectory: jobDirectory,
+					projectRoot,
+					task,
+					treeHash: canonicalFingerprint(Object.fromEntries(current)),
+				});
+			} catch {
+				// Missing, corrupted, stale or model-authored receipts are not proof.
+				verified = undefined;
+			}
+			const testPassed = verified?.passed === true;
+			const fresh = verified !== undefined;
+			boundsReason = undefined;
 			const violations = changedPaths(baseline, current).filter(
 				(path) => !isWriteAllowed(projectRoot, path, writeAllowForTask(task)),
 			);
@@ -1418,7 +1482,6 @@ function loopFacts(
 				"fingerprints.fresh": fresh,
 				"ship.shipped": await alreadyShipped(projectRoot, jobDirectory, task.job_id),
 				"progress.repeated": witness !== undefined,
-				"plan.repair_tried": observed.stop.repaired.length >= MAX_AUTOMATIC_REPLANS,
 			};
 		},
 	};
@@ -1517,6 +1580,14 @@ async function recordNoProgress(
 		failing_ac: [...(event.failingAcIds ?? [])],
 		evidence_ref: event.source === "test" ? "evidence.json" : "verdict.json",
 		witness,
+		decision: decideRecovery({
+			kind: "engineering",
+			witness,
+			prior: stop.repair?.decision === undefined ? [] : [stop.repair.decision],
+			evidenceRefs: [event.source === "test" ? "evidence.json" : "verdict.json"],
+			taskIds: ["plan", "implement"],
+			goalIds: [...(event.failingAcIds ?? [])],
+		}),
 		// The operator's words outlive one plan: they stand until the next touch.
 		...(stop.repair?.guidance === undefined ? {} : { guidance: stop.repair.guidance }),
 	};
@@ -1535,6 +1606,89 @@ async function recordNoProgress(
 	});
 	ctx.ui.notify(`K-π ${task.job_id} re-planning: ${repair.reason}`, "warning");
 	return { ...stop, repair, repaired: [...stop.repaired, witness] };
+}
+
+async function confirmDesiredState(
+	ctx: ExtensionCommandContext,
+	engine: GraphEngine,
+	jobDirectory: string,
+	task: Task,
+	stopState: StopState,
+	signal: AbortSignal | undefined,
+): Promise<"accepted" | "revised" | DriveResult> {
+	const base = { state: engine.state, stopState };
+	let refinement: Awaited<ReturnType<typeof readIntentRefinement>>;
+	try {
+		refinement = await readIntentRefinement(jobDirectory, task);
+	} catch (error) {
+		return needsHuman(base, "contract", describeError(error), task.job_id);
+	}
+	if (task.mode === "autopilot") {
+		if (refinement.questions.length > 0) {
+			return needsHuman(base, "contract", refinement.questions.join("; "), task.job_id);
+		}
+		if (refinement.task.ac.quality !== "executable") {
+			return needsHuman(
+				base,
+				"ac_quality",
+				"derived required acceptance needs executable checks and explicit bounds",
+				task.job_id,
+			);
+		}
+	} else {
+		if (!ctx.hasUI) {
+			return needsHuman(
+				base,
+				"approval",
+				`Confirm desired state in ${jobDirectory}/intent.proposal.json`,
+				task.job_id,
+			);
+		}
+		const options = refinement.questions.length > 0 ? ["Provide decisions", "Stop"] : [...INTENT_GATE_OPTIONS];
+		const answer = await untilStop(
+			ctx.ui.select(`Confirm desired outcome\n\n${refinement.summary}`, options),
+			signal,
+		);
+		if (answer === undefined)
+			return needsHuman(base, "approval", "desired-state confirmation was dismissed", task.job_id);
+		if (answer === "Stop")
+			return { ...base, terminalStatus: "STOPPED", reason: "operator stopped at intent confirmation" };
+		if (answer === "Request changes" || answer === "Provide decisions") {
+			const feedback = await untilStop(ctx.ui.editor("Desired-state clarification", ""), signal);
+			if (feedback?.trim()) {
+				await engine.requestIntentRevision(
+					(await planWasProvided(jobDirectory)) ? "plan-check" : "specify",
+					feedback.trim(),
+				);
+				return "revised";
+			}
+			return needsHuman(base, "approval", "desired-state clarification needs the operator's decision", task.job_id);
+		}
+		if (answer !== "Accept intent") throw new Error("Unexpected desired-state confirmation response");
+	}
+	const intent = await acceptIntentRefinement(
+		jobDirectory,
+		task,
+		refinement.task,
+		task.mode === "autopilot" ? "delegated-autopilot" : "operator",
+	);
+	Object.assign(task, refinement.task);
+	await engine.adoptIntent(
+		intent.hash,
+		createGoalGraph(task)
+			.goals.filter((goal) => goal.required)
+			.map((goal) => goal.id),
+	);
+	await appendEvent(join(jobDirectory, "events.jsonl"), {
+		ts: new Date().toISOString(),
+		type: "approval.result",
+		job_id: task.job_id,
+		round: stopState.round,
+		node: "intent",
+		approved: true,
+		question: `Accepted desired state revision ${intent.revision} (${intent.hash})`,
+	});
+	return "accepted";
 }
 
 async function driveUntilPause(
@@ -1567,6 +1721,33 @@ async function driveUntilPause(
 		// A marker written by another session lands here, before any work starts.
 		if ((await readStopMarker(jobDirectory)) !== undefined) {
 			return operatorStop();
+		}
+		try {
+			await assertProtectedIntent(jobDirectory, task);
+			await readTaskForJob(projectRoot, jobId);
+		} catch (error) {
+			return needsHuman(
+				{ state, stopState: currentStopState, shippedThisRun },
+				"contract",
+				describeError(error),
+				jobId,
+			);
+		}
+		if (task.intent_details === undefined && state.active.some((node) => node === "plan" || node === "implement")) {
+			try {
+				const desired = await confirmDesiredState(ctx, engine, jobDirectory, task, currentStopState, signal);
+				if (typeof desired !== "string") return desired;
+				state = engine.state;
+				if (desired === "revised") continue;
+			} catch (error) {
+				if (error instanceof OperatorStopError) return operatorStop();
+				return needsHuman(
+					{ state, stopState: currentStopState, shippedThisRun },
+					"contract",
+					describeError(error),
+					jobId,
+				);
+			}
 		}
 		if (state.active.some((node) => node === "specify" || node === "plan" || node === "plan-check")) {
 			try {
@@ -1607,18 +1788,24 @@ async function driveUntilPause(
 		if (state.active.includes("implement")) {
 			try {
 				await assertResearchFresh(jobDirectory, task);
-				// The contract is re-read here because advancing the slice, or naming a
-				// playbook, is an edit that happens while the job is open. The map is a
-				// precondition, not a convenience: it is read, validated and bound to
-				// this contract before the node's first write, and a missing or stale
-				// stack pauses the round rather than being regenerated.
-				const contract = await readTaskForJob(projectRoot, jobId).catch(() => task);
+				// Missing slices, stale maps and invalid ownership are execution-plan
+				// defects. The planner repairs them without changing accepted intent;
+				// implement remains blocked until the repaired map is admissible.
+				const contract = await readTaskForJob(projectRoot, jobId);
 				if (stackRequiredFor(contract)) {
 					const { module } = await freezeCurrentSlice(projectRoot, jobDirectory, contract);
 					await scaffoldModule(projectRoot, module);
-					await assertScaffoldedBeforeBehavior(projectRoot, module);
 				}
 			} catch (error) {
+				if (error instanceof DuneStackError) {
+					await unfreezeSlice(jobDirectory);
+					state = await engine.reportContractDefect("implement", describeError(error));
+					if (state.status === "running") {
+						await writeState(jobDirectory, task, state, currentStopState);
+						await onStateChange?.();
+						continue;
+					}
+				}
 				return needsHuman(
 					{ state, stopState: currentStopState, shippedThisRun },
 					"stack",
@@ -1630,6 +1817,21 @@ async function driveUntilPause(
 
 		const completedNodes = [...state.active];
 		if (completedNodes.includes("ship")) {
+			try {
+				await assertVerificationFresh({
+					projectRoot,
+					runDirectory: jobDirectory,
+					task,
+					treeHash: await verificationTreeHash(projectRoot),
+				});
+			} catch (error) {
+				return needsHuman(
+					{ state, stopState: currentStopState, shippedThisRun },
+					"review",
+					`release evidence is no longer valid: ${describeError(error)}`,
+					jobId,
+				);
+			}
 			// The commit decision is being made in this pass, whatever the superstep
 			// goes on to do with it.
 			shippedThisRun = true;
@@ -1666,7 +1868,7 @@ async function driveUntilPause(
 		// witness is judged before the round is recorded, on the same terms the
 		// facts merged before routing were.
 		let event: VerifierEvent | undefined;
-		if (completedNodes.includes("review")) {
+		if (completedNodes.includes("review") && state.nodes.review?.status === "completed") {
 			event = await verifierEventOnDisk(jobDirectory, "review");
 			if (event === undefined) {
 				return needsHuman(
@@ -1678,6 +1880,7 @@ async function driveUntilPause(
 			}
 		} else if (
 			completedNodes.includes("test") &&
+			state.nodes.test?.status === "completed" &&
 			isJsonObject(state.values.test) &&
 			state.values.test.passed === false &&
 			isJsonObject(state.values.bounds) &&
@@ -1712,6 +1915,15 @@ async function driveUntilPause(
 			const base = { state, stopState: currentStopState, shippedThisRun };
 			if (pause.recovery === "bounds") {
 				return needsHuman(base, "bounds", facts.boundsReason() ?? pause.reason, jobId);
+			}
+			if (pause.recovery === "delivery") {
+				const delivery = state.values.delivery;
+				return needsHuman(
+					base,
+					isJsonObject(delivery) && delivery.recovery === "ship" ? "ship" : "delivery",
+					isJsonObject(delivery) && typeof delivery.reason === "string" ? delivery.reason : pause.reason,
+					jobId,
+				);
 			}
 			// Plan owns stack.json via its response contract. A map the plan cannot
 			// freeze is the same Dune refusal implement would raise: a stack pause
@@ -1901,6 +2113,7 @@ async function answerPendingHuman(
 		return needsHuman(base, "approval", `${pending.title} needs an interactive session`, jobId) as GateStop;
 	}
 	let answer: HumanAnswer;
+	const approvedTree = node.statePath === "release.approved" ? await verificationTreeHash(ctx.cwd) : undefined;
 	try {
 		if (node.feedbackPath === undefined) {
 			answer = { approved: await untilStop(ctx.ui.confirm(pending.title, pending.question), signal) };
@@ -1935,6 +2148,45 @@ async function answerPendingHuman(
 		}
 		throw error;
 	}
+	if (approvedTree !== undefined && answer.approved) {
+		const currentTree = await verificationTreeHash(ctx.cwd);
+		if (currentTree !== approvedTree) {
+			return needsHuman(
+				base,
+				"approval",
+				"candidate changed while release approval was open; inspect the current candidate",
+				jobId,
+			) as GateStop;
+		}
+		try {
+			await assertVerificationFresh({
+				projectRoot: ctx.cwd,
+				runDirectory: jobDirectory,
+				task,
+				treeHash: currentTree,
+			});
+		} catch (error) {
+			return needsHuman(
+				base,
+				"review",
+				`release evidence is no longer valid: ${describeError(error)}`,
+				jobId,
+			) as GateStop;
+		}
+		await atomicWrite(
+			join(jobDirectory, "release-approval.json"),
+			`${JSON.stringify(
+				{
+					approved: true,
+					intent_hash: contractHash(task),
+					tree_hash: currentTree,
+					accepted_at: new Date().toISOString(),
+				},
+				null,
+				2,
+			)}\n`,
+		);
+	}
 	await appendEvent(eventsPath, {
 		ts: new Date().toISOString(),
 		type: "approval.result",
@@ -1946,9 +2198,7 @@ async function answerPendingHuman(
 		...(answer.feedback === undefined ? {} : { feedback: answer.feedback }),
 	});
 	await engine.submitHuman(answer);
-	// The answer is durable before the next node runs: policy reads
-	// `release.approved` from state.json, and a push or a pull request is
-	// allowed on that flag alone.
+	// Publish the answer only after the verified candidate's authorization is durable.
 	await writeState(jobDirectory, task, engine.state, stopState);
 	await onStateChange?.();
 	return undefined;
@@ -1998,50 +2248,10 @@ export async function verifyShippedCommit(
 	return subject;
 }
 
-/**
- * Records the one commit decision, whether this run made it or recovered it.
- *
- * A run that shipped in this pass is held to the one-commit rule. A replay whose
- * marker was lost finalizes the job's own marked commit instead - later
- * unrelated commits do not hide it, and nothing new is committed.
- */
-async function finalizeShip(
-	projectRoot: string,
-	jobDirectory: string,
-	jobId: string,
-	previousHead: string | undefined,
-	shippedThisRun: boolean,
-	readPullRequest: LoopDependencies["readPullRequest"],
-): Promise<void> {
-	if ((await readShipMarker(projectRoot, jobDirectory, jobId)) !== undefined) {
-		return;
-	}
-	if (shippedThisRun) {
-		const subject = await verifyShippedCommit(projectRoot, previousHead, jobId);
-		const head = await gitHead(projectRoot);
-		const delivery =
-			head === undefined ? undefined : await verifyShipDelivery(projectRoot, jobId, head, readPullRequest);
-		await writeShipMarker(projectRoot, jobDirectory, jobId, subject, head, delivery);
-		return;
-	}
-	const recovered = await findJobCommit(projectRoot, jobId, previousHead);
-	if (recovered === undefined) {
-		throw new Error(`No commit carries ${SHIP_TRAILER_NAME}: ${jobId}`);
-	}
-	// A recovered decision is held to the same delivery: a job whose push or
-	// pull request failed resumes here once the operator has put it right.
-	const delivery = await verifyShipDelivery(projectRoot, jobId, recovered.head, readPullRequest);
-	await writeShipMarker(projectRoot, jobDirectory, jobId, recovered.subject, recovered.head, delivery);
-}
-
-/** What the no-progress prompt offers once the automatic re-plans are spent. */
-export const NO_PROGRESS_OPTIONS = ["Give guidance", "Keep going", "Stop"] as const;
-
 /** Everything a job's drive needs once its engine exists. */
 interface JobRun {
 	ctx: ExtensionCommandContext;
 	dependencies: LoopDependencies;
-	graph: GraphDefinition;
 	engine: GraphEngine;
 	jobId: string;
 	jobDirectory: string;
@@ -2051,8 +2261,6 @@ interface JobRun {
 	/** The latest stop state; every drive and every touch replaces it. */
 	stopState: StopState;
 	previousHead: string | undefined;
-	/** A resume into a no-progress pause asks the operator before it drives. */
-	askNoProgressFirst: boolean;
 }
 
 /**
@@ -2073,6 +2281,126 @@ function engineOptions(
 	return {
 		projectRoot: ctx.cwd,
 		jobId,
+		intentHash: contractHash(task),
+		requiredGoalIds: createGoalGraph(task)
+			.goals.filter((goal) => goal.required)
+			.map((goal) => goal.id),
+		resolveVerifiedGoalIds: async () => {
+			try {
+				const verified = await readVerification({
+					projectRoot: ctx.cwd,
+					runDirectory: jobDirectory,
+					task,
+					treeHash: await verificationTreeHash(ctx.cwd),
+				});
+				return verified.goals.goals.filter((goal) => goal.status === "passed").map((goal) => goal.id);
+			} catch {
+				return [];
+			}
+		},
+		executeVerification: async (nodeId): Promise<JsonObject> => {
+			await assertProtectedIntent(jobDirectory, task);
+			if (nodeId === "ship" || nodeId === "deliver") {
+				const treeHash = await verificationTreeHash(ctx.cwd);
+				await assertVerificationFresh({ projectRoot: ctx.cwd, runDirectory: jobDirectory, task, treeHash });
+				const release = current().state.values.release;
+				if (!isJsonObject(release) || release.approved !== true)
+					throw new Error("Delivery requires current release authority");
+				if (task.mode === "gated") {
+					const approval = JSON.parse(
+						await readFile(join(jobDirectory, "release-approval.json"), "utf8"),
+					) as Record<string, unknown>;
+					if (
+						approval.intent_hash !== contractHash(task) ||
+						approval.tree_hash !== treeHash ||
+						approval.approved !== true
+					) {
+						throw new Error("Release approval does not authorize the current verified candidate");
+					}
+				}
+				if (nodeId === "deliver") {
+					const owner = {
+						jobId,
+						agentId: `${HOST_VERIFIER_ID}:delivery`,
+						pid: process.pid,
+						incarnation: randomUUID(),
+					};
+					await reserveWriterAuthority(ctx.cwd, owner);
+					try {
+						if (treeHash !== (await verificationTreeHash(ctx.cwd)))
+							throw new ShipIntegrityError("The candidate changed before delivery acquired ownership");
+						const invocation = facts.shipInvocation;
+						if (!invocation) throw new ShipIntegrityError("Host delivery has no invocation boundary");
+						if ((current().state.nodes.ship?.runs ?? 0) > invocation.runs)
+							await verifyShippedCommit(ctx.cwd, invocation.previousHead, jobId);
+						const commit = await findJobCommit(ctx.cwd, jobId, await startingHeadFor(jobDirectory));
+						if (!commit) throw new ShipIntegrityError(`No commit carries ${SHIP_TRAILER_NAME}: ${jobId}`);
+						const delivery = await verifyShipDelivery(
+							ctx.cwd,
+							jobId,
+							commit.head,
+							dependencies.readPullRequest,
+							dependencies.createPullRequest,
+							true,
+							dependencies.signal,
+						);
+						await writeShipMarker(ctx.cwd, jobDirectory, jobId, commit.subject, commit.head, delivery);
+						return { "delivery.passed": true, "delivery.reason": "" };
+					} catch (error) {
+						if (classifyTransientFailure(error)) throw error;
+						if (
+							error instanceof ShipDeliveryError ||
+							error instanceof PullRequestLookupError ||
+							error instanceof ShipIntegrityError
+						)
+							return {
+								"delivery.passed": false,
+								"delivery.reason": describeError(error),
+								"delivery.recovery": error instanceof ShipIntegrityError ? "ship" : "delivery",
+							};
+						throw error;
+					} finally {
+						await releaseWriterAuthority(ctx.cwd, owner);
+					}
+				}
+				return { "test.passed": true, "verification.passed": true };
+			}
+			const owner = { jobId, agentId: HOST_VERIFIER_ID, pid: process.pid, incarnation: randomUUID() };
+			await reserveWriterAuthority(ctx.cwd, owner);
+			try {
+				const treeHash = await verificationTreeHash(ctx.cwd);
+				const result = await executeVerification({
+					projectRoot: ctx.cwd,
+					runDirectory: jobDirectory,
+					task,
+					treeHash,
+					verifierId: HOST_VERIFIER_ID,
+					signal: dependencies.signal,
+				});
+				const unchanged = treeHash === (await verificationTreeHash(ctx.cwd));
+				const builder = Object.entries(current().state.nodes).find(([id]) => id === "implement");
+				if (builder?.[1].model)
+					await recordEngineeringOutcome({
+						projectRoot: ctx.cwd,
+						role: "builder",
+						model: builder[1].model,
+						taskId: builder[0],
+						evidenceRef: join(jobDirectory, result.evidence.record_path),
+						source: "host-verification",
+						verification: result.passed && unchanged ? "passed" : "failed",
+					});
+				return {
+					"test.passed": result.passed && unchanged,
+					"verification.passed": result.passed && unchanged,
+					"verification.reason": unchanged
+						? result.unverifiedReasons.join("; ")
+						: "candidate changed during verification",
+					"evidence.head": (await gitHead(ctx.cwd)) ?? null,
+				};
+			} finally {
+				await releaseWriterAuthority(ctx.cwd, owner);
+			}
+		},
 		createAgentSession: dependencies.createAgentSession,
 		busDependencies: dependencies.busDependencies,
 		now: dependencies.now,
@@ -2082,6 +2410,7 @@ function engineOptions(
 		resolveFacts: facts.resolve,
 		uiContext: ctx.ui,
 		model: ctx.model,
+		...(ctx.modelRegistry ? { availableModels: async () => ctx.modelRegistry.getAvailable() } : {}),
 		thinkingLevel: ctx.thinkingLevel,
 		onSessionsChange: dependencies.onStateChange,
 		signal: dependencies.signal,
@@ -2113,121 +2442,20 @@ function engineOptions(
 	};
 }
 
-/**
- * The operator's answer to a run that repeated itself after its automatic
- * re-plans. Guidance goes to the planner through repair.json; guidance and
- * "Keep going" both start a fresh re-plan allowance and re-arm the run at
- * plan; "Stop" (or a dismissed prompt, or the operator's stop) ends it
- * STOPPED with everything intact for the next resume.
- */
-async function settleNoProgress(run: JobRun): Promise<DriveResult | undefined> {
-	const { ctx, engine, jobDirectory, task, dependencies } = run;
-	const jobId = task.job_id;
-	const stopped = (reason: string): DriveResult => ({
-		state: engine.state,
-		stopState: run.stopState,
-		terminalStatus: "STOPPED",
-		reason,
-	});
-	for (;;) {
-		try {
-			const choice = await untilStop(
-				ctx.ui.select(`K-π no progress after ${MAX_AUTOMATIC_REPLANS} re-plans`, [...NO_PROGRESS_OPTIONS]),
-				dependencies.signal,
-			);
-			if (choice === undefined || choice === NO_PROGRESS_OPTIONS[2]) {
-				return stopped(`stopped by the operator after no progress (resume with /kpi ${jobId})`);
-			}
-			if (choice === NO_PROGRESS_OPTIONS[0]) {
-				const repair = run.stopState.repair;
-				if (repair === undefined) {
-					// Nothing to guide: the state that paused carries no repair record.
-					ctx.ui.notify(
-						`K-π job ${jobId} has no ${REPAIR_FILE_NAME} to guide; choose Keep going or Stop`,
-						"warning",
-					);
-					continue;
-				}
-				const text = await untilStop(
-					ctx.ui.editor("Guidance for the planner", repair.guidance ?? ""),
-					dependencies.signal,
-				);
-				if (text === undefined) {
-					// A dismissed editor is not a decision: back to the select.
-					continue;
-				}
-				const guidance = text.trim();
-				if (guidance.length === 0) {
-					ctx.ui.notify(
-						"K-π guidance is required to give guidance; choose Keep going to continue without it",
-						"warning",
-					);
-					continue;
-				}
-				const guided: PlanRepair = { ...repair, guidance };
-				await atomicWrite(join(jobDirectory, REPAIR_FILE_NAME), `${JSON.stringify(guided, null, 2)}\n`);
-				run.stopState = { ...run.stopState, repair: guided, repaired: [] };
-			} else if (choice === NO_PROGRESS_OPTIONS[1]) {
-				run.stopState = { ...run.stopState, repaired: [] };
-			} else {
-				throw new Error(`the no-progress prompt was answered with an option it did not offer: ${choice}`);
-			}
-		} catch (error) {
-			// The operator's stop lands while the select or the editor is open.
-			if (error instanceof OperatorStopError) {
-				return {
-					...stopped("operator stop"),
-					terminalEmitted: (await readStopMarker(jobDirectory))?.recorded === true,
-				};
-			}
-			throw error;
-		}
-		engine.rearm();
-		await writeState(jobDirectory, task, engine.state, run.stopState);
-		await dependencies.onStateChange?.();
-		return undefined;
-	}
-}
-
-/**
- * Drives until the graph pauses, and settles a no-progress pause with the
- * operator when there is one to ask: an interactive session is offered
- * guidance, keep going, or stop and the run continues on the first two.
- * Without a UI the NEEDS_HUMAN stands, with the resume command.
- */
 async function driveWithOperator(run: JobRun): Promise<DriveResult> {
-	for (;;) {
-		if (run.askNoProgressFirst) {
-			run.askNoProgressFirst = false;
-			const settled = await settleNoProgress(run);
-			if (settled !== undefined) {
-				return settled;
-			}
-		}
-		const result = await driveUntilPause(
-			run.engine,
-			run.ctx,
-			run.ctx.cwd,
-			run.jobDirectory,
-			run.task,
-			run.facts,
-			run.stopState,
-			run.dependencies.signal,
-			run.dependencies.onStateChange,
-		);
-		run.stopState = result.stopState;
-		if (result.terminalStatus !== "NEEDS_HUMAN" || result.recovery !== "no_progress" || !run.ctx.hasUI) {
-			return result;
-		}
-		// On the record before the operator is asked: a session lost mid-dialog
-		// resumes into the same question.
-		await writeTerminalState(run.jobDirectory, run.eventsPath, run.task, result);
-		await run.dependencies.onStateChange?.();
-		const settled = await settleNoProgress(run);
-		if (settled !== undefined) {
-			return settled;
-		}
-	}
+	const result = await driveUntilPause(
+		run.engine,
+		run.ctx,
+		run.ctx.cwd,
+		run.jobDirectory,
+		run.task,
+		run.facts,
+		run.stopState,
+		run.dependencies.signal,
+		run.dependencies.onStateChange,
+	);
+	run.stopState = result.stopState;
+	return result;
 }
 
 /**
@@ -2238,6 +2466,18 @@ async function driveWithOperator(run: JobRun): Promise<DriveResult> {
  */
 async function driveJob(run: JobRun): Promise<LoopOutcome> {
 	const { ctx, engine, jobId, jobDirectory, eventsPath, task, dependencies } = run;
+	run.facts.shipInvocation = { previousHead: run.previousHead, runs: engine.state.nodes.ship?.runs ?? 0 };
+	const priorRelease = engine.state.values.release;
+	if (
+		engine.state.status === "completed" &&
+		isJsonObject(priorRelease) &&
+		priorRelease.approved === true &&
+		(await readShipMarker(ctx.cwd, jobDirectory, jobId)) === undefined
+	) {
+		// A crash can persist graph exhaustion before its durable delivery record.
+		// Reconcile only delivery; never repeat the already recorded commit decision.
+		engine.rearm(["deliver"]);
+	}
 	const finish = async (result: DriveResult): Promise<LoopOutcome> => {
 		await writeTerminalState(jobDirectory, eventsPath, task, result);
 		await dependencies.onStateChange?.();
@@ -2253,7 +2493,7 @@ async function driveJob(run: JobRun): Promise<LoopOutcome> {
 	while (result.terminalStatus === undefined && result.state.status === "interrupted") {
 		const stopped = await answerPendingHuman(
 			engine,
-			run.graph,
+			engine.definition,
 			ctx,
 			jobDirectory,
 			eventsPath,
@@ -2290,16 +2530,19 @@ async function driveJob(run: JobRun): Promise<LoopOutcome> {
 		);
 	}
 	try {
+		await assertProtectedIntent(jobDirectory, task);
+		await assertVerificationFresh({
+			projectRoot: ctx.cwd,
+			runDirectory: jobDirectory,
+			task,
+			treeHash: await verificationTreeHash(ctx.cwd),
+		});
 		// One job, one commit decision, identified by this job's own trailer:
 		// this run's commit, or the marked one a replay recovers, never a second.
-		await finalizeShip(
-			ctx.cwd,
-			jobDirectory,
-			jobId,
-			run.previousHead,
-			result.shippedThisRun === true,
-			dependencies.readPullRequest,
-		);
+		if (result.shippedThisRun === true) await verifyShippedCommit(ctx.cwd, run.previousHead, jobId);
+		if ((await readShipMarker(ctx.cwd, jobDirectory, jobId)) === undefined) {
+			throw new ShipIntegrityError("Graph completed without a host-verified delivery record");
+		}
 	} catch (error) {
 		// A failed finalization is a terminal the operator reads like any
 		// other - the reason and the resume command - rather than a thrown
@@ -2321,6 +2564,7 @@ export async function resumeLoop(
 	// The marker that stopped this job would stop it again at its first
 	// superstep; resuming is the operator lifting it.
 	await rm(join(jobDirectory, STOP_MARKER_NAME), { force: true });
+	await reconcileIntentPublication(jobDirectory);
 	// Read leniently: a contract from the release that enforced caps still
 	// carries `limits`. It is reported as ignored, never validated, and left on
 	// the contract so the hashes research.json and stack.json bound to still hold.
@@ -2332,10 +2576,60 @@ export async function resumeLoop(
 		string,
 		unknown
 	>;
-	if (stateDocument.status === "DONE") {
-		return { jobId, status: "DONE" };
+	try {
+		await assertProtectedIntent(jobDirectory, task);
+	} catch (error) {
+		const missing = (error as NodeJS.ErrnoException).code === "ENOENT";
+		const approved =
+			missing &&
+			ctx.hasUI &&
+			(await ctx.ui.confirm(
+				"Protect this legacy job's intent",
+				`This run predates protected intent. Confirm its current desired state before migration:\n${JSON.stringify(task, null, 2)}`,
+			));
+		if (approved) {
+			await adoptLegacyIntent(jobDirectory, task);
+		} else {
+			const reason = recoveryReason(
+				"contract",
+				missing ? "legacy intent needs operator confirmation" : describeError(error),
+				jobId,
+			);
+			await atomicWrite(
+				join(jobDirectory, "state.json"),
+				`${JSON.stringify({ ...stateDocument, status: "NEEDS_HUMAN", recovery: "contract", reason }, null, 2)}\n`,
+			);
+			return { jobId, status: "NEEDS_HUMAN", recovery: "contract", reason };
+		}
 	}
-	const graph = await loadNamedGraph(ctx.cwd, task.mode === "autopilot" ? "coding-loop.auto" : "coding-loop.gated");
+	if (stateDocument.status === "DONE") {
+		try {
+			await assertVerificationFresh({
+				projectRoot: ctx.cwd,
+				runDirectory: jobDirectory,
+				task,
+				treeHash: await verificationTreeHash(ctx.cwd),
+			});
+			if ((await readShipMarker(ctx.cwd, jobDirectory, jobId)) !== undefined) return { jobId, status: "DONE" };
+		} catch (error) {
+			// Do not rewrite a previously delivered candidate merely because the
+			// surrounding checkout has changed or its proof was externally damaged.
+			if ((await readShipMarker(ctx.cwd, jobDirectory, jobId)) !== undefined) {
+				const reason = recoveryReason(
+					"review",
+					`completed delivery proof is no longer current: ${describeError(error)}`,
+					jobId,
+				);
+				await atomicWrite(
+					join(jobDirectory, "state.json"),
+					`${JSON.stringify({ ...stateDocument, status: "NEEDS_HUMAN", recovery: "review", reason }, null, 2)}\n`,
+				);
+				return { jobId, status: "NEEDS_HUMAN", recovery: "review", reason };
+			}
+		}
+		// An unsubstantiated DONE document is not authority. Checkpoint restore
+		// re-arms unmet goals rather than inheriting this cached status.
+	}
 	const baselineSource = JSON.parse(await readFile(join(jobDirectory, "baseline.json"), "utf8")) as Record<
 		string,
 		string
@@ -2346,17 +2640,40 @@ export async function resumeLoop(
 	const facts = loopFacts(ctx.cwd, jobDirectory, task, baseline, await planWasProvided(jobDirectory));
 	const eventsPath = join(jobDirectory, "events.jsonl");
 	let run: JobRun;
-	const engine = await GraphEngine.restore(
-		graph,
-		engineOptions(ctx, dependencies, jobId, jobDirectory, task, facts, () => ({
-			stop: run.stopState,
-			state: run.engine.state,
-		})),
-	);
+	let engine: GraphEngine;
+	try {
+		engine = await GraphEngine.restore(
+			engineOptions(ctx, dependencies, jobId, jobDirectory, task, facts, () => ({
+				stop: run.stopState,
+				state: run.engine.state,
+			})),
+		);
+	} catch (error) {
+		// Never reconstruct a mutable graph from today's named template. A legacy
+		// checkpoint cannot establish which topology the operator authorized.
+		const detail = describeError(error);
+		const reason = detail.includes("checkpoint has no execution topology")
+			? `${detail}. Restore a checkpoint containing the original execution definition and its protected intent from a trusted backup, then resume with /kpi ${jobId}; if no such backup exists, start a new /kpi job and confirm its desired state. This run was not restarted`
+			: recoveryReason("contract", `checkpoint restoration refused: ${detail}`, jobId);
+		await atomicWrite(
+			join(jobDirectory, "state.json"),
+			`${JSON.stringify(
+				{
+					...stateDocument,
+					status: "NEEDS_HUMAN",
+					recovery: "contract",
+					reason,
+				},
+				null,
+				2,
+			)}\n`,
+		);
+		await dependencies.onStateChange?.();
+		return { jobId, status: "NEEDS_HUMAN", recovery: "contract", reason };
+	}
 	run = {
 		ctx,
 		dependencies,
-		graph,
 		engine,
 		jobId,
 		jobDirectory,
@@ -2365,7 +2682,6 @@ export async function resumeLoop(
 		facts,
 		stopState: restoreStopState(stateDocument),
 		previousHead: await startingHeadFor(jobDirectory),
-		askNoProgressFirst: stateDocument.recovery === "no_progress" && ctx.hasUI,
 	};
 	try {
 		// Caps a retired release froze onto the contract or the checkpoint are
@@ -2385,7 +2701,7 @@ export async function resumeLoop(
 		}
 		// The run is live again from here: a resumed pause or stop is RUNNING on
 		// disk before its first superstep, not after.
-		if (!run.askNoProgressFirst && engine.state.status === "running") {
+		if (engine.state.status === "running") {
 			await writeState(jobDirectory, task, engine.state, run.stopState);
 			await dependencies.onStateChange?.();
 		}
@@ -2451,41 +2767,6 @@ export async function runLoop(
 		await writePlanSnapshot(job.directory, plan);
 	}
 
-	if (invocation.mode === "autopilot" && compilation.quality !== "executable") {
-		const refusal = `autopilot requires executable acceptance criteria; received ${compilation.quality}`;
-		const reason = recoveryReason("ac_quality", refusal, job.jobId);
-		await appendEvent(job.eventsPath, {
-			ts: new Date().toISOString(),
-			type: "ac.refused",
-			job_id: job.jobId,
-			round: 0,
-			node: "ac-compiler",
-			quality: compilation.quality,
-			reason: refusal,
-		});
-		await atomicWrite(
-			join(job.directory, "state.json"),
-			`${JSON.stringify(
-				{
-					job_id: task.job_id,
-					mode: task.mode,
-					round: 0,
-					stage: "ac-compile",
-					node: "ac-compiler",
-					ac: task.ac,
-					status: "NEEDS_HUMAN",
-					reason,
-					recovery: "ac_quality",
-					graph_status: "not_started",
-				},
-				null,
-				2,
-			)}\n`,
-		);
-		await dependencies.onStateChange?.();
-		return { jobId: job.jobId, status: "NEEDS_HUMAN", reason, recovery: "ac_quality" };
-	}
-
 	await appendEvent(job.eventsPath, {
 		ts: new Date().toISOString(),
 		type: "handoff.created",
@@ -2519,7 +2800,6 @@ export async function runLoop(
 	run = {
 		ctx,
 		dependencies,
-		graph,
 		engine,
 		jobId: job.jobId,
 		jobDirectory: job.directory,
@@ -2528,7 +2808,6 @@ export async function runLoop(
 		facts,
 		stopState: createStopState(),
 		previousHead,
-		askNoProgressFirst: false,
 	};
 	try {
 		await writeState(job.directory, task, engine.state, run.stopState);

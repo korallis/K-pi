@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "goal.schema.json",
+  "title": "K-pi protected acceptance goal projection",
+  "type": "object",
+  "required": [
+    "version",
+    "job_id",
+    "intent_hash",
+    "goals"
+  ],
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "job_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "intent_hash": {
+      "type": "string",
+      "minLength": 1
+    },
+    "tree_hash": {
+      "type": "string",
+      "minLength": 1
+    },
+    "verification_run_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "goals": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "statement",
+          "required",
+          "status",
+          "receipt_ids",
+          "reasons"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "criterion_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "quality_gate_index": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "statement": {
+            "type": "string"
+          },
+          "required": {
+            "type": "boolean"
+          },
+          "status": {
+            "enum": [
+              "unverified",
+              "passed",
+              "failed",
+              "blocked"
+            ]
+          },
+          "receipt_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "reasons": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

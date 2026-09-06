@@ -3,11 +3,15 @@ import { type BoardModel, type NodeDetail, resolveCurrentStageIndex } from "./bo
 import type { ActivitySnapshot } from "./board-activity.ts";
 import type { BoardPalette } from "./board-frame.ts";
 import {
+	type CentreJob,
 	type CentreState,
 	clampStage,
+	jobGroup,
+	jobNeedsHuman,
 	type RunFileRow,
 	renderCommandCentre,
 	resolveKey,
+	roundSpans,
 	type TranscriptEntry,
 } from "./command-centre.ts";
 import { BOARD_TICK_MS, type Ticker } from "./control-plane.ts";
@@ -21,6 +25,11 @@ export interface CommandCentreSources {
 	workerCap: number;
 	/** Same builder the widget ticks (control-plane buildBoardModel with the job's activity reader, surface "overlay"); undefined when the job is gone. */
 	readModel(): Promise<BoardModel | undefined>;
+	/** Native discovery supplies real snapshots. Opening transfers to that job's own sources. */
+	fleet?: {
+		read(): Promise<readonly CentreJob[]>;
+		open(jobId: string): Promise<void>;
+	};
 	/** The activity snapshot produced by the latest readModel(). */
 	activity(): ActivitySnapshot | undefined;
 	readNodeDetail(stage: number): Promise<NodeDetail>;
@@ -81,6 +90,9 @@ export function createCommandCentre(options: CommandCentreOptions): CommandCentr
 	const state: CentreState = {
 		view: "home",
 		selected: 0,
+		jobs: [],
+		selectedJob: sources.jobId,
+		help: false,
 		jobId: sources.jobId,
 		model: undefined,
 		jobGone: false,
@@ -170,17 +182,48 @@ export function createCommandCentre(options: CommandCentreOptions): CommandCentr
 	 */
 	async function refresh(full: boolean): Promise<void> {
 		state.nowMs = sources.now();
+		if (sources.fleet !== undefined) {
+			state.jobs = [...(await sources.fleet.read())].sort((a, b) => jobGroup(a) - jobGroup(b));
+		}
 		const model = await sources.readModel();
 		if (disposed) return;
 		if (model === undefined) {
+			state.model = undefined;
 			state.jobGone = true;
-			endTicker();
+			state.jobs = state.jobs.filter((job) => job.jobId !== sources.jobId);
+			if (!state.jobs.some((job) => job.jobId === state.selectedJob)) {
+				state.selectedJob = state.jobs[0]?.jobId ?? sources.jobId;
+			}
+			state.refreshError = undefined;
+			if (sources.fleet === undefined) endTicker();
 			return;
 		}
 		const first = state.model === undefined;
 		state.jobGone = false;
 		state.model = model;
 		state.activity = sources.activity();
+		state.rounds = roundSpans(state.activity?.records ?? [], state.nowMs);
+		const nodeHistory = new Map<string, { retries: number; writes: string[]; denied: number }>();
+		for (const record of state.activity?.records ?? []) {
+			if (record.type !== "node.retry" && record.type !== "tool.request") continue;
+			let history = nodeHistory.get(record.node);
+			if (history === undefined) {
+				history = { retries: 0, writes: [], denied: 0 };
+				nodeHistory.set(record.node, history);
+			}
+			if (record.type === "node.retry") history.retries += 1;
+			else if ((record.tool === "write" || record.tool === "edit") && typeof record.path === "string") {
+				if (!history.writes.includes(record.path)) history.writes.push(record.path);
+				if (record.decision === "deny") history.denied += 1;
+			}
+		}
+		state.nodeHistory = nodeHistory;
+		const discoveredLocal = state.jobs.find((job) => job.jobId === sources.jobId);
+		state.jobs = [
+			...state.jobs.filter((job) => job.jobId !== sources.jobId),
+			{ ...discoveredLocal, jobId: sources.jobId, model },
+		].sort((a, b) => jobGroup(a) - jobGroup(b));
+		if (!state.jobs.some((job) => job.jobId === state.selectedJob)) state.selectedJob = sources.jobId;
 		state.route = sources.route();
 		state.refreshError = undefined;
 		if (first) state.selected = resolveCurrentStageIndex(model.stage, model.node);
@@ -190,7 +233,7 @@ export function createCommandCentre(options: CommandCentreOptions): CommandCentr
 		}
 		await readTranscript();
 		await readDetail();
-		if (model.stop !== "RUNNING") endTicker();
+		if (model.stop !== "RUNNING" && sources.fleet === undefined) endTicker();
 	}
 
 	function startTicker(): void {
@@ -227,9 +270,34 @@ export function createCommandCentre(options: CommandCentreOptions): CommandCentr
 		repaint();
 	}
 
+	function selectJob(direction: number, attention = false): void {
+		const jobs = attention ? state.jobs.filter(jobNeedsHuman) : state.jobs;
+		if (jobs.length === 0) {
+			state.hint = { text: "Nothing is waiting for you", tone: "muted" };
+			repaint();
+			return;
+		}
+		const current = jobs.findIndex((job) => job.jobId === state.selectedJob);
+		const index =
+			current < 0 ? (direction > 0 ? 0 : jobs.length - 1) : (current + direction + jobs.length) % jobs.length;
+		state.selectedJob = jobs[index]!.jobId;
+		state.view = "home";
+		state.hint = undefined;
+		repaint();
+	}
+
 	/** Enter on a non-empty prompt: the two commands the centre owns, two refusals, or a chat message. */
 	function submit(line: string): void {
 		state.input = "";
+		if (
+			(line === "/kpi stop" || line === "/kpi verify") &&
+			state.view === "home" &&
+			state.selectedJob !== sources.jobId
+		) {
+			state.hint = { text: "Open the selected job before using its commands", tone: "warning" };
+			repaint();
+			return;
+		}
 		if (line === "/kpi stop") {
 			enqueue(async () => {
 				try {
@@ -283,7 +351,7 @@ export function createCommandCentre(options: CommandCentreOptions): CommandCentr
 			startTicker();
 			return;
 		}
-		if (state.model?.stop === "RUNNING") startTicker();
+		if (state.model?.stop === "RUNNING" || sources.fleet !== undefined) startTicker();
 	});
 
 	return {
@@ -300,15 +368,25 @@ export function createCommandCentre(options: CommandCentreOptions): CommandCentr
 			if (disposed) return;
 			const key = resolveKey(data, state.input.length > 0);
 			if (key === undefined) return;
+			if (state.help && key.kind !== "help" && key.kind !== "escape" && key.kind !== "close") return;
 			switch (key.kind) {
+				case "help":
+					state.help = !state.help;
+					repaint();
+					return;
+				case "attention":
+					selectJob(key.reverse ? -1 : 1, true);
+					return;
 				case "close":
 					close();
 					return;
 				case "escape":
-					if (state.input.length > 0) {
+					if (state.help) {
+						state.help = false;
+					} else if (state.input.length > 0) {
 						state.input = "";
-					} else if (state.view === "session") {
-						state.view = "home";
+					} else if (state.view !== "home") {
+						state.view = state.view === "session" ? "details" : "home";
 						state.hint = undefined;
 					} else {
 						close();
@@ -317,13 +395,15 @@ export function createCommandCentre(options: CommandCentreOptions): CommandCentr
 					repaint();
 					return;
 				case "next":
-					select(state.selected + 1);
+					if (state.view === "home") selectJob(1);
+					else select(state.selected + 1);
 					return;
 				case "previous":
-					select(state.selected - 1);
+					if (state.view === "home") selectJob(-1);
+					else select(state.selected - 1);
 					return;
 				case "jump":
-					select(key.stage);
+					if (state.view !== "home") select(key.stage);
 					return;
 				case "refresh":
 					if (inFlight === 0) enqueue(() => refresh(true));
@@ -346,6 +426,16 @@ export function createCommandCentre(options: CommandCentreOptions): CommandCentr
 					// q/r/1–8 into typed text.
 					state.input = "";
 					if (state.view === "home") {
+						if (state.selectedJob !== sources.jobId && sources.fleet !== undefined) {
+							const jobId = state.selectedJob;
+							close();
+							pending = pending.then(() => sources.fleet!.open(jobId));
+							return;
+						}
+						if (state.model === undefined) return;
+						state.view = "details";
+						state.hint = undefined;
+					} else if (state.view === "details") {
 						state.view = "session";
 						state.hint = undefined;
 						enqueue(readDetail);

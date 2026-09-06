@@ -153,7 +153,7 @@ export type EventInput =
 				status?: string;
 			}
 	  >
-	| Event<"node.started", { run: number; model?: string }>
+	| Event<"node.started", { run: number; model?: string; model_reason?: string[]; model_family?: string }>
 	| Event<
 			"node.finished",
 			{

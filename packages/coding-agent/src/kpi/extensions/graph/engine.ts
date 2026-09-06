@@ -1,31 +1,43 @@
-import { mkdir, readdir, readFile } from "node:fs/promises";
-import { basename, isAbsolute, join, relative, resolve } from "node:path";
+import { randomUUID } from "node:crypto";
+import { mkdir, readdir, readFile, realpath, stat } from "node:fs/promises";
+import { basename, isAbsolute, join, relative } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { Model } from "@earendil-works/pi-ai";
-
+import { type Model, Type } from "@earendil-works/pi-ai";
 import { CONFIG_DIR_NAME, getAgentDir, getKpiResourceDir } from "../../../config.ts";
-import type { ExtensionUIContext, InlineExtension } from "../../../core/extensions/types.ts";
+import { defineTool, type ExtensionUIContext, type InlineExtension } from "../../../core/extensions/types.ts";
+import type { ModelRuntime } from "../../../core/model-runtime.ts";
 import { DefaultResourceLoader } from "../../../core/resource-loader.ts";
 import { type CreateAgentSessionOptions, createAgentSession } from "../../../core/sdk.ts";
 import { SessionManager } from "../../../core/session-manager.ts";
 import { SettingsManager } from "../../../core/settings-manager.ts";
-import { AccountsStore } from "../accounts/store.ts";
+import { type ArchitectureArena, createArchitectureArena } from "../../kstack/arena.ts";
+import { type EngineeringModelResolution, resolveEngineeringModel } from "../../kstack/routing.ts";
 import { appendEvent, buildReviewVerdictEventFields, type NodeLifecycleEvent } from "../append-log.ts";
+import {
+	bindSessionWriterAuthority,
+	type LeaseOwner,
+	releaseWriterAuthority,
+	reserveWriterAuthority,
+} from "../bus/leases.ts";
+import { PeerClient, type PeerMessage } from "../bus/peer-runtime.ts";
 import { ROLE_CONTRACT_FILE } from "../bus/roles.ts";
-import { registerLiveBus, registerLiveNodeSession } from "../bus/sessions-snapshot.ts";
-import { BackgroundBus, type BusDependencies } from "../bus/spawn.ts";
-import { type LocalProviderId, registerLocalProviders } from "../local/providers.ts";
-import { registerPolicy } from "../policy.ts";
-import { atomicWrite, LOOP_RECOVERIES, readLiveJob, type Task, writeAllowForTask } from "../run-store.ts";
+import { registerLiveNodeSession } from "../bus/sessions-snapshot.ts";
+import { type BusDependencies, getOrCreateBackgroundBus } from "../bus/spawn.ts";
+import { type AgentContextOptions, createAgentContextExtension } from "../context/index.ts";
+import { atomicWrite, LOOP_RECOVERIES, readIntentContract, readTaskForJob } from "../run-store.ts";
+import { registerRuntime } from "../runtime.ts";
 import { assertDuneStack, DuneStackError } from "../stack.ts";
 import { batchReadyNodes, isBudgetState } from "./budget.ts";
 import { type JsonSchema, validateJsonSchema } from "./json-schema.ts";
+import { GraphPeerBinding } from "./peer-session.ts";
 import {
 	type AgentGraphNode,
 	type AgentWorkerRole,
+	type ExecutionRevision,
 	type GraphDefinition,
 	type GraphEdge,
+	type GraphMutation,
 	type GraphNode,
 	type GraphPauseState,
 	type GraphRunState,
@@ -36,8 +48,10 @@ import {
 	type PauseGraphNode,
 } from "./schema.ts";
 import {
+	canonicalFingerprint,
 	classifyTransientFailure,
 	DEFAULT_RETRY_BASE_MS,
+	decideRecovery,
 	retryDelayMs,
 	type Sleeper,
 	type TransientReason,
@@ -49,6 +63,7 @@ const END_NODE_ID = "__end__";
 
 export interface GraphAgentSession {
 	readonly sessionId: string;
+	readonly model?: Model<any>;
 	prompt(text: string): Promise<void>;
 	/** Interrupts the prompt in flight. The core AgentSession has it; test fakes may omit it. */
 	abort?(): Promise<void> | void;
@@ -120,6 +135,14 @@ export interface GraphEngineOptions {
 	thinkingLevel?: ThinkingLevel;
 	/** Fired (fire-and-forget) whenever a live node/worker session registers or releases. */
 	onSessionsChange?: () => void | Promise<void>;
+	modelRuntime?: ModelRuntime;
+	/** Live extension-facing catalog when the host intentionally keeps its runtime private. */
+	availableModels?: () => Promise<Model<any>[]>;
+	modelAssignments?: Record<string, EngineeringModelResolution>;
+	executeVerification?: (nodeId: string) => Promise<JsonObject>;
+	intentHash?: string;
+	requiredGoalIds?: string[];
+	resolveVerifiedGoalIds?: () => Promise<string[]>;
 }
 
 /** The production backoff: a timer the operator's stop clears at once. */
@@ -231,6 +254,12 @@ function validateNode(value: unknown, index: number): asserts value is GraphNode
 	}
 	assertString(value.id, `nodes[${index}].id`);
 	assertString(value.type, `nodes[${index}].type`);
+	if (value.id === END_NODE_ID || FORBIDDEN_PATH_PARTS.has(value.id)) throw new Error("reserved graph node id");
+	for (const key of ["goalIds", "assumptionIds", "dependencies"] as const) {
+		if (value[key] !== undefined) assertStringArray(value[key], `node ${value.id}.${key}`);
+	}
+	if (value.required !== undefined) assertBoolean(value.required, `node ${value.id}.required`);
+	if (value.type === "verify") return;
 
 	if (value.type === "set") {
 		if (!isJsonObject(value.assignments)) {
@@ -275,6 +304,24 @@ function validateNode(value: unknown, index: number): asserts value is GraphNode
 	assertString(value.prompt, `agent node ${value.id}.prompt`);
 	assertBoolean(value.readOnly, `agent node ${value.id}.readOnly`);
 	assertStringArray(value.tools, `agent node ${value.id}.tools`);
+	if (
+		value.role !== undefined &&
+		!["planner", "diagnostic", "architect", "builder", "reviewer", "researcher", "release"].includes(
+			String(value.role),
+		)
+	) {
+		throw new Error(`agent node ${value.id} has unknown role`);
+	}
+	if (value.arenaProposalRefs !== undefined) {
+		assertStringArray(value.arenaProposalRefs, `agent node ${value.id}.arenaProposalRefs`);
+		if (
+			value.role !== "reviewer" ||
+			!value.readOnly ||
+			!isJsonObject(value.response) ||
+			value.response.schema !== "arena-judge.schema.json"
+		)
+			throw new Error("arena references require an isolated read-only judge");
+	}
 	if (!isJsonObject(value.context)) {
 		throw new Error(`agent node ${value.id} must define context`);
 	}
@@ -485,6 +532,89 @@ export function validateGraphDefinition(value: unknown): asserts value is GraphD
 			throw new Error(`non-interactive graph ${value.id} cannot contain human node ${humanNode.id}`);
 		}
 	}
+	validateExecutionTopology(value as unknown as GraphDefinition);
+}
+
+function validateExecutionTopology(graph: GraphDefinition): void {
+	const nodes = new Map(graph.nodes.map((node) => [node.id, node]));
+	const goals = new Set(graph.requiredGoalIds ?? []);
+	if (goals.size !== (graph.requiredGoalIds ?? []).length) throw new Error("duplicate required goal IDs");
+	const assumptions = new Set(graph.assumptionIds ?? []);
+	if (graph.requiredGoalIds?.length && !graph.intentHash) throw new Error("required goals need protected intentHash");
+	const threads = new Map<string, AgentGraphNode>();
+	for (const node of graph.nodes) {
+		if (node.type !== "agent" || node.context.mode !== "thread") continue;
+		const key = node.context.threadKey ?? node.id;
+		const previous = threads.get(key);
+		if (
+			previous &&
+			(previous.role !== node.role ||
+				previous.readOnly !== node.readOnly ||
+				!isDeepStrictEqual(previous.tools, node.tools) ||
+				previous.workerRole !== node.workerRole)
+		) {
+			throw new Error(`thread ${key} cannot share independent role capabilities`);
+		}
+		threads.set(key, node);
+	}
+	const visiting = new Set<string>();
+	const visited = new Set<string>();
+	const visit = (id: string): void => {
+		if (visiting.has(id)) throw new Error(`dependency cycle at ${id}`);
+		if (visited.has(id)) return;
+		const node = nodes.get(id);
+		if (!node) throw new Error(`unknown dependency ${id}`);
+		visiting.add(id);
+		for (const dependency of node.dependencies ?? []) visit(dependency);
+		visiting.delete(id);
+		visited.add(id);
+	};
+	for (const node of graph.nodes) {
+		visit(node.id);
+		for (const id of node.goalIds ?? []) if (!goals.has(id)) throw new Error(`unknown goal ${id}`);
+		for (const id of node.assumptionIds ?? []) if (!assumptions.has(id)) throw new Error(`unknown assumption ${id}`);
+	}
+	const reachable = new Set<string>();
+	const walk = (id: string): void => {
+		if (reachable.has(id)) return;
+		reachable.add(id);
+		for (const edge of graph.edges) if (edge.from === id) walk(edge.to);
+		const node = nodes.get(id);
+		if (node?.type === "pause") for (const target of node.resume) walk(target);
+	};
+	walk(graph.entry);
+	for (const node of graph.nodes) {
+		if ((node.required || node.goalIds?.length) && !reachable.has(node.id))
+			throw new Error(`required unreachable task ${node.id}`);
+		if (node.required || node.goalIds?.length) {
+			for (const dependency of node.dependencies ?? [])
+				if (!reachable.has(dependency)) throw new Error(`required unreachable dependency ${dependency}`);
+		}
+	}
+	for (const id of goals) {
+		if (!graph.nodes.some((node) => reachable.has(node.id) && node.goalIds?.includes(id)))
+			throw new Error(`orphan required goal ${id}`);
+	}
+	if (
+		goals.size &&
+		!graph.nodes.some((node) => node.type === "agent" && (node.role === "planner" || node.role === "diagnostic"))
+	)
+		throw new Error("required goals need an authorized repair planner");
+	if (graph.repairNodeId !== undefined) {
+		const repair = nodes.get(graph.repairNodeId);
+		if (repair?.type !== "agent" || !["planner", "diagnostic"].includes(repair.role ?? ""))
+			throw new Error("repairNodeId must name a planning/diagnostic agent");
+	}
+}
+
+function protectedNode(node: GraphNode): boolean {
+	return (
+		node.type !== "agent" ||
+		node.workerRole !== undefined ||
+		node.role === "reviewer" ||
+		node.role === "release" ||
+		["review", "ship", "test", "verify"].includes(node.id)
+	);
 }
 
 export async function loadGraph(path: string | URL): Promise<GraphDefinition> {
@@ -550,65 +680,22 @@ async function loadResponseSchema(projectRoot: string, name: string): Promise<Js
 	return JSON.parse(await readFile(join(getKpiResourceDir(), "schemas", name), "utf8")) as JsonSchema;
 }
 
-/**
- * Graph agent sessions are not the operator CLI: they need local model catalogs
- * and policy, not control-plane widgets/status that bind a parent ExtensionRunner
- * context. Loading full k-pi here previously crashed the host with stale ctx.
- */
-async function resolveActiveWriteAllow(cwd: string): Promise<string[]> {
-	const job = await readLiveJob(cwd);
-	if (job === undefined) {
-		return [];
-	}
-	const task = JSON.parse(await readFile(join(job.directory, "task.json"), "utf8")) as Task;
-	const allow = [...writeAllowForTask(task)];
-	const runRelative = relative(resolve(cwd), resolve(job.directory)).replaceAll("\\", "/");
-	if (runRelative.length > 0 && !runRelative.startsWith("..")) {
-		allow.push(`${runRelative}/candidate.json`);
-	}
-	return allow;
-}
-
+/** Same native resource/auth/policy surface, without a second control plane. */
 function graphAgentExtensionFactories(): InlineExtension[] {
-	return [
-		{
-			name: "k-pi-graph-agent",
-			factory: (pi) => {
-				registerLocalProviders(pi, {
-					resolveSlots: async (poolId: LocalProviderId) => {
-						const slots = (await new AccountsStore().read()).pools[poolId]?.slots ?? [];
-						return slots.flatMap((slot) =>
-							slot.kind === "local" && slot.baseUrl !== undefined
-								? [{ slotId: slot.id, baseUrl: slot.baseUrl, secretRef: slot.secretRef }]
-								: [],
-						);
-					},
-					resolveToken: async (poolId: LocalProviderId, slotId: string) => {
-						const store = new AccountsStore();
-						const slot = (await store.read()).pools[poolId]?.slots.find((candidate) => candidate.id === slotId);
-						const reference = slot?.kind === "local" ? slot.secretRef : undefined;
-						if (reference === undefined) return undefined;
-						const credential = (await store.readSecrets())[reference];
-						return credential?.type === "api_key"
-							? credential.key
-							: credential?.type === "oauth"
-								? credential.access
-								: undefined;
-					},
-				});
-				registerPolicy(pi, { resolveWriteAllow: resolveActiveWriteAllow });
-			},
-		},
-	];
+	return [{ name: "k-pi-graph-agent", factory: (pi) => registerRuntime(pi, { graphSession: true }) }];
 }
 
 export class GraphEngine {
-	private readonly graph: GraphDefinition;
+	private graph: GraphDefinition;
 	private readonly options: GraphEngineOptions;
 	private readonly nodes: Map<string, GraphNode>;
 	private readonly sessionFactory: GraphAgentSessionFactory;
 	private readonly uiContext?: ExtensionUIContext;
 	private readonly threadSessions = new Map<string, GraphAgentSession>();
+	private readonly sessionContexts = new WeakMap<GraphAgentSession, AgentContextOptions>();
+	private readonly peerBindings = new Map<string, Promise<GraphPeerBinding>>();
+	private readonly peerNodeIds = new Map<string, string>();
+	private disposed = false;
 	private readonly now: () => number;
 	private readonly accumulatedCostUsd: () => number;
 	/**
@@ -618,6 +705,8 @@ export class GraphEngine {
 	private readonly baselineCostUsd: number;
 	/** USD billed by agent sessions in this process (provider usage × model.cost). */
 	private sessionCostUsd = 0;
+	private readonly nodeModels = new Map<string, Model<any> | undefined>();
+	private builderModel?: Model<any>;
 	/** Last getSessionStats().cost observed per live session (for deltas). */
 	private readonly sessionCostBaseline = new WeakMap<object, number>();
 	/** Cost summed across every attempt of a node's current run, reset at node.started. */
@@ -628,6 +717,7 @@ export class GraphEngine {
 	private readonly retryBaseDelayMs: number;
 	private checkpointWrites: Promise<void> = Promise.resolve();
 	private runState: GraphRunState;
+	private mutationWrites: Promise<unknown> = Promise.resolve();
 	/**
 	 * Limit keys the checkpoint carried that no longer mean anything, in
 	 * checkpoint order: the caps a retired release enforced. Empty for a new
@@ -660,7 +750,17 @@ export class GraphEngine {
 	};
 
 	constructor(graph: GraphDefinition, options: GraphEngineOptions, initialState?: GraphRunState) {
+		graph = structuredClone(initialState?.definition ?? graph);
+		if (initialState === undefined && options.requiredGoalIds !== undefined) {
+			graph.intentHash = options.intentHash;
+			graph.requiredGoalIds = [...options.requiredGoalIds];
+			for (const node of graph.nodes) {
+				if (node.type === "agent" || node.type === "verify") node.goalIds ??= [...options.requiredGoalIds];
+			}
+		}
 		validateGraphDefinition(graph);
+		if (options.intentHash !== undefined && graph.intentHash !== options.intentHash)
+			throw new Error("checkpoint intent mismatch");
 		this.graph = graph;
 		this.options = options;
 		this.uiContext = options.uiContext;
@@ -738,6 +838,20 @@ export class GraphEngine {
 				this.rearm();
 			}
 		}
+		this.runState.definition = this.graph;
+		this.runState.revision ??= 0;
+		this.runState.revisions ??= [];
+		this.runState.superseded ??= {};
+		this.runState.blockers ??= [];
+		this.runState.recoveries ??= [];
+		this.runState.pendingRoutes ??= [];
+		for (const node of graph.nodes) {
+			const key = node.type === "agent" ? (node.context.threadKey ?? node.id) : node.id;
+			this.runState.nodes[node.id].agentId ??=
+				node.type === "agent" && node.workerRole
+					? `${node.workerRole}-${safeThreadKey(node.id)}`
+					: `${options.jobId}/${key}`;
+		}
 
 		if (this.runState.graphId !== graph.id || this.runState.jobId !== options.jobId) {
 			throw new Error("checkpoint does not match graph and job");
@@ -749,16 +863,456 @@ export class GraphEngine {
 		return this.runState;
 	}
 
+	get definition(): GraphDefinition {
+		return structuredClone(this.graph);
+	}
+
+	/** Host-only adoption of the accepted additive proposal, before engineering starts. */
+	async adoptIntent(hash: string, requiredGoalIds: string[]): Promise<void> {
+		if (this.runState.revisions?.length) throw new Error("intent adoption must precede execution mutations");
+		if (
+			this.graph.nodes.some(
+				(node) =>
+					(node.type === "verify" || (node.type === "agent" && !node.readOnly)) &&
+					this.runState.nodes[node.id].runs > 0,
+			)
+		)
+			throw new Error("cannot adopt intent after engineering execution");
+		const contract = await readIntentContract(this.runDirectory());
+		if (contract.hash !== hash) throw new Error("intent adoption does not match protected contract");
+		const next = structuredClone(this.graph);
+		next.intentHash = hash;
+		next.requiredGoalIds = [...requiredGoalIds];
+		for (const node of next.nodes)
+			if (node.type === "agent" || node.type === "verify") node.goalIds = [...requiredGoalIds];
+		validateGraphDefinition(next);
+		this.graph = next;
+		this.runState.definition = next;
+		this.nodes.clear();
+		for (const node of next.nodes) this.nodes.set(node.id, node);
+		await this.writeCheckpoint();
+	}
+
+	/** Clarify the initial desired state, never reopen accepted intent as an agent tool. */
+	async requestIntentRevision(nodeId: "specify" | "plan-check", feedback: string): Promise<void> {
+		const contract = await readIntentContract(this.runDirectory());
+		if ("intent_details" in contract.task) throw new Error("desired-state proposal is already accepted");
+		if (!feedback.trim()) throw new Error("intent clarification requires feedback");
+		if (
+			this.graph.nodes.some(
+				(node) =>
+					(node.type === "verify" || (node.type === "agent" && !node.readOnly)) &&
+					this.runState.nodes[node.id].runs > 0,
+			)
+		)
+			throw new Error("cannot reopen intent after engineering execution");
+		const node = this.nodes.get(nodeId);
+		if (node?.type !== "agent" || node.response?.path !== "intent.proposal.json")
+			throw new Error("intent proposer is unavailable");
+		this.runState.active = [nodeId];
+		this.runState.nodes[nodeId].status = "pending";
+		this.runState.status = "running";
+		delete this.runState.pendingHuman;
+		delete this.runState.pause;
+		this.runState.blockers = [];
+		this.runState.pendingRoutes = [];
+		setStatePath(this.runState.values, "intent.feedback", feedback.trim());
+		await this.writeCheckpoint();
+	}
+
+	private canMutate(node: GraphNode): boolean {
+		return node.type === "agent" && (node.role === "planner" || node.role === "diagnostic");
+	}
+
+	private mutationTools(node: AgentGraphNode): NonNullable<CreateAgentSessionOptions["customTools"]> {
+		if (!this.canMutate(node)) return [];
+		return [
+			defineTool({
+				name: "graph_mutate",
+				label: "Revise execution tasks",
+				description:
+					"Atomically revise execution strategy, never protected intent or safety capabilities. Read the graph checkpoint for task IDs/revision. Operations: create {task,template}; replace/split {taskId,tasks}; supersede {taskId,replacementIds}; dependencies {taskId,dependencies}; route {from,edges}. New/replacement tasks are agent nodes with goalIds and no tools beyond their template. Supply changed strategy reason and existing run-relative evidence files.",
+				parameters: Type.Object({
+					expectedRevision: Type.Integer({ minimum: 0 }),
+					reason: Type.String({ minLength: 1 }),
+					evidenceRefs: Type.Array(Type.String(), { minItems: 1 }),
+					affectedGoalIds: Type.Array(Type.String()),
+					affectedAssumptionIds: Type.Array(Type.String()),
+					affectedTaskIds: Type.Array(Type.String(), { minItems: 1 }),
+					operations: Type.Array(Type.Unknown(), { minItems: 1 }),
+				}),
+				execute: async (_id, params) => {
+					const revision = await this.applyMutation(params as GraphMutation, node.id);
+					return { content: [{ type: "text", text: JSON.stringify(revision) }], details: revision };
+				},
+			}),
+			defineTool({
+				name: "architecture_arena",
+				label: "Compare architecture alternatives",
+				description:
+					"For a consequential one-way-door decision only: insert independent architecture proposals and a judge into this execution graph before your outgoing work. All original safety routes remain. Judgment is advisory, never completion.",
+				parameters: Type.Object({
+					expectedRevision: Type.Integer({ minimum: 0 }),
+					evidenceRefs: Type.Array(Type.String(), { minItems: 1 }),
+					decision: Type.Object({
+						id: Type.String({ minLength: 1 }),
+						oneWayDoor: Type.Literal(true),
+						question: Type.String({ minLength: 1 }),
+						consequences: Type.String({ minLength: 1 }),
+						alternatives: Type.Array(Type.String({ minLength: 1 }), { minItems: 2 }),
+					}),
+				}),
+				execute: async (_id, params) => {
+					const catalog = this.options.availableModels
+						? { getAvailable: this.options.availableModels }
+						: this.options.modelRuntime;
+					if (!catalog || !this.options.model)
+						throw new Error("An authenticated live model catalog is required for an architecture arena");
+					const arena = await createArchitectureArena({
+						projectRoot: this.options.projectRoot,
+						modelRuntime: catalog,
+						parentModel: this.options.model,
+						builderModel: this.builderModel,
+						decision: params.decision,
+					});
+					const outgoing = this.graph.edges.filter((edge) => edge.from === node.id);
+					const affected = [
+						...new Set([
+							node.id,
+							...arena.graph.nodes.map((task) => task.id),
+							...outgoing.map((edge) => edge.to).filter((id) => id !== END_NODE_ID),
+						]),
+					];
+					const mutation: GraphMutation = {
+						expectedRevision: params.expectedRevision,
+						reason: params.decision.consequences,
+						evidenceRefs: params.evidenceRefs,
+						affectedTaskIds: affected,
+						affectedGoalIds: [...(this.graph.requiredGoalIds ?? [])],
+						affectedAssumptionIds: [...(this.graph.assumptionIds ?? [])],
+						operations: [{ type: "insert_arena", afterTaskId: node.id, definition: arena.graph }],
+					};
+					const operation = this.mutationWrites.then(() => this.commitMutation(mutation, node.id, arena));
+					this.mutationWrites = operation.catch(() => undefined);
+					const revision = await operation;
+					return {
+						content: [
+							{
+								type: "text",
+								text: JSON.stringify({
+									revision: revision.revision,
+									proposalEvidence: arena.proposalEvidence,
+									judgeEvidence: arena.judgeEvidence,
+									independentJudge: arena.independentJudge,
+								}),
+							},
+						],
+						details: revision,
+					};
+				},
+			}),
+		];
+	}
+
+	/** Serialized CAS, topology validation and audit publication are one checkpoint transaction. */
+	applyMutation(mutation: GraphMutation, actorNodeId: string): Promise<ExecutionRevision> {
+		const operation = this.mutationWrites.then(() => this.commitMutation(mutation, actorNodeId));
+		this.mutationWrites = operation.catch(() => undefined);
+		return operation;
+	}
+
+	private async commitMutation(
+		request: GraphMutation,
+		actorNodeId: string,
+		authorizedArena?: ArchitectureArena,
+	): Promise<ExecutionRevision> {
+		const actor = this.nodes.get(actorNodeId);
+		if (!actor || !this.canMutate(actor)) throw new Error("graph mutation requires a planning or diagnostic role");
+		const mutation = structuredClone(request);
+		if (mutation.expectedRevision !== this.runState.revision) throw new Error("execution revision conflict");
+		assertString(mutation.reason, "mutation reason");
+		if (!mutation.reason.trim()) throw new Error("mutation reason must explain the changed strategy");
+		for (const key of ["evidenceRefs", "affectedGoalIds", "affectedAssumptionIds", "affectedTaskIds"] as const) {
+			assertStringArray(mutation[key], key);
+		}
+		if (!Array.isArray(mutation.operations) || !mutation.operations.length || !mutation.evidenceRefs.length)
+			throw new Error("mutation requires operations and triggering evidence");
+		for (const ref of mutation.evidenceRefs) {
+			if (isAbsolute(ref) || ref.split(/[\\/]/u).includes(".."))
+				throw new Error("mutation evidence must stay in the run directory");
+			const path = await realpath(join(this.runDirectory(), ref));
+			const within = relative(await realpath(this.runDirectory()), path);
+			if (
+				within === ".." ||
+				within.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) ||
+				isAbsolute(within) ||
+				!(await stat(path)).isFile()
+			)
+				throw new Error("mutation references unknown run evidence");
+		}
+		const next = structuredClone(this.graph);
+		const removed = new Map<string, string[]>();
+		const touched = new Set<string>();
+		const editable = (id: string): AgentGraphNode => {
+			const node = next.nodes.find((candidate) => candidate.id === id);
+			if (!node) throw new Error(`unknown task ${id}`);
+			if (protectedNode(node)) throw new Error(`cannot replace safety node ${id}`);
+			if (this.runState.nodes[id]?.status === "running") throw new Error(`cannot replace running task ${id}`);
+			touched.add(id);
+			return node as AgentGraphNode;
+		};
+		const checkCapability = (task: AgentGraphNode, template: AgentGraphNode): void => {
+			validateNode(task, 0);
+			if (
+				task.type !== "agent" ||
+				task.workerRole !== template.workerRole ||
+				task.role !== template.role ||
+				task.tools.some((tool) => !template.tools.includes(tool)) ||
+				(template.readOnly && !task.readOnly) ||
+				!isDeepStrictEqual(task.response, template.response)
+			)
+				throw new Error("mutation cannot grant capabilities or change artifact authority");
+			if (protectedNode(task)) throw new Error("mutation cannot create safety nodes");
+		};
+		const retire = (id: string, replacements: string[]): void => {
+			if (!replacements.length || replacements.includes(id))
+				throw new Error("supersession needs distinct replacement tasks");
+			const old = editable(id);
+			if (id === this.graph.repairNodeId) throw new Error("cannot remove the repair planner");
+			for (const replacement of replacements) {
+				const target = next.nodes.find((candidate) => candidate.id === replacement);
+				if (!target || target.type !== "agent") throw new Error(`unknown replacement ${replacement}`);
+				checkCapability(target, old);
+				touched.add(replacement);
+			}
+			next.nodes = next.nodes.filter((node) => node.id !== id);
+			for (const node of next.nodes)
+				if (node.dependencies?.includes(id)) {
+					node.dependencies = [
+						...new Set(node.dependencies.flatMap((dep) => (dep === id ? replacements : [dep]))),
+					];
+					touched.add(node.id);
+				}
+			if (replacements.length > 1)
+				for (const edge of next.edges.filter((edge) => edge.from === id && edge.to !== END_NODE_ID)) {
+					const target = next.nodes.find((node) => node.id === edge.to);
+					if (target) {
+						target.dependencies = [...new Set([...(target.dependencies ?? []), ...replacements])];
+						touched.add(target.id);
+					}
+				}
+			next.edges = next.edges.flatMap((edge) =>
+				edge.from === id
+					? replacements.map((replacement) => ({ ...edge, from: replacement }))
+					: edge.to === id
+						? replacements.map((replacement) => ({ ...edge, to: replacement }))
+						: [edge],
+			);
+			if (next.entry === id) {
+				if (replacements.length !== 1) throw new Error("cannot split graph entry");
+				next.entry = replacements[0];
+			}
+			removed.set(id, replacements);
+		};
+		for (const operation of mutation.operations) {
+			switch (operation.type) {
+				case "insert_arena": {
+					if (
+						!authorizedArena ||
+						operation.afterTaskId !== actorNodeId ||
+						canonicalFingerprint(operation.definition) !== canonicalFingerprint(authorizedArena.graph)
+					) {
+						throw new Error("arena insertion requires host-selected independent assignments");
+					}
+					const outgoing = next.edges.filter((edge) => edge.from === actorNodeId);
+					const terminals = operation.definition.edges
+						.filter((edge) => edge.to === END_NODE_ID)
+						.map((edge) => edge.from);
+					if (!outgoing.length || terminals.length !== 1)
+						throw new Error("arena insertion requires one exit and existing outgoing work");
+					for (const task of operation.definition.nodes) {
+						next.nodes.push({ ...task, goalIds: [...(next.requiredGoalIds ?? [])] });
+						touched.add(task.id);
+					}
+					for (const edge of outgoing) {
+						const target = next.nodes.find((task) => task.id === edge.to);
+						if (target) {
+							target.dependencies = [...new Set([...(target.dependencies ?? []), terminals[0]])];
+							touched.add(target.id);
+						}
+					}
+					next.edges = [
+						...next.edges.filter((edge) => edge.from !== actorNodeId),
+						{ from: actorNodeId, to: operation.definition.entry },
+						...operation.definition.edges.filter((edge) => edge.to !== END_NODE_ID),
+						...outgoing.map((edge) => ({ ...edge, from: terminals[0] })),
+					];
+					touched.add(actorNodeId);
+					break;
+				}
+				case "create": {
+					const template = this.nodes.get(operation.template);
+					if (!template || template.type !== "agent" || protectedNode(template))
+						throw new Error("unknown or protected capability template");
+					checkCapability(operation.task, template);
+					next.nodes.push(operation.task);
+					touched.add(operation.task.id);
+					break;
+				}
+				case "replace":
+				case "split": {
+					const old = editable(operation.taskId);
+					if (
+						!Array.isArray(operation.tasks) ||
+						!operation.tasks.length ||
+						(operation.type === "replace" && operation.tasks.length !== 1)
+					)
+						throw new Error("invalid replacement task count");
+					for (const task of operation.tasks) {
+						checkCapability(task, old);
+						task.dependencies ??= [...(old.dependencies ?? [])];
+						next.nodes.push(task);
+						touched.add(task.id);
+					}
+					retire(
+						old.id,
+						operation.tasks.map((task) => task.id),
+					);
+					break;
+				}
+				case "supersede":
+					retire(operation.taskId, operation.replacementIds);
+					break;
+				case "dependencies":
+					editable(operation.taskId).dependencies = [...operation.dependencies];
+					break;
+				case "route": {
+					const source = next.nodes.find((node) => node.id === operation.from);
+					if (!source || protectedNode(source)) throw new Error("cannot rewrite safety routing");
+					touched.add(source.id);
+					const prior = next.edges.filter((edge) => edge.from === operation.from);
+					for (const edge of operation.edges) {
+						if (edge.from !== operation.from) throw new Error("route source mismatch");
+						const target = next.nodes.find((node) => node.id === edge.to);
+						if (
+							((target && protectedNode(target)) || edge.to === END_NODE_ID) &&
+							!prior.some((existing) => isDeepStrictEqual(existing, edge))
+						)
+							throw new Error("cannot introduce a safety bypass");
+					}
+					for (const edge of prior) {
+						const target = next.nodes.find((node) => node.id === edge.to);
+						if (
+							target &&
+							protectedNode(target) &&
+							!operation.edges.some((replacement) => isDeepStrictEqual(edge, replacement))
+						)
+							throw new Error("cannot remove a safety route");
+					}
+					next.edges = [...next.edges.filter((edge) => edge.from !== operation.from), ...operation.edges];
+					break;
+				}
+				default:
+					throw new Error("unknown graph mutation operation");
+			}
+		}
+		for (const id of touched)
+			if (!mutation.affectedTaskIds.includes(id)) throw new Error(`mutation omits affected task ${id}`);
+		for (const id of mutation.affectedTaskIds) if (!touched.has(id)) throw new Error(`unknown affected task ${id}`);
+		for (const id of mutation.affectedGoalIds)
+			if (!next.requiredGoalIds?.includes(id)) throw new Error(`unknown affected goal ${id}`);
+		for (const id of mutation.affectedAssumptionIds)
+			if (!next.assumptionIds?.includes(id)) throw new Error(`unknown affected assumption ${id}`);
+		for (const node of [...this.graph.nodes, ...next.nodes].filter((node) => touched.has(node.id))) {
+			for (const goal of node.goalIds ?? [])
+				if (!mutation.affectedGoalIds.includes(goal)) throw new Error(`mutation omits affected goal ${goal}`);
+			for (const assumption of node.assumptionIds ?? [])
+				if (!mutation.affectedAssumptionIds.includes(assumption))
+					throw new Error(`mutation omits affected assumption ${assumption}`);
+		}
+		for (const node of next.nodes) {
+			if (!this.nodes.has(node.id) && Object.hasOwn(this.runState.nodes, node.id))
+				throw new Error(`duplicate graph node id from superseded history: ${node.id}`);
+		}
+		const reachable = (definition: GraphDefinition): Set<string> => {
+			const ids = new Set<string>();
+			const pending = [definition.entry];
+			for (let index = 0; index < pending.length; index++) {
+				const id = pending[index];
+				if (ids.has(id)) continue;
+				ids.add(id);
+				for (const edge of definition.edges) if (edge.from === id) pending.push(edge.to);
+				const node = definition.nodes.find((candidate) => candidate.id === id);
+				if (node?.type === "pause") pending.push(...node.resume);
+			}
+			return ids;
+		};
+		const previouslyReachable = reachable(this.graph);
+		const nextReachable = reachable(next);
+		for (const node of this.graph.nodes) {
+			if (protectedNode(node) && previouslyReachable.has(node.id) && !nextReachable.has(node.id))
+				throw new Error(`mutation cannot bypass safety node ${node.id}`);
+		}
+		validateGraphDefinition(next);
+		if (canonicalFingerprint(next) === canonicalFingerprint(this.graph))
+			throw new Error("mutation must change execution strategy");
+		const revision: ExecutionRevision = {
+			revision: (this.runState.revision ?? 0) + 1,
+			previousHash: canonicalFingerprint(this.graph),
+			hash: canonicalFingerprint(next),
+			at: new Date(this.now()).toISOString(),
+			actorId: this.runState.nodes[actorNodeId].agentId!,
+			mutation,
+		};
+		const previousState = structuredClone(this.runState);
+		const previousGraph = this.graph;
+		this.graph = next;
+		this.nodes.clear();
+		for (const node of next.nodes) {
+			this.nodes.set(node.id, node);
+			this.runState.nodes[node.id] ??= {
+				status: "pending",
+				runs: 0,
+				agentId: `${this.options.jobId}/${node.type === "agent" ? (node.context.threadKey ?? node.id) : node.id}`,
+			};
+			const selected = authorizedArena?.assignments[node.id];
+			if (selected) {
+				this.runState.nodes[node.id].model = `${selected.model.provider}/${selected.model.id}`;
+				this.runState.nodes[node.id].modelReason = selected.reason;
+				this.runState.nodes[node.id].modelPinned = true;
+			}
+		}
+		for (const [id, replacements] of removed) this.runState.superseded![id] = replacements;
+		this.runState.active = [...new Set(this.runState.active.flatMap((id) => removed.get(id) ?? [id]))];
+		this.runState.definition = next;
+		this.runState.revision = revision.revision;
+		this.runState.revisions!.push(revision);
+		try {
+			await this.writeCheckpoint();
+		} catch (error) {
+			this.graph = previousGraph;
+			this.runState = previousState;
+			this.nodes.clear();
+			for (const node of previousGraph.nodes) this.nodes.set(node.id, node);
+			throw error;
+		}
+		return revision;
+	}
+
 	/**
-	 * Re-arms a parked run so the next superstep continues it: status running,
-	 * the pause's resume targets (or the active set) scheduled, and every
+	 * Re-arms a parked run or explicit reconciliation targets: status running,
+	 * the targets (otherwise the pause's resume targets or active set) scheduled, and every
 	 * scheduled node that is not mid-run reset to pending. A node a kill left
 	 * `running` continues its own run with its retry count and backoff deadline
 	 * intact. Public because the operator's "keep going" is exactly this.
 	 */
-	rearm(): void {
+	rearm(targets?: readonly string[]): void {
+		const active = targets ?? this.runState.pause?.resume ?? this.runState.active;
+		for (const nodeId of active) {
+			if (!this.nodes.has(nodeId)) throw new Error(`Cannot rearm unknown graph node ${nodeId}`);
+		}
 		this.runState.status = "running";
-		this.runState.active = [...(this.runState.pause?.resume ?? this.runState.active)];
+		this.runState.active = [...active];
 		for (const nodeId of this.runState.active) {
 			const nodeState = this.runState.nodes[nodeId];
 			if (nodeState !== undefined && nodeState.status !== "running") {
@@ -766,6 +1320,7 @@ export class GraphEngine {
 			}
 		}
 		delete this.runState.pause;
+		this.runState.blockers = [];
 		// A checkpoint from the release that enforced caps carries the terminal
 		// record of the cap or status that ended it; it goes with the status.
 		const legacy: GraphRunState & { terminal?: unknown } = this.runState;
@@ -791,6 +1346,10 @@ export class GraphEngine {
 				`Return only JSON matching ${node.response.schema}; the graph engine writes ${node.response.path}.`,
 			);
 		}
+		if (node.response?.path === "intent.proposal.json") {
+			const clarification = getStatePath(this.runState.values, "intent.feedback");
+			if (typeof clarification === "string") lines.push(`Operator desired-state clarification: ${clarification}`);
+		}
 		// An isolated re-run has no memory of the answer the operator sent back,
 		// so the change request travels in the prompt. `runs` already counts this
 		// run, so the first re-run reads "node run 2".
@@ -803,6 +1362,14 @@ export class GraphEngine {
 				feedback,
 				"Address every point, then return the corrected JSON only.",
 			);
+		}
+		if (this.canMutate(node)) {
+			lines.push(
+				`Execution revision: ${this.runState.revision}; required goal IDs: ${JSON.stringify(this.graph.requiredGoalIds ?? [])}`,
+				"Read execution-repair.json if present. Every repeated failure requires new diagnostic evidence or a materially different task strategy before retrying engineering.",
+			);
+			const recovery = this.runState.recoveries?.at(-1);
+			if (recovery) lines.push(`Recovery decision: ${JSON.stringify(recovery)}`);
 		}
 		return lines.join("\n");
 	}
@@ -865,43 +1432,28 @@ export class GraphEngine {
 		return conditions.every((condition) => isDeepStrictEqual(getStatePath(values, condition.path), condition.equals));
 	}
 
-	/**
-	 * Routes the nodes that just ran. A pause node wins over any sibling
-	 * target: the run is parking, so scheduling more work would be a
-	 * contradiction. Priority among pauses is graph edge order, which makes an
-	 * ambiguous topology resolve the same way every replay.
-	 */
+	/** Preserve each branch's blockers and normal descendants independently. */
 	private route(
 		nodeIds: readonly string[],
 		values: JsonObject,
-	): { targets: string[]; pause?: PauseGraphNode; gap?: string } {
+	): { targets: string[]; pauses: PauseGraphNode[]; gap?: string } {
 		const targets = new Set<string>();
-		let pause: PauseGraphNode | undefined;
+		const pauses = new Map<string, PauseGraphNode>();
 		let gap: string | undefined;
 		for (const nodeId of nodeIds) {
 			const outgoing = this.outgoing(nodeId);
 			let fired = false;
 			for (const edge of outgoing) {
-				if (!this.edgeFires(edge, values)) {
-					continue;
-				}
+				if (!this.edgeFires(edge, values)) continue;
 				fired = true;
 				const target = this.nodes.get(edge.to);
-				if (target?.type === "pause") {
-					pause ??= target;
-					continue;
-				}
-				targets.add(edge.to);
+				if (target?.type === "pause") pauses.set(target.id, target);
+				else targets.add(edge.to);
 			}
-			// A node whose branches all missed has not finished the run: treating
-			// that as completion would report success for a state the topology never
-			// accounted for.
-			if (!fired && outgoing.length > 0) {
-				gap ??= nodeId;
-			}
+			if (!fired && outgoing.length) gap ??= nodeId;
 		}
 		targets.delete(END_NODE_ID);
-		return { targets: [...targets], pause, gap };
+		return { targets: [...targets], pauses: [...pauses.values()], gap };
 	}
 
 	/**
@@ -959,6 +1511,44 @@ export class GraphEngine {
 		await appendEvent(join(this.runDirectory(), "events.jsonl"), event);
 	}
 
+	private async selectNodeModel(node: AgentGraphNode): Promise<Model<any> | undefined> {
+		if (this.nodeModels.has(node.id)) return this.nodeModels.get(node.id);
+		const catalog = this.options.availableModels
+			? { getAvailable: this.options.availableModels }
+			: this.options.modelRuntime;
+		const priorModel = this.runState.nodes[node.id].model;
+		const available = catalog ? await catalog.getAvailable() : [];
+		const retained = priorModel
+			? available.find((model) => `${model.provider}/${model.id}` === priorModel)
+			: undefined;
+		if (this.runState.nodes[node.id].modelPinned) {
+			if (!retained)
+				throw new GraphNodeProviderError(
+					node.id,
+					`Arena model ${priorModel} is unavailable; restore that resource or revise the arena`,
+				);
+			this.nodeModels.set(node.id, retained);
+			return retained;
+		}
+		const selected =
+			this.options.modelAssignments?.[node.id] ??
+			(catalog && this.options.model
+				? await resolveEngineeringModel({
+						role: node.role ?? node.id,
+						modelRuntime: { getAvailable: async () => available },
+						projectRoot: this.options.projectRoot,
+						parentModel: retained ?? this.options.model,
+						builderModel: this.builderModel,
+					})
+				: undefined);
+		const model = selected?.model ?? this.options.model;
+		this.nodeModels.set(node.id, model);
+		this.runState.nodes[node.id].model = model ? `${model.provider}/${model.id}` : undefined;
+		this.runState.nodes[node.id].modelReason = selected?.reason;
+		if (node.role === "builder" || node.id === "implement") this.builderModel = model;
+		return model;
+	}
+
 	private async createSessionForNode(
 		node: AgentGraphNode,
 	): Promise<{ session: GraphAgentSession; disposeAfter: boolean }> {
@@ -966,6 +1556,11 @@ export class GraphEngine {
 		if (node.context.mode === "thread") {
 			const existing = this.threadSessions.get(threadKey);
 			if (existing !== undefined) {
+				const context = this.sessionContexts.get(existing);
+				if (context) {
+					context.taskId = node.id;
+					context.role = node.role ?? node.id;
+				}
 				return { session: existing, disposeAfter: false };
 			}
 		}
@@ -979,44 +1574,68 @@ export class GraphEngine {
 			safeThreadKey(threadKey),
 		);
 		await mkdir(sessionDirectory, { recursive: true });
-		const sessionManager = SessionManager.continueRecent(this.options.projectRoot, sessionDirectory);
+		const sessionManager =
+			node.context.mode === "isolated"
+				? SessionManager.create(this.options.projectRoot, sessionDirectory)
+				: SessionManager.continueRecent(this.options.projectRoot, sessionDirectory);
 
 		const agentDir = getAgentDir();
 		const settingsManager = SettingsManager.create(this.options.projectRoot, agentDir);
+		const model = await this.selectNodeModel(node);
+		const contextOptions: AgentContextOptions = {
+			projectRoot: this.options.projectRoot,
+			runDirectory: this.runDirectory(),
+			agentId: this.runState.nodes[node.id].agentId!,
+			role: node.role ?? node.id,
+			taskId: node.id,
+			modelContextWindow: model?.contextWindow ?? 128_000,
+		};
 		const resourceLoader = new DefaultResourceLoader({
 			cwd: this.options.projectRoot,
 			agentDir,
 			settingsManager,
-			extensionFactories: graphAgentExtensionFactories(),
+			extensionFactories: [
+				...graphAgentExtensionFactories(),
+				...(this.graph.intentHash ? [createAgentContextExtension(contextOptions)] : []),
+			],
 		});
 		await resourceLoader.reload();
+		const peer = this.graph.intentHash ? await this.peerBinding(node) : undefined;
 		const result = await this.sessionFactory({
 			cwd: this.options.projectRoot,
 			agentDir,
 			sessionManager,
 			settingsManager,
 			resourceLoader,
-			model: this.options.model,
+			model,
+			modelRuntime: this.options.modelRuntime,
 			thinkingLevel: this.options.thinkingLevel,
-			tools: [...node.tools],
+			tools: [
+				...node.tools,
+				...(this.canMutate(node) ? ["graph_mutate", "architecture_arena"] : []),
+				...(this.graph.intentHash ? ["context_map", "context_navigate", "communicate", "peers"] : []),
+			],
+			customTools: [...this.mutationTools(node), ...(peer?.tools() ?? [])],
 			excludeTools: node.readOnly ? ["bash", "edit", "write"] : undefined,
 		});
-		if (this.uiContext !== undefined) {
-			const session = result.session as GraphAgentSession & {
-				bindExtensions?: (b: {
-					uiContext?: ExtensionUIContext;
-					mode?: "rpc" | "print" | "interactive";
-				}) => Promise<void>;
-			};
-			if (typeof session.bindExtensions === "function") {
-				await session.bindExtensions({
-					uiContext: this.uiContext,
-					mode: "rpc",
-				});
-			}
+		const session = result.session as GraphAgentSession & {
+			bindExtensions?: (bindings: { uiContext?: ExtensionUIContext; mode: "rpc" }) => Promise<void>;
+		};
+		if (typeof session.bindExtensions === "function") {
+			await session.bindExtensions({ uiContext: this.uiContext, mode: "rpc" });
 		}
 		const unexpectedTool = node.readOnly
-			? result.session.getActiveToolNames().find((tool) => !node.tools.includes(tool))
+			? result.session
+					.getActiveToolNames()
+					.find(
+						(tool) =>
+							!node.tools.includes(tool) &&
+							!(["graph_mutate", "architecture_arena"].includes(tool) && this.canMutate(node)) &&
+							!(
+								this.graph.intentHash &&
+								["context_map", "context_navigate", "communicate", "peers"].includes(tool)
+							),
+					)
 			: undefined;
 		if (unexpectedTool !== undefined) {
 			result.session.dispose();
@@ -1026,6 +1645,7 @@ export class GraphEngine {
 			);
 		}
 
+		this.sessionContexts.set(result.session, contextOptions);
 		if (node.context.mode === "thread") {
 			this.threadSessions.set(threadKey, result.session);
 		}
@@ -1035,7 +1655,141 @@ export class GraphEngine {
 		};
 	}
 
+	private observeSessionModel(session: GraphAgentSession, node: AgentGraphNode): void {
+		const model = session.model;
+		if (!model) return;
+		const state = this.runState.nodes[node.id];
+		const served = `${model.provider}/${model.id}`;
+		if (state.modelPinned && state.model !== served) {
+			throw new GraphNodeProviderError(
+				node.id,
+				`Arena resource changed from ${state.model} to ${served}; independent assignments must be re-established before accepting this result`,
+			);
+		}
+		if (state.model !== served) {
+			state.modelReason = [
+				...(state.modelReason ?? []),
+				`Native session moved from ${state.model ?? "unselected"} to ${served}; logical peer identity retained.`,
+			];
+			state.model = served;
+		}
+		this.nodeModels.set(node.id, model);
+		if (node.role === "builder" || node.id === "implement") this.builderModel = model;
+	}
+
+	private async promptSession(session: GraphAgentSession, node: AgentGraphNode, prompt: string): Promise<void> {
+		this.observeSessionModel(session, node);
+		if (this.graph.intentHash) await readTaskForJob(this.options.projectRoot, this.options.jobId);
+		try {
+			await session.prompt(prompt);
+		} finally {
+			this.observeSessionModel(session, node);
+		}
+	}
+
+	private peerBinding(node: AgentGraphNode): Promise<GraphPeerBinding> {
+		const agentId = this.runState.nodes[node.id].agentId!;
+		this.peerNodeIds.set(agentId, node.id);
+		let opening = this.peerBindings.get(agentId);
+		if (!opening) {
+			opening = (async () => {
+				const runtime = await getOrCreateBackgroundBus(
+					this.options.projectRoot,
+					this.runDirectory(),
+					this.options.jobId,
+					this.options.busDependencies,
+				).peers();
+				const endpoint = await runtime.activate({
+					agentId,
+					sessionPath: join(this.runDirectory(), "agents", safeThreadKey(node.context.threadKey ?? node.id)),
+					taskId: node.id,
+					prompt: this.nodePrompt(node),
+					model: this.runState.nodes[node.id].model,
+					descriptor: {
+						agentId,
+						jobId: this.options.jobId,
+						runDirectory: this.runDirectory(),
+						role: node.readOnly ? "explorer" : "implementer",
+						tools: ["communicate", "peers"],
+					},
+				});
+				try {
+					const binding = new GraphPeerBinding(runtime, agentId, await PeerClient.connect(endpoint));
+					binding.attach((message) => this.deliverPeerMessage(agentId, message));
+					if (this.disposed) binding.close();
+					return binding;
+				} catch (error) {
+					runtime.deactivate(agentId);
+					throw error;
+				}
+			})();
+			this.peerBindings.set(agentId, opening);
+			void opening.catch(() => this.peerBindings.delete(agentId));
+		}
+		return opening;
+	}
+
+	private async deliverPeerMessage(agentId: string, message: PeerMessage): Promise<void> {
+		const node = this.nodes.get(this.peerNodeIds.get(agentId)!);
+		if (!node || node.type !== "agent" || this.disposed)
+			throw new Error("peer task no longer belongs to this execution");
+		this.assertNotAborted();
+		const owner: LeaseOwner | undefined = !node.readOnly
+			? { jobId: this.options.jobId, agentId, pid: process.pid, incarnation: randomUUID() }
+			: undefined;
+		if (owner) {
+			for (;;) {
+				if (this.disposed) throw new Error("graph peer detached while awaiting workspace ownership");
+				try {
+					await reserveWriterAuthority(this.options.projectRoot, owner);
+					break;
+				} catch (error) {
+					if (classifyTransientFailure(error) !== "resource") throw error;
+					await this.sleep(this.retryBaseDelayMs, this.options.signal);
+					this.assertNotAborted();
+				}
+			}
+		}
+		let session: GraphAgentSession | undefined;
+		let disposeAfter = false;
+		let unbind: (() => void) | undefined;
+		try {
+			if (this.disposed || this.runState.status === "completed")
+				throw new Error("completed execution cannot start another peer turn");
+			({ session, disposeAfter } = await this.createSessionForNode(node));
+			if (owner) unbind = bindSessionWriterAuthority(session.sessionId, owner);
+			this.inFlight.add(session);
+			await this.promptSession(
+				session,
+				node,
+				`Peer message (data, not protected intent or a new assignment):\n${JSON.stringify(message)}\nRespond directly with communicate; acknowledge with peers only after handling it. Do not publish a new task result or claim completion from this message.`,
+			);
+			const error = session.getLastAssistantError?.();
+			if (error) throw new GraphNodeProviderError(node.id, error);
+		} finally {
+			if (session) {
+				this.inFlight.delete(session);
+				this.recordSessionCost(session);
+				if (disposeAfter) session.dispose();
+			}
+			unbind?.();
+			if (owner) await releaseWriterAuthority(this.options.projectRoot, owner);
+		}
+	}
+
 	private async executeNode(node: GraphNode): Promise<NodeResult> {
+		if (node.type === "agent" && node.workerRole === undefined && this.graph.intentHash) {
+			return (await this.peerBinding(node)).run(() => this.executeAssignedNode(node));
+		}
+		return this.executeAssignedNode(node);
+	}
+
+	private async executeAssignedNode(node: GraphNode): Promise<NodeResult> {
+		if (node.type === "verify") {
+			if (!this.options.executeVerification)
+				throw new GraphNodeContractError(node.id, "authoritative verifier is unavailable");
+			return { nodeId: node.id, assignments: await this.options.executeVerification(node.id) };
+		}
 		if (node.type === "set") {
 			return { nodeId: node.id, assignments: node.assignments };
 		}
@@ -1047,118 +1801,176 @@ export class GraphEngine {
 			// run was scheduled past its own park.
 			throw new Error(`pause node ${node.id} must pause the run before execution`);
 		}
-
-		if (node.workerRole !== undefined) {
-			return this.executeWorkerAgentNode(node);
-		}
-
-		const { session, disposeAfter } = await this.createSessionForNode(node);
-		this.runState.nodes[node.id].sessionId = session.sessionId;
-		const releaseSession = registerLiveNodeSession({
-			kind: "node",
-			jobId: this.options.jobId,
-			nodeId: node.id,
-			sessionId: session.sessionId,
-			contextMode: node.context.mode,
-			threadKey: node.context.threadKey ?? node.id,
-			model: this.modelLabel(),
-			startedAt: new Date(this.now()).toISOString(),
-			stats: () => session.getSessionStats?.(),
-		});
-		this.noteSessionsChange();
-		this.inFlight.add(session);
+		const writer: LeaseOwner | undefined =
+			this.graph.intentHash && (!node.readOnly || node.tools.includes("bash"))
+				? {
+						jobId: this.options.jobId,
+						agentId: this.runState.nodes[node.id].agentId!,
+						pid: process.pid,
+						incarnation: randomUUID(),
+					}
+				: undefined;
+		if (writer) await reserveWriterAuthority(this.options.projectRoot, writer);
+		let unbindWriter: (() => void) | undefined;
 		try {
-			if (node.response === undefined) {
-				this.assertNotAborted();
-				await session.prompt(this.nodePrompt(node));
-				const providerError = session.getLastAssistantError?.();
-				if (providerError !== undefined) {
-					throw new GraphNodeProviderError(node.id, providerError);
+			if (this.graph.intentHash && (node.role === "release" || node.id === "ship")) {
+				if (!this.options.executeVerification)
+					throw new GraphNodeContractError(node.id, "shipping requires host verification");
+				const verified = await this.options.executeVerification("ship");
+				for (const [path, value] of Object.entries(verified)) setStatePath(this.runState.values, path, value);
+				await this.refreshFacts();
+				const passed = new Set((await this.options.resolveVerifiedGoalIds?.()) ?? []);
+				if (
+					getStatePath(this.runState.values, "release.approved") !== true ||
+					(this.graph.requiredGoalIds ?? []).some((id) => !passed.has(id))
+				) {
+					throw new GraphNodeContractError(
+						node.id,
+						"shipping requires fresh goal receipts and current release authority",
+					);
 				}
-				return { nodeId: node.id, assignments: {} };
+				// A retry may follow a successful commit and a failed model response.
+				// The host reconciles its marked Git history; finalization still verifies delivery.
+				if (getStatePath(this.runState.values, "ship.shipped") === true) {
+					return { nodeId: node.id, assignments: {} };
+				}
 			}
 
-			const schema = await loadResponseSchema(this.options.projectRoot, node.response.schema);
-			let validationErrors: string[] = [];
-			for (let attempt = 0; attempt <= node.response.retries; attempt += 1) {
-				const prompt =
-					attempt === 0
-						? this.nodePrompt(node)
-						: `Your previous response failed ${node.response.schema}: ${validationErrors.join("; ")}. Return corrected JSON only.`;
-				// A stop that landed while the session was idle (creating it, or
-				// between validation attempts) has no run to abort: refuse the next prompt.
-				this.assertNotAborted();
-				await session.prompt(prompt);
-				const providerError = session.getLastAssistantError?.();
-				if (providerError !== undefined) {
-					throw new GraphNodeProviderError(node.id, providerError);
-				}
-				const source = session.getLastAssistantText?.();
-				if (source === undefined) {
-					validationErrors = ["assistant response text is unavailable"];
-					continue;
-				}
+			if (node.workerRole !== undefined) {
+				return this.executeWorkerAgentNode(node);
+			}
 
-				let output: unknown;
-				try {
-					output = JSON.parse(source);
-				} catch {
-					validationErrors = ["response is not valid JSON"];
-					continue;
-				}
-				validationErrors = validateJsonSchema(output, schema);
-				if (validationErrors.length > 0) {
-					continue;
-				}
-				if (!isJsonObject(output)) {
-					validationErrors = ["response must be a JSON object"];
-					continue;
-				}
-
-				const assignments: Record<string, JsonValue> = {};
-				for (const [statePath, responsePath] of Object.entries(node.response.state)) {
-					const value = getStatePath(output, responsePath);
-					if (value === undefined) {
-						validationErrors = [`response state path ${responsePath} does not exist`];
-						break;
+			const { session, disposeAfter } = await this.createSessionForNode(node);
+			this.runState.nodes[node.id].sessionId = session.sessionId;
+			if (writer) unbindWriter = bindSessionWriterAuthority(session.sessionId, writer);
+			const releaseSession = registerLiveNodeSession({
+				kind: "node",
+				jobId: this.options.jobId,
+				nodeId: node.id,
+				agentId: this.runState.nodes[node.id].agentId,
+				sessionId: session.sessionId,
+				contextMode: node.context.mode,
+				threadKey: node.context.threadKey ?? node.id,
+				model: this.runState.nodes[node.id].model ?? this.modelLabel(),
+				startedAt: new Date(this.now()).toISOString(),
+				stats: () => session.getSessionStats?.(),
+			});
+			this.noteSessionsChange();
+			this.inFlight.add(session);
+			try {
+				if (node.response === undefined) {
+					this.assertNotAborted();
+					await this.promptSession(session, node, this.nodePrompt(node));
+					const providerError = session.getLastAssistantError?.();
+					if (providerError !== undefined) {
+						throw new GraphNodeProviderError(node.id, providerError);
 					}
-					assignments[statePath] = structuredClone(value);
-				}
-				if (validationErrors.length > 0) {
-					continue;
+					return { nodeId: node.id, assignments: {} };
 				}
 
-				// stack.json is not only JSON-shaped: Dune semantic rules refuse layer
-				// maps, missing twins, and folder/id mismatches before implement can read them.
-				if (node.response.path === "stack.json") {
-					try {
-						assertDuneStack(output);
-					} catch (error) {
-						validationErrors = [
-							error instanceof DuneStackError || error instanceof Error ? error.message : String(error),
-						];
+				const schema = await loadResponseSchema(this.options.projectRoot, node.response.schema);
+				let validationErrors: string[] = [];
+				for (let attempt = 0; attempt <= node.response.retries; attempt += 1) {
+					const prompt =
+						attempt === 0
+							? this.nodePrompt(node)
+							: `Your previous response failed ${node.response.schema}: ${validationErrors.join("; ")}. Return corrected JSON only.`;
+					// A stop that landed while the session was idle (creating it, or
+					// between validation attempts) has no run to abort: refuse the next prompt.
+					this.assertNotAborted();
+					await this.promptSession(session, node, prompt);
+					const providerError = session.getLastAssistantError?.();
+					if (providerError !== undefined) {
+						throw new GraphNodeProviderError(node.id, providerError);
+					}
+					const source = session.getLastAssistantText?.();
+					if (source === undefined) {
+						validationErrors = ["assistant response text is unavailable"];
 						continue;
 					}
-				}
 
-				await atomicWrite(join(this.runDirectory(), node.response.path), `${JSON.stringify(output, null, 2)}\n`);
-				return { nodeId: node.id, assignments };
+					let output: unknown;
+					try {
+						output = JSON.parse(source);
+					} catch {
+						validationErrors = ["response is not valid JSON"];
+						continue;
+					}
+					validationErrors = validateJsonSchema(output, schema);
+					if (validationErrors.length > 0) {
+						continue;
+					}
+					if (!isJsonObject(output)) {
+						validationErrors = ["response must be a JSON object"];
+						continue;
+					}
+					if (node.arenaProposalRefs) {
+						if (
+							!Array.isArray(output.proposalRefs) ||
+							output.proposalRefs.length !== node.arenaProposalRefs.length ||
+							!node.arenaProposalRefs.every((path) => (output.proposalRefs as JsonValue[]).includes(path))
+						) {
+							validationErrors = ["judgment must reference every independent proposal exactly once"];
+							continue;
+						}
+						for (const path of node.arenaProposalRefs) {
+							const proposal = JSON.parse(await readFile(join(this.runDirectory(), path), "utf8"));
+							const proposalSchema = await loadResponseSchema(
+								this.options.projectRoot,
+								"arena-proposal.schema.json",
+							);
+							if (validateJsonSchema(proposal, proposalSchema).length)
+								throw new GraphNodeContractError(node.id, "arena proposal evidence is invalid");
+						}
+					}
+
+					const assignments: Record<string, JsonValue> = {};
+					for (const [statePath, responsePath] of Object.entries(node.response.state)) {
+						const value = getStatePath(output, responsePath);
+						if (value === undefined) {
+							validationErrors = [`response state path ${responsePath} does not exist`];
+							break;
+						}
+						assignments[statePath] = structuredClone(value);
+					}
+					if (validationErrors.length > 0) {
+						continue;
+					}
+
+					// Validate ownership semantics, not whether the map changed.
+					if (node.response.path === "stack.json") {
+						try {
+							assertDuneStack(output);
+						} catch (error) {
+							validationErrors = [
+								error instanceof DuneStackError || error instanceof Error ? error.message : String(error),
+							];
+							continue;
+						}
+					}
+
+					await atomicWrite(join(this.runDirectory(), node.response.path), `${JSON.stringify(output, null, 2)}\n`);
+					return { nodeId: node.id, assignments };
+				}
+				throw new GraphNodeContractError(
+					node.id,
+					`agent node ${node.id} failed response validation after ${node.response.retries + 1} attempts: ${validationErrors.join("; ")}`,
+				);
+			} finally {
+				this.inFlight.delete(session);
+				releaseSession();
+				this.noteSessionsChange();
+				const delta = this.recordSessionCost(session);
+				if (delta !== undefined) {
+					this.nodeRunCostUsd.set(node.id, (this.nodeRunCostUsd.get(node.id) ?? 0) + delta);
+				}
+				if (disposeAfter) {
+					session.dispose();
+				}
 			}
-			throw new GraphNodeContractError(
-				node.id,
-				`agent node ${node.id} failed response validation after ${node.response.retries + 1} attempts: ${validationErrors.join("; ")}`,
-			);
 		} finally {
-			this.inFlight.delete(session);
-			releaseSession();
-			this.noteSessionsChange();
-			const delta = this.recordSessionCost(session);
-			if (delta !== undefined) {
-				this.nodeRunCostUsd.set(node.id, (this.nodeRunCostUsd.get(node.id) ?? 0) + delta);
-			}
-			if (disposeAfter) {
-				session.dispose();
-			}
+			unbindWriter?.();
+			if (writer) await releaseWriterAuthority(this.options.projectRoot, writer);
 		}
 	}
 
@@ -1178,39 +1990,40 @@ export class GraphEngine {
 			);
 		}
 
-		const bus = new BackgroundBus(
+		const bus = getOrCreateBackgroundBus(
 			this.options.projectRoot,
 			this.runDirectory(),
 			this.options.jobId,
 			this.options.busDependencies ?? {},
 		);
-		const releaseBus = registerLiveBus(bus);
-		let agentId: string | undefined;
 		try {
 			this.assertNotAborted();
+			await this.selectNodeModel(node);
 			const worker = await bus.spawn({
 				role: node.workerRole,
 				prompt: this.workerNodePrompt(node),
-				model: this.modelLabel(),
+				tools: [...new Set([...node.tools, "write_contract", "communicate", "peers"])],
+				model: this.runState.nodes[node.id].model,
 				node: node.id,
+				agentId: this.runState.nodes[node.id].agentId,
 			});
-			agentId = worker.agentId;
 			this.noteSessionsChange();
 			const nodeState = this.runState.nodes[node.id];
 			nodeState.sessionId = worker.sessionPath;
-			nodeState.agentId = worker.agentId;
 
 			let published: {
 				receipt: { declared_path: string };
 				document: Record<string, unknown>;
 			};
 			try {
-				// The operator's stop lands here at once; `finally` stops the worker.
+				// Stop interrupts this assignment; the job-owned peer remains registered.
 				published = await this.abortable(bus.awaitInitialContract(worker.agentId));
 			} catch (error) {
 				if (error instanceof OperatorStopError) {
+					await bus.stop(worker.agentId);
 					throw error;
 				}
+				if (classifyTransientFailure(error) !== undefined) throw error;
 				throw new GraphNodeContractError(
 					node.id,
 					`worker-role agent node ${node.id} failed closed without a receipt-backed ${node.response.path}: ${
@@ -1245,10 +2058,6 @@ export class GraphEngine {
 			await this.emitReviewVerdictIfNeeded(node, output);
 			return { nodeId: node.id, assignments };
 		} finally {
-			if (agentId !== undefined) {
-				await bus.stop(agentId).catch(() => undefined);
-			}
-			releaseBus();
 			this.noteSessionsChange();
 		}
 	}
@@ -1330,6 +2139,15 @@ export class GraphEngine {
 				nodeState.retryAtMs = this.now() + delayMs;
 				nodeState.retryDelaysMs = [...(nodeState.retryDelaysMs ?? []), delayMs];
 				nodeState.error = `transient ${reason}: ${message}`;
+				nodeState.recovery = decideRecovery({
+					kind: "transient",
+					classification: "TRANSIENT_FAILURE",
+					witness: canonicalFingerprint({ node: node.id, reason, status: httpStatus(error) }),
+					prior: nodeState.recovery ? [nodeState.recovery] : [],
+					taskIds: [node.id],
+					goalIds: node.goalIds,
+					evidenceRefs: [`graph/checkpoint-${String(this.runState.superstep).padStart(6, "0")}.json`],
+				});
 				await this.writeCheckpoint();
 				const status = httpStatus(error);
 				await this.options.onRetry?.({
@@ -1395,28 +2213,136 @@ export class GraphEngine {
 	}
 
 	/**
-	 * A contract defect — a routing gap, two writers of one path, a node that
-	 * will not validate — is neither the operator's stop nor a retry: the run
-	 * parks NEEDS_HUMAN (contract) with the nodes marked failed. A resume
-	 * re-runs those nodes and every active node the pause left unexecuted, so
-	 * a sibling in a later batch is never dropped from the topology's schedule.
+	 * Contract defects retain failed-node evidence and route to the authorized
+	 * repair planner. Without one, only the affected branch is blocked; ready
+	 * siblings continue. A run pauses only when no independent work remains.
 	 */
-	private fail(message: string, nodeIds: readonly string[]): Promise<Readonly<GraphRunState>> {
+	private async fail(message: string, nodeIds: readonly string[]): Promise<Readonly<GraphRunState>> {
 		for (const nodeId of nodeIds) {
 			this.runState.nodes[nodeId].status = "failed";
 			this.runState.nodes[nodeId].error = message;
 		}
-		const pending = this.runState.active.filter(
-			(id) => !nodeIds.includes(id) && this.runState.nodes[id]?.status === "pending",
-		);
-		return this.pause({
+		const decision = decideRecovery({
+			kind: "contract",
+			witness: canonicalFingerprint({ message, nodeIds }),
+			prior: this.runState.recoveries,
+			evidenceRefs: [`graph/checkpoint-${String(this.runState.superstep).padStart(6, "0")}.json`],
+			taskIds: [...nodeIds],
+			goalIds: [...new Set(nodeIds.flatMap((id) => this.nodes.get(id)?.goalIds ?? []))],
+		});
+		this.runState.recoveries!.push(decision);
+		for (const id of nodeIds) this.runState.nodes[id].recovery = decision;
+		this.runState.active = this.runState.active.filter((id) => !nodeIds.includes(id));
+		if (this.graph.repairNodeId) {
+			const repair = this.graph.repairNodeId;
+			this.runState.nodes[repair].status = "pending";
+			this.runState.active = [...new Set([...this.runState.active, repair])];
+			await this.writeCheckpoint();
+			await atomicWrite(
+				join(this.runDirectory(), "execution-repair.json"),
+				`${JSON.stringify(decision, null, 2)}\n`,
+			);
+			return this.runState;
+		}
+		const blocker: GraphPauseState = {
 			recovery: "contract",
 			reason: message,
 			round: this.runState.budget.round,
 			superstep: this.runState.superstep,
 			nodes: [...nodeIds],
-			resume: [...nodeIds, ...pending],
+			resume: [...nodeIds],
+		};
+		this.runState.blockers!.push(blocker);
+		if (this.readyNodeIds().length) {
+			await this.writeCheckpoint();
+			return this.runState;
+		}
+		return this.pause({ ...blocker, resume: [...new Set([...nodeIds, ...this.runState.active])] });
+	}
+
+	private readyNodeIds(): string[] {
+		const blocked = new Set((this.runState.blockers ?? []).flatMap((blocker) => blocker.resume));
+		const dependsOnBlocked = (id: string): boolean =>
+			blocked.has(id) || (this.nodes.get(id)?.dependencies ?? []).some(dependsOnBlocked);
+		return this.runState.active.filter(
+			(id) =>
+				!this.runState.superseded?.[id] &&
+				!dependsOnBlocked(id) &&
+				(this.nodes.get(id)?.dependencies ?? []).every(
+					(dependency) => this.runState.nodes[dependency]?.status === "completed",
+				),
+		);
+	}
+
+	private async settleExhaustion(): Promise<void> {
+		if (this.runState.active.length) return;
+		const blockers = this.runState.blockers ?? [];
+		if (blockers.length) {
+			await this.pause({ ...blockers[0], resume: [...new Set(blockers.flatMap((blocker) => blocker.resume))] });
+			return;
+		}
+		const verified = new Set((await this.options.resolveVerifiedGoalIds?.()) ?? []);
+		const missing = (this.graph.requiredGoalIds ?? []).filter((id) => !verified.has(id));
+		if (!missing.length) {
+			this.runState.status = "completed";
+			return;
+		}
+		const repair = this.graph.repairNodeId ?? this.graph.nodes.find((node) => this.canMutate(node))?.id;
+		if (!repair) {
+			await this.pause({
+				recovery: "contract",
+				reason: `required goals remain unverified and no repair planner exists: ${missing.join(", ")}`,
+				round: this.runState.budget.round,
+				superstep: this.runState.superstep,
+				nodes: [],
+				resume: [this.graph.entry],
+			});
+			return;
+		}
+		const decision = decideRecovery({
+			kind: "engineering",
+			witness: canonicalFingerprint(missing),
+			prior: this.runState.recoveries,
+			goalIds: missing,
+			taskIds: [repair],
 		});
+		this.runState.recoveries!.push(decision);
+		this.runState.nodes[repair].status = "pending";
+		this.runState.active = [repair];
+		this.runState.status = "running";
+		await this.writeCheckpoint();
+		await atomicWrite(join(this.runDirectory(), "execution-repair.json"), `${JSON.stringify(decision, null, 2)}\n`);
+	}
+
+	private async propagateResults(): Promise<void> {
+		if (!this.runState.pendingRoutes?.length) return;
+		await this.refreshFacts();
+		const routed = this.route(this.runState.pendingRoutes, this.runState.values);
+		this.runState.pendingRoutes = [];
+		for (const id of routed.targets) {
+			const node = this.nodes.get(id)!;
+			if (
+				node.dependencies?.length &&
+				this.runState.nodes[id].status === "completed" &&
+				node.dependencies.every(
+					(dependency) =>
+						this.runState.nodes[id].dependencyRuns?.[dependency] === this.runState.nodes[dependency].runs,
+				)
+			)
+				continue;
+			if (!this.runState.active.includes(id)) this.runState.active.push(id);
+			if (this.runState.nodes[id].status !== "running") this.runState.nodes[id].status = "pending";
+		}
+		for (const pause of routed.pauses)
+			this.runState.blockers!.push({
+				recovery: pause.recovery,
+				reason: pause.reason,
+				round: this.runState.budget.round,
+				superstep: this.runState.superstep,
+				nodes: [pause.id],
+				resume: [...pause.resume],
+			});
+		if (routed.gap) await this.fail(`no graph edge from ${routed.gap} matched the run state`, [routed.gap]);
 	}
 
 	/** Folds the injected clock and cost source into the durable, report-only counters. */
@@ -1470,206 +2396,177 @@ export class GraphEngine {
 		});
 	}
 
+	/** Host admission failures use the same evidence-driven repair path as node failures. */
+	async reportContractDefect(nodeId: string, message: string): Promise<Readonly<GraphRunState>> {
+		if (!this.nodes.has(nodeId)) throw new Error(`unknown failed task ${nodeId}`);
+		if (!message.trim()) throw new Error("contract defect requires an observed reason");
+		return this.fail(message, [nodeId]);
+	}
+
 	async runSuperstep(): Promise<Readonly<GraphRunState>> {
-		if (this.runState.status === "interrupted") {
-			throw new Error("graph is interrupted and must be resumed");
-		}
+		if (this.runState.status === "interrupted") throw new Error("graph is interrupted and must be resumed");
+		if (this.runState.status !== "running") return this.runState;
+		this.readBudget();
+		await this.assertNotStopped();
+		await this.propagateResults();
+		if (this.runState.status !== "running") return this.runState;
+		await this.settleExhaustion();
 		if (this.runState.status !== "running") {
+			await this.writeCheckpoint();
 			return this.runState;
 		}
-		this.readBudget();
-
-		const activeNodes = this.runState.active.map((id) => {
+		// Durable initial state exists before the first agent or tool can run.
+		await this.writeCheckpoint();
+		let activeNodes = this.readyNodeIds().map((id) => {
 			const node = this.nodes.get(id);
-			if (node === undefined) {
-				throw new Error(`active graph node does not exist: ${id}`);
-			}
+			if (!node) throw new Error(`active graph node does not exist: ${id}`);
 			return node;
 		});
-
-		const humanNode = activeNodes.find((node) => node.type === "human");
-		if (humanNode !== undefined) {
-			if (activeNodes.length !== 1 || humanNode.type !== "human") {
-				return this.fail("human nodes cannot share a superstep", this.runState.active);
-			}
-			const nodeState = this.runState.nodes[humanNode.id];
-			nodeState.runs += 1;
-			nodeState.status = "interrupted";
+		if (!activeNodes.length) {
+			const blocker = this.runState.blockers?.[0];
+			if (blocker)
+				return this.pause({
+					...blocker,
+					resume: [
+						...new Set([...this.runState.active, ...this.runState.blockers!.flatMap((entry) => entry.resume)]),
+					],
+				});
+			return this.fail("active tasks have unsatisfied dependencies", this.runState.active);
+		}
+		// Independent branches drain before an external approval parks the run.
+		if (activeNodes.some((node) => node.type !== "human" && node.type !== "pause")) {
+			activeNodes = activeNodes.filter((node) => node.type !== "human" && node.type !== "pause");
+		}
+		const pauseNode = activeNodes.find((node) => node.type === "pause");
+		if (pauseNode?.type === "pause") return this.routedPause(pauseNode);
+		const human = activeNodes.find((node) => node.type === "human");
+		if (human?.type === "human") {
+			const state = this.runState.nodes[human.id];
+			state.runs += 1;
+			state.status = "interrupted";
 			this.countRound();
 			this.runState.status = "interrupted";
-			this.runState.pendingHuman = {
-				nodeId: humanNode.id,
-				title: humanNode.title,
-				question: humanNode.question,
-			};
+			this.runState.pendingHuman = { nodeId: human.id, title: human.title, question: human.question };
 			this.runState.superstep += 1;
 			await this.writeCheckpoint();
 			return this.runState;
 		}
-
-		// Bookkeeping happens per batch, immediately around the work it describes.
-		// Counting a whole superstep up front and then stopping between batches
-		// would leave a checkpoint claiming runs for nodes that never started, and
-		// a resume would repeat the side effects of the batches that did.
-		const results: NodeResult[] = [];
-		const executed: GraphNode[] = [];
-		for (const batch of batchReadyNodes(activeNodes, this.runState.budget.limits.maxConcurrency)) {
+		for (const scheduled of batchReadyNodes(
+			activeNodes,
+			this.runState.budget.limits.maxConcurrency,
+			(left, right) =>
+				left.type === "verify" ||
+				right.type === "verify" ||
+				(left.type === "agent" && (!left.readOnly || this.canMutate(left))) ||
+				(right.type === "agent" && (!right.readOnly || this.canMutate(right))) ||
+				(left.type === "agent" &&
+					right.type === "agent" &&
+					((left.response?.path !== undefined && left.response.path === right.response?.path) ||
+						(left.context.mode === "thread" &&
+							right.context.mode === "thread" &&
+							(left.context.threadKey ?? left.id) === (right.context.threadKey ?? right.id)))),
+		)) {
+			const ready = new Set(this.readyNodeIds());
+			const batch = scheduled.flatMap((node) => {
+				const current = this.nodes.get(node.id);
+				return current && ready.has(current.id) ? [current] : [];
+			});
+			if (!batch.length) continue;
+			const starts = new Map<string, number>();
 			for (const node of batch) {
-				const nodeState = this.runState.nodes[node.id];
-				// A node whose checkpoint already says `running` was killed mid-run;
-				// continuing it is the same run, so neither its run count nor the
-				// graph's round moves again.
-				if (nodeState.status !== "running") {
-					nodeState.runs += 1;
+				if (node.type === "agent") {
+					try {
+						await this.selectNodeModel(node);
+					} catch (error) {
+						return this.fail(error instanceof Error ? error.message : String(error), [node.id]);
+					}
 				}
-				nodeState.status = "running";
-				delete nodeState.error;
+				const state = this.runState.nodes[node.id];
+				if (state.status !== "running") state.runs += 1;
+				state.status = "running";
+				delete state.error;
+				this.nodeRunCostUsd.delete(node.id);
+				starts.set(node.id, this.now());
 			}
 			this.countRound();
-
-			// Bracket every agent node in the batch with node.started/node.finished on
-			// events.jsonl; a resumed `running` node re-emits node.started with the
-			// same run number since its runs count did not move above. Transient
-			// retries inside executeWithRetries never repeat either event.
-			const startedAt = new Map<string, number>();
+			await this.writeCheckpoint();
 			for (const node of batch) {
-				if (node.type !== "agent") {
-					continue;
-				}
-				const t = this.now();
-				startedAt.set(node.id, t);
-				this.nodeRunCostUsd.delete(node.id);
-				const model = this.modelLabel();
+				if (node.type !== "agent" && node.type !== "verify") continue;
 				await this.appendNodeEvent({
-					ts: new Date(t).toISOString(),
+					ts: new Date(starts.get(node.id)!).toISOString(),
 					type: "node.started",
 					job_id: this.options.jobId,
 					round: this.runState.budget.round,
 					node: node.id,
 					run: this.runState.nodes[node.id].runs,
-					...(model === undefined ? {} : { model }),
+					...(node.type === "agent" && this.runState.nodes[node.id].model
+						? {
+								model: this.runState.nodes[node.id].model,
+								model_reason: this.runState.nodes[node.id].modelReason,
+							}
+						: {}),
 				});
 			}
-
-			// Settled, not fail-fast. A sibling that finished has already had its
-			// side effects, so discarding its result would make a resumed run repeat
-			// them; it is committed exactly once here and never reruns.
 			const settled = await Promise.allSettled(batch.map((node) => this.executeWithRetries(node)));
+			const results: NodeResult[] = [];
+			const executed: GraphNode[] = [];
 			const rejected: { node: GraphNode; error: unknown }[] = [];
 			for (const [index, outcome] of settled.entries()) {
 				const node = batch[index];
+				const state = this.runState.nodes[node.id];
 				if (outcome.status === "fulfilled") {
 					results.push(outcome.value);
 					executed.push(node);
-					continue;
-				}
-				rejected.push({ node, error: outcome.reason });
-				// A stopped node is not finished: it keeps its retry record and
-				// continues on resume, so it is neither marked nor reported failed.
-				if (outcome.reason instanceof OperatorStopError) {
-					continue;
-				}
-				this.runState.nodes[node.id].status = "failed";
-				this.runState.nodes[node.id].error =
-					outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason);
-			}
-
-			for (const [index, outcome] of settled.entries()) {
-				const node = batch[index];
-				if (
-					node.type !== "agent" ||
-					(outcome.status === "rejected" && outcome.reason instanceof OperatorStopError)
-				) {
-					continue;
-				}
-				const nodeStartedAt = startedAt.get(node.id);
-				if (nodeStartedAt === undefined) {
-					continue;
-				}
-				const t = this.now();
-				const elapsedMs = Math.max(0, t - nodeStartedAt);
-				const costUsd = this.nodeRunCostUsd.get(node.id);
-				this.nodeRunCostUsd.delete(node.id);
-				const nodeState = this.runState.nodes[node.id];
-				if (outcome.status === "fulfilled") {
-					await this.appendNodeEvent({
-						ts: new Date(t).toISOString(),
-						type: "node.finished",
-						job_id: this.options.jobId,
-						round: this.runState.budget.round,
-						node: node.id,
-						run: nodeState.runs,
-						status: "completed",
-						elapsed_ms: elapsedMs,
-						...(costUsd === undefined ? {} : { cost_usd: costUsd }),
-						...(node.response !== undefined ? { result: node.response.path } : {}),
-						...(nodeState.sessionId === undefined ? {} : { session: nodeState.sessionId }),
-					});
 				} else {
-					const error = outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason);
-					await this.appendNodeEvent({
-						ts: new Date(t).toISOString(),
-						type: "node.finished",
-						job_id: this.options.jobId,
-						round: this.runState.budget.round,
-						node: node.id,
-						run: nodeState.runs,
-						status: "failed",
-						elapsed_ms: elapsedMs,
-						...(costUsd === undefined ? {} : { cost_usd: costUsd }),
-						...(nodeState.sessionId === undefined ? {} : { session: nodeState.sessionId }),
-						error,
-					});
+					rejected.push({ node, error: outcome.reason });
+					if (outcome.reason instanceof OperatorStopError) continue;
+					state.status = "failed";
+					state.error = outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason);
 				}
+				if (node.type !== "agent" && node.type !== "verify") continue;
+				const cost = this.nodeRunCostUsd.get(node.id);
+				await this.appendNodeEvent({
+					ts: new Date(this.now()).toISOString(),
+					type: "node.finished",
+					job_id: this.options.jobId,
+					round: this.runState.budget.round,
+					node: node.id,
+					run: state.runs,
+					status: outcome.status === "fulfilled" ? "completed" : "failed",
+					elapsed_ms: Math.max(0, this.now() - starts.get(node.id)!),
+					...(cost === undefined ? {} : { cost_usd: cost }),
+					...(state.sessionId === undefined ? {} : { session: state.sessionId }),
+					...(outcome.status === "rejected"
+						? { error: state.error }
+						: node.type === "agent" && node.response
+							? { result: node.response.path }
+							: {}),
+				});
 			}
-
-			if (rejected.length > 0) {
-				const conflict = this.commitResults(results, executed);
-				if (conflict !== undefined) {
-					return this.fail(conflict, this.runState.active);
-				}
-				this.runState.active = activeNodes.filter((node) => !executed.includes(node)).map((node) => node.id);
-				// The operator's stop wins over any sibling's failure; otherwise batch
-				// order decides, and every rejection is already recorded on its node.
+			const conflict = this.commitResults(results, executed);
+			if (conflict !== undefined) return this.fail(conflict, this.runState.active);
+			const completed = new Set(executed.map((node) => node.id));
+			this.runState.active = this.runState.active.filter((id) => !completed.has(id));
+			this.runState.pendingRoutes = [...new Set([...(this.runState.pendingRoutes ?? []), ...completed])];
+			this.runState.budget.batches += 1;
+			// Result and its still-pending descendants are indivisible on replay.
+			await this.writeCheckpoint();
+			if (rejected.length) {
 				const first =
 					rejected.find((entry) => entry.error instanceof OperatorStopError)?.error ?? rejected[0].error;
-				if (first instanceof OperatorStopError || first instanceof GraphNodeProviderError) {
-					// Both are the driver's to record: STOPPED, or NEEDS_HUMAN (provider).
-					// The checkpoint keeps a stopped node `running` with its retry count
-					// and deadline so a restore continues it, and a refused node
-					// `failed` with the refusal so a restore re-runs it.
-					await this.writeCheckpoint();
-					throw first;
-				}
+				if (first instanceof OperatorStopError || first instanceof GraphNodeProviderError) throw first;
+				await this.propagateResults();
 				return this.fail(
 					first instanceof Error ? first.message : String(first),
 					rejected.map((entry) => entry.node.id),
 				);
 			}
-			this.runState.budget.batches += 1;
-		}
-
-		const conflict = this.commitResults(results, executed);
-		if (conflict !== undefined) {
-			return this.fail(conflict, this.runState.active);
 		}
 		this.readBudget();
-		// Environment facts are refreshed before routing, never after: an edge
-		// that tests bounds or evidence freshness must see the state the batch
-		// just produced, not the state it started from.
-		await this.refreshFacts();
-		const routed = this.route(
-			executed.map((node) => node.id),
-			this.runState.values,
-		);
-		if (routed.pause !== undefined) {
-			return this.routedPause(routed.pause);
-		}
-		if (routed.gap !== undefined) {
-			return this.fail(`no graph edge from ${routed.gap} matched the run state`, [routed.gap]);
-		}
-		this.runState.active = routed.targets;
-		this.runState.status = this.runState.active.length === 0 ? "completed" : "running";
+		await this.propagateResults();
+		if (this.runState.status !== "running") return this.runState;
+		await this.settleExhaustion();
+		if (this.state.status === "paused") return this.runState;
 		this.runState.superstep += 1;
 		await this.writeCheckpoint();
 		return this.runState;
@@ -1703,7 +2600,11 @@ export class GraphEngine {
 		const values = structuredClone(this.runState.values);
 		for (const result of results) {
 			for (const [path, value] of Object.entries(result.assignments)) {
-				if (seenPaths.has(path)) {
+				if (
+					[...seenPaths].some(
+						(seen) => seen === path || seen.startsWith(`${path}.`) || path.startsWith(`${seen}.`),
+					)
+				) {
 					return `multiple nodes wrote state path ${path} in one superstep`;
 				}
 				seenPaths.add(path);
@@ -1713,6 +2614,9 @@ export class GraphEngine {
 		this.runState.values = values;
 		for (const node of executed) {
 			this.runState.nodes[node.id].status = "completed";
+			this.runState.nodes[node.id].dependencyRuns = Object.fromEntries(
+				(node.dependencies ?? []).map((id) => [id, this.runState.nodes[id].runs]),
+			);
 		}
 		return undefined;
 	}
@@ -1758,17 +2662,13 @@ export class GraphEngine {
 		}
 		this.runState.values = values;
 		this.runState.nodes[node.id].status = "completed";
-		await this.refreshFacts();
-		const routed = this.route([node.id], this.runState.values);
+		this.runState.active = this.runState.active.filter((id) => id !== node.id);
+		this.runState.pendingRoutes!.push(node.id);
 		delete this.runState.pendingHuman;
-		if (routed.pause !== undefined) {
-			return this.routedPause(routed.pause);
-		}
-		if (routed.gap !== undefined) {
-			return this.fail(`no graph edge from ${routed.gap} matched the run state`, [routed.gap]);
-		}
-		this.runState.active = routed.targets;
-		this.runState.status = this.runState.active.length === 0 ? "completed" : "running";
+		this.runState.status = "running";
+		await this.propagateResults();
+		await this.settleExhaustion();
+		if (this.state.status === "paused") return this.runState;
 		this.runState.superstep += 1;
 		await this.writeCheckpoint();
 		return this.runState;
@@ -1780,6 +2680,13 @@ export class GraphEngine {
 	}
 
 	dispose(): void {
+		this.disposed = true;
+		this.onAbort();
+		for (const binding of this.peerBindings.values())
+			void binding.then(
+				(peer) => peer.close(),
+				() => undefined,
+			);
 		this.options.signal?.removeEventListener("abort", this.onAbort);
 		for (const session of this.threadSessions.values()) {
 			session.dispose();
@@ -1787,14 +2694,38 @@ export class GraphEngine {
 		this.threadSessions.clear();
 	}
 
-	static async restore(graph: GraphDefinition, options: GraphEngineOptions): Promise<GraphEngine> {
+	static restore(options: GraphEngineOptions): Promise<GraphEngine>;
+	static restore(graph: GraphDefinition, options: GraphEngineOptions): Promise<GraphEngine>;
+	static async restore(
+		graphOrOptions: GraphDefinition | GraphEngineOptions,
+		suppliedOptions?: GraphEngineOptions,
+	): Promise<GraphEngine> {
+		const graph = "schemaVersion" in graphOrOptions ? graphOrOptions : undefined;
+		const options = suppliedOptions ?? (graphOrOptions as GraphEngineOptions);
 		const directory = join(options.projectRoot, CONFIG_DIR_NAME, "runs", options.jobId, "graph");
-		const checkpointNames = (await readdir(directory)).filter((name) => /^checkpoint-\d{6}\.json$/.test(name)).sort();
+		const checkpointNames = (await readdir(directory))
+			.filter((name) => /^checkpoint-\d+\.json$/.test(name))
+			.sort((a, b) => Number(a.slice(11, -5)) - Number(b.slice(11, -5)));
 		const latest = checkpointNames.at(-1);
 		if (latest === undefined) {
 			throw new Error(`No graph checkpoint found for job ${options.jobId}`);
 		}
 		const state = JSON.parse(await readFile(join(directory, latest), "utf8")) as GraphRunState;
-		return new GraphEngine(graph, options, state);
+		if (!state.definition) throw new Error("checkpoint has no execution topology; explicit migration required");
+		if (graph !== undefined && state.graphId !== graph.id) throw new Error("checkpoint graph identity mismatch");
+		const lastRevision = state.revisions?.at(-1);
+		if (lastRevision && lastRevision.hash !== canonicalFingerprint(state.definition))
+			throw new Error("checkpoint topology audit hash mismatch");
+		const engine = new GraphEngine(state.definition, options, state);
+		if (state.status === "completed" && state.definition.requiredGoalIds?.length) {
+			const verified = new Set((await options.resolveVerifiedGoalIds?.()) ?? []);
+			if (state.definition.requiredGoalIds.some((id) => !verified.has(id))) {
+				engine.runState.status = "running";
+				engine.runState.active = [];
+				await engine.settleExhaustion();
+				await engine.writeCheckpoint();
+			}
+		}
+		return engine;
 	}
 }

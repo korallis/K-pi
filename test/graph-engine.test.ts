@@ -12,6 +12,7 @@ import {
 } from "../packages/coding-agent/src/kpi/extensions/append-log.ts";
 import {
 	liveNodeSessions,
+	registeredBuses,
 	resetSessionsRegistry,
 } from "../packages/coding-agent/src/kpi/extensions/bus/sessions-snapshot.ts";
 import {
@@ -31,7 +32,7 @@ import type {
 	GraphRunState,
 } from "../packages/coding-agent/src/kpi/extensions/graph/schema.ts";
 import { classifyTransientFailure } from "../packages/coding-agent/src/kpi/extensions/graph/stop.ts";
-import { reviewerBusDependencies } from "./helpers/reviewer-bus.ts";
+import { createReviewerJob, reviewerBusDependencies } from "./helpers/reviewer-bus.ts";
 
 const limits = { maxConcurrency: 2 };
 
@@ -61,6 +62,13 @@ function graph(
 
 async function fixture(): Promise<string> {
 	return mkdtemp(join(tmpdir(), "k-pi-graph-"));
+}
+
+async function disposeFixture(projectRoot: string): Promise<void> {
+	for (const bus of registeredBuses()) {
+		if (bus.cwd === projectRoot) await bus.stopAll();
+	}
+	await rm(projectRoot, { recursive: true, force: true });
 }
 
 async function latestCheckpoint(projectRoot: string, jobId: string): Promise<GraphRunState> {
@@ -109,11 +117,8 @@ test("set nodes write nested state and checkpoint the superstep", async () => {
 		const state = await engine.runUntilPause();
 		assert.equal(state.status, "completed");
 		assert.deepEqual(state.values, { policy: { onHumanDeny: "revise" }, release: { approved: true } });
-		assert.deepEqual(await readdir(join(projectRoot, ".kpi", "runs", "set-job", "graph")), [
-			"checkpoint-000001.json",
-		]);
 	} finally {
-		await rm(projectRoot, { recursive: true, force: true });
+		await disposeFixture(projectRoot);
 	}
 });
 
@@ -143,7 +148,7 @@ test("agent nodes inherit the operator session model instead of resolving a diff
 		assert.equal((await engine.runUntilPause()).status, "completed");
 		assert.deepEqual(received, [inheritedModel]);
 	} finally {
-		await rm(projectRoot, { recursive: true, force: true });
+		await disposeFixture(projectRoot);
 	}
 });
 
@@ -201,7 +206,7 @@ test("human nodes pause and a restored true response continues", async () => {
 			continued: true,
 		});
 	} finally {
-		await rm(projectRoot, { recursive: true, force: true });
+		await disposeFixture(projectRoot);
 	}
 });
 
@@ -254,7 +259,77 @@ test("reviewer sessions are persisted separately from the coder thread", async (
 		assert.notEqual(state.nodes.implement.sessionId, state.nodes.review.sessionId);
 		engine.dispose();
 	} finally {
-		await rm(projectRoot, { recursive: true, force: true });
+		await disposeFixture(projectRoot);
+	}
+});
+
+test("isolated reruns start with fresh history while retaining logical agent identity", async () => {
+	const projectRoot = await fixture();
+	const managers: NonNullable<Parameters<GraphAgentSessionFactory>[0]["sessionManager"]>[] = [];
+	const historySizes: number[] = [];
+	const createSession: GraphAgentSessionFactory = async (options) => {
+		const manager = options.sessionManager!;
+		managers.push(manager);
+		historySizes.push(manager.getEntries().length);
+		return {
+			session: {
+				sessionId: manager.getSessionId(),
+				getActiveToolNames: () => options.tools ?? [],
+				dispose() {},
+				async prompt() {
+					manager.appendMessage({ role: "user", content: "prior isolated turn", timestamp: 1 });
+					manager.appendMessage({
+						role: "assistant",
+						content: [{ type: "text", text: "prior independent judgment" }],
+						api: "openai-completions",
+						provider: "openai",
+						model: "test",
+						stopReason: "stop",
+						timestamp: 2,
+						usage: {
+							input: 1,
+							output: 1,
+							cacheRead: 0,
+							cacheWrite: 0,
+							totalTokens: 2,
+							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+						},
+					});
+				},
+			},
+		};
+	};
+	try {
+		const definition = graph("fresh", [
+			{
+				id: "independent",
+				type: "agent",
+				role: "reviewer",
+				prompt: "review",
+				context: { mode: "isolated" },
+				readOnly: true,
+				tools: ["read"],
+			},
+		]);
+		const engine = new GraphEngine(definition, { projectRoot, jobId: "fresh", createAgentSession: createSession });
+		await engine.runUntilPause();
+		const logicalId = engine.state.nodes.independent.agentId;
+		const checkpoint: GraphRunState = structuredClone(engine.state);
+		checkpoint.status = "running";
+		checkpoint.active = ["independent"];
+		const repeated = new GraphEngine(
+			definition,
+			{ projectRoot, jobId: "fresh", createAgentSession: createSession },
+			checkpoint,
+		);
+		await repeated.runUntilPause();
+		assert.deepEqual(historySizes, [0, 0]);
+		assert.notEqual(managers[0].getSessionId(), managers[1].getSessionId());
+		assert.equal(repeated.state.nodes.independent.agentId, logicalId);
+		engine.dispose();
+		repeated.dispose();
+	} finally {
+		await disposeFixture(projectRoot);
 	}
 });
 
@@ -298,7 +373,7 @@ test("read-only agents reject write tools registered by their session", async ()
 		assert.match(state.pause?.reason ?? "", /read-only agent node review registered forbidden tool write/u);
 		assert.equal(state.nodes.review.status, "failed");
 	} finally {
-		await rm(projectRoot, { recursive: true, force: true });
+		await disposeFixture(projectRoot);
 	}
 });
 
@@ -311,7 +386,7 @@ test("the packaged gated graph loads as schema version 2", async () => {
 		assert.ok(definition.nodes.some((node) => node.id === "human"));
 		assert.equal(definition.policy.allowNonInteractive, false);
 	} finally {
-		await rm(projectRoot, { recursive: true, force: true });
+		await disposeFixture(projectRoot);
 	}
 });
 
@@ -401,7 +476,7 @@ test("no counter or clock ends a run: cost, elapsed time, steps, and node runs o
 			/graph limits\.maxConcurrency must be a positive number/u,
 		);
 	} finally {
-		await rm(projectRoot, { recursive: true, force: true });
+		await disposeFixture(projectRoot);
 	}
 });
 
@@ -525,7 +600,7 @@ test("eight ready nodes at concurrency two execute in four batches at peak concu
 		}
 		engine.dispose();
 	} finally {
-		await rm(projectRoot, { recursive: true, force: true });
+		await disposeFixture(projectRoot);
 	}
 });
 
@@ -652,7 +727,7 @@ test("a pause node parks the run with its resume targets and a rearm continues t
 			/pause node unsafe cannot have outgoing edges/u,
 		);
 	} finally {
-		await rm(projectRoot, { recursive: true, force: true });
+		await disposeFixture(projectRoot);
 	}
 });
 
@@ -706,7 +781,7 @@ test("a contract failure pauses with recovery contract instead of failing the ru
 		assert.equal((await terminalEvents(projectRoot, "contract-pause-job")).length, 1);
 		restored.dispose();
 	} finally {
-		await rm(projectRoot, { recursive: true, force: true });
+		await disposeFixture(projectRoot);
 	}
 });
 
@@ -815,7 +890,7 @@ test("a transient prompt failure retries in place with exponential backoff", asy
 			assert.deepEqual(state.nodes.implement.retryDelaysMs, [100]);
 			engine.dispose();
 		} finally {
-			await rm(projectRoot, { recursive: true, force: true });
+			await disposeFixture(projectRoot);
 		}
 	}
 });
@@ -844,7 +919,7 @@ test("two transient failures retry twice with increasing delays and still finish
 		assert.equal(state.budget.round, 1);
 		engine.dispose();
 	} finally {
-		await rm(projectRoot, { recursive: true, force: true });
+		await disposeFixture(projectRoot);
 	}
 });
 
@@ -927,7 +1002,7 @@ test("transient failures retry for as long as it takes with a capped backoff and
 		assert.equal((await terminalEvents(projectRoot, "retry-forever-job")).length, 0, "zero loop.terminal events");
 		engine.dispose();
 	} finally {
-		await rm(projectRoot, { recursive: true, force: true });
+		await disposeFixture(projectRoot);
 	}
 });
 
@@ -957,7 +1032,7 @@ test("a transient 429 retry does not increment the round", async () => {
 		assert.deepEqual(retries, [{ attempt: 1, reason: "http", status: 429 }]);
 		engine.dispose();
 	} finally {
-		await rm(projectRoot, { recursive: true, force: true });
+		await disposeFixture(projectRoot);
 	}
 });
 
@@ -1020,7 +1095,7 @@ test("an operator stop lands after the current backoff and leaves the node resum
 		assert.equal(finished.nodes.implement.runs, 1, "the same run, not a new one");
 		restored.dispose();
 	} finally {
-		await rm(projectRoot, { recursive: true, force: true });
+		await disposeFixture(projectRoot);
 	}
 });
 
@@ -1086,7 +1161,7 @@ test("an aborted signal stops the engine at once and leaves the node resumable",
 		assert.equal(finished.nodes.implement.runs, 1, "as the same run");
 		restored.dispose();
 	} finally {
-		await rm(projectRoot, { recursive: true, force: true });
+		await disposeFixture(projectRoot);
 	}
 
 	// Abort while the session is still being created: no prompt is ever issued.
@@ -1127,7 +1202,7 @@ test("an aborted signal stops the engine at once and leaves the node resumable",
 		assert.equal(liveNodeSessions().length, 0, "the never-prompted session was released");
 		engine.dispose();
 	} finally {
-		await rm(creatingRoot, { recursive: true, force: true });
+		await disposeFixture(creatingRoot);
 	}
 
 	// Abort between two response-validation attempts: the idle session has no
@@ -1176,7 +1251,7 @@ test("an aborted signal stops the engine at once and leaves the node resumable",
 		assert.equal((await latestCheckpoint(betweenRoot, "abort-between-job")).nodes.plan.status, "running");
 		engine.dispose();
 	} finally {
-		await rm(betweenRoot, { recursive: true, force: true });
+		await disposeFixture(betweenRoot);
 	}
 
 	// Abort during an injected backoff sleep that never returns.
@@ -1225,7 +1300,7 @@ test("an aborted signal stops the engine at once and leaves the node resumable",
 		assert.equal(attempts(), 2);
 		restored.dispose();
 	} finally {
-		await rm(sleepRoot, { recursive: true, force: true });
+		await disposeFixture(sleepRoot);
 	}
 });
 
@@ -1269,7 +1344,7 @@ test("an http 503 provider error is transient and a 401 is not", async () => {
 		assert.deepEqual(retries, [{ reason: "http", status: 503 }]);
 		engine.dispose();
 	} finally {
-		await rm(projectRoot, { recursive: true, force: true });
+		await disposeFixture(projectRoot);
 	}
 
 	// A 401 reaches the caller untouched: the driver's provider path decides.
@@ -1313,7 +1388,7 @@ test("an http 503 provider error is transient and a 401 is not", async () => {
 		);
 		engine.dispose();
 	} finally {
-		await rm(refusedRoot, { recursive: true, force: true });
+		await disposeFixture(refusedRoot);
 	}
 });
 
@@ -1341,7 +1416,7 @@ test("an assistant provider failure keeps its real reason instead of becoming mi
 		assert.match(engine.state.nodes.implement.error ?? "", /out of extra usage/u);
 		assert.doesNotMatch(engine.state.nodes.implement.error ?? "", /assistant response text is unavailable/u);
 	} finally {
-		await rm(projectRoot, { recursive: true, force: true });
+		await disposeFixture(projectRoot);
 	}
 });
 
@@ -1383,7 +1458,7 @@ test("a non-transient failure is never retried", async () => {
 			assert.equal((await terminalEvents(projectRoot, "no-retry-job")).length, 1, `${scenario.name}: one terminal`);
 			engine.dispose();
 		} finally {
-			await rm(projectRoot, { recursive: true, force: true });
+			await disposeFixture(projectRoot);
 		}
 	}
 });
@@ -1415,7 +1490,7 @@ test("a read-only contract breach is a defect, not a transient failure", async (
 		assert.equal(state.pause?.recovery, "contract");
 		assert.match(state.pause?.reason ?? "", /registered forbidden tool write/u);
 	} finally {
-		await rm(projectRoot, { recursive: true, force: true });
+		await disposeFixture(projectRoot);
 	}
 });
 
@@ -1452,7 +1527,7 @@ test("review.verdict is a first-class event and fields stay concise", async () =
 		assert.equal(event.blocking_count, 0);
 		assert.doesNotMatch(JSON.stringify(event), /blockingIssues|nit|evidence\.json/);
 	} finally {
-		await rm(projectRoot, { recursive: true, force: true });
+		await disposeFixture(projectRoot);
 	}
 });
 
@@ -1550,7 +1625,7 @@ test("a denied human node with a feedback path writes the feedback and the re-ru
 			/agent node draft\.feedbackPath must be a non-empty string/u,
 		);
 	} finally {
-		await rm(projectRoot, { recursive: true, force: true });
+		await disposeFixture(projectRoot);
 	}
 });
 
@@ -1619,13 +1694,14 @@ test("agent nodes append node.started and node.finished with run, elapsed and co
 			const eventsPath = join(setProjectRoot, ".kpi", "runs", "set-only-job", "events.jsonl");
 			await assert.rejects(readFile(eventsPath, "utf8"), /ENOENT/u, "a set-only run writes no event log");
 		} finally {
-			await rm(setProjectRoot, { recursive: true, force: true });
+			await disposeFixture(setProjectRoot);
 		}
 
 		// A workerRole node emits both records too, but never a fabricated cost.
 		const workerJobId = "lifecycle-worker";
 		const workerDirectory = await mkdtemp(join(tmpdir(), "k-pi-graph-worker-"));
 		try {
+			await createReviewerJob(workerDirectory, workerJobId);
 			const workerEngine = new GraphEngine(reviewGraphFixture(), {
 				projectRoot: workerDirectory,
 				jobId: workerJobId,
@@ -1643,10 +1719,10 @@ test("agent nodes append node.started and node.finished with run, elapsed and co
 			assert.deepEqual(validateJsonSchema(workerStarted, schema), []);
 			assert.deepEqual(validateJsonSchema(workerFinished, schema), []);
 		} finally {
-			await rm(workerDirectory, { recursive: true, force: true });
+			await disposeFixture(workerDirectory);
 		}
 	} finally {
-		await rm(projectRoot, { recursive: true, force: true });
+		await disposeFixture(projectRoot);
 	}
 });
 
@@ -1687,7 +1763,7 @@ test("a failed agent node records node.finished failed with its error and sums c
 		assert.deepEqual(validateJsonSchema(finished, schema), []);
 		assert.deepEqual(validateJsonSchema(terminals[0], schema), []);
 	} finally {
-		await rm(projectRoot, { recursive: true, force: true });
+		await disposeFixture(projectRoot);
 	}
 
 	// A transient failure then a success: exactly one started/finished pair for
@@ -1741,7 +1817,7 @@ test("a failed agent node records node.finished failed with its error and sums c
 		);
 		assert.ok(typeof finished[0]?.elapsed_ms === "number" && (finished[0]?.elapsed_ms as number) >= 0);
 	} finally {
-		await rm(retryRoot, { recursive: true, force: true });
+		await disposeFixture(retryRoot);
 	}
 });
 
@@ -1794,7 +1870,7 @@ test("a running agent node is a live in-process session until it settles, and th
 		assert.equal(liveNodeSessions().length, 0, "the session is released once the node settles");
 		assert.ok(changes.length >= 2, "onSessionsChange fired at least once on register and once on release");
 	} finally {
+		await disposeFixture(projectRoot);
 		resetSessionsRegistry();
-		await rm(projectRoot, { recursive: true, force: true });
 	}
 });

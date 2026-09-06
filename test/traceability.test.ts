@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { access, readFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { access, copyFile, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -247,7 +249,10 @@ test("every RP, metric, REQ, NFR, schema, and event has exactly one map entry", 
 		byKind("schema")
 			.map((e) => e.id)
 			.sort(),
-		["SCH-event", "SCH-evidence", "SCH-task", "SCH-verdict"],
+		(await readdir(join(root, "packages/coding-agent/src/kpi/schemas")))
+			.filter((name) => name.endsWith(".schema.json"))
+			.map((name) => `SCH-${name.slice(0, -".schema.json".length)}`)
+			.sort(),
 	);
 	assert.deepEqual(
 		byKind("event")
@@ -452,5 +457,73 @@ test("exact title patterns select exactly one title in their file", async () => 
 			`${entry.id} pattern must select exactly one title in ${check.file}, got ${selected.length}`,
 		);
 		assert.equal(selected[0], check.test_title);
+	}
+});
+
+test("regeneration preserves newly queued packages and exposes retired checks as uncovered", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "kpi-traceability-"));
+	try {
+		await mkdir(join(directory, "docs"));
+		await mkdir(join(directory, "test"));
+		const schemaDirectory = join(directory, "packages/coding-agent/src/kpi/schemas");
+		await mkdir(schemaDirectory, { recursive: true });
+		for (const name of ["task", "intent", "future"]) {
+			await writeFile(join(schemaDirectory, `${name}.schema.json`), '{"type":"object"}');
+		}
+		await writeFile(join(directory, "docs/PRD.md"), "### US-01\n- **AC-01.1** Required built artifact\n");
+		await writeFile(join(directory, "docs/remediation-plan.md"), "## RP-22 — New package\n");
+		await writeFile(join(directory, "docs/spec.md"), "");
+		await writeFile(join(directory, "docs/remediation-research.md"), "");
+		execFileSync(process.execPath, [join(root, "scripts/generate-traceability-map.mjs")], {
+			cwd: directory,
+			timeout: 10_000,
+		});
+		const generated = JSON.parse(await readFile(join(directory, "docs/traceability-map.json"), "utf8")) as TraceMap;
+		for (const id of ["AC-01.1", "RP-22", "SCH-future"]) {
+			const entry = generated.entries.find((candidate) => candidate.id === id);
+			assert.ok(entry, `${id} must not disappear from the inventory`);
+			assert.equal(entry.coverage, "uncovered", `${id} cannot inherit imaginary check coverage`);
+			assert.deepEqual(entry.named_checks, []);
+			assert.ok(
+				generated.uncovered?.some((gap) => gap.id === id),
+				`${id} must remain visible to acceptance`,
+			);
+		}
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("uncovered or empty maps fail product preflight even when gates are skipped", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "kpi-proof-preflight-"));
+	try {
+		await mkdir(join(directory, "docs"));
+		await mkdir(join(directory, "scripts"));
+		const command = join(directory, "scripts/verify-product.mjs");
+		await copyFile(join(root, "scripts/verify-product.mjs"), command);
+		await symlink(join(root, "scripts/metric-runs.mjs"), join(directory, "scripts/metric-runs.mjs"));
+		const reportPath = join(directory, "proof.json");
+		for (const entries of [
+			[{ id: "AC-01.1", primary_owner: "RP-01A", coverage: "uncovered", uncovered_reason: "missing real check" }],
+			[],
+		]) {
+			await writeFile(join(directory, "docs/traceability-map.json"), JSON.stringify({ entries, counts: {} }));
+			await writeFile(reportPath, JSON.stringify({ ok: true, traceability: { complete: true } }));
+			assert.throws(
+				() =>
+					execFileSync(process.execPath, [command, "--skip-gates", "--skip-harness", "--json", reportPath], {
+						cwd: directory,
+						timeout: 10_000,
+						stdio: "pipe",
+					}),
+				(error: unknown) => typeof error === "object" && error !== null && "status" in error && error.status === 1,
+			);
+			const report = JSON.parse(await readFile(reportPath, "utf8"));
+			assert.equal(report.ok, false, "an older green report must be replaced");
+			assert.equal(report.traceability.complete, false);
+			assert.ok(report.failures.some((failure: { check: string }) => failure.check === "acceptance-coverage"));
+		}
+	} finally {
+		await rm(directory, { recursive: true, force: true });
 	}
 });

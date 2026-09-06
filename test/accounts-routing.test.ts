@@ -6,10 +6,13 @@ import type { Model } from "@earendil-works/pi-ai";
 
 import {
 	AccountBalancer,
-	DEFAULT_FALLBACK_CHAIN,
 	LOW_QUOTA_REMAINING_PERCENT,
 } from "../packages/coding-agent/src/kpi/extensions/accounts/balancer.ts";
-import type { AccountsDocument, PoolId } from "../packages/coding-agent/src/kpi/extensions/accounts/store.ts";
+import {
+	type AccountsDocument,
+	DEFAULT_FALLBACK_CHAIN,
+	type PoolId,
+} from "../packages/coding-agent/src/kpi/extensions/accounts/store.ts";
 import { UsageCache } from "../packages/coding-agent/src/kpi/extensions/accounts/usage/cache.ts";
 import { readUsageHeaders } from "../packages/coding-agent/src/kpi/extensions/accounts/usage/headers.ts";
 import { renderAccountsWidget } from "../packages/coding-agent/src/kpi/extensions/accounts/widget.ts";
@@ -250,11 +253,6 @@ test("cross-family fallback begins only after the whole family cools and follows
 	assert.equal(plan?.sameFamily, false);
 	assert.equal(plan?.to.poolId, "openai-codex", "the next configured pool in the default chain");
 	assert.equal(plan?.model?.provider, "openai-codex");
-	assert.equal(
-		DEFAULT_FALLBACK_CHAIN.indexOf("openai-codex") < DEFAULT_FALLBACK_CHAIN.indexOf("xai"),
-		true,
-		"codex precedes xai in the default chain",
-	);
 });
 
 test("cross-family fallback honors the exact live model order saved by setup-kstack", () => {

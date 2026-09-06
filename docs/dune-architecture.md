@@ -1,116 +1,52 @@
-# Dune architecture (folder-as-map)
+# Feature ownership and repository context
 
-**Normative for plan + implement.**
+`stack.json` is the plan's explicit Product Feature Map input, not a prescribed language or folder layout. Existing Python, Go, Rust, layered and root-level projects remain valid. Vertical feature delivery is the default; horizontal delivery records a reason.
 
-The point is simple: a stranger — human or agent — should understand the product by reading folder names. Auth lives under `auth/`. Billing lives under `billing/`. Feature one lives under that feature’s folder. Not in a shared `utils/` soup.
+The operator's RP-22 **Preserve existing layouts** decision makes this the active ownership contract; see [RP-22](remediation-plan.md#rp-22--autonomous-runtime-architectural-rebuild), PRD US-30 and `spec.md` §5 **SCH-stack**. It supersedes mandatory folder=id, auth-home, nested-only-layer, pre-created source/test twins and consumer-count gates, not explicit ownership or protected bounds. No offline document or fixture result alone accepts live canonical-context behavior.
 
-This matches Lauren Tan’s published pstack rules we already keep: foundational-thinking (scaffold before feature), model-the-domain, boundary-discipline, laziness-protocol. The extra constraint is **physical**: one capability, one folder.
+## Ownership contract
 
-## Folder map
+A version-1 `shape: "dune"` stack declares `root`, `delivery`, modules and the current module identity. Each module declares `id`, `purpose`, `folder`, `interface`, `allowed_paths`, and `depends_on`. `root` and `folder` may be `.` for the project root. Identifiers need not equal folder names. The interface must be inside its declared folder and admitted by `allowed_paths`.
 
-Default layout for app code k-pi creates or extends:
+`allowed_paths` is the **only** ownership grant. Neither a folder label nor an inferred test twin widens it. Paths remain canonical repository-relative paths, checked both lexically and after symlink resolution. Traversal, absolute declarations, ownership without an explicit path prefix, missing dependencies and dependency cycles fail. Frozen module ownership must remain inside the protected task's declared write bounds. A worker claims only its selected feature's paths, never the union of every feature.
 
-```
-src/
-  auth/          # login, sessions, keys
-  billing/       # invoices, plans
-  <feature>/     # that feature only
-  shared/        # truly shared types/interfaces only
-test/
-  auth/
-  billing/
-  <feature>/
-```
+The selected `current_module_id` is explicit; `modules[0]` is never a default. Missing, stale or inconsistent stack/task selection blocks implement before writing and uses the execution-repair path (`spec.md` §6–§7); an ordinary map defect is not a mandatory product-approval gate. A stack is still unnecessary for the existing typo, unslop and comment-strip exemptions; the accepted playbook cannot be silently changed to gain one.
 
-Rules:
+## Scaffold only what is needed
 
-- Folder name is the capability name. No clever aliases.
-- A feature’s UI, API, data, and tests sit next to each other under that name (`src/auth`, `test/auth`). Do not split one feature across `controllers/`, `services/`, `helpers/` as the primary map.
-- Layer folders (`components/`, `hooks/`, `lib/`) are allowed *inside* a feature folder, not as the top map.
-- `shared/` may hold types and adapters used by two or more features. If only one feature uses it, it moves into that feature.
-- `utils/`, `helpers/`, `common/`, `misc/` as top-level homes are plan-gate failures unless the purpose field is specific and the folder contains fewer than five files.
+Optional `module.scaffold` lists exact directories the task actually needs. The scaffold operation creates only those authorized directories, preserving existing content. It never creates a TypeScript interface, empty test, test twin or placeholder behavior. `scaffold_first` is optional metadata, not permission to corrupt an existing layout. The implementer writes meaningful source and regression checks in the project's actual language and conventions.
 
-## Vertical slices
-
-Default delivery is a **vertical slice**, not a horizontal layer.
-
-A slice is one user-visible capability cut through its own folder: interface → data → behaviour → tests. Auth login is one slice. “Write every API, then every screen” is not.
-
-- Plan names slices. `modules[]` are slices.
-- One implement round ships the one slice named by `task.json.current_module_id`. It does not ship “all controllers.”
-- A slice may touch UI, API, and storage **inside its folder**.
-- Shared code is extracted only after a second slice needs it.
-- Horizontal work needs `delivery: "horizontal"` plus a reason, or a `no-stack` playbook.
-
-`stack.json` field `delivery`: `"vertical"` (default) | `"horizontal"`.
-
-## Scaffold first
-
-Before feature logic, the implementer creates the empty map:
-
-1. Feature folder
-2. Public interface file (`index.ts` or `api.ts`)
-3. Matching test folder
-4. Then types
-5. Then behaviour
-
-An implement node that writes behaviour into an existing unrelated folder, instead of creating the feature folder, leaves the module's bounds: the write is denied, and a write that lands anyway pauses the run `NEEDS_HUMAN` (`bounds`).
-
-## `stack.json`
+Generic/layered folders and existing shared abstractions remain valid when their purpose, explicit paths and dependencies are declared. An interface path must be inside its declared folder and admitted; its declaration does not require fabricating that file. Tests use the project's actual locations and require explicit admitted paths. A `shared/` label grants no writes and a single consumer does not force relocation; unknown dependencies and cycles still fail. New abstractions must satisfy the accepted task and minimalist ladder, not an arbitrary consumer threshold.
 
 ```json
-{
-  "version": 1,
-  "shape": "dune",
-  "delivery": "vertical",
-  "root": "src",
-  "modules": [
-    {
-      "id": "auth",
-      "purpose": "login and sessions",
-      "folder": "src/auth",
-      "interface": "src/auth/api.ts",
-      "allowed_paths": ["src/auth/**", "test/auth/**"],
-      "depends_on": []
-    }
-  ],
-  "scaffold_first": true
-}
+{"version":1,"shape":"dune","delivery":"vertical","root":".","current_module_id":"login","modules":[{"id":"login","purpose":"existing account login","folder":"app/services","interface":"app/services/login.py","allowed_paths":["app/services/login.py","tests/test_login.py"],"depends_on":[]}]}
 ```
 
-`folder` is required. `allowed_paths` must be that folder plus its test twin. `claim_path` outside those globs is refused as an `UNSAFE` claim; the same globs are the implementer's `write_allow`, so a write that leaves them pauses the run `NEEDS_HUMAN` (`bounds`).
+## Canonical context after reset
 
-## Mandatory stack and current slice
+`extensions/context/index.ts` exports `assembleAgentContext({projectRoot,runDirectory,agentId,role,taskId,modelContextWindow,outputReserve?})`, returning `{prompt,manifest}`. The engine awaits assembly immediately before inference and appends the returned context; the companion `createAgentContextExtension` registers native retrieval tools only, not a parallel loader or orchestrator. Errors propagate through engine preflight, not through optional extension hooks that could swallow them.
 
-The stack is a precondition, not a convenience. Implement reads a frozen contract; it never guesses one.
+Assembly validates `task.json` against protected `intent.json`, retains the full protected task/goal/required acceptance/constraints and execution identity, then prioritizes ownership, repairs, goals/decisions, candidate/evidence, addressed peer messages, current source-backed knowledge and ranked repository entries. Missing intent is an explicit migration issue, never a permissive legacy fallback. Canonical artifacts are not rewritten or truncated. Per-agent manifests carry raw paths, content hashes and budget omissions; the prompt points to that manifest.
 
-- Plan writes `stack.json`. The operator approves it at `plan-approval` or requests changes; a change request re-runs plan with the feedback and overwrites `stack.json`. When a round repeated its witness the re-run reads `repair.json` first (the round, the failing acceptance criteria, the verdict or evidence, any operator guidance) and must produce a materially different map. The control plane freezes the approved map before implement.
-- Implement with no `stack.json`, or with a `stack.json` older than the current `task.json`, pauses `NEEDS_HUMAN` (`stack`) before its first write, and `/kpi <job>` resumes once the map is repaired. There is no default shape and no on-the-fly regeneration.
-- `task.json.current_module_id` is required for implement and must equal exactly one `stack.json.modules[].id`.
-- Position is not identity. `modules[0]` is never the current slice — not as a default, not as a fallback after a failed lookup. A missing, empty, or unmatched `current_module_id` pauses `NEEDS_HUMAN` (`stack`).
-- One implement round owns one `current_module_id`. Advancing to the next slice is a plan edit that re-freezes the contract, not an implementer decision.
-- Implement bounds and `claim_path` read the module named by `current_module_id` — its `folder`, `interface`, and `allowed_paths` — never the union of every module.
+Compact JSON is the default. The input budget is model window minus output reserve. Accounting is explicitly a conservative UTF-8-byte token **estimate**, not tokenizer or provider usage. Mandatory overflow throws an actionable error naming the raw intent and requesting a larger window or lower reserve. Optional records are omitted whole, never silently clipped. The engine must reserve the existing system prompt, user prompt and transcript before passing the remaining window; native session compaction still owns transcript reduction. Live small-window inference remains separate acceptance evidence.
 
-`task.json` fragment:
+## Two distinct incremental projections
+
+- `context/product-feature-map.json`: protected intent hash, declared feature purpose/ownership/dependencies, and observed owned file paths. It does not infer product acceptance from file existence.
+- `context/repository-map.json`: version, revision, content hash, tooling hash, actual source file hashes/byte sizes/language extensions, and real language-server symbol results or explicit unsupported reasons. It does not grant ownership or pretend filename matching is semantic analysis.
+
+Inventory uses tracked and nonignored Git files; a non-Git project uses a bounded-by-directory-policy filesystem walk that does not follow directory symlinks. Dependency/build/runtime-state directories and conventional credential paths are excluded. A full refresh detects additions, modifications and deletions; `context_map.affectedPaths` updates only the named files and preserves untouched entries. Unchanged content reuses its symbol result. Feature proximity and declared dependency proximity rank first, then query matches against actual symbol results and paths. Source bodies remain retrievable at their canonical paths.
+
+`context_map` supports query, offset and limit for targeted navigation. `context_navigate` offers symbols, definitions and references with zero-based positions. No regex result is labeled semantic.
+
+## Optional first-party LSP
+
+Explicitly authorize installed local servers in project `.kpi/lsp.json`:
 
 ```json
-{
-  "job_id": "2026-09-01-healthcheck",
-  "current_module_id": "auth"
-}
+[{"command":"pyright-langserver","args":["--stdio"],"extensions":[".py"],"languageId":"python"}]
 ```
 
-## Plan checklist
+This is executable configuration: review it before enabling it. The client reuses the harness process launcher, negotiates capabilities over native stdio JSON-RPC, opens current file text, performs read-only retrieval, and shuts down owned server processes. It never installs packages or accepts server-initiated edits. Missing binary, missing configuration, missing capability, malformed protocol, timeout and oversized source report unsupported with a reason. AST-backed symbols depend on the configured server; there is no fabricated regex/AST substitute when unavailable.
 
-- [ ] every new capability has its own folder
-- [ ] folder name matches `id`
-- [ ] interface file lives inside that folder
-- [ ] tests live in the twin folder
-- [ ] no top-level `utils` / `helpers` / `common` / `misc` without a tight purpose
-- [ ] scaffold folders exist before behaviour
-- [ ] research.md names the stack versions
-- [ ] `delivery` is `vertical` unless a reason is recorded
-- [ ] the next implement round is one slice, not one layer
-- [ ] the current slice is named in `task.json.current_module_id`, never inferred from `modules[0]`
-
-Exempt playbooks: `no-stack` (typo, unslop, comment-strip).
+Research basis: [Aider repository map](https://aider.chat/docs/repomap.html) motivates budgeted symbol/dependency ranking; [Serena](https://github.com/oraios/serena) demonstrates real language-server symbol navigation; [TOON's limitations](https://github.com/toon-format/toon/blob/main/packages/toon/README.md#when-not-to-use-toon) favor compact JSON for irregular data unless measured token, accuracy and latency results justify a different encoding. These are design inputs, not runtime dependencies or live acceptance proof.

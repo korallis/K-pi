@@ -3,6 +3,7 @@ import { chmod, mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { Credential } from "@earendil-works/pi-ai";
 import { getAgentDir } from "../../../config.ts";
+import { FileAuthStorageBackend } from "../../../core/auth-storage.ts";
 
 export const POOL_IDS = [
 	"anthropic",
@@ -81,6 +82,8 @@ export interface AccountSlot {
 	 * sessions until `/accounts login <pool> <slot>` rewrites its credential.
 	 */
 	needsLogin?: string;
+	/** Durable resource health; never a quality score. */
+	cooldownUntil?: number;
 }
 
 export interface AccountPool {
@@ -97,14 +100,21 @@ export interface AccountsDocument {
 
 export type AccountSecrets = Record<string, Credential>;
 
-const DEFAULT_FALLBACK: PoolId[] = ["anthropic", "openai-codex", "xai", "zai", "kimi-coding", "cursor"];
+export const DEFAULT_FALLBACK_CHAIN: readonly PoolId[] = [
+	"anthropic",
+	"openai-codex",
+	"xai",
+	"zai",
+	"kimi-coding",
+	"cursor",
+];
 const SLOT_ID_PATTERN = /^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$/u;
 
 function defaultAccounts(): AccountsDocument {
 	return {
 		version: 1,
 		pools: {},
-		fallback: [...DEFAULT_FALLBACK],
+		fallback: [...DEFAULT_FALLBACK_CHAIN],
 		stickiness: "session-until-exhausted",
 	};
 }
@@ -192,6 +202,12 @@ function assertAccounts(value: unknown, path: string): asserts value is Accounts
 			}
 			if (slot.needsLogin !== undefined && (typeof slot.needsLogin !== "string" || slot.needsLogin.length === 0)) {
 				throw new Error(`${path} pool ${poolName} slot ${slot.id} has an invalid needsLogin`);
+			}
+			if (
+				slot.cooldownUntil !== undefined &&
+				(typeof slot.cooldownUntil !== "number" || !Number.isFinite(slot.cooldownUntil) || slot.cooldownUntil < 0)
+			) {
+				throw new Error(`${path} pool ${poolName} slot ${slot.id} has an invalid cooldown deadline`);
 			}
 		}
 	}
@@ -338,7 +354,11 @@ export class AccountsStore {
 	}
 
 	private mutate<T>(operation: () => Promise<T>): Promise<T> {
-		const result = this.mutations.then(operation);
+		const result = this.mutations.then(() =>
+			new FileAuthStorageBackend(`${this.accountsPath}.transactions`).withLockAsync(async () => ({
+				result: await operation(),
+			})),
+		);
 		this.mutations = result.then(
 			() => undefined,
 			() => undefined,
@@ -354,6 +374,38 @@ export class AccountsStore {
 	async readSecrets(): Promise<AccountSecrets> {
 		await this.mutations;
 		return this.readSecretsUnlocked();
+	}
+
+	async markCooling(poolId: PoolId, slotId: string, until: number): Promise<void> {
+		await this.mutate(async () => {
+			const document = await this.readAccountsUnlocked();
+			const slot = document.pools[poolId]?.slots.find((entry) => entry.id === slotId);
+			if (!slot) return;
+			slot.cooldownUntil = Math.max(slot.cooldownUntil ?? 0, until);
+			await writePrivateJson(this.accountsPath, document);
+		});
+	}
+
+	/** Shares the accounts transaction lock with login/logout and rechecks after acquisition. */
+	async refreshCredential(
+		poolId: PoolId,
+		slotId: string,
+		refresh: (credential: Extract<Credential, { type: "oauth" }>) => Promise<Credential>,
+		now: number,
+	): Promise<Credential | undefined> {
+		return this.mutate(async () => {
+			const document = await this.readAccountsUnlocked();
+			const slot = document.pools[poolId]?.slots.find((entry) => entry.id === slotId);
+			if (!slot || slot.official || slot.needsLogin) return undefined;
+			const secrets = await this.readSecretsUnlocked();
+			const key = secretKey(poolId, slotId);
+			const credential = secrets[key];
+			if (credential?.type !== "oauth" || credential.expires > now + 300_000) return credential;
+			const refreshed = await refresh(credential);
+			secrets[key] = refreshed;
+			await writePrivateJson(this.secretsPath, secrets);
+			return refreshed;
+		});
 	}
 
 	async getSlot(poolId: PoolId, slotId: string): Promise<AccountSlot | undefined> {
@@ -390,6 +442,7 @@ export class AccountsStore {
 			const existingIndex = pool.slots.findIndex((existing) => existing.id === slot.id);
 			const merged = existingIndex < 0 ? { ...slot } : { ...pool.slots[existingIndex], ...slot };
 			delete merged.needsLogin;
+			delete merged.cooldownUntil;
 			if (existingIndex < 0) {
 				pool.slots.push(merged);
 			} else {

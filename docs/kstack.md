@@ -22,7 +22,7 @@ Upstream says “fork it, make it yours.” We do. We never install those repos 
 
 K-stack vendors the MIT-licensed Cursor `pstack` plugin: a set of engineering principles, playbooks, and workflow skills. Attribution lives in the root `NOTICE` and in `kstack/UPSTREAM.md`, which is a licence obligation and stays. Upstream's `/poteto-mode` matches a task to a playbook, copies the steps into a todo list, and fires other skills as those steps need them; ours is `/k-mode`.
 
-That is the missing middle of k-pi: our graph owns order and gates; the vendored skills supply node-local engineering technique. They are a library, not an authority — where a vendored skill contradicts `spec.md`, `PRD.md`, or `AGENTS.md`, ours wins and the vendored text is overlay-patched rather than obeyed.
+That is the missing middle of k-pi: the graph owns execution dependencies and completion gates; the vendored skills supply node-local engineering technique. They are a library, not an authority — where a vendored skill contradicts `spec.md`, `PRD.md`, or `AGENTS.md`, ours wins and the vendored text is overlay-patched rather than obeyed. RP-22 keeps accepted intent rigid while permitting authorized execution-graph changes: a playbook is not permission to rewrite acceptance, widen credentials or ownership, or bypass external approval.
 
 ```
 operator
@@ -141,8 +141,8 @@ Do not use a git submodule of `cursor/plugins` inside this repository. Fetch is 
 | `/k-mode off` | Clear sticky flag. |
 | `/how` `/why` `/teach` `/recall` | Understanding skills. Read-only. |
 | `/architect` | Isolated design node. Writes design notes, not production code. |
-| `/arena` | N local isolated attempts, same brief, graft the best. Models from the panel list. Cap N = 2, the same `maxConcurrency` every other fan-out obeys (AC-20.4). |
-| `/swarm` | Coverage fan-out. Cap 2 concurrent (k-pi `maxConcurrency`). Local only. |
+| `/arena` | Explicit local alternatives under the same accepted brief; use the existing graph and resource/ownership admission, not a separate cloud scheduler. See §8 for RP-22's consequential architecture arena. |
+| `/swarm` | Local coverage fan-out under the graph's configured concurrency and checkout ownership constraints; no universal two-worker capability limit. |
 | `/interrogate` | Isolated multi-model review → `verdict.json` shape. |
 | `/tdd` | Same contract as k-pi `tdd-cycle` skill. |
 | `/no-comments` | Comment-strip pass over the current diff. Deletes comments that restate the code; keeps comments a contract, an AC, or a named constraint requires. |
@@ -152,7 +152,7 @@ Do not use a git submodule of `cursor/plugins` inside this repository. Fetch is 
 | `/create-verification-skill` | Project-local verify skill whose commands become `task.json.quality_gates`. |
 | `/reflect` | After DONE, propose skill/playbook edits. Does not auto-merge them. |
 
-`/kpi` remains the graph entry. If `/k-mode` is on when `/kpi` starts, the matched playbook is frozen into `task.json.playbook` and each playbook step is a named gate on the graph.
+`/kpi` remains the graph entry. When K-mode supplies `task.json.playbook`, it is execution guidance within the accepted intent and graph contract, not a second authority. RP-22 permits authorized decomposition and repair of execution nodes while retaining required coverage and completion gates; a saved playbook must not force a stale execution plan or bypass those gates.
 
 ---
 
@@ -185,7 +185,7 @@ It must not:
 }
 ```
 
-Roles with no line inherit the parent k-pi session model. `/setup-kstack` rewrites the whole file.
+Unspecified roles use parent affinity as a fallback, not an unconditional dispatch lock. `/setup-kstack` rewrites the role configuration; native dispatch rechecks availability and applies the engineering selection rules below. Optional `model_families` maps exact `provider/id` slugs to operator-identified families; a provider prefix is not a model family.
 
 ### Auto suggestion
 
@@ -193,7 +193,7 @@ Setup must print a proposed map before writing.
 
 1. Intersect live registry with healthy pools.
 2. For each role, walk the prefer list in `model-ladder.md`. First hit wins.
-3. `review_panel` takes two different families, cap 3. UI slices use the `frontend` role (`kimi-k3` first).
+3. `review_panel` suggests distinct recognizable model families, cap 3; unknown IDs do not establish independence. UI slices use the `frontend` suggestion (`kimi-k3` first when available).
 4. Show: role → suggested slug → next-best → confidence.
 5. Sort the same live set by the ladder's overall order to propose `fallback_models`.
 6. Operator applies or edits the role lines and exact fallback order, then write.
@@ -201,7 +201,11 @@ Setup must print a proposed map before writing.
 
 Hard-coded pstack ids are still forbidden as *required* defaults. The ladder is a suggestion table, not a lock.
 
-Failover still goes through the k-pi accounts balancer. A K-stack role is a model id, not a slot. Slots stay in `accounts.json`. The balancer uses every healthy same-provider slot with the exact current model before it follows `fallback_models`; `/pool chain` remains the legacy fallback until setup writes that model order.
+Runtime engineering dispatch uses `resolveEngineeringModel`, not the suggestion table as a quality ranking. It resolves explicit role mappings against the current authenticated catalog, honors local/cloud authorization and required context capacity, and prefers known independent reviewer families within operator constraints. Without an eligible explicit mapping, applicable host verification outcomes and labeled operator priors can reorder candidates before parent affinity and fallback order. Unknown metrics remain unknown; arbitrary frozen capability values and provider-name diversity are not evidence. See `model-ladder.md` for exact role mapping and evidence freshness rules.
+
+Failover still goes through the k-pi accounts balancer. A K-stack role names a model, not a credential slot. Slots stay in `accounts.json`; same-provider slot exhaustion precedes configured model fallback (`/pool chain` is the legacy fallback when no model order is configured). The `before_provider_auth` hook supplies the selected grant to native request construction, including OAuth refresh/conversion; changing a header after primary auth resolution is not the scheduling mechanism. Missing authorized resources fail closed, and routing cannot silently cross the operator's local/cloud boundary.
+
+Host-only `runEngineeringEvaluations` consumes explicit tasks, deterministic checker commands and an existing runtime adapter, retains raw output/checker evidence and records outcomes for the actual model. It is not an automatic arena, self-reported model score or a benchmark result supplied by this ladder. `.kpi/kstack/engineering/` keeps hash-bound outcomes and separately labeled priors; dispatch rereads applicable intact evidence.
 
 ---
 
@@ -226,7 +230,7 @@ Keep and rewrite for local Pi + graph gates:
 | autonomous-run | our autopilot graph only if AC executable |
 | session-pickup | resume from `.kpi/runs/<id>/` |
 | pause-safely | `/kpi stop` + checkpoint |
-| multi-phase-plan | frozen plan entry `/kpi --plan` |
+| multi-phase-plan | `/kpi --plan` supplies execution guidance; protected accepted intent remains binding while authorized decomposition/repair stays fluid |
 | figure-it-out | custom playbook |
 
 Rewrite hard (cloud stripped):
@@ -256,7 +260,7 @@ Carry every upstream principle that survives the §5 keep/rewrite/drop rules as 
 
 **Override** `never-block-on-the-human`:
 
-> Reversible work proceeds. Irreversible effects (commit in gated mode, push, deploy, delete, new runtime deps) still hit the k-pi human node or are denied in autopilot. The outer loop owns those gates. This principle must not delete US-02 AC-02.5 or US-13.
+> Reversible work proceeds within accepted intent and current ownership. Execution changes do not authorize credential changes or irreversible effects. Commit in gated mode, push, deploy, delete and new runtime dependencies retain their applicable human/release/policy gates. External approval and retained evidence remain authoritative; a playbook cannot turn a missing approval or failed check into success.
 
 **Add** four graph principles (ours):
 
@@ -267,7 +271,7 @@ Carry every upstream principle that survives the §5 keep/rewrite/drop rules as 
 | proof-or-stop | No DONE without HEAD-bound receipts. LLM “tests passed” is not evidence. |
 | executable-ac-or-gated | Autopilot playbooks refuse to start unless `ac.quality == executable`. |
 
-The four graph principles above are always in force. Beyond them, a `/k-mode` todo list loads only the principle skills whose frontmatter `description` matches the current node — the same on-demand dispatch `spec.md` §9 already specifies as the last entry in the context-pack load order ("Skills on demand"). There is no blanket principle read, and no todo list opens by reading the whole index.
+The four graph principles above remain in force. Other K-stack guidance is selected on demand for the current node, not loaded as an entire principle index at every turn. Protected graph sessions rebuild canonical context through the native inference hook, including after reset/compaction and resource changes: protected intent first, then bounded execution, evidence, audience-scoped peer messages, knowledge and repository layers with raw references. The projection is ephemeral, not an accumulating transcript checkpoint. Unknown context capacity or mandatory overflow blocks inference; byte estimates are not advertised as model-token measurements. See `agents-bus.md` for the implemented context and retrieval boundary.
 
 ---
 
@@ -289,15 +293,15 @@ When only `/k-mode` is used (no `/kpi` job):
 
 ---
 
-## 8. Swarm / arena — background K-π sessions, not subagents
+## 8. Swarm / arena — native peers under one graph
 
-See `agents-bus.md`. `/swarm` and `/arena` call `spawn_background` + `communicate`. No `subagent_type`.
+See `agents-bus.md`. Owned `spawn_background` RPC workers and in-process graph sessions share the authenticated job broker; neither is a Cursor Cloud worker or an external orchestrator. Logical peer identity and replay survive native session replacement. Direct and room messages reach actual native followup turns, with explicit acknowledgement and no implication that durable acceptance is task completion.
 
-- `maxConcurrency = 2`
-- arena panel length = 2 in v1, matching `maxConcurrency` and AC-20.4
-- every worker is a background `kpi --mode rpc` session
-- models from K-π pools only
-- parent reads contract files, not worker transcripts
+Concurrency is execution policy, not model capability: graph ready nodes use configured `maxConcurrency`, RPC process admission uses `KPI_MAX_PEERS` (default 8), and checkout-wide writer authority independently prevents overlapping mutation. Distinct native sessions in the same PID cannot borrow each other's writer lease. More available peers never widens accepted intent, tool permissions or publication rights.
+
+RP-22's `architecture_arena` uses the existing graph mutation boundary for an explicitly consequential one-way-door decision with at least two alternatives. `createArchitectureArena` defaults to two independently scoped proposals followed by a judge; model assignments are applied to native sessions, not merely named in prompts. It tries to reserve a judge from an identified family independent of the proposers within operator role constraints, records when independence is unavailable and then adds a mandatory host-verification node. Pinned model drift is rejected rather than silently crediting a different resource. Proposal and judgment artifacts are retained as evidence; even an independent judgment remains advisory, not a verified pass or permission to bypass the enclosing run's completion/release gates.
+
+`scoped-tests-8.json` under `.kpi/proof/RP-22/` records local routing/evaluation, graph, context and peer fixtures passing; the offline build and built-harness startup/resource/RPC smoke also passed. These are scoped implementation proofs, not live credentialed multi-model collaboration, representative model-quality results or completion of the entire RP-22/autonomous-runtime mandate. This documentation migration does not check any DoD boxes.
 
 ---
 

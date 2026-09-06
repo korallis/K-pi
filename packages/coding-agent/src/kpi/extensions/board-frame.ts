@@ -537,5 +537,11 @@ export function paintRegions(regions: BoardRegions, options: PaintOptions): stri
 
 /** Board A or Board B, framed and coloured for `width` columns. */
 export function paintBoard(model: BoardModel, options: PaintOptions): string[] {
-	return paintRegions(buildBoardRegions(model), options);
+	const regions = buildBoardRegions(model);
+	if (model.stop !== "NEEDS_HUMAN" && regions.byId.oversight === undefined) return paintRegions(regions, options);
+	const base = options.palette ?? PLAIN_PALETTE;
+	const palette: BoardPalette = {
+		paint: (tone, text) => base.paint(tone === "accent" || tone === "borderAccent" ? "warning" : tone, text),
+	};
+	return paintRegions(regions, { ...options, palette });
 }

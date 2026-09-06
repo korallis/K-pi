@@ -6,8 +6,8 @@ import {
 	classifyTransientFailure,
 	createStopState,
 	DEFAULT_RETRY_BASE_MS,
+	decideRecovery,
 	failingAcSetKey,
-	MAX_AUTOMATIC_REPLANS,
 	RETRY_MAX_DELAY_MS,
 	recordVerifier,
 	repeatedWitness,
@@ -166,7 +166,51 @@ test("retry delays double from the base and stop growing at the ceiling", () => 
 	);
 	assert.equal(retryDelayMs(0), 1_000, "the base defaults to one second");
 	assert.equal(retryDelayMs(40), 60_000, "no jitter and no growth past the ceiling, however long it goes");
-	assert.equal(MAX_AUTOMATIC_REPLANS, 2, "two automatic re-plans per operator touch");
+});
+
+test("persistent engineering failures escalate across checkpointed latest decisions without a count stop", () => {
+	let decision = decideRecovery({
+		kind: "engineering",
+		witness: "same",
+		classification: "IMPLEMENTATION_ERROR",
+		evidenceRefs: ["evidence.json"],
+	});
+	assert.equal(decision.action, "diagnose");
+	decision = decideRecovery({ kind: "engineering", witness: "same", prior: [decision] });
+	assert.equal(decision.action, "replan");
+	decision = decideRecovery({ kind: "engineering", witness: "same", prior: [decision] });
+	assert.equal(decision.action, "decompose");
+	for (let attempt = 4; attempt <= 20; attempt++) {
+		const previous = decision;
+		decision = decideRecovery({
+			kind: "engineering",
+			witness: "same",
+			prior: [JSON.parse(JSON.stringify(decision))],
+		});
+		assert.equal(decision.attempt, attempt);
+		assert.equal(decision.action, "reconsider");
+		assert.notEqual(decision.reason, previous.reason);
+	}
+});
+
+test("transient waits remain waits and unknown failures do not invent a diagnosis", () => {
+	let decision = decideRecovery({
+		kind: "transient",
+		witness: "capacity",
+		classification: "TRANSIENT_FAILURE",
+		evidenceRefs: ["transport.json"],
+	});
+	for (let attempt = 0; attempt < 20; attempt++) {
+		decision = decideRecovery({ kind: "transient", witness: "capacity", prior: [decision] });
+		assert.equal(decision.action, "wait");
+	}
+	assert.equal(decideRecovery({ kind: "engineering", witness: "unknown" }).failure.classification, "UNKNOWN_FAILURE");
+	assert.equal(
+		decideRecovery({ kind: "engineering", witness: "unsupported", classification: "ARCHITECTURAL_ERROR" }).failure
+			.classification,
+		"UNKNOWN_FAILURE",
+	);
+	assert.equal(decideRecovery({ kind: "authorization", witness: "approval" }).action, "request_authority");
 });
 
 test("the transition path canonicalizes fingerprints rather than trusting the caller's spelling", () => {

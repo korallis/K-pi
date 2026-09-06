@@ -1,134 +1,110 @@
-# Background Pi agents + communicate
+# Local peer runtime
 
-**Normative.** k-pi does not use Cursor-style subagents (`Task`, `subagent_type`) and does not install pi-intercom, pi-mesh, pi-agents-talk-to-each-other, pi-bus, or pi-side-agents.
+K-π uses native agent sessions, both in-process graph sessions and owned `kpi --mode rpc` child processes, with persistent native session JSONL files. A job-owned `BackgroundBus` supplies the shared authenticated Unix-domain socket broker. The broker routes messages; it does not execute graph nodes, choose plans, or replace the native agent runtime. No external room package, filesystem inbox poller, or second orchestrator is involved. The shared `registerRuntime` bootstrap installs account routing, resources, peer tools, knowledge/research tools and policy for ordinary and graph sessions; graph-session setup adds its authenticated peer binding and canonical context extension.
 
-The forked harness base [does not ship sub-agents](https://pi.dev/). Workers are **real K-π sessions** started in the background. They talk with the harness's own injection APIs.
+## Identity and lifetime
 
-## Official primitives we wrap
+The canonical run root remains `.kpi/runs/<job>`. The job owns:
 
-| API | Role |
-|---|---|
-| `createAgentSession()` / `kpi --mode rpc` | Spawn a headless worker |
-| `pi.sendUserMessage(content, { deliverAs })` | Deliver into a live session |
-| `pi.sendMessage(...)` | Non-user custom events |
-| `session.prompt` / RPC `prompt` | Start work on a headless session |
-| `deliverAs: "steer"` | Interrupt after current tool |
-| `deliverAs: "followUp"` | Wait until the current turn ends |
+- `agents/`: native transcripts; RPC workers use `agents/<agentId>.jsonl`, while graph sessions use native session files beneath the node/thread's session directory;
+- `peer-events.jsonl`: ordered, fsynced logical identities, task references, room membership, message envelopes, and acknowledgement cursors;
+- existing contract files and publication receipts, still checked for capability, canonical path, schema, and content hash;
+- verification evidence is host-owned; tester peers cannot publish `evidence.json` or mint verification receipts.
+- `bus.jsonl` and `events.jsonl`: audit records, **not message transports**.
 
-That pair — spawn + `sendUserMessage`/`prompt` — is the communicate path. We expose it as one tool so models do not invent a bus.
+`agentId` is the canonical logical peer, not a native session ID or a model slug. RPC workers use stable role-prefixed names; graph peers retain their recorded job/thread identity in run state. PID, native session incarnation, broker incarnation UUID, model resource and transport bearer are distinct. An isolated graph assignment may create and dispose a native session without deleting its logical peer; thread mode reuses or continues native history. Canonical identity, membership and inbox are not reconstructed from transcript text.
 
-## Tools
+For RPC workers, `spawn({agentId, ...})` reuses an existing live peer, or reopens its recorded session after the previous process has exited. `restart(agentId)` uses the recorded prompt, model, tools and task reference. Room membership and cursor survive both peer replacement and owner restart. A changed RPC launch model/tool allowance requires stopping the live peer first. The broker's logical role and recorded session path cannot change through activation; that is not a requirement to keep one native session UUID or model forever. Graph routing observes native model changes and records the actual resource while retaining logical identity; pinned architecture assignments instead reject a resource switch.
 
-### `spawn_background`
+This is an **owner-lifetime service**, not a detached daemon. Owner shutdown stops its RPC children and closes the socket. Abrupt owner death closes their RPC pipes; a later owner can recover records and reopen sessions, but refuses replacement while a recorded PID still appears alive. It does not adopt arbitrary surviving processes. PID reuse can conservatively block recovery.
 
-```
-role: implementer | reviewer | tester | arena | explorer
-model?: id from k-pi pool / kstack models.json
-tools?: allowlist
-prompt: string
-```
+The Unix socket is a short hash-derived path from the canonical run root in the OS temporary directory and is mode `0600`. A durable `peer-owner` lock is acquired before journal recovery and held through socket shutdown. Existing accepting sockets are never removed. Dead-lock recovery uses separately owned recovery locks, so simultaneous reapers cannot unlink a new live holder; a crashed reaper is recovered by the same mechanism. Only verified dead PIDs are recovered. A stopped process, reused PID, permission failure, or unreadable ownership record fails closed; age is not evidence of death.
 
-Starts `kpi --mode rpc` (or in-process `createAgentSession` when tests need it) with:
+## Worker tools
 
-- session file `.kpi/runs/<job>/agents/<role>-<id>.jsonl`
-- same cwd as the job
-- tool allowlist for that role (reviewer and tester: read + grep + gate-only test bash plus pinned `write_contract`; explorer: read + grep + classifier-restricted read-only bash; never `write` / `edit`)
-- model from K-stack role map, failed over through accounts
-
-Returns `{ agent_id, session_path, pid }`. Writes `agent.spawned` to `events.jsonl`. Cap: `maxConcurrency = 2` live workers per job.
-
-### Same-tree rule (v1, no worktrees)
-
-Two workers share the project checkout. They must not edit the same files.
-
-- At most **one** live worker may have `write` / `edit`. That is the writer. Reviewer and tester never get either tool; they publish through `write_contract`, which does not make them the writer.
-- Before a writer edits path `P`, it calls `claim_path(P)`. Exclusive. Held in `.kpi/runs/<job>/leases.json`.
-- Another claim on `P` is denied until release or the holder exits.
-- Bounds still apply. A claim outside `task.json.allowed_paths` is refused as an `UNSAFE` claim and denied; the same boundary is the implementer's `write_allow`, so a write that leaves it pauses the run `NEEDS_HUMAN` (`bounds`).
-- Parent implementer in the operator session counts as the writer if no worker writer is live.
-
-`claim_path` / `release_path` are tools. Crash/reap of a pid releases its claims.
-
-### `write_contract`
-
-Reviewer and tester must publish a run-contract file without holding a general file-mutation tool. `write_contract` is that single, narrow surface. It is the only way those roles reach disk.
-
-```
-path: string      # must equal the role's declared contract path
-content: object   # the parsed contract payload, not a diff and not prose
-```
-
-- **Pinned at spawn.** The capability is minted for one `agent_id`, one job, one role, and one declared contract path, and that tuple is fixed when the worker starts. Reviewer → `.kpi/runs/<job>/verdict.json`. Tester → `.kpi/runs/<job>/evidence.json`. A worker cannot widen its own pin at call time.
-- **One path, everything else denied.** Any other `path` fails: product files, `task.json`, `release.approved`, another role's contract file, another job's run directory, and any `..` or symlink that resolves outside the pinned path. Denial is a returned error, never a silent no-op.
-- **Schema before disk.** The payload validates against `verdict.schema.json` or `evidence.schema.json` first. An invalid payload writes nothing — no partial file, no placeholder — and the error goes back to the worker. A reviewer that cannot produce a valid verdict has failed review; it has not approved anything.
-- **Atomic write.** A validated payload lands by temp file → fsync → same-directory rename, so the parent never reads a half-written contract.
-- **Not a writer.** `write_contract` takes no `claim_path` lease, does not consume the one-writer slot, and does not relax the same-tree rule. Caps are unchanged.
+RPC workers receive these tools through the built-in extension. Explicit tool narrowing may remove them but cannot widen a role's authority. Protected graph sessions expose authenticated `communicate` and `peers` through `GraphPeerBinding`; their mutation and publication authority remains the graph node's, not the broker descriptor's.
 
 ### `communicate`
 
-```
-to: agent_id
-message: string
-deliverAs: "steer" | "followUp"   # default followUp
-expect: "none" | "ack" | "result" # default none
-```
+Send exactly one direct or room message:
 
-- Live same-process session → `pi.sendUserMessage(message, { deliverAs })`
-- Other process → RPC `prompt` into that worker (steer maps to immediate prompt, followUp waits for idle)
-- Always appends `agent.message` to `events.jsonl` and `.kpi/runs/<job>/bus.jsonl`
-
-`expect: "result"` waits until the worker writes its contract file (`candidate.json` / `evidence.json` / `verdict.json`) or hits timeout. It does not scrape the worker transcript into the parent context.
-
-### `agents_status`
-
-Lists live workers, last event, pid liveness. Dead pids are reaped.
-
-### `agents_stop`
-
-Sends a follow-up “stop, publish your contract file, exit”, then SIGTERM if needed.
-
-## Who talks to whom
-
-```
-operator session (TUI, board, /kpi)
-    spawn_background reviewer
-    communicate to=reviewer "grade candidate.json"
-    reviewer publishes verdict.json through write_contract
-    parent reads verdict.json  — not the reviewer's chat
+```json
+{"to":"tester-auth","message":"Run the declared auth gate","id":"auth-gate-request-17"}
 ```
 
-Handoffs stay the run contract files. Chat between agents is steering, not source of truth.
+```json
+{"room":"auth-review","message":"Revision is ready","id":"auth-revision-17","replyTo":"prior-message-id"}
+```
 
-## Replaces
+RPC worker `communicate` accepts optional `deliverAs` (`steer` or `followUp`); the graph-peer variant always sends `followUp` and does not expose that option. The runtime derives sender from the authenticated incarnation, never from a model-controlled `sender`, role, PID, job or capability argument. Unknown broker fields are rejected. A room sender must first join that room. A reply must name a message the sender sent or received.
 
-| Old idea | Now |
-|---|---|
-| K-stack `poteto-agent` / `k-agent` subagent | background K-π session with role prompt |
-| `/swarm` fan-out | N≤2 `spawn_background` + `communicate` |
-| `/arena` bakeoff | N≤2 arena workers, parent grafts from their `candidate.json` |
-| `/interrogate` panel | one reviewer worker per panel model, results merge into `verdict.json` |
-| Isolated reviewer node | background reviewer session, parent blocked on file |
+The response includes `accepted`, `message` and `duplicate`. Here `accepted: true` means the full envelope was durably appended, **not** that a model processed it or completed a task. Reusing an ID with the same envelope returns the original sequence; reusing it for different content/origin/destination is refused.
 
-## Board
+### `peers`
 
-File lamp row may include `BUS` when `bus.jsonl` exists; `BUS ●` tracks `bus.jsonl` history. The CONTEXT row's AGENTS cell is the live total with its breakdown — `AGENTS 2 · 1 node · 1 worker` — counted for the live job in this process, and it repaints when a node session or worker starts or ends. Worker names stay off the main transcript.
+- `{"action":"discover"}` lists only this job's logical peers, roles, task references, rooms, incarnation and presence. No bearer or publication capability is returned.
+- `{"action":"join","room":"auth-review"}` and `leave` durably change this peer's membership.
+- `{"action":"inbox"}` returns this peer's unacknowledged messages in order, at most 100 and within the bounded response size.
+- `{"action":"inbox","after":0}` explicitly replays this peer's history without changing its cursor. Use the last returned sequence as `after` to page.
+- `{"action":"ack","id":"message-id"}` advances only this peer's cursor, and only over its next unacknowledged message. Repeating an acknowledgement is harmless; skipping a pending message is refused.
 
-## Visibility
+Room recipients are snapshotted at send time. Disconnecting does not remove room membership, so messages sent while a peer is offline remain available to it. Joining later does not grant earlier room history. Neither direct delivery nor context projection reveals another peer's inbox.
 
-K-π runs graph nodes as in-process sessions in this kpi process; a node with workerRole (the reviewer) and the spawn_background tool start separate kpi --mode rpc processes that talk over .kpi/runs/<job>/bus.jsonl. No sub-agent API is used.
+Messages carry sequence, ID, authenticated sender, concrete recipients, optional room/task/reply reference, text, timestamp and delivery mode. `readPeerMessages(runDirectory, agentId, taskId?)` is the read-only context projection; optional task filtering includes matching and job-level messages only.
 
-Two session kinds feed one in-process registry (`bus/sessions-snapshot.ts`): node sessions, registered by the graph engine when an agent node's session starts and released when it ends; and buses, registered by the engine (a `workerRole` node) or the parent's tools (`spawn_background`), each listing its workers. Liveness comes from each bus's own pid check — a dead worker is listed `ALIVE no` and not counted, and the registry never reaps.
+## Realtime delivery and replay
 
-`/agents` prints that registry — columns `KIND ID ROLE MODEL PID ALIVE ELAPSED TOOLS LAST NODE JOB` — then `caps (this process): workers <w>/2 · writers <n>/1`, the mechanism sentence above, and `job <id> <status>` or `no active job` (not an error; the main row still prints). Files and memory only, no model.
+The socket broker accepts direct and room messages without filesystem polling and offers arrivals through the registered native delivery adapter. For RPC children, delivery uses `prompt` with `streamingBehavior`: the atomic native operation starts an idle session and queues correctly during streaming. Queue-only `steer`/`follow_up` RPC commands are not used for peer work delivery.
 
-The honest limit: node sessions are visible only from the kpi process running the loop, and `/agents` says so; caps and the count are per process, so another K-π process's workers are not listed, while `bus.jsonl` is per run directory.
+For in-process graph peers, `GraphPeerBinding` serializes assignments and message turns on one logical peer. Delivery obtains the current node's native session and calls `session.prompt` after its current assignment, with the envelope explicitly marked as data, not protected intent or a new assignment. Mutating followups acquire checkout writer authority and bind it to that exact native session for the turn. The receiver can respond directly with `communicate` and acknowledge with `peers`; a message turn cannot publish a new task result or establish completion. Completed/disposed executions refuse new message turns. This is actual native followup delivery, not merely an audit entry or context projection.
 
-## Forbidden
+Delivery does not move the durable cursor. The receiving peer acknowledges after handling the message. If a process or owner dies before acknowledgement, the new incarnation is offered that message again. This is **at-least-once delivery**, with durable envelope-ID deduplication and ordered explicit acknowledgement. It does not promise exactly-once arbitrary shell effects: consumers must use message IDs and independently verified artifacts when an interrupted operation could be repeated.
 
-- `subagent_type`
-- installing community room/bus packages
-- dumping a worker transcript into the parent model
-- spawning Cursor Cloud
-- more than 2 live workers
-- granting `write` / `edit` to a reviewer or tester
-- publishing `verdict.json` or `evidence.json` by any path other than that role's pinned `write_contract`
+Connections have bounded LF-only JSONL framing, bounded pending requests, request/connect/drain deadlines and idle timeouts. Text messages are limited to 32,000 characters; wire/journal records to 128,000 characters. Journal capacity is bounded and exceeding it refuses further acceptance rather than silently dropping history. Worker extensions heartbeat every 20 seconds; presence ages offline after 60 seconds. Presence is a liveness projection, not proof of progress or completion. An authenticated connection is not an OS sandbox: processes under the same OS account with unrestricted shell/read access remain trusted harness participants.
+
+## Mutation and publication authority
+
+Scheduler concurrency is operational policy: `KPI_MAX_PEERS` configures the default process admission limit (default 8); hosts/tests can inject `createWorkerAdmission({maxWorkers})`. This capacity is process-scoped, but **writer exclusion is checkout-scoped**, independent of job, bus, or owner process. `.kpi/ownership/{writers,leases}.json` records are updated under one cross-process hard-link lock. Every holder is identified by the complete job ID, agent ID, process PID and incarnation UUID; matching only agent ID or PID does not grant claim, mutation, transfer or release.
+
+An implementer/arena holding general `bash` reserves the whole checkout **before launch**, even when `write` and `edit` were narrowed away. That reservation is durably transferred to the child PID before its first prompt. For edit-only peers, `spawn({writePaths: ["src/auth"], tools: [...]})` can reserve explicit scopes; disjoint canonical scopes run concurrently, while ancestor/descendant, symlink-alias and same-path overlap are refused. A scoped peer cannot carry unrestricted `bash`. Omitting `writePaths` retains whole-checkout exclusion.
+
+Reviewer/tester shells remain limited to exactly their frozen quality gates; potentially mutating gates also acquire whole-checkout authority, retained until peer stop. The scheduler must stop the candidate writer before those gates execute. Explorer shells and classified read-only parent commands remain concurrent. Gate execution does not grant model-written verification receipts or candidate publication authority.
+
+`claim_path`, `release_path` and publication use narrow authenticated broker methods. Named file mutations additionally require a canonical claim belonging to the active process incarnation; a directory claim covers its descendants. Escape through lexical traversal, dangling or existing symlinks is refused. Multiply-linked file targets are refused by the path-claim boundary because arbitrary hard-link aliases cannot be fenced by names alone. The durable writer reservation remains held after individual claim release, preventing in-flight mutations from being handed to another writer. Failed process termination retains both reservation and admission; transport loss alone never releases either.
+
+`write_contract` executes in the owning runtime, retaining the existing role pin, canonical path checks, schema validation and content-hash receipt. Workers cannot choose another sender/role's pin through tool parameters. The runtime never returns the bearer in tool results. A stop failure retains the live record and admission; successful transfer occurs only after process exit and lease cleanup. SIGKILL is followed by a bounded wait for confirmed exit, not immediate release.
+
+## Graph and parent integration
+
+Use the shared registry factory:
+
+```ts
+const bus = getOrCreateBackgroundBus(cwd, runDirectory, jobId, dependencies);
+const worker = await bus.spawn({
+  agentId: "reviewer-review-node",
+  role: "reviewer",
+  prompt,
+  node: "review-node",
+});
+const result = await bus.awaitInitialContract(worker.agentId);
+```
+
+Keep the bus and peer between node executions; do not `stopAll()` or release its registration in a node's `finally`. Stop at the run/runtime ownership boundary instead. The factory, parent tools and `/agents` consume the same registry; there is no separate private parent lookup that hides graph workers. Parent `communicate` retains its existing `none`/`ack`/`result` contract: `none` means only bounded pipe delivery, `ack` means native RPC acceptance, and `result` additionally requires the existing fresh validated publication. Parent messages are also journaled. These legacy flags are distinct from a worker socket send's durable acceptance.
+
+Direct host mutation and verification executors use `reserveWriterAuthority(cwd, owner, paths)` and `releaseWriterAuthority(cwd, owner)`, where `owner` is `{jobId, agentId, pid, incarnation}`. Reserve before execution and release only after execution/termination is confirmed. Bind an in-process node's exact session ID using `bindSessionWriterAuthority(sessionId, owner)` for that turn and dispose the binding afterward. The tool boundary verifies the complete bound owner against disk; another session in the same PID cannot borrow it. Unbound parent tool calls acquire their own reservation through `tool_execution_end`. Host verification remains separate from peer publication.
+
+## Canonical context at inference
+
+For protected-intent graph sessions, the native `context` hook rebuilds an ephemeral `kpi-runtime-context` message before each inference, including continuation and retry turns. It removes the prior projection from that request rather than appending another copy to persisted session history. Reset, compaction, isolated-session replacement and resource changes therefore do not make transcript memory authoritative.
+
+Assembly rechecks `intent.json` against `task.json`, preserves the complete protected intent, and adds bounded execution state, feature ownership, raw evidence references, relevant failure/approval events, this peer's task-scoped messages, accepted knowledge claims and repository maps. These are retrieved data; neither peer messages nor knowledge claims authorize scope changes, write ownership, external actions or completion. Product ownership and structural repository maps remain separate. `context_map` supports targeted retrieval; `context_navigate` reports real configured LSP capabilities or unsupported status rather than calling text search semantic navigation.
+
+The current resource's context capacity, history, system prompt and output reserve constrain assembly. Unknown/nonpositive capacity, unavailable protected state or mandatory context overflow blocks inference through the native extension runner; there is no invented capacity that makes an unknown resource safe. Optional layers may be omitted with raw references and coverage recorded in `context/manifest-*.json`. Model-bound authorized tokenizers can measure serialization candidates; without one, budgeting is explicitly a conservative UTF-8-byte estimate, not measured model tokens. The ephemeral projection never rewrites canonical evidence.
+
+## Remaining limits and verification
+
+- These are enforced harness/tool authority boundaries, **not mandatory OS isolation**. An independently launched hostile process under the same OS account, a legacy runtime bypassing this boundary, an authorized arbitrary shell that tampers with lock files, or a detached descendant surviving its managed parent can bypass cooperative filesystem fencing. Filesystem paths can also be changed between preflight and the actual syscall by such a process. Strong hostile-process guarantees require OS sandboxing or separate OS identities/workspaces; they are not claimed here.
+- Publication results still use the existing role files and receipt validation. Same-role concurrent publications can invalidate a shared projection's hash; this fails closed but is not immutable per-assignment result storage. Legacy contract-result waits still inspect files; those waits are not the peer message transport.
+- Reply correlation identifies messages, not independent evidence completion. Parent concurrent result requests to one peer are refused, but a settle event plus publication is not proof of a task's external effects.
+- Automatic owner recovery restores logical records, not a running daemon. Reopening a peer is explicit through stable `spawn`/`restart`; replays do not prove exactly-once effects.
+- RP-22 scoped evidence is retained under `.kpi/proof/RP-22/`. `scoped-tests-8.json` records exit 0 for the scoped run including `test/peer-runtime.test.ts`, `test/graph-peer.test.ts`, `test/context.test.ts`, bus, ownership and routing fixtures; `native-context-runner.json` records the native extension-runner suite passing. These cover authenticated transport/replay, graph delivery adapters, local process ownership and fail-closed context behavior, not live model quality. `build-offline.json` and `built-harness.json` record successful offline build and built startup/resource/RPC smoke. No validation was rerun for this documentation update. Live credentialed three-peer inference, live failover and representative model-quality comparisons remain unverified here; these local proofs do not complete RP-22's DoD or the full autonomous-runtime mandate.

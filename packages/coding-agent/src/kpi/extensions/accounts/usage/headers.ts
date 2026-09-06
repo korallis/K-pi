@@ -1,3 +1,4 @@
+import { parseRetryAfter } from "../errors.ts";
 import type { UsageReading } from "./types.ts";
 
 export type ResponseHeaders = Readonly<Record<string, string | undefined>>;
@@ -168,7 +169,7 @@ export function readUsageHeaders(headers: ResponseHeaders, nowMs: number): Usage
 	}
 
 	// `retry-after` states when the slot recovers even when no family is present.
-	const retryAfter = parseReset(headerValue(headers, "retry-after"), nowMs);
+	const retryAfter = parseRetryAfter(headerValue(headers, "retry-after"), nowMs);
 	if (resetAt === undefined && retryAfter !== undefined) {
 		resetAt = retryAfter;
 	}

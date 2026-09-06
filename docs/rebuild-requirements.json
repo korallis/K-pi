@@ -1,0 +1,3066 @@
+{
+  "version": 1,
+  "source": "Operator architectural rebuild mandate, 2026-09-05, sections 1–122 and execution steps 1–30",
+  "principle": "Make user intent rigid. Make execution fluid.",
+  "completion": "No overall completion until all original mandate conditions, visual acceptance and live end-to-end proofs are evidenced. Titles index the original mandate; they do not replace or narrow its contents.",
+  "followup_2026_09_06": {
+    "report": "docs/rebuild-audit.md#2026-09-06-follow-up",
+    "evidence": ".kpi/proof/RP-22/followup-20260906/manifest.json",
+    "operator_decisions": ["Keep imported wireframe styling and mentality; add useful truthful detail", "Preserve existing layouts with explicit feature/path ownership"],
+    "authenticated_smoke": ["openai-codex", "anthropic", "zai"],
+    "credential_scope": "Temporary access-only snapshots; no refresh tokens copied, no OMP database writes, no permanent K-pi credential import",
+    "traceability": { "entries": 354, "bound": 353, "uncovered": 1 },
+    "acceptance": "Whole-package live acceptance remains open; minimal inference and offline bindings do not accept the complete mandate"
+  },
+  "requirements": [
+    {
+      "id": "RB-001",
+      "title": "First audit the existing K-Pi",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "B"
+      ],
+      "remaining_acceptance": [
+        "Source-backed reconstruction is recorded; it is not an executed proof of every original audit finding."
+      ]
+    },
+    {
+      "id": "RB-002",
+      "title": "Identify everything preventing a full graph cycle",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "B"
+      ],
+      "remaining_acceptance": [
+        "Source-backed reconstruction is recorded; it is not an executed proof of every original audit finding."
+      ]
+    },
+    {
+      "id": "RB-003",
+      "title": "Remove unnecessary gates from execution flow",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/built-delivery-finalization.json",
+        ".kpi/proof/RP-22/built-http-observation-verified.json",
+        ".kpi/proof/RP-22/delivery-finalization-fixed.json",
+        ".kpi/proof/RP-22/delivery-finalization-red.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/partial-delivery-fixed.json",
+        ".kpi/proof/RP-22/partial-delivery-red.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "F",
+        "G",
+        "P"
+      ],
+      "remaining_acceptance": [
+        "The full model-backed induced-failure cycle and diagnostic quality remain unproved.",
+        "Local host-verification adversarial cases passed; the complete original scenario matrix remains open.",
+        "Recorded reproductions cover named defects only, not all mandatory live failure scenarios."
+      ]
+    },
+    {
+      "id": "RB-004",
+      "title": "Retain real safety and integrity boundaries",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/built-delivery-finalization.json",
+        ".kpi/proof/RP-22/built-http-observation-verified.json",
+        ".kpi/proof/RP-22/delivery-finalization-fixed.json",
+        ".kpi/proof/RP-22/delivery-finalization-red.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/partial-delivery-fixed.json",
+        ".kpi/proof/RP-22/partial-delivery-red.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "F",
+        "G",
+        "P"
+      ],
+      "remaining_acceptance": [
+        "The full model-backed induced-failure cycle and diagnostic quality remain unproved.",
+        "Local host-verification adversarial cases passed; the complete original scenario matrix remains open.",
+        "Recorded reproductions cover named defects only, not all mandatory live failure scenarios."
+      ]
+    },
+    {
+      "id": "RB-005",
+      "title": "Define desired state with versioned Intent Contract",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/built-delivery-finalization.json",
+        ".kpi/proof/RP-22/built-http-observation-verified.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "E",
+        "G"
+      ],
+      "remaining_acceptance": [
+        "Live desired-state derivation and complete user-journey acceptance are not established.",
+        "Local host-verification adversarial cases passed; the complete original scenario matrix remains open."
+      ]
+    },
+    {
+      "id": "RB-006",
+      "title": "Understand features as complete user experiences",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/built-delivery-finalization.json",
+        ".kpi/proof/RP-22/built-http-observation-verified.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "E",
+        "G"
+      ],
+      "remaining_acceptance": [
+        "Live desired-state derivation and complete user-journey acceptance are not established.",
+        "Local host-verification adversarial cases passed; the complete original scenario matrix remains open."
+      ]
+    },
+    {
+      "id": "RB-007",
+      "title": "Derive requirements before asking user questions",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/built-delivery-finalization.json",
+        ".kpi/proof/RP-22/built-http-observation-verified.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "E",
+        "G"
+      ],
+      "remaining_acceptance": [
+        "Live desired-state derivation and complete user-journey acceptance are not established.",
+        "Local host-verification adversarial cases passed; the complete original scenario matrix remains open."
+      ]
+    },
+    {
+      "id": "RB-008",
+      "title": "Protect accepted intent against silent changes",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/built-delivery-finalization.json",
+        ".kpi/proof/RP-22/built-http-observation-verified.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "E",
+        "G"
+      ],
+      "remaining_acceptance": [
+        "Live desired-state derivation and complete user-journey acceptance are not established.",
+        "Local host-verification adversarial cases passed; the complete original scenario matrix remains open."
+      ]
+    },
+    {
+      "id": "RB-009",
+      "title": "Separate Goal Graph from Execution Graph",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/built-delivery-finalization.json",
+        ".kpi/proof/RP-22/built-http-observation-verified.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "E",
+        "G"
+      ],
+      "remaining_acceptance": [
+        "Live desired-state derivation and complete user-journey acceptance are not established.",
+        "Local host-verification adversarial cases passed; the complete original scenario matrix remains open."
+      ]
+    },
+    {
+      "id": "RB-010",
+      "title": "Implement the simple observed-state control loop",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/built-delivery-finalization.json",
+        ".kpi/proof/RP-22/built-http-observation-verified.json",
+        ".kpi/proof/RP-22/delivery-finalization-fixed.json",
+        ".kpi/proof/RP-22/delivery-finalization-red.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/partial-delivery-fixed.json",
+        ".kpi/proof/RP-22/partial-delivery-red.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "F",
+        "G",
+        "P"
+      ],
+      "remaining_acceptance": [
+        "The full model-backed induced-failure cycle and diagnostic quality remain unproved.",
+        "Local host-verification adversarial cases passed; the complete original scenario matrix remains open.",
+        "Recorded reproductions cover named defects only, not all mandatory live failure scenarios."
+      ]
+    },
+    {
+      "id": "RB-011",
+      "title": "Allow dynamic execution graph mutation",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/built-delivery-finalization.json",
+        ".kpi/proof/RP-22/built-http-observation-verified.json",
+        ".kpi/proof/RP-22/delivery-finalization-fixed.json",
+        ".kpi/proof/RP-22/delivery-finalization-red.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/partial-delivery-fixed.json",
+        ".kpi/proof/RP-22/partial-delivery-red.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "F",
+        "G",
+        "P"
+      ],
+      "remaining_acceptance": [
+        "The full model-backed induced-failure cycle and diagnostic quality remain unproved.",
+        "Local host-verification adversarial cases passed; the complete original scenario matrix remains open.",
+        "Recorded reproductions cover named defects only, not all mandatory live failure scenarios."
+      ]
+    },
+    {
+      "id": "RB-012",
+      "title": "Record auditable execution graph mutation history",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/built-delivery-finalization.json",
+        ".kpi/proof/RP-22/built-http-observation-verified.json",
+        ".kpi/proof/RP-22/delivery-finalization-fixed.json",
+        ".kpi/proof/RP-22/delivery-finalization-red.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/partial-delivery-fixed.json",
+        ".kpi/proof/RP-22/partial-delivery-red.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "F",
+        "G",
+        "P"
+      ],
+      "remaining_acceptance": [
+        "The full model-backed induced-failure cycle and diagnostic quality remain unproved.",
+        "Local host-verification adversarial cases passed; the complete original scenario matrix remains open.",
+        "Recorded reproductions cover named defects only, not all mandatory live failure scenarios."
+      ]
+    },
+    {
+      "id": "RB-013",
+      "title": "Implement diagnosis-driven self-healing recovery",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/built-delivery-finalization.json",
+        ".kpi/proof/RP-22/built-http-observation-verified.json",
+        ".kpi/proof/RP-22/delivery-finalization-fixed.json",
+        ".kpi/proof/RP-22/delivery-finalization-red.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/partial-delivery-fixed.json",
+        ".kpi/proof/RP-22/partial-delivery-red.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "F",
+        "G",
+        "P"
+      ],
+      "remaining_acceptance": [
+        "The full model-backed induced-failure cycle and diagnostic quality remain unproved.",
+        "Local host-verification adversarial cases passed; the complete original scenario matrix remains open.",
+        "Recorded reproductions cover named defects only, not all mandatory live failure scenarios."
+      ]
+    },
+    {
+      "id": "RB-014",
+      "title": "Implement the complete failure classification taxonomy",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/built-delivery-finalization.json",
+        ".kpi/proof/RP-22/built-http-observation-verified.json",
+        ".kpi/proof/RP-22/delivery-finalization-fixed.json",
+        ".kpi/proof/RP-22/delivery-finalization-red.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/partial-delivery-fixed.json",
+        ".kpi/proof/RP-22/partial-delivery-red.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "F",
+        "G",
+        "P"
+      ],
+      "remaining_acceptance": [
+        "The full model-backed induced-failure cycle and diagnostic quality remain unproved.",
+        "Local host-verification adversarial cases passed; the complete original scenario matrix remains open.",
+        "Recorded reproductions cover named defects only, not all mandatory live failure scenarios."
+      ]
+    },
+    {
+      "id": "RB-015",
+      "title": "Escalate recovery strategies on repeated failures",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/built-delivery-finalization.json",
+        ".kpi/proof/RP-22/built-http-observation-verified.json",
+        ".kpi/proof/RP-22/delivery-finalization-fixed.json",
+        ".kpi/proof/RP-22/delivery-finalization-red.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/partial-delivery-fixed.json",
+        ".kpi/proof/RP-22/partial-delivery-red.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "F",
+        "G",
+        "P"
+      ],
+      "remaining_acceptance": [
+        "The full model-backed induced-failure cycle and diagnostic quality remain unproved.",
+        "Local host-verification adversarial cases passed; the complete original scenario matrix remains open.",
+        "Recorded reproductions cover named defects only, not all mandatory live failure scenarios."
+      ]
+    },
+    {
+      "id": "RB-016",
+      "title": "Detect non-progress instead of counting iterations",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/built-delivery-finalization.json",
+        ".kpi/proof/RP-22/built-http-observation-verified.json",
+        ".kpi/proof/RP-22/delivery-finalization-fixed.json",
+        ".kpi/proof/RP-22/delivery-finalization-red.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/partial-delivery-fixed.json",
+        ".kpi/proof/RP-22/partial-delivery-red.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "F",
+        "G",
+        "P"
+      ],
+      "remaining_acceptance": [
+        "The full model-backed induced-failure cycle and diagnostic quality remain unproved.",
+        "Local host-verification adversarial cases passed; the complete original scenario matrix remains open.",
+        "Recorded reproductions cover named defects only, not all mandatory live failure scenarios."
+      ]
+    },
+    {
+      "id": "RB-017",
+      "title": "Capture observations that drive agent reasoning",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/built-delivery-finalization.json",
+        ".kpi/proof/RP-22/built-http-observation-verified.json",
+        ".kpi/proof/RP-22/delivery-finalization-fixed.json",
+        ".kpi/proof/RP-22/delivery-finalization-red.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/partial-delivery-fixed.json",
+        ".kpi/proof/RP-22/partial-delivery-red.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "F",
+        "G",
+        "P"
+      ],
+      "remaining_acceptance": [
+        "The full model-backed induced-failure cycle and diagnostic quality remain unproved.",
+        "Local host-verification adversarial cases passed; the complete original scenario matrix remains open.",
+        "Recorded reproductions cover named defects only, not all mandatory live failure scenarios."
+      ]
+    },
+    {
+      "id": "RB-018",
+      "title": "Require evidence-based project completion states",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/built-delivery-finalization.json",
+        ".kpi/proof/RP-22/built-http-observation-verified.json",
+        ".kpi/proof/RP-22/delivery-finalization-fixed.json",
+        ".kpi/proof/RP-22/delivery-finalization-red.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/partial-delivery-fixed.json",
+        ".kpi/proof/RP-22/partial-delivery-red.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "F",
+        "G",
+        "P"
+      ],
+      "remaining_acceptance": [
+        "The full model-backed induced-failure cycle and diagnostic quality remain unproved.",
+        "Local host-verification adversarial cases passed; the complete original scenario matrix remains open.",
+        "Recorded reproductions cover named defects only, not all mandatory live failure scenarios."
+      ]
+    },
+    {
+      "id": "RB-019",
+      "title": "Trace protected requirements through verified evidence",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/built-delivery-finalization.json",
+        ".kpi/proof/RP-22/built-http-observation-verified.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "E",
+        "G"
+      ],
+      "remaining_acceptance": [
+        "Live desired-state derivation and complete user-journey acceptance are not established.",
+        "Local host-verification adversarial cases passed; the complete original scenario matrix remains open."
+      ]
+    },
+    {
+      "id": "RB-020",
+      "title": "Require independent acceptance verification after building",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/built-delivery-finalization.json",
+        ".kpi/proof/RP-22/built-http-observation-verified.json",
+        ".kpi/proof/RP-22/delivery-finalization-fixed.json",
+        ".kpi/proof/RP-22/delivery-finalization-red.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/partial-delivery-fixed.json",
+        ".kpi/proof/RP-22/partial-delivery-red.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "F",
+        "G",
+        "P"
+      ],
+      "remaining_acceptance": [
+        "The full model-backed induced-failure cycle and diagnostic quality remain unproved.",
+        "Local host-verification adversarial cases passed; the complete original scenario matrix remains open.",
+        "Recorded reproductions cover named defects only, not all mandatory live failure scenarios."
+      ]
+    },
+    {
+      "id": "RB-021",
+      "title": "Test complete user journeys where relevant",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/built-delivery-finalization.json",
+        ".kpi/proof/RP-22/built-http-observation-verified.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "E",
+        "G"
+      ],
+      "remaining_acceptance": [
+        "Live desired-state derivation and complete user-journey acceptance are not established.",
+        "Local host-verification adversarial cases passed; the complete original scenario matrix remains open."
+      ]
+    },
+    {
+      "id": "RB-022",
+      "title": "Separate deterministic control plane from agent plane",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/built-delivery-finalization.json",
+        ".kpi/proof/RP-22/built-http-observation-verified.json",
+        ".kpi/proof/RP-22/delivery-finalization-fixed.json",
+        ".kpi/proof/RP-22/delivery-finalization-red.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/partial-delivery-fixed.json",
+        ".kpi/proof/RP-22/partial-delivery-red.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "F",
+        "G",
+        "P"
+      ],
+      "remaining_acceptance": [
+        "The full model-backed induced-failure cycle and diagnostic quality remain unproved.",
+        "Local host-verification adversarial cases passed; the complete original scenario matrix remains open.",
+        "Recorded reproductions cover named defects only, not all mandatory live failure scenarios."
+      ]
+    },
+    {
+      "id": "RB-023",
+      "title": "Reuse persistent forked Pi runtime capabilities",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/native-runner-verified.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "H"
+      ],
+      "remaining_acceptance": [
+        "Three live model-backed peers, their restart/replay teamwork and provider-neutral continuity remain unproved."
+      ]
+    },
+    {
+      "id": "RB-024",
+      "title": "Make persistent Pi-to-Pi peers the primary model",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/native-runner-verified.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "H"
+      ],
+      "remaining_acceptance": [
+        "Three live model-backed peers, their restart/replay teamwork and provider-neutral continuity remain unproved."
+      ]
+    },
+    {
+      "id": "RB-025",
+      "title": "Preserve logical agent identity above models",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/native-runner-verified.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "H"
+      ],
+      "remaining_acceptance": [
+        "Three live model-backed peers, their restart/replay teamwork and provider-neutral continuity remain unproved."
+      ]
+    },
+    {
+      "id": "RB-026",
+      "title": "Implement real-time peer communication primitives",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/native-runner-verified.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "H"
+      ],
+      "remaining_acceptance": [
+        "Three live model-backed peers, their restart/replay teamwork and provider-neutral continuity remain unproved."
+      ]
+    },
+    {
+      "id": "RB-027",
+      "title": "Allow agents to communicate directly together",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/native-runner-verified.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "H"
+      ],
+      "remaining_acceptance": [
+        "Three live model-backed peers, their restart/replay teamwork and provider-neutral continuity remain unproved."
+      ]
+    },
+    {
+      "id": "RB-028",
+      "title": "Coordinate through deterministic graphs not master LLM",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/native-runner-verified.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "H"
+      ],
+      "remaining_acceptance": [
+        "Three live model-backed peers, their restart/replay teamwork and provider-neutral continuity remain unproved."
+      ]
+    },
+    {
+      "id": "RB-029",
+      "title": "Support scoped agent rooms and channels",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/native-runner-verified.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "H"
+      ],
+      "remaining_acceptance": [
+        "Three live model-backed peers, their restart/replay teamwork and provider-neutral continuity remain unproved."
+      ]
+    },
+    {
+      "id": "RB-030",
+      "title": "Form dynamic teams from execution needs",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/native-runner-verified.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "H"
+      ],
+      "remaining_acceptance": [
+        "Three live model-backed peers, their restart/replay teamwork and provider-neutral continuity remain unproved."
+      ]
+    },
+    {
+      "id": "RB-031",
+      "title": "Restart logical agents independently of processes",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/native-runner-verified.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "H"
+      ],
+      "remaining_acceptance": [
+        "Three live model-backed peers, their restart/replay teamwork and provider-neutral continuity remain unproved."
+      ]
+    },
+    {
+      "id": "RB-032",
+      "title": "Implement heartbeats presence and lost-agent recovery",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/native-runner-verified.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "H"
+      ],
+      "remaining_acceptance": [
+        "Three live model-backed peers, their restart/replay teamwork and provider-neutral continuity remain unproved."
+      ]
+    },
+    {
+      "id": "RB-033",
+      "title": "Support configured officially supported multiple providers",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/built-native-catalog-preservation-final.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/resource-inventory-final.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "I"
+      ],
+      "remaining_acceptance": [
+        "Temporary native Codex, Anthropic and z.ai inference smoke passed; installed accounts and full live acceptance remain unproved. Cursor CLI-protocol integration is operator-authorised; authenticated Cursor acceptance remains open."
+      ]
+    },
+    {
+      "id": "RB-034",
+      "title": "Separate authorised accounts from provider identity",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/built-native-catalog-preservation-final.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/resource-inventory-final.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "I"
+      ],
+      "remaining_acceptance": [
+        "Temporary native Codex, Anthropic and z.ai inference smoke passed; installed accounts and full live acceptance remain unproved. Cursor CLI-protocol integration is operator-authorised; authenticated Cursor acceptance remains open."
+      ]
+    },
+    {
+      "id": "RB-035",
+      "title": "Keep secrets outside agent and project state",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/built-native-catalog-preservation-final.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/resource-inventory-final.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "I"
+      ],
+      "remaining_acceptance": [
+        "Temporary native Codex, Anthropic and z.ai inference smoke passed; installed accounts and full live acceptance remain unproved. Cursor CLI-protocol integration is operator-authorised; authenticated Cursor acceptance remains open."
+      ]
+    },
+    {
+      "id": "RB-036",
+      "title": "Reuse provider adapters with required capabilities",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/built-native-catalog-preservation-final.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/resource-inventory-final.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "I"
+      ],
+      "remaining_acceptance": [
+        "Temporary native Codex, Anthropic and z.ai inference smoke passed; installed accounts and full live acceptance remain unproved. Cursor CLI-protocol integration is operator-authorised; authenticated Cursor acceptance remains open."
+      ]
+    },
+    {
+      "id": "RB-037",
+      "title": "Maintain live resource registry and health",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/built-native-catalog-preservation-final.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/resource-inventory-final.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "I"
+      ],
+      "remaining_acceptance": [
+        "Temporary native Codex, Anthropic and z.ai inference smoke passed; installed accounts and full live acceptance remain unproved. Cursor CLI-protocol integration is operator-authorised; authenticated Cursor acceptance remains open."
+      ]
+    },
+    {
+      "id": "RB-038",
+      "title": "Continue agents transparently through resource failover",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/built-native-catalog-preservation-final.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/resource-inventory-final.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "I"
+      ],
+      "remaining_acceptance": [
+        "Temporary native Codex, Anthropic and z.ai inference smoke passed; installed accounts and full live acceptance remain unproved. Cursor CLI-protocol integration is operator-authorised; authenticated Cursor acceptance remains open."
+      ]
+    },
+    {
+      "id": "RB-039",
+      "title": "Preserve canonical context across provider switching",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/context-benchmark.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/native-runner-verified.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "L",
+        "M"
+      ],
+      "remaining_acceptance": [
+        "Real model switching, compaction and differing-capacity inference quality remain unproved.",
+        "Only local byte/read/exact-recovery measurements exist; token counts, model comprehension and cross-family quality are unmeasured."
+      ]
+    },
+    {
+      "id": "RB-040",
+      "title": "Generate structured canonical context transfer packets",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/context-benchmark.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/native-runner-verified.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "L",
+        "M"
+      ],
+      "remaining_acceptance": [
+        "Real model switching, compaction and differing-capacity inference quality remain unproved.",
+        "Only local byte/read/exact-recovery measurements exist; token counts, model comprehension and cross-family quality are unmeasured."
+      ]
+    },
+    {
+      "id": "RB-041",
+      "title": "Preserve memory across model context capacities",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/context-benchmark.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/native-runner-verified.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "L",
+        "M"
+      ],
+      "remaining_acceptance": [
+        "Real model switching, compaction and differing-capacity inference quality remain unproved.",
+        "Only local byte/read/exact-recovery measurements exist; token counts, model comprehension and cross-family quality are unmeasured."
+      ]
+    },
+    {
+      "id": "RB-042",
+      "title": "Protect project state against inference failures",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/context-benchmark.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/native-runner-verified.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "L",
+        "M"
+      ],
+      "remaining_acceptance": [
+        "Real model switching, compaction and differing-capacity inference quality remain unproved.",
+        "Only local byte/read/exact-recovery measurements exist; token counts, model comprehension and cross-family quality are unmeasured."
+      ]
+    },
+    {
+      "id": "RB-043",
+      "title": "Route intelligence by engineering task requirements",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/resource-inventory-final.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "J"
+      ],
+      "remaining_acceptance": [
+        "Configured-model quality, cross-family review and independent arena acceptance remain unmeasured."
+      ]
+    },
+    {
+      "id": "RB-044",
+      "title": "Discover authenticated available models dynamically",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/built-native-catalog-preservation-final.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/resource-inventory-final.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "I"
+      ],
+      "remaining_acceptance": [
+        "Temporary native Codex, Anthropic and z.ai inference smoke passed; installed accounts and full live acceptance remain unproved. Cursor CLI-protocol integration is operator-authorised; authenticated Cursor acceptance remains open."
+      ]
+    },
+    {
+      "id": "RB-045",
+      "title": "Track model capabilities without invented precision",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/built-native-catalog-preservation-final.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/resource-inventory-final.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "I"
+      ],
+      "remaining_acceptance": [
+        "Temporary native Codex, Anthropic and z.ai inference smoke passed; installed accounts and full live acceptance remain unproved. Cursor CLI-protocol integration is operator-authorised; authenticated Cursor acceptance remains open."
+      ]
+    },
+    {
+      "id": "RB-046",
+      "title": "Route important engineering responsibilities quality first",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/resource-inventory-final.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "J"
+      ],
+      "remaining_acceptance": [
+        "Configured-model quality, cross-family review and independent arena acceptance remain unmeasured."
+      ]
+    },
+    {
+      "id": "RB-047",
+      "title": "Study Oh My Pi resource patterns",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/resource-inventory-final.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "B",
+        "J"
+      ],
+      "remaining_acceptance": [
+        "Source-backed reconstruction is recorded; it is not an executed proof of every original audit finding.",
+        "Configured-model quality, cross-family review and independent arena acceptance remain unmeasured."
+      ]
+    },
+    {
+      "id": "RB-048",
+      "title": "Study pstack model-by-role intelligence routing",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/resource-inventory-final.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "B",
+        "J"
+      ],
+      "remaining_acceptance": [
+        "Source-backed reconstruction is recorded; it is not an executed proof of every original audit finding.",
+        "Configured-model quality, cross-family review and independent arena acceptance remain unmeasured."
+      ]
+    },
+    {
+      "id": "RB-049",
+      "title": "Prefer independent cross-family review where available",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/resource-inventory-final.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "J"
+      ],
+      "remaining_acceptance": [
+        "Configured-model quality, cross-family review and independent arena acceptance remain unmeasured."
+      ]
+    },
+    {
+      "id": "RB-050",
+      "title": "Support architecture arenas for consequential decisions",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/resource-inventory-final.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "J"
+      ],
+      "remaining_acceptance": [
+        "Configured-model quality, cross-family review and independent arena acceptance remain unmeasured."
+      ]
+    },
+    {
+      "id": "RB-051",
+      "title": "Separate intelligence routing from resource scheduling",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/resource-inventory-final.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "J"
+      ],
+      "remaining_acceptance": [
+        "Configured-model quality, cross-family review and independent arena acceptance remain unmeasured."
+      ]
+    },
+    {
+      "id": "RB-052",
+      "title": "Preserve healthy appropriate inference session affinity",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/resource-inventory-final.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "J"
+      ],
+      "remaining_acceptance": [
+        "Configured-model quality, cross-family review and independent arena acceptance remain unmeasured."
+      ]
+    },
+    {
+      "id": "RB-053",
+      "title": "Choose compatible quality-preserving failover resources",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/resource-inventory-final.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "J"
+      ],
+      "remaining_acceptance": [
+        "Configured-model quality, cross-family review and independent arena acceptance remain unmeasured."
+      ]
+    },
+    {
+      "id": "RB-054",
+      "title": "Learn explainable routing from local outcomes",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/resource-inventory-final.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "J"
+      ],
+      "remaining_acceptance": [
+        "Configured-model quality, cross-family review and independent arena acceptance remain unmeasured."
+      ]
+    },
+    {
+      "id": "RB-055",
+      "title": "Record model selection reasons for assignments",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/resource-inventory-final.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "J"
+      ],
+      "remaining_acceptance": [
+        "Configured-model quality, cross-family review and independent arena acceptance remain unmeasured."
+      ]
+    },
+    {
+      "id": "RB-056",
+      "title": "Evaluate configured models on representative tasks",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/resource-inventory-final.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "J"
+      ],
+      "remaining_acceptance": [
+        "Configured-model quality, cross-family review and independent arena acceptance remain unmeasured."
+      ]
+    },
+    {
+      "id": "RB-057",
+      "title": "Parallelise useful independent intelligence work selectively",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/native-runner-verified.json",
+        ".kpi/proof/RP-22/resource-inventory-final.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "H",
+        "J"
+      ],
+      "remaining_acceptance": [
+        "Three live model-backed peers, their restart/replay teamwork and provider-neutral continuity remain unproved.",
+        "Configured-model quality, cross-family review and independent arena acceptance remain unmeasured."
+      ]
+    },
+    {
+      "id": "RB-058",
+      "title": "Support competing hypotheses for difficult failures",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/resource-inventory-final.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "J"
+      ],
+      "remaining_acceptance": [
+        "Configured-model quality, cross-family review and independent arena acceptance remain unmeasured."
+      ]
+    },
+    {
+      "id": "RB-059",
+      "title": "Use agent-native architecture for greenfield applications",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/context-benchmark.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "K"
+      ],
+      "remaining_acceptance": [
+        "Greenfield/low-context model-backed application work is unproved; older Dune ACs conflict with the new ownership contract."
+      ]
+    },
+    {
+      "id": "RB-060",
+      "title": "Make obvious code paths correct paths",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/context-benchmark.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "K"
+      ],
+      "remaining_acceptance": [
+        "Greenfield/low-context model-backed application work is unproved; older Dune ACs conflict with the new ownership contract."
+      ]
+    },
+    {
+      "id": "RB-061",
+      "title": "Colocate features according to project stack",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/context-benchmark.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "K"
+      ],
+      "remaining_acceptance": [
+        "Greenfield/low-context model-backed application work is unproved; older Dune ACs conflict with the new ownership contract."
+      ]
+    },
+    {
+      "id": "RB-062",
+      "title": "Avoid unnecessary cross-repository feature scattering",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/context-benchmark.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "K"
+      ],
+      "remaining_acceptance": [
+        "Greenfield/low-context model-backed application work is unproved; older Dune ACs conflict with the new ownership contract."
+      ]
+    },
+    {
+      "id": "RB-063",
+      "title": "Expose machine-discoverable feature ownership metadata",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/context-benchmark.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "K"
+      ],
+      "remaining_acceptance": [
+        "Greenfield/low-context model-backed application work is unproved; older Dune ACs conflict with the new ownership contract."
+      ]
+    },
+    {
+      "id": "RB-064",
+      "title": "Enforce architectural boundaries through mechanical checks",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/context-benchmark.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "K"
+      ],
+      "remaining_acceptance": [
+        "Greenfield/low-context model-backed application work is unproved; older Dune ACs conflict with the new ownership contract."
+      ]
+    },
+    {
+      "id": "RB-065",
+      "title": "Convert observed repeated mistakes into structural prevention",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/context-benchmark.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "K"
+      ],
+      "remaining_acceptance": [
+        "Greenfield/low-context model-backed application work is unproved; older Dune ACs conflict with the new ownership contract."
+      ]
+    },
+    {
+      "id": "RB-066",
+      "title": "Apply Dune principles without cargo-cult restrictions",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/context-benchmark.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "K"
+      ],
+      "remaining_acceptance": [
+        "Greenfield/low-context model-backed application work is unproved; older Dune ACs conflict with the new ownership contract."
+      ]
+    },
+    {
+      "id": "RB-067",
+      "title": "Maintain user-experience-to-code Product Feature Map",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/context-benchmark.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "K"
+      ],
+      "remaining_acceptance": [
+        "Greenfield/low-context model-backed application work is unproved; older Dune ACs conflict with the new ownership contract."
+      ]
+    },
+    {
+      "id": "RB-068",
+      "title": "Keep product repository and execution maps separate",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/context-benchmark.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "K"
+      ],
+      "remaining_acceptance": [
+        "Greenfield/low-context model-backed application work is unproved; older Dune ACs conflict with the new ownership contract."
+      ]
+    },
+    {
+      "id": "RB-069",
+      "title": "Provide convention-aware agent-oriented feature scaffolding",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/context-benchmark.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "K"
+      ],
+      "remaining_acceptance": [
+        "Greenfield/low-context model-backed application work is unproved; older Dune ACs conflict with the new ownership contract."
+      ]
+    },
+    {
+      "id": "RB-070",
+      "title": "Treat context engineering as first-class system",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/context-benchmark.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/native-runner-verified.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "L",
+        "M"
+      ],
+      "remaining_acceptance": [
+        "Real model switching, compaction and differing-capacity inference quality remain unproved.",
+        "Only local byte/read/exact-recovery measurements exist; token counts, model comprehension and cross-family quality are unmeasured."
+      ]
+    },
+    {
+      "id": "RB-071",
+      "title": "Persist authoritative memory outside model windows",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/context-benchmark.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/native-runner-verified.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "L",
+        "M"
+      ],
+      "remaining_acceptance": [
+        "Real model switching, compaction and differing-capacity inference quality remain unproved.",
+        "Only local byte/read/exact-recovery measurements exist; token counts, model comprehension and cross-family quality are unmeasured."
+      ]
+    },
+    {
+      "id": "RB-072",
+      "title": "Assemble purpose-built context for each inference",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/context-benchmark.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/native-runner-verified.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "L",
+        "M"
+      ],
+      "remaining_acceptance": [
+        "Real model switching, compaction and differing-capacity inference quality remain unproved.",
+        "Only local byte/read/exact-recovery measurements exist; token counts, model comprehension and cross-family quality are unmeasured."
+      ]
+    },
+    {
+      "id": "RB-073",
+      "title": "Layer relevant context with retrievable history",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/context-benchmark.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/native-runner-verified.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "L",
+        "M"
+      ],
+      "remaining_acceptance": [
+        "Real model switching, compaction and differing-capacity inference quality remain unproved.",
+        "Only local byte/read/exact-recovery measurements exist; token counts, model comprehension and cross-family quality are unmeasured."
+      ]
+    },
+    {
+      "id": "RB-074",
+      "title": "Study and implement structural repository mapping",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/context-benchmark.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/native-runner-verified.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "L",
+        "M"
+      ],
+      "remaining_acceptance": [
+        "Real model switching, compaction and differing-capacity inference quality remain unproved.",
+        "Only local byte/read/exact-recovery measurements exist; token counts, model comprehension and cross-family quality are unmeasured."
+      ]
+    },
+    {
+      "id": "RB-075",
+      "title": "Study and expose supported semantic retrieval",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/context-benchmark.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/native-runner-verified.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "L",
+        "M"
+      ],
+      "remaining_acceptance": [
+        "Real model switching, compaction and differing-capacity inference quality remain unproved.",
+        "Only local byte/read/exact-recovery measurements exist; token counts, model comprehension and cross-family quality are unmeasured."
+      ]
+    },
+    {
+      "id": "RB-076",
+      "title": "Default navigation to targeted relevant retrieval",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/context-benchmark.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/native-runner-verified.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "L",
+        "M"
+      ],
+      "remaining_acceptance": [
+        "Real model switching, compaction and differing-capacity inference quality remain unproved.",
+        "Only local byte/read/exact-recovery measurements exist; token counts, model comprehension and cross-family quality are unmeasured."
+      ]
+    },
+    {
+      "id": "RB-077",
+      "title": "Incrementally update affected repository indexes",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/context-benchmark.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/native-runner-verified.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "L",
+        "M"
+      ],
+      "remaining_acceptance": [
+        "Real model switching, compaction and differing-capacity inference quality remain unproved.",
+        "Only local byte/read/exact-recovery measurements exist; token counts, model comprehension and cross-family quality are unmeasured."
+      ]
+    },
+    {
+      "id": "RB-078",
+      "title": "Make diffs primary review context primitive",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/context-benchmark.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/native-runner-verified.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "L",
+        "M"
+      ],
+      "remaining_acceptance": [
+        "Real model switching, compaction and differing-capacity inference quality remain unproved.",
+        "Only local byte/read/exact-recovery measurements exist; token counts, model comprehension and cross-family quality are unmeasured."
+      ]
+    },
+    {
+      "id": "RB-079",
+      "title": "Compress tool context while retaining complete results",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/context-benchmark.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/native-runner-verified.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "L",
+        "M"
+      ],
+      "remaining_acceptance": [
+        "Real model switching, compaction and differing-capacity inference quality remain unproved.",
+        "Only local byte/read/exact-recovery measurements exist; token counts, model comprehension and cross-family quality are unmeasured."
+      ]
+    },
+    {
+      "id": "RB-080",
+      "title": "Retain lossless canonical evidence outside context",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/context-benchmark.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/native-runner-verified.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "L",
+        "M"
+      ],
+      "remaining_acceptance": [
+        "Real model switching, compaction and differing-capacity inference quality remain unproved.",
+        "Only local byte/read/exact-recovery measurements exist; token counts, model comprehension and cross-family quality are unmeasured."
+      ]
+    },
+    {
+      "id": "RB-081",
+      "title": "Study TOON as optional prompt serialization",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/context-benchmark.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/native-runner-verified.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "L",
+        "M"
+      ],
+      "remaining_acceptance": [
+        "Real model switching, compaction and differing-capacity inference quality remain unproved.",
+        "Only local byte/read/exact-recovery measurements exist; token counts, model comprehension and cross-family quality are unmeasured."
+      ]
+    },
+    {
+      "id": "RB-082",
+      "title": "Choose prompt serialization adaptively from measurements",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/context-benchmark.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/native-runner-verified.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "L",
+        "M"
+      ],
+      "remaining_acceptance": [
+        "Real model switching, compaction and differing-capacity inference quality remain unproved.",
+        "Only local byte/read/exact-recovery measurements exist; token counts, model comprehension and cross-family quality are unmeasured."
+      ]
+    },
+    {
+      "id": "RB-083",
+      "title": "Keep internal authoritative storage format independent",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/context-benchmark.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/native-runner-verified.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "L",
+        "M"
+      ],
+      "remaining_acceptance": [
+        "Real model switching, compaction and differing-capacity inference quality remain unproved.",
+        "Only local byte/read/exact-recovery measurements exist; token counts, model comprehension and cross-family quality are unmeasured."
+      ]
+    },
+    {
+      "id": "RB-084",
+      "title": "Benchmark serialization across available model families",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/context-benchmark.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/native-runner-verified.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "L",
+        "M"
+      ],
+      "remaining_acceptance": [
+        "Real model switching, compaction and differing-capacity inference quality remain unproved.",
+        "Only local byte/read/exact-recovery measurements exist; token counts, model comprehension and cross-family quality are unmeasured."
+      ]
+    },
+    {
+      "id": "RB-085",
+      "title": "Deduplicate context using stable canonical references",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/context-benchmark.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/native-runner-verified.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "L",
+        "M"
+      ],
+      "remaining_acceptance": [
+        "Real model switching, compaction and differing-capacity inference quality remain unproved.",
+        "Only local byte/read/exact-recovery measurements exist; token counts, model comprehension and cross-family quality are unmeasured."
+      ]
+    },
+    {
+      "id": "RB-086",
+      "title": "Version important intent maps and context",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/context-benchmark.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/native-runner-verified.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "L",
+        "M"
+      ],
+      "remaining_acceptance": [
+        "Real model switching, compaction and differing-capacity inference quality remain unproved.",
+        "Only local byte/read/exact-recovery measurements exist; token counts, model comprehension and cross-family quality are unmeasured."
+      ]
+    },
+    {
+      "id": "RB-087",
+      "title": "Exploit supported provider prompt caching semantics",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/context-benchmark.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/native-runner-verified.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "L",
+        "M"
+      ],
+      "remaining_acceptance": [
+        "Real model switching, compaction and differing-capacity inference quality remain unproved.",
+        "Only local byte/read/exact-recovery measurements exist; token counts, model comprehension and cross-family quality are unmeasured."
+      ]
+    },
+    {
+      "id": "RB-088",
+      "title": "Refresh context without losing logical identity",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/context-benchmark.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/native-runner-verified.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "L",
+        "M"
+      ],
+      "remaining_acceptance": [
+        "Real model switching, compaction and differing-capacity inference quality remain unproved.",
+        "Only local byte/read/exact-recovery measurements exist; token counts, model comprehension and cross-family quality are unmeasured."
+      ]
+    },
+    {
+      "id": "RB-089",
+      "title": "Reconstruct memory from canonical state after compaction",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/context-benchmark.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/native-runner-verified.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "L",
+        "M"
+      ],
+      "remaining_acceptance": [
+        "Real model switching, compaction and differing-capacity inference quality remain unproved.",
+        "Only local byte/read/exact-recovery measurements exist; token counts, model comprehension and cross-family quality are unmeasured."
+      ]
+    },
+    {
+      "id": "RB-090",
+      "title": "Scope peer communication for context efficiency",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/context-benchmark.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/native-runner-verified.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "H",
+        "L",
+        "M"
+      ],
+      "remaining_acceptance": [
+        "Three live model-backed peers, their restart/replay teamwork and provider-neutral continuity remain unproved.",
+        "Real model switching, compaction and differing-capacity inference quality remain unproved.",
+        "Only local byte/read/exact-recovery measurements exist; token counts, model comprehension and cross-family quality are unmeasured."
+      ]
+    },
+    {
+      "id": "RB-091",
+      "title": "Support relevant agent information subscriptions",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/context-benchmark.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/native-runner-verified.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "H",
+        "L",
+        "M"
+      ],
+      "remaining_acceptance": [
+        "Three live model-backed peers, their restart/replay teamwork and provider-neutral continuity remain unproved.",
+        "Real model switching, compaction and differing-capacity inference quality remain unproved.",
+        "Only local byte/read/exact-recovery measurements exist; token counts, model comprehension and cross-family quality are unmeasured."
+      ]
+    },
+    {
+      "id": "RB-092",
+      "title": "Budget context by model role and task",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/context-benchmark.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/native-runner-verified.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "L",
+        "M"
+      ],
+      "remaining_acceptance": [
+        "Real model switching, compaction and differing-capacity inference quality remain unproved.",
+        "Only local byte/read/exact-recovery measurements exist; token counts, model comprehension and cross-family quality are unmeasured."
+      ]
+    },
+    {
+      "id": "RB-093",
+      "title": "Measure context cost and observed utility",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/context-benchmark.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/native-runner-verified.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "L",
+        "M"
+      ],
+      "remaining_acceptance": [
+        "Real model switching, compaction and differing-capacity inference quality remain unproved.",
+        "Only local byte/read/exact-recovery measurements exist; token counts, model comprehension and cross-family quality are unmeasured."
+      ]
+    },
+    {
+      "id": "RB-094",
+      "title": "Preserve correctness while improving information density",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/context-benchmark.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/native-runner-verified.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "L",
+        "M"
+      ],
+      "remaining_acceptance": [
+        "Real model switching, compaction and differing-capacity inference quality remain unproved.",
+        "Only local byte/read/exact-recovery measurements exist; token counts, model comprehension and cross-family quality are unmeasured."
+      ]
+    },
+    {
+      "id": "RB-095",
+      "title": "Use agent-native structure as context compression",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/context-benchmark.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/native-runner-verified.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "L",
+        "M"
+      ],
+      "remaining_acceptance": [
+        "Real model switching, compaction and differing-capacity inference quality remain unproved.",
+        "Only local byte/read/exact-recovery measurements exist; token counts, model comprehension and cross-family quality are unmeasured."
+      ]
+    },
+    {
+      "id": "RB-096",
+      "title": "Checkpoint important transitions and reconcile crashes",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/built-delivery-finalization.json",
+        ".kpi/proof/RP-22/built-http-observation-verified.json",
+        ".kpi/proof/RP-22/delivery-finalization-fixed.json",
+        ".kpi/proof/RP-22/delivery-finalization-red.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/partial-delivery-fixed.json",
+        ".kpi/proof/RP-22/partial-delivery-red.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "F",
+        "G",
+        "P"
+      ],
+      "remaining_acceptance": [
+        "The full model-backed induced-failure cycle and diagnostic quality remain unproved.",
+        "Local host-verification adversarial cases passed; the complete original scenario matrix remains open.",
+        "Recorded reproductions cover named defects only, not all mandatory live failure scenarios."
+      ]
+    },
+    {
+      "id": "RB-097",
+      "title": "Reconcile partially completed actions before retrying",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/built-delivery-finalization.json",
+        ".kpi/proof/RP-22/built-http-observation-verified.json",
+        ".kpi/proof/RP-22/delivery-finalization-fixed.json",
+        ".kpi/proof/RP-22/delivery-finalization-red.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/partial-delivery-fixed.json",
+        ".kpi/proof/RP-22/partial-delivery-red.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "F",
+        "G",
+        "P"
+      ],
+      "remaining_acceptance": [
+        "The full model-backed induced-failure cycle and diagnostic quality remain unproved.",
+        "Local host-verification adversarial cases passed; the complete original scenario matrix remains open.",
+        "Recorded reproductions cover named defects only, not all mandatory live failure scenarios."
+      ]
+    },
+    {
+      "id": "RB-098",
+      "title": "Prevent conflicts across parallel agent workspaces",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/built-delivery-finalization.json",
+        ".kpi/proof/RP-22/built-http-observation-verified.json",
+        ".kpi/proof/RP-22/delivery-finalization-fixed.json",
+        ".kpi/proof/RP-22/delivery-finalization-red.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/partial-delivery-fixed.json",
+        ".kpi/proof/RP-22/partial-delivery-red.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "F",
+        "G",
+        "P"
+      ],
+      "remaining_acceptance": [
+        "The full model-backed induced-failure cycle and diagnostic quality remain unproved.",
+        "Local host-verification adversarial cases passed; the complete original scenario matrix remains open.",
+        "Recorded reproductions cover named defects only, not all mandatory live failure scenarios."
+      ]
+    },
+    {
+      "id": "RB-099",
+      "title": "Localise blockers to actual dependency branches",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/built-delivery-finalization.json",
+        ".kpi/proof/RP-22/built-http-observation-verified.json",
+        ".kpi/proof/RP-22/delivery-finalization-fixed.json",
+        ".kpi/proof/RP-22/delivery-finalization-red.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/partial-delivery-fixed.json",
+        ".kpi/proof/RP-22/partial-delivery-red.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "F",
+        "G",
+        "P"
+      ],
+      "remaining_acceptance": [
+        "The full model-backed induced-failure cycle and diagnostic quality remain unproved.",
+        "Local host-verification adversarial cases passed; the complete original scenario matrix remains open.",
+        "Recorded reproductions cover named defects only, not all mandatory live failure scenarios."
+      ]
+    },
+    {
+      "id": "RB-100",
+      "title": "Reserve human intervention for genuine escalation",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/built-delivery-finalization.json",
+        ".kpi/proof/RP-22/built-http-observation-verified.json",
+        ".kpi/proof/RP-22/delivery-finalization-fixed.json",
+        ".kpi/proof/RP-22/delivery-finalization-red.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/partial-delivery-fixed.json",
+        ".kpi/proof/RP-22/partial-delivery-red.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "F",
+        "G",
+        "P"
+      ],
+      "remaining_acceptance": [
+        "The full model-backed induced-failure cycle and diagnostic quality remain unproved.",
+        "Local host-verification adversarial cases passed; the complete original scenario matrix remains open.",
+        "Recorded reproductions cover named defects only, not all mandatory live failure scenarios."
+      ]
+    },
+    {
+      "id": "RB-101",
+      "title": "Explain project status from structured state",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/terminal-final.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "N"
+      ],
+      "remaining_acceptance": [
+        "Actual fixture-backed terminal rendering/navigation is recorded; contradictory earlier UI ACs still require reconciliation."
+      ]
+    },
+    {
+      "id": "RB-102",
+      "title": "Instrument graph agents resources evidence and recovery",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/built-delivery-finalization.json",
+        ".kpi/proof/RP-22/built-http-observation-verified.json",
+        ".kpi/proof/RP-22/delivery-finalization-fixed.json",
+        ".kpi/proof/RP-22/delivery-finalization-red.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/partial-delivery-fixed.json",
+        ".kpi/proof/RP-22/partial-delivery-red.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "F",
+        "G",
+        "P"
+      ],
+      "remaining_acceptance": [
+        "The full model-backed induced-failure cycle and diagnostic quality remain unproved.",
+        "Local host-verification adversarial cases passed; the complete original scenario matrix remains open.",
+        "Recorded reproductions cover named defects only, not all mandatory live failure scenarios."
+      ]
+    },
+    {
+      "id": "RB-103",
+      "title": "Enforce all eighteen core graph invariants",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/built-delivery-finalization.json",
+        ".kpi/proof/RP-22/built-http-observation-verified.json",
+        ".kpi/proof/RP-22/delivery-finalization-fixed.json",
+        ".kpi/proof/RP-22/delivery-finalization-red.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/partial-delivery-fixed.json",
+        ".kpi/proof/RP-22/partial-delivery-red.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "F",
+        "G",
+        "P"
+      ],
+      "remaining_acceptance": [
+        "The full model-backed induced-failure cycle and diagnostic quality remain unproved.",
+        "Local host-verification adversarial cases passed; the complete original scenario matrix remains open.",
+        "Recorded reproductions cover named defects only, not all mandatory live failure scenarios."
+      ]
+    },
+    {
+      "id": "RB-104",
+      "title": "Remove hidden obsolete and contradictory prompts",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "C",
+        "D"
+      ],
+      "remaining_acceptance": [
+        "Retained components are documented; full mandate acceptance remains open.",
+        "Listed obsolete paths were removed; unresolved contract disagreements are not silently accepted."
+      ]
+    },
+    {
+      "id": "RB-105",
+      "title": "Keep specialist prompts small and runtime-backed",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "C",
+        "D"
+      ],
+      "remaining_acceptance": [
+        "Retained components are documented; full mandate acceptance remains open.",
+        "Listed obsolete paths were removed; unresolved contract disagreements are not silently accepted."
+      ]
+    },
+    {
+      "id": "RB-106",
+      "title": "Migrate useful components and remove obsolete architecture",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "C",
+        "D"
+      ],
+      "remaining_acceptance": [
+        "Retained components are documented; full mandate acceptance remains open.",
+        "Listed obsolete paths were removed; unresolved contract disagreements are not silently accepted."
+      ]
+    },
+    {
+      "id": "RB-107",
+      "title": "Exercise all required orchestrator behavior scenarios",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/built-delivery-finalization.json",
+        ".kpi/proof/RP-22/built-http-observation-verified.json",
+        ".kpi/proof/RP-22/delivery-finalization-fixed.json",
+        ".kpi/proof/RP-22/delivery-finalization-red.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/partial-delivery-fixed.json",
+        ".kpi/proof/RP-22/partial-delivery-red.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "F",
+        "G",
+        "P"
+      ],
+      "remaining_acceptance": [
+        "The full model-backed induced-failure cycle and diagnostic quality remain unproved.",
+        "Local host-verification adversarial cases passed; the complete original scenario matrix remains open.",
+        "Recorded reproductions cover named defects only, not all mandatory live failure scenarios."
+      ]
+    },
+    {
+      "id": "RB-108",
+      "title": "Adversarially test graph integrity and recovery",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/built-delivery-finalization.json",
+        ".kpi/proof/RP-22/built-http-observation-verified.json",
+        ".kpi/proof/RP-22/delivery-finalization-fixed.json",
+        ".kpi/proof/RP-22/delivery-finalization-red.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/partial-delivery-fixed.json",
+        ".kpi/proof/RP-22/partial-delivery-red.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "F",
+        "G",
+        "P"
+      ],
+      "remaining_acceptance": [
+        "The full model-backed induced-failure cycle and diagnostic quality remain unproved.",
+        "Local host-verification adversarial cases passed; the complete original scenario matrix remains open.",
+        "Recorded reproductions cover named defects only, not all mandatory live failure scenarios."
+      ]
+    },
+    {
+      "id": "RB-109",
+      "title": "Prove three simultaneous persistent communicating Pi agents",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/native-runner-verified.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "H"
+      ],
+      "remaining_acceptance": [
+        "Three live model-backed peers, their restart/replay teamwork and provider-neutral continuity remain unproved."
+      ]
+    },
+    {
+      "id": "RB-110",
+      "title": "Prove provider-neutral collaboration across configured sources",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/built-native-catalog-preservation-final.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/native-runner-verified.json",
+        ".kpi/proof/RP-22/resource-inventory-final.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "H",
+        "I"
+      ],
+      "remaining_acceptance": [
+        "Three live model-backed peers, their restart/replay teamwork and provider-neutral continuity remain unproved.",
+        "Temporary native Codex, Anthropic and z.ai inference smoke passed; installed accounts and full live acceptance remain unproved. Cursor CLI-protocol integration is operator-authorised; authenticated Cursor acceptance remains open."
+      ]
+    },
+    {
+      "id": "RB-111",
+      "title": "Prove authorised same-provider multi-account agent migration",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/built-native-catalog-preservation-final.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/native-runner-verified.json",
+        ".kpi/proof/RP-22/resource-inventory-final.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "H",
+        "I"
+      ],
+      "remaining_acceptance": [
+        "Three live model-backed peers, their restart/replay teamwork and provider-neutral continuity remain unproved.",
+        "Temporary native Codex, Anthropic and z.ai inference smoke passed; installed accounts and full live acceptance remain unproved. Cursor CLI-protocol integration is operator-authorised; authenticated Cursor acceptance remains open."
+      ]
+    },
+    {
+      "id": "RB-112",
+      "title": "Prove engineering-task recovery after resource failure",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/built-native-catalog-preservation-final.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/native-runner-verified.json",
+        ".kpi/proof/RP-22/resource-inventory-final.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "H",
+        "I"
+      ],
+      "remaining_acceptance": [
+        "Three live model-backed peers, their restart/replay teamwork and provider-neutral continuity remain unproved.",
+        "Temporary native Codex, Anthropic and z.ai inference smoke passed; installed accounts and full live acceptance remain unproved. Cursor CLI-protocol integration is operator-authorised; authenticated Cursor acceptance remains open."
+      ]
+    },
+    {
+      "id": "RB-113",
+      "title": "Prove task-role routing and independent review",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/resource-inventory-final.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "J"
+      ],
+      "remaining_acceptance": [
+        "Configured-model quality, cross-family review and independent arena acceptance remain unmeasured."
+      ]
+    },
+    {
+      "id": "RB-114",
+      "title": "Prove architecture arena with independent model proposals",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/resource-inventory-final.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "J"
+      ],
+      "remaining_acceptance": [
+        "Configured-model quality, cross-family review and independent arena acceptance remain unmeasured."
+      ]
+    },
+    {
+      "id": "RB-115",
+      "title": "Prove Dune-style greenfield low-context application work",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/context-benchmark.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "K"
+      ],
+      "remaining_acceptance": [
+        "Greenfield/low-context model-backed application work is unproved; older Dune ACs conflict with the new ownership contract."
+      ]
+    },
+    {
+      "id": "RB-116",
+      "title": "Benchmark engineered context against broad context",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/context-benchmark.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/native-runner-verified.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "L",
+        "M"
+      ],
+      "remaining_acceptance": [
+        "Real model switching, compaction and differing-capacity inference quality remain unproved.",
+        "Only local byte/read/exact-recovery measurements exist; token counts, model comprehension and cross-family quality are unmeasured."
+      ]
+    },
+    {
+      "id": "RB-117",
+      "title": "Benchmark JSON compact JSON and TOON",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/context-benchmark.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/native-runner-verified.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "L",
+        "M"
+      ],
+      "remaining_acceptance": [
+        "Real model switching, compaction and differing-capacity inference quality remain unproved.",
+        "Only local byte/read/exact-recovery measurements exist; token counts, model comprehension and cross-family quality are unmeasured."
+      ]
+    },
+    {
+      "id": "RB-118",
+      "title": "Demonstrate complete induced-failure self-healing graph cycle",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/built-delivery-finalization.json",
+        ".kpi/proof/RP-22/built-http-observation-verified.json",
+        ".kpi/proof/RP-22/delivery-finalization-fixed.json",
+        ".kpi/proof/RP-22/delivery-finalization-red.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/partial-delivery-fixed.json",
+        ".kpi/proof/RP-22/partial-delivery-red.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "F",
+        "G",
+        "P"
+      ],
+      "remaining_acceptance": [
+        "The full model-backed induced-failure cycle and diagnostic quality remain unproved.",
+        "Local host-verification adversarial cases passed; the complete original scenario matrix remains open.",
+        "Recorded reproductions cover named defects only, not all mandatory live failure scenarios."
+      ]
+    },
+    {
+      "id": "RB-119",
+      "title": "Deliver all eighteen final report sections",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/build-offline-final.json",
+        ".kpi/proof/RP-22/built-delivery-finalization.json",
+        ".kpi/proof/RP-22/built-harness-final.json",
+        ".kpi/proof/RP-22/built-http-observation-verified.json",
+        ".kpi/proof/RP-22/built-native-catalog-preservation-final.json",
+        ".kpi/proof/RP-22/context-benchmark.json",
+        ".kpi/proof/RP-22/delivery-finalization-fixed.json",
+        ".kpi/proof/RP-22/delivery-finalization-red.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/native-runner-verified.json",
+        ".kpi/proof/RP-22/partial-delivery-fixed.json",
+        ".kpi/proof/RP-22/partial-delivery-red.json",
+        ".kpi/proof/RP-22/product-uncovered-preflight-final.json",
+        ".kpi/proof/RP-22/resource-inventory-final.json",
+        ".kpi/proof/RP-22/terminal-final.json",
+        ".kpi/proof/RP-22/traceability-final-cleanup.json",
+        ".kpi/proof/RP-22/traceability-regenerated-final.json",
+        ".kpi/proof/RP-22/typecheck-final.json"
+      ],
+      "local_state": "scoped_report_published",
+      "report_sections": [
+        "A",
+        "B",
+        "C",
+        "D",
+        "E",
+        "F",
+        "G",
+        "H",
+        "I",
+        "J",
+        "K",
+        "L",
+        "M",
+        "N",
+        "O",
+        "P",
+        "Q",
+        "R"
+      ],
+      "remaining_acceptance": [
+        "A–R is published as a scoped report. Report publication does not accept the full original rebuild mandate."
+      ]
+    },
+    {
+      "id": "RB-120",
+      "title": "Verify every non-negotiable architectural success condition",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/built-harness-final.json",
+        ".kpi/proof/RP-22/product-uncovered-preflight-final.json",
+        ".kpi/proof/RP-22/resource-inventory-final.json",
+        ".kpi/proof/RP-22/traceability-regenerated-final.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "A",
+        "Q",
+        "R"
+      ],
+      "remaining_acceptance": [
+        "RP-22 remains open; no overall rebuild acceptance, full pre-PR gates or final UAT is claimed.",
+        "Terminal and ownership decisions are resolved; whole-package live acceptance remains uncovered.",
+        "Authorised resources, applicable contract decisions and disposable GitHub authority are required for remaining acceptance."
+      ]
+    },
+    {
+      "id": "RB-121",
+      "title": "Validate the autonomous experience from user perspective",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/built-harness-final.json",
+        ".kpi/proof/RP-22/product-uncovered-preflight-final.json",
+        ".kpi/proof/RP-22/resource-inventory-final.json",
+        ".kpi/proof/RP-22/traceability-regenerated-final.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "A",
+        "Q",
+        "R"
+      ],
+      "remaining_acceptance": [
+        "RP-22 remains open; no overall rebuild acceptance, full pre-PR gates or final UAT is claimed.",
+        "Terminal and ownership decisions are resolved; whole-package live acceptance remains uncovered.",
+        "Authorised resources, applicable contract decisions and disposable GitHub authority are required for remaining acceptance."
+      ]
+    },
+    {
+      "id": "RB-122",
+      "title": "Validate implementation against final design philosophy",
+      "status": "unverified",
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/built-harness-final.json",
+        ".kpi/proof/RP-22/product-uncovered-preflight-final.json",
+        ".kpi/proof/RP-22/resource-inventory-final.json",
+        ".kpi/proof/RP-22/traceability-regenerated-final.json"
+      ],
+      "local_state": "scoped_evidence_recorded",
+      "report_sections": [
+        "A",
+        "Q",
+        "R"
+      ],
+      "remaining_acceptance": [
+        "RP-22 remains open; no overall rebuild acceptance, full pre-PR gates or final UAT is claimed.",
+        "Terminal and ownership decisions are resolved; whole-package live acceptance remains uncovered.",
+        "Authorised resources, applicable contract decisions and disposable GitHub authority are required for remaining acceptance."
+      ]
+    }
+  ],
+  "execution": [
+    {
+      "id": "EX-01",
+      "title": "Explore repository implementation and runtime surfaces",
+      "status": "pending_acceptance",
+      "report_sections": [
+        "B"
+      ],
+      "evidence": [
+        "docs/rebuild-audit.md"
+      ],
+      "remaining_acceptance": [
+        "Source-backed reconstruction is recorded; it is not an executed proof of every original audit finding."
+      ]
+    },
+    {
+      "id": "EX-02",
+      "title": "Reconstruct existing architecture from executed control flow",
+      "status": "pending_acceptance",
+      "report_sections": [
+        "B"
+      ],
+      "evidence": [
+        "docs/rebuild-audit.md"
+      ],
+      "remaining_acceptance": [
+        "Source-backed reconstruction is recorded; it is not an executed proof of every original audit finding."
+      ]
+    },
+    {
+      "id": "EX-03",
+      "title": "Audit gates controls and retained invariants",
+      "status": "pending_acceptance",
+      "report_sections": [
+        "B",
+        "Q"
+      ],
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/product-uncovered-preflight-final.json",
+        ".kpi/proof/RP-22/traceability-regenerated-final.json"
+      ],
+      "remaining_acceptance": [
+        "Source-backed reconstruction is recorded; it is not an executed proof of every original audit finding.",
+        "Terminal and ownership decisions are resolved; whole-package live acceptance remains uncovered."
+      ]
+    },
+    {
+      "id": "EX-04",
+      "title": "Audit prompt and injected instruction layers",
+      "status": "pending_acceptance",
+      "report_sections": [
+        "B",
+        "D"
+      ],
+      "evidence": [
+        "docs/rebuild-audit.md"
+      ],
+      "remaining_acceptance": [
+        "Source-backed reconstruction is recorded; it is not an executed proof of every original audit finding.",
+        "Listed obsolete paths were removed; unresolved contract disagreements are not silently accepted."
+      ]
+    },
+    {
+      "id": "EX-05",
+      "title": "Analyse actual failures and recovery paths",
+      "status": "pending_acceptance",
+      "report_sections": [
+        "P"
+      ],
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/delivery-finalization-fixed.json",
+        ".kpi/proof/RP-22/delivery-finalization-red.json",
+        ".kpi/proof/RP-22/partial-delivery-fixed.json",
+        ".kpi/proof/RP-22/partial-delivery-red.json"
+      ],
+      "remaining_acceptance": [
+        "Recorded reproductions cover named defects only, not all mandatory live failure scenarios."
+      ]
+    },
+    {
+      "id": "EX-06",
+      "title": "Design target architecture grounded in audit",
+      "status": "pending_acceptance",
+      "report_sections": [
+        "C",
+        "E",
+        "F"
+      ],
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/built-delivery-finalization.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json"
+      ],
+      "remaining_acceptance": [
+        "Retained components are documented; full mandate acceptance remains open.",
+        "Live desired-state derivation and complete user-journey acceptance are not established.",
+        "The full model-backed induced-failure cycle and diagnostic quality remain unproved."
+      ]
+    },
+    {
+      "id": "EX-07",
+      "title": "Design clean migration with explicit ownership",
+      "status": "pending_acceptance",
+      "report_sections": [
+        "C",
+        "D"
+      ],
+      "evidence": [
+        "docs/rebuild-audit.md"
+      ],
+      "remaining_acceptance": [
+        "Retained components are documented; full mandate acceptance remains open.",
+        "Listed obsolete paths were removed; unresolved contract disagreements are not silently accepted."
+      ]
+    },
+    {
+      "id": "EX-08",
+      "title": "Implement required autonomous runtime architecture changes",
+      "status": "pending_acceptance",
+      "report_sections": [
+        "E",
+        "F",
+        "G"
+      ],
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/built-delivery-finalization.json",
+        ".kpi/proof/RP-22/built-http-observation-verified.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json"
+      ],
+      "remaining_acceptance": [
+        "Live desired-state derivation and complete user-journey acceptance are not established.",
+        "The full model-backed induced-failure cycle and diagnostic quality remain unproved.",
+        "Local host-verification adversarial cases passed; the complete original scenario matrix remains open."
+      ]
+    },
+    {
+      "id": "EX-09",
+      "title": "Remove obsolete conflicting runtime systems completely",
+      "status": "pending_acceptance",
+      "report_sections": [
+        "D"
+      ],
+      "evidence": [
+        "docs/rebuild-audit.md"
+      ],
+      "remaining_acceptance": [
+        "Listed obsolete paths were removed; unresolved contract disagreements are not silently accepted."
+      ]
+    },
+    {
+      "id": "EX-10",
+      "title": "Integrate persistent forked Pi agent runtime",
+      "status": "pending_acceptance",
+      "report_sections": [
+        "H"
+      ],
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/native-runner-verified.json"
+      ],
+      "remaining_acceptance": [
+        "Three live model-backed peers, their restart/replay teamwork and provider-neutral continuity remain unproved."
+      ]
+    },
+    {
+      "id": "EX-11",
+      "title": "Implement direct real-time Pi-to-Pi communication",
+      "status": "pending_acceptance",
+      "report_sections": [
+        "H"
+      ],
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/native-runner-verified.json"
+      ],
+      "remaining_acceptance": [
+        "Three live model-backed peers, their restart/replay teamwork and provider-neutral continuity remain unproved."
+      ]
+    },
+    {
+      "id": "EX-12",
+      "title": "Implement provider abstraction using existing capabilities",
+      "status": "pending_acceptance",
+      "report_sections": [
+        "I"
+      ],
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/built-native-catalog-preservation-final.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/resource-inventory-final.json"
+      ],
+      "remaining_acceptance": [
+        "Temporary native Codex, Anthropic and z.ai inference smoke passed; installed accounts and full live acceptance remain unproved. Cursor CLI-protocol integration is operator-authorised; authenticated Cursor acceptance remains open."
+      ]
+    },
+    {
+      "id": "EX-13",
+      "title": "Implement authorised multi-account resource scheduling",
+      "status": "pending_acceptance",
+      "report_sections": [
+        "I"
+      ],
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/built-native-catalog-preservation-final.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/resource-inventory-final.json"
+      ],
+      "remaining_acceptance": [
+        "Temporary native Codex, Anthropic and z.ai inference smoke passed; installed accounts and full live acceptance remain unproved. Cursor CLI-protocol integration is operator-authorised; authenticated Cursor acceptance remains open."
+      ]
+    },
+    {
+      "id": "EX-14",
+      "title": "Implement measured model capability registry",
+      "status": "pending_acceptance",
+      "report_sections": [
+        "I",
+        "J"
+      ],
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/built-native-catalog-preservation-final.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/resource-inventory-final.json"
+      ],
+      "remaining_acceptance": [
+        "Temporary native Codex, Anthropic and z.ai inference smoke passed; installed accounts and full live acceptance remain unproved. Cursor CLI-protocol integration is operator-authorised; authenticated Cursor acceptance remains open.",
+        "Configured-model quality, cross-family review and independent arena acceptance remain unmeasured."
+      ]
+    },
+    {
+      "id": "EX-15",
+      "title": "Implement quality-first engineering intelligence routing",
+      "status": "pending_acceptance",
+      "report_sections": [
+        "J"
+      ],
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/resource-inventory-final.json"
+      ],
+      "remaining_acceptance": [
+        "Configured-model quality, cross-family review and independent arena acceptance remain unmeasured."
+      ]
+    },
+    {
+      "id": "EX-16",
+      "title": "Implement canonical context assembly and budgeting",
+      "status": "pending_acceptance",
+      "report_sections": [
+        "L"
+      ],
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/native-runner-verified.json"
+      ],
+      "remaining_acceptance": [
+        "Real model switching, compaction and differing-capacity inference quality remain unproved."
+      ]
+    },
+    {
+      "id": "EX-17",
+      "title": "Implement Product Feature Map and Repo Map",
+      "status": "pending_acceptance",
+      "report_sections": [
+        "K",
+        "L"
+      ],
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/context-benchmark.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/native-runner-verified.json"
+      ],
+      "remaining_acceptance": [
+        "Greenfield/low-context model-backed application work is unproved; older Dune ACs conflict with the new ownership contract.",
+        "Real model switching, compaction and differing-capacity inference quality remain unproved."
+      ]
+    },
+    {
+      "id": "EX-18",
+      "title": "Implement supported semantic repository navigation capabilities",
+      "status": "pending_acceptance",
+      "report_sections": [
+        "L"
+      ],
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/native-runner-verified.json"
+      ],
+      "remaining_acceptance": [
+        "Real model switching, compaction and differing-capacity inference quality remain unproved."
+      ]
+    },
+    {
+      "id": "EX-19",
+      "title": "Implement protected goals and dynamic execution graph",
+      "status": "pending_acceptance",
+      "report_sections": [
+        "E",
+        "F"
+      ],
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/built-delivery-finalization.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json"
+      ],
+      "remaining_acceptance": [
+        "Live desired-state derivation and complete user-journey acceptance are not established.",
+        "The full model-backed induced-failure cycle and diagnostic quality remain unproved."
+      ]
+    },
+    {
+      "id": "EX-20",
+      "title": "Implement failure diagnosis escalation and self-healing",
+      "status": "pending_acceptance",
+      "report_sections": [
+        "F",
+        "P"
+      ],
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/built-delivery-finalization.json",
+        ".kpi/proof/RP-22/delivery-finalization-fixed.json",
+        ".kpi/proof/RP-22/delivery-finalization-red.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/partial-delivery-fixed.json",
+        ".kpi/proof/RP-22/partial-delivery-red.json"
+      ],
+      "remaining_acceptance": [
+        "The full model-backed induced-failure cycle and diagnostic quality remain unproved.",
+        "Recorded reproductions cover named defects only, not all mandatory live failure scenarios."
+      ]
+    },
+    {
+      "id": "EX-21",
+      "title": "Implement independent evidence-based acceptance verification",
+      "status": "pending_acceptance",
+      "report_sections": [
+        "G"
+      ],
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/built-delivery-finalization.json",
+        ".kpi/proof/RP-22/built-http-observation-verified.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json"
+      ],
+      "remaining_acceptance": [
+        "Local host-verification adversarial cases passed; the complete original scenario matrix remains open."
+      ]
+    },
+    {
+      "id": "EX-22",
+      "title": "Implement safe checkpoint reconciliation and recovery",
+      "status": "pending_acceptance",
+      "report_sections": [
+        "F",
+        "G",
+        "P"
+      ],
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/built-delivery-finalization.json",
+        ".kpi/proof/RP-22/built-http-observation-verified.json",
+        ".kpi/proof/RP-22/delivery-finalization-fixed.json",
+        ".kpi/proof/RP-22/delivery-finalization-red.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/partial-delivery-fixed.json",
+        ".kpi/proof/RP-22/partial-delivery-red.json"
+      ],
+      "remaining_acceptance": [
+        "The full model-backed induced-failure cycle and diagnostic quality remain unproved.",
+        "Local host-verification adversarial cases passed; the complete original scenario matrix remains open.",
+        "Recorded reproductions cover named defects only, not all mandatory live failure scenarios."
+      ]
+    },
+    {
+      "id": "EX-23",
+      "title": "Run required orchestration behavior regression tests",
+      "status": "pending_acceptance",
+      "report_sections": [
+        "O"
+      ],
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/build-offline-final.json",
+        ".kpi/proof/RP-22/built-delivery-finalization.json",
+        ".kpi/proof/RP-22/built-harness-final.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/native-runner-verified.json",
+        ".kpi/proof/RP-22/traceability-final-cleanup.json",
+        ".kpi/proof/RP-22/typecheck-final.json"
+      ],
+      "remaining_acceptance": [
+        "617 scoped regressions, native-runner checks and built probes do not replace the full original live acceptance matrix or pre-PR gates."
+      ]
+    },
+    {
+      "id": "EX-24",
+      "title": "Run adversarial graph and integrity tests",
+      "status": "pending_acceptance",
+      "report_sections": [
+        "G",
+        "P"
+      ],
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/built-delivery-finalization.json",
+        ".kpi/proof/RP-22/built-http-observation-verified.json",
+        ".kpi/proof/RP-22/delivery-finalization-fixed.json",
+        ".kpi/proof/RP-22/delivery-finalization-red.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/partial-delivery-fixed.json",
+        ".kpi/proof/RP-22/partial-delivery-red.json"
+      ],
+      "remaining_acceptance": [
+        "Local host-verification adversarial cases passed; the complete original scenario matrix remains open.",
+        "Recorded reproductions cover named defects only, not all mandatory live failure scenarios."
+      ]
+    },
+    {
+      "id": "EX-25",
+      "title": "Run real provider failover acceptance scenarios",
+      "status": "blocked_live_acceptance",
+      "report_sections": [
+        "I",
+        "R"
+      ],
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/built-native-catalog-preservation-final.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/resource-inventory-final.json"
+      ],
+      "remaining_acceptance": [
+        "Temporary native Codex, Anthropic and z.ai inference smoke passed; installed accounts and full live acceptance remain unproved. Cursor CLI-protocol integration is operator-authorised; authenticated Cursor acceptance remains open.",
+        "Authorised resources, applicable contract decisions and disposable GitHub authority are required for remaining acceptance."
+      ]
+    },
+    {
+      "id": "EX-26",
+      "title": "Run authorised multi-account continuity acceptance scenarios",
+      "status": "blocked_live_acceptance",
+      "report_sections": [
+        "I",
+        "R"
+      ],
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/built-native-catalog-preservation-final.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/resource-inventory-final.json"
+      ],
+      "remaining_acceptance": [
+        "Temporary native Codex, Anthropic and z.ai inference smoke passed; installed accounts and full live acceptance remain unproved. Cursor CLI-protocol integration is operator-authorised; authenticated Cursor acceptance remains open.",
+        "Authorised resources, applicable contract decisions and disposable GitHub authority are required for remaining acceptance."
+      ]
+    },
+    {
+      "id": "EX-27",
+      "title": "Run independent cross-family review acceptance scenarios",
+      "status": "blocked_live_acceptance",
+      "report_sections": [
+        "J",
+        "R"
+      ],
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/resource-inventory-final.json"
+      ],
+      "remaining_acceptance": [
+        "Configured-model quality, cross-family review and independent arena acceptance remain unmeasured.",
+        "Authorised resources, applicable contract decisions and disposable GitHub authority are required for remaining acceptance."
+      ]
+    },
+    {
+      "id": "EX-28",
+      "title": "Run low-context feature navigation acceptance scenarios",
+      "status": "blocked_live_acceptance",
+      "report_sections": [
+        "K",
+        "L",
+        "R"
+      ],
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/context-benchmark.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/native-runner-verified.json",
+        ".kpi/proof/RP-22/resource-inventory-final.json"
+      ],
+      "remaining_acceptance": [
+        "Greenfield/low-context model-backed application work is unproved; older Dune ACs conflict with the new ownership contract.",
+        "Real model switching, compaction and differing-capacity inference quality remain unproved.",
+        "Authorised resources, applicable contract decisions and disposable GitHub authority are required for remaining acceptance."
+      ]
+    },
+    {
+      "id": "EX-29",
+      "title": "Run measured context-efficiency and serialization benchmarks",
+      "status": "pending_acceptance",
+      "report_sections": [
+        "M"
+      ],
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/context-benchmark.json"
+      ],
+      "remaining_acceptance": [
+        "Only local byte/read/exact-recovery measurements exist; token counts, model comprehension and cross-family quality are unmeasured."
+      ]
+    },
+    {
+      "id": "EX-30",
+      "title": "Run complete end-to-end induced-failure self-healing cycle",
+      "status": "blocked_live_acceptance",
+      "report_sections": [
+        "F",
+        "R"
+      ],
+      "evidence": [
+        "docs/rebuild-audit.md",
+        ".kpi/proof/RP-22/built-delivery-finalization.json",
+        ".kpi/proof/RP-22/integrated-acceptance-final.json",
+        ".kpi/proof/RP-22/resource-inventory-final.json"
+      ],
+      "remaining_acceptance": [
+        "The full model-backed induced-failure cycle and diagnostic quality remain unproved.",
+        "Authorised resources, applicable contract decisions and disposable GitHub authority are required for remaining acceptance."
+      ]
+    }
+  ],
+  "visual": {
+    "reference": "docs/visual/k-pi-design/K-pi Command Center Wireframes.dc.html",
+    "status": "scoped_fixture_evidence_recorded",
+    "direction": "Preserve grouped jobs, plain language, Now/Next/Done, labelled input, cool machine activity and warm human intervention; adapt static workflow wording to truthful dynamic execution state.",
+    "evidence": [
+      ".kpi/proof/RP-22/followup-20260906/terminal-observations.json",
+      ".kpi/proof/RP-22/terminal-final.json",
+      "docs/visual-targets.md",
+      "docs/remediation-plan.md"
+    ],
+    "scope": "Operator approved imported wireframe styling on 2026-09-06. Built CLI Jobs and retry widget exercised at 80/108/120; navigation boundaries tested at 60/80/108/120/140/160/200. Live teamwork and full visual UAT remain unaccepted."
+  },
+  "acceptance_state": "NEEDS_HUMAN",
+  "evidence_scope": "All 122 requirements and 30 execution steps remain indexed. Scoped evidence references report observations, not completion of the entire original section. Only RP-22 scoped DoD evidence can establish acceptance.",
+  "blockers": [
+    {
+      "id": "AUTH-RESOURCES",
+      "reason": "Temporary access-only Codex, Anthropic and z.ai smoke passed. Installed onboarding, independent same-provider grants and safe refresh lifecycle still require configured resources.",
+      "evidence": ".kpi/proof/RP-22/followup-20260906/native-auth-live.json"
+    },
+    {
+      "id": "CURSOR-LIVE-PROOF",
+      "reason": "The operator authorised first-party Cursor CLI-protocol integration on 2026-09-06. Adapter implementation and packed-artifact checks are required; authenticated Cursor seat eligibility, login, renewal and inference remain separate live acceptance.",
+      "evidence": "docs/remediation-plan.md"
+    },
+    {
+      "id": "ACCEPTANCE-COVERAGE",
+      "reason": "353 of 354 entries have behavioral bindings; RP-22 whole-package acceptance remains uncovered and product preflight refuses acceptance.",
+      "evidence": "docs/traceability-map.json"
+    }
+  ]
+}

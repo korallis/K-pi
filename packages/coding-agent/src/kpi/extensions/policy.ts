@@ -18,6 +18,7 @@ import { isJsonObject } from "./graph/schema.ts";
 import { isAuthoritativeKnowledgeGraphPath } from "./kg/store.ts";
 import { atomicWrite, type RunState, readLiveJob, type Task, writeAllowForTask } from "./run-store.ts";
 import { classifyShellCommand } from "./shell-classifier.ts";
+import { canonicalProjectPath } from "./stack.ts";
 
 const execFile = promisify(execFileCallback);
 
@@ -387,8 +388,29 @@ function relativeWritePath(cwd: string, path: string): string | undefined {
 }
 
 const PROTECTED_RUN_ARTIFACT_OWNERS = {
+	"task.json": "the accepted intent control plane",
+	"intent.json": "the accepted intent control plane",
+	"intent.pending.json": "the accepted intent control plane",
+	"intent-history": "the accepted intent control plane",
+	"goals.json": "the independent verification control plane",
+	"evidence.json": "the independent verification control plane",
+	verification: "the independent verification control plane",
+	architecture: "the host architecture evaluation authority",
+	"state.json": "the graph control plane",
+	graph: "the graph control plane",
+	"events.jsonl": "the graph control plane",
+	"baseline.json": "the graph control plane",
+	"fingerprints.json": "the graph control plane",
+	"context.md": "the context control plane",
+	context: "the context control plane",
+	"peer-owner": "the peer runtime",
+	"peer-events.jsonl": "the peer runtime",
+	"leases.json": "the workspace ownership authority",
+	"leases.lock": "the workspace ownership authority",
+	"writers.json": "the workspace ownership authority",
 	"verdict.json": "the reviewer",
 	"release.approved": "the release.set node",
+	"release-approval.json": "the verified-candidate release authority",
 	// The record of this job's one commit decision. A node that could write it
 	// could make the loop skip shipping and still be accepted as done.
 	"ship.json": "the control plane",
@@ -404,6 +426,17 @@ function protectedRunArtifact(cwd: string, path: string): ProtectedRunArtifact |
 	const segments = relativePath.split("/");
 	if (segments.length < 4 || segments[0] !== CONFIG_DIR_NAME || segments[1] !== "runs") {
 		return undefined;
+	}
+	const subtree = segments[3];
+	if (
+		subtree === "graph" ||
+		subtree === "verification" ||
+		subtree === "intent-history" ||
+		subtree === "context" ||
+		subtree === "peer-owner" ||
+		subtree === "architecture"
+	) {
+		return subtree;
 	}
 	const artifact = segments[segments.length - 1];
 	return Object.hasOwn(PROTECTED_RUN_ARTIFACT_OWNERS, artifact) ? (artifact as ProtectedRunArtifact) : undefined;
@@ -421,6 +454,14 @@ function protectedCommandTarget(cwd: string, command: string): { path: string; o
 	for (const word of command.split(SHELL_WORD_SEPARATOR)) {
 		if (word.length === 0) {
 			continue;
+		}
+		const relativePath = relativeWritePath(cwd, word);
+		if (
+			relativePath === CONFIG_DIR_NAME ||
+			relativePath === `${CONFIG_DIR_NAME}/ownership` ||
+			relativePath?.startsWith(`${CONFIG_DIR_NAME}/ownership/`)
+		) {
+			return { path: word, owner: "the workspace ownership authority" };
 		}
 		const artifact = protectedRunArtifact(cwd, word);
 		if (artifact !== undefined) {
@@ -708,7 +749,8 @@ async function evaluateCommand(command: string, options: PolicyEvaluationOptions
 		return { kind: "deny", reason: `Policy denied command: ${command}` };
 	}
 
-	const reserved = protectedCommandTarget(options.cwd, command);
+	const classification = classifyShellCommand(command);
+	const reserved = classification.readOnly ? undefined : protectedCommandTarget(options.cwd, command);
 	if (reserved !== undefined) {
 		return {
 			kind: "deny",
@@ -749,7 +791,6 @@ async function evaluateCommand(command: string, options: PolicyEvaluationOptions
 		return ALLOW;
 	}
 
-	const classification = classifyShellCommand(command);
 	if (classification.readOnly) {
 		return ALLOW;
 	}
@@ -766,6 +807,14 @@ async function evaluateCommand(command: string, options: PolicyEvaluationOptions
 }
 
 function evaluateWrite(path: string, options: PolicyEvaluationOptions): PolicyDecision {
+	const relativePath = relativeWritePath(options.cwd, path);
+	if (
+		relativePath === CONFIG_DIR_NAME ||
+		relativePath === `${CONFIG_DIR_NAME}/ownership` ||
+		relativePath?.startsWith(`${CONFIG_DIR_NAME}/ownership/`)
+	) {
+		return { kind: "deny", reason: `Policy reserved workspace ownership for the runtime: ${path}` };
+	}
 	const artifact = protectedRunArtifact(options.cwd, path);
 	if (artifact !== undefined) {
 		return {
@@ -801,7 +850,13 @@ export async function evaluateToolCall(
 	}
 
 	if (isToolCallEventType("write", event) || isToolCallEventType("edit", event)) {
-		return evaluateWrite(event.input.path, options);
+		try {
+			const canonical = await canonicalProjectPath(options.cwd, event.input.path);
+			const original = evaluateWrite(event.input.path, options);
+			return original.kind === "deny" ? original : evaluateWrite(canonical, options);
+		} catch (error) {
+			return { kind: "deny", reason: error instanceof Error ? error.message : "unresolvable mutation path" };
+		}
 	}
 
 	return ALLOW;

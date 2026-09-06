@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -8,7 +8,9 @@ import test from "node:test";
 import type { WorkerLauncher } from "../packages/coding-agent/src/kpi/extensions/bus/launch.ts";
 import { WorkerProtocol } from "../packages/coding-agent/src/kpi/extensions/bus/protocol.ts";
 import {
+	type LiveWorkerSession,
 	liveWorkerSessions,
+	registeredBuses,
 	resetSessionsRegistry,
 } from "../packages/coding-agent/src/kpi/extensions/bus/sessions-snapshot.ts";
 import { BackgroundBus, createWorkerAdmission } from "../packages/coding-agent/src/kpi/extensions/bus/spawn.ts";
@@ -17,7 +19,7 @@ import {
 	GraphEngine,
 } from "../packages/coding-agent/src/kpi/extensions/graph/engine.ts";
 import type { GraphDefinition } from "../packages/coding-agent/src/kpi/extensions/graph/schema.ts";
-import { reviewerBusDependencies } from "./helpers/reviewer-bus.ts";
+import { createReviewerJob, reviewerBusDependencies } from "./helpers/reviewer-bus.ts";
 
 const validVerdict = {
 	status: "PASS",
@@ -77,24 +79,25 @@ function reviewGraph(): GraphDefinition {
 	};
 }
 
-async function jobRoot(jobId: string): Promise<{ directory: string; runDirectory: string }> {
-	const directory = await mkdtemp(join(tmpdir(), "k-pi-reviewer-"));
-	const runDirectory = join(directory, ".kpi", "runs", jobId);
-	await mkdir(runDirectory, { recursive: true });
-	await writeFile(
-		join(runDirectory, "task.json"),
-		`${JSON.stringify(
-			{
-				job_id: jobId,
-				goal: "review",
-				mode: "gated",
-				quality_gates: ["npm test"],
-			},
-			null,
-			2,
-		)}\n`,
+async function jobRoot(jobId: string, directory?: string): Promise<{ directory: string; runDirectory: string }> {
+	directory ??= await mkdtemp(join(tmpdir(), "k-pi-reviewer-"));
+	const job = await createReviewerJob(directory, jobId);
+	return { directory, runDirectory: job.directory };
+}
+
+async function disposeJobRoot(directory: string): Promise<void> {
+	const outcomes = await Promise.allSettled(
+		registeredBuses()
+			.filter((bus) => bus.cwd === directory)
+			.map((bus) => bus.stopAll()),
 	);
-	return { directory, runDirectory };
+	const failures = outcomes.filter((outcome) => outcome.status === "rejected");
+	if (failures.length > 0)
+		throw new AggregateError(
+			failures.map((failure) => failure.reason),
+			"reviewer fixture cleanup failed",
+		);
+	await rm(directory, { recursive: true, force: true });
 }
 
 test("fake reviewer accepts the prompt before settlement and parent requires a valid verdict", async () => {
@@ -129,7 +132,7 @@ test("fake reviewer accepts the prompt before settlement and parent requires a v
 		assert.equal(state.nodes.review?.agentId?.startsWith("reviewer-"), true);
 		assert.match(state.nodes.review?.sessionId ?? "", /reviewer-.*\.jsonl$/u);
 	} finally {
-		await rm(directory, { recursive: true, force: true });
+		await disposeJobRoot(directory);
 	}
 });
 
@@ -147,7 +150,7 @@ test("reviewer argv and tools have no write or edit", async () => {
 		const tools = bus.launches[0]!.tools;
 		assert.ok(tools.includes("write_contract"));
 		assert.ok(tools.includes("read"));
-		assert.ok(tools.includes("bash"));
+		assert.equal(tools.includes("bash"), false);
 		assert.equal(tools.includes("write"), false);
 		assert.equal(tools.includes("edit"), false);
 		const argv = bus.lastArgv() ?? [];
@@ -158,7 +161,7 @@ test("reviewer argv and tools have no write or edit", async () => {
 		assert.match(toolsArg!, /write_contract/u);
 		assert.doesNotMatch(toolsArg!, /(^|,)(write|edit)(,|$)/u);
 	} finally {
-		await rm(directory, { recursive: true, force: true });
+		await disposeJobRoot(directory);
 	}
 });
 
@@ -184,7 +187,7 @@ test("transcript saying PASS without a receipt-backed verdict fails closed", asy
 		assert.equal(state.nodes.review.status, "failed");
 		assert.equal(state.values.review, undefined, "no verdict was committed");
 	} finally {
-		await rm(directory, { recursive: true, force: true });
+		await disposeJobRoot(directory);
 	}
 });
 
@@ -224,14 +227,15 @@ test("implementer and reviewer session ids differ and lineage is recorded", asyn
 		assert.ok(state.nodes.review?.agentId?.startsWith("reviewer-"));
 		assert.match(state.nodes.review?.sessionId ?? "", /agents[/\\]reviewer-.*\.jsonl$/u);
 	} finally {
-		await rm(directory, { recursive: true, force: true });
+		await disposeJobRoot(directory);
 	}
 });
 
 test("shared admission blocks a graph reviewer when parent bus already holds max workers", async () => {
 	const jobId = "review-cap";
-	const { directory, runDirectory } = await jobRoot(jobId);
-	const admission = createWorkerAdmission();
+	const { directory } = await jobRoot(jobId);
+	const admission = createWorkerAdmission({ maxWorkers: 2 });
+	const ownedBuses: BackgroundBus[] = [];
 	const parentAlive = new Set<number>();
 	let nextPid = 40_000;
 	const parentLauncher: WorkerLauncher = async (request) => {
@@ -261,10 +265,13 @@ test("shared admission blocks a graph reviewer when parent bus already holds max
 			stop: async () => {
 				parentAlive.delete(pid);
 				protocol.close();
+				toWorker.destroy();
+				toParent.destroy();
 			},
 		};
 	};
-	const parent = new BackgroundBus(directory, runDirectory, `${jobId}-parent`, {
+	const parentRun = await jobRoot(`${jobId}-parent`, directory);
+	const parent = new BackgroundBus(directory, parentRun.runDirectory, `${jobId}-parent`, {
 		launcher: parentLauncher,
 		isProcessAlive: (pid) => parentAlive.has(pid),
 		admission,
@@ -272,6 +279,7 @@ test("shared admission blocks a graph reviewer when parent bus already holds max
 		contractWaitTimeoutMs: 500,
 		lockRetryMs: 2,
 	});
+	ownedBuses.push(parent);
 	const bus = reviewerBusDependencies();
 	bus.admission = admission;
 	try {
@@ -294,36 +302,43 @@ test("shared admission blocks a graph reviewer when parent bus already holds max
 		assert.equal(admission.counts().workers, 0);
 
 		// Writer cap is global across bus instances. Fresh bus after stopAll.
-		const parentAgain = new BackgroundBus(directory, runDirectory, `${jobId}-parent-2`, {
+		const parentAgainRun = await jobRoot(`${jobId}-parent-2`, directory);
+		const parentAgain = new BackgroundBus(directory, parentAgainRun.runDirectory, `${jobId}-parent-2`, {
 			launcher: parentLauncher,
 			isProcessAlive: (pid) => parentAlive.has(pid),
 			admission,
 			contractPollIntervalMs: 1,
 			lockRetryMs: 2,
 		});
+		ownedBuses.push(parentAgain);
 		await parentAgain.spawn({ role: "implementer", prompt: "write-again" });
-		const second = new BackgroundBus(directory, runDirectory, `${jobId}-other`, {
+		const secondRun = await jobRoot(`${jobId}-other`, directory);
+		const second = new BackgroundBus(directory, secondRun.runDirectory, `${jobId}-other`, {
 			launcher: parentLauncher,
 			isProcessAlive: (pid) => parentAlive.has(pid),
 			admission,
 			contractPollIntervalMs: 1,
 			lockRetryMs: 2,
 		});
+		ownedBuses.push(second);
 		await assert.rejects(second.spawn({ role: "arena", prompt: "also write" }), /writer worker is already live/u);
 		await parentAgain.stopAll();
 		await second.stopAll();
 	} finally {
-		await parent.stopAll().catch(() => undefined);
-		await rm(directory, { recursive: true, force: true });
+		try {
+			await Promise.all(ownedBuses.map((bus) => bus.stopAll()));
+		} finally {
+			await disposeJobRoot(directory);
+		}
 	}
 });
 
-test("a graph reviewer worker is a live worker session while its node runs and is gone after", async () => {
+test("a graph reviewer remains addressable after its node settles until its host shuts down", async () => {
 	const jobId = "review-live";
 	const { directory } = await jobRoot(jobId);
 	resetSessionsRegistry();
 	const bus = reviewerBusDependencies();
-	const seen: ReturnType<typeof liveWorkerSessions>[] = [];
+	const seen: LiveWorkerSession[][] = [];
 	try {
 		const engine = new GraphEngine(reviewGraph(), {
 			projectRoot: directory,
@@ -336,17 +351,21 @@ test("a graph reviewer worker is a live worker session while its node runs and i
 		const state = await engine.runUntilPause();
 		assert.equal(state.status, "completed");
 
-		assert.ok(seen.length >= 2, "the engine says when the worker session registers and releases");
-		const whileRunning = seen[0] ?? [];
-		assert.equal(whileRunning.length, 1, "the worker was a live session for the duration of its node");
+		const whileRunning = seen.find((sessions) => sessions.some((session) => session.node === "review")) ?? [];
+		assert.equal(whileRunning.length, 1, "the worker was a live session while its node ran");
 		assert.equal(whileRunning[0]?.jobId, jobId);
 		assert.equal(whileRunning[0]?.role, "reviewer");
 		assert.equal(whileRunning[0]?.node, "review");
 		assert.equal(whileRunning[0]?.alive, true);
 
-		assert.equal(liveWorkerSessions().length, 0, "the bus is released once the node settles");
+		assert.deepEqual(
+			liveWorkerSessions().map((session) => session.agentId),
+			[state.nodes.review.agentId],
+		);
+		await disposeJobRoot(directory);
+		assert.deepEqual(liveWorkerSessions(), [], "host shutdown releases the persistent peer");
 	} finally {
+		await disposeJobRoot(directory);
 		resetSessionsRegistry();
-		await rm(directory, { recursive: true, force: true });
 	}
 });
