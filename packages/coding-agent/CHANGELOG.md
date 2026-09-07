@@ -4,6 +4,18 @@ K-π's own release history. Upstream Pi's changelog is kept beside this file as
 `CHANGELOG.upstream.md` for merge history; the version this file is compared
 against at startup is K-π's, so only K-π entries belong here.
 
+## [0.4.0] - 2026-09-07
+
+### Fixed
+
+- SSH/Mosh subscription login preserves the complete OAuth URL in clickable links and adds Ctrl+Y clipboard transfer in pooled and native login prompts. Remote sessions no longer launch a server-side browser or write the server's desktop clipboard. Anthropic/Codex prompts explain how to paste the final callback URL when the browser runs on another machine.
+
+### Changed
+
+- Published as a normal GitHub release and on npm `latest`, replacing `0.3.0` for default installs. Includes the Cursor adapter and runtime changes described in `0.4.0-rc.1`.
+
+The operator requested the normal release channel for testing. Live provider login and the wider RP-22 acceptance matrix remain open; normal release labeling does not establish their completion.
+
 ## [0.4.0-rc.1] - 2026-09-06
 
 ### Changed

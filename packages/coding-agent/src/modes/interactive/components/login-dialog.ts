@@ -1,5 +1,15 @@
 import type { AuthInfoLink, OAuthDeviceCodeInfo } from "@earendil-works/pi-ai";
-import { Container, type Focusable, getKeybindings, Input, Spacer, Text, type TUI } from "@earendil-works/pi-tui";
+import {
+	Container,
+	type Focusable,
+	getKeybindings,
+	Input,
+	matchesKey,
+	Spacer,
+	Text,
+	type TUI,
+} from "@earendil-works/pi-tui";
+import { copyToClipboard } from "../../../utils/clipboard.ts";
 import { openBrowser } from "../../../utils/open-browser.ts";
 import { theme } from "../theme/theme.ts";
 import { DynamicBorder } from "./dynamic-border.ts";
@@ -16,6 +26,7 @@ export class LoginDialogComponent extends Container implements Focusable {
 	private inputResolver?: (value: string) => void;
 	private inputRejecter?: (error: Error) => void;
 	private onComplete: (success: boolean, message?: string) => void;
+	private authUrl?: string;
 
 	// Focusable implementation - propagate to input for IME cursor positioning
 	private _focused = false;
@@ -94,12 +105,13 @@ export class LoginDialogComponent extends Container implements Focusable {
 	 * Called by onAuth callback - show URL and optional instructions
 	 */
 	showAuth(url: string, instructions?: string): void {
+		this.authUrl = url;
 		this.contentContainer.clear();
 		this.contentContainer.addChild(new Spacer(1));
 		const linkedUrl = `\x1b]8;;${url}\x07${url}\x1b]8;;\x07`;
 		this.contentContainer.addChild(new Text(theme.fg("accent", linkedUrl), 1, 0));
 
-		const clickHint = process.platform === "darwin" ? "Cmd+click to open" : "Ctrl+click to open";
+		const clickHint = "Ctrl/Cmd+click to open; Ctrl+Y copies the complete URL";
 		const hyperlink = `\x1b]8;;${url}\x07${clickHint}\x1b]8;;\x07`;
 		this.contentContainer.addChild(new Text(theme.fg("dim", hyperlink), 1, 0));
 
@@ -107,6 +119,16 @@ export class LoginDialogComponent extends Container implements Focusable {
 			this.contentContainer.addChild(new Spacer(1));
 			this.contentContainer.addChild(new Text(theme.fg("warning", instructions), 1, 0));
 		}
+		this.contentContainer.addChild(
+			new Text(
+				theme.fg(
+					"dim",
+					"Using a browser on another machine? Paste its final redirect URL here, even if localhost cannot connect.",
+				),
+				1,
+				0,
+			),
+		);
 
 		openBrowser(url);
 		this.tui.requestRender();
@@ -116,12 +138,13 @@ export class LoginDialogComponent extends Container implements Focusable {
 	 * Called by onDeviceCode callback - show URL and user code.
 	 */
 	showDeviceCode(info: OAuthDeviceCodeInfo): void {
+		this.authUrl = info.verificationUri;
 		this.contentContainer.clear();
 		this.contentContainer.addChild(new Spacer(1));
 		const linkedUrl = `\x1b]8;;${info.verificationUri}\x07${info.verificationUri}\x1b]8;;\x07`;
 		this.contentContainer.addChild(new Text(theme.fg("accent", linkedUrl), 1, 0));
 
-		const clickHint = process.platform === "darwin" ? "Cmd+click to open" : "Ctrl+click to open";
+		const clickHint = "Ctrl/Cmd+click to open; Ctrl+Y copies the complete URL";
 		const hyperlink = `\x1b]8;;${info.verificationUri}\x07${clickHint}\x1b]8;;\x07`;
 		this.contentContainer.addChild(new Text(theme.fg("dim", hyperlink), 1, 0));
 		this.contentContainer.addChild(new Spacer(1));
@@ -220,6 +243,12 @@ export class LoginDialogComponent extends Container implements Focusable {
 	}
 
 	handleInput(data: string): void {
+		if (this.authUrl && matchesKey(data, "ctrl+y")) {
+			void copyToClipboard(this.authUrl).catch(() =>
+				this.showProgress("Could not copy the URL. Use your terminal's copy-link action."),
+			);
+			return;
+		}
 		const kb = getKeybindings();
 
 		if (kb.matches(data, "tui.select.cancel")) {

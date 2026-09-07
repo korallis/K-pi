@@ -138,10 +138,6 @@ test("Anthropic warning precedes the official OAuth window", async () => {
 		registerCommand(name: string, options: { handler: CommandHandler }) {
 			commands.set(name, options.handler);
 		},
-		async exec(command: string, args: string[]) {
-			sequence.push(`open:${command}:${args.at(-1)}`);
-			return { code: 0, stdout: "", stderr: "" };
-		},
 	};
 	registerAccounts(pi as unknown as Parameters<typeof registerAccounts>[0], {
 		store,
@@ -156,16 +152,15 @@ test("Anthropic warning precedes the official OAuth window", async () => {
 			getProvider() {
 				return { auth: { oauth: {} } };
 			},
-			async login(_providerId: string, _method: string, interaction: ProviderAuthInteraction) {
+			async login() {
 				sequence.push("oauth");
-				interaction.notify({
-					type: "auth_url",
-					url: "https://example.test/oauth",
-				});
 				return oauthCredential("home");
 			},
 		},
 		ui: {
+			onTerminalInput() {
+				return () => {};
+			},
 			async confirm() {
 				sequence.push("confirm");
 				return true;
@@ -177,7 +172,6 @@ test("Anthropic warning precedes the official OAuth window", async () => {
 		await commands.get("accounts")!("login anthropic home", context);
 
 		assert.deepEqual(sequence.slice(0, 2), ["confirm", "oauth"]);
-		assert.match(sequence[2] ?? "", /^open:.*:https:\/\/example\.test\/oauth$/u);
 		assert.equal((await store.read()).pools.anthropic?.slots[0]?.id, "home");
 	} finally {
 		await rm(directory, { recursive: true, force: true });
@@ -1120,6 +1114,9 @@ async function providerLoginHarness(
 			},
 		},
 		ui: {
+			onTerminalInput() {
+				return () => {};
+			},
 			async confirm() {
 				sequence.push("confirm");
 				return true;

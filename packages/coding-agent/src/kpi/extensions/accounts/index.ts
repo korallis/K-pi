@@ -5,8 +5,11 @@ import type {
 	Credential,
 	ProviderAuthInteraction,
 } from "@earendil-works/pi-ai";
+import { hyperlink, matchesKey } from "@earendil-works/pi-tui";
 import { VERSION } from "../../../config.ts";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "../../../core/extensions/types.ts";
+import { copyToClipboard } from "../../../utils/clipboard.ts";
+import { openBrowser } from "../../../utils/open-browser.ts";
 import { resolveFallbackModels } from "../../kstack/models.ts";
 import { appendEvent } from "../append-log.ts";
 import { DEFAULT_LOCAL_BASE_URLS, type LocalProviderId } from "../local/providers.ts";
@@ -105,10 +108,17 @@ class LoginCancelledError extends Error {
 
 function authEventMessage(event: AuthEvent): string {
 	if (event.type === "auth_url") {
-		return [event.instructions, event.url].filter(Boolean).join("\n");
+		return [
+			event.instructions,
+			hyperlink(event.url, event.url),
+			"Ctrl/Cmd+click the link, or press Ctrl+Y to copy the complete URL.",
+			"If your browser is on another machine, paste its final redirect URL here even if localhost cannot connect.",
+		]
+			.filter(Boolean)
+			.join("\n");
 	}
 	if (event.type === "device_code") {
-		return `${event.verificationUri}\nCode: ${event.userCode}`;
+		return `${hyperlink(event.verificationUri, event.verificationUri)}\nCode: ${event.userCode}\nCtrl+Y copies the complete sign-in URL.`;
 	}
 	const links = event.type === "info" ? (event.links ?? []) : [];
 	return [event.message, ...links.map((link) => link.url)].join("\n");
@@ -136,16 +146,6 @@ async function answerAuthPrompt(prompt: AuthPrompt, context: ExtensionContext): 
 	return answer;
 }
 
-function openAuthUrl(pi: ExtensionAPI, url: string): void {
-	const command =
-		process.platform === "darwin"
-			? { name: "open", args: [url] }
-			: process.platform === "win32"
-				? { name: "cmd", args: ["/c", "start", "", url] }
-				: { name: "xdg-open", args: [url] };
-	void pi.exec(command.name, command.args).catch(() => undefined);
-}
-
 /**
  * Acquires the credential the pool's provider actually offers, rather than
  * assuming every official pool is a subscription. Subscription OAuth wins
@@ -160,22 +160,56 @@ async function loginWithOfficialProvider(
 	providerId: PoolId,
 	_slotId: string,
 	context: ExtensionContext,
-	showAuthUrl: (url: string) => void,
 ): Promise<Credential> {
 	const auth = context.modelRegistry.getProvider(providerId)?.auth;
 	if (auth?.oauth !== undefined) {
 		const signal = context.signal ?? new AbortController().signal;
+		let authUrl: string | undefined;
+		let authMessage = "";
+		const unsubscribe =
+			context.mode === "tui"
+				? context.ui.onTerminalInput((data) => {
+						if (!authUrl || !matchesKey(data, "ctrl+y")) return undefined;
+						const url = authUrl;
+						void copyToClipboard(url)
+							.then(() => {
+								if (authUrl === url)
+									context.ui.notify(
+										`${authMessage}\nSign-in URL sent to terminal clipboard. Allow clipboard access if your terminal asks.`,
+										"info",
+									);
+							})
+							.catch(() =>
+								context.ui.notify(
+									"Could not copy the sign-in URL. Use the terminal's copy-link action.",
+									"warning",
+								),
+							);
+						return { consume: true };
+					})
+				: undefined;
 		const interaction: ProviderAuthInteraction = {
 			signal,
 			prompt: (prompt) => answerAuthPrompt(prompt, context),
 			notify: (event) => {
+				const message = authEventMessage(event);
 				if (event.type === "auth_url") {
-					showAuthUrl(event.url);
+					authUrl = event.url;
+					authMessage = message;
+					openBrowser(event.url);
+				} else if (event.type === "device_code") {
+					authUrl = event.verificationUri;
+					authMessage = message;
 				}
-				context.ui.notify(authEventMessage(event), "info");
+				context.ui.notify(message, "info");
 			},
 		};
-		return context.modelRegistry.login(providerId, "oauth", interaction);
+		try {
+			return await context.modelRegistry.login(providerId, "oauth", interaction);
+		} finally {
+			authUrl = undefined;
+			unsubscribe?.();
+		}
 	}
 	if (auth?.apiKey !== undefined) {
 		const answer = await context.ui.input(auth.apiKey.name, "Paste the key, or Enter to cancel", {
@@ -476,12 +510,6 @@ async function handlePoolCommand(
 	throw new Error("Usage: /pool strategy <provider> <name> | /pool chain a,b,c");
 }
 
-/** The default login registerAccounts wires up: the official provider flow, its auth URL opened by pi.exec. */
-function defaultLogin(pi: ExtensionAPI): NonNullable<AccountsDependencies["login"]> {
-	return (providerId, slotId, context) =>
-		loginWithOfficialProvider(providerId, slotId, context, (url) => openAuthUrl(pi, url));
-}
-
 /**
  * Logs into one pool the same way `/accounts login <pool>` does — same provider
  * notices, slots, and secrets — so onboarding and the command share one path.
@@ -489,7 +517,6 @@ function defaultLogin(pi: ExtensionAPI): NonNullable<AccountsDependencies["login
  * (including `LoginCancelledError`) propagates for the caller to report.
  */
 export async function loginPoolInteractively(
-	pi: ExtensionAPI,
 	poolId: PoolId,
 	context: ExtensionContext,
 	dependencies: Pick<AccountsDependencies, "store" | "now" | "login"> = {},
@@ -498,7 +525,7 @@ export async function loginPoolInteractively(
 		poolId,
 		undefined,
 		dependencies.store ?? new AccountsStore(),
-		dependencies.login ?? defaultLogin(pi),
+		dependencies.login ?? loginWithOfficialProvider,
 		dependencies.now ?? (() => new Date()),
 		context,
 	);
@@ -508,7 +535,7 @@ export function registerAccounts(pi: ExtensionAPI, dependencies: AccountsDepende
 	const resolved: Required<AccountsDependencies> = {
 		store: dependencies.store ?? new AccountsStore(),
 		now: dependencies.now ?? (() => new Date()),
-		login: dependencies.login ?? defaultLogin(pi),
+		login: dependencies.login ?? loginWithOfficialProvider,
 		usageReaders: dependencies.usageReaders ?? {},
 		fallbackModels: dependencies.fallbackModels ?? resolveFallbackModels,
 	};

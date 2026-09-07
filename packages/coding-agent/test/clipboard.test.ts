@@ -50,7 +50,6 @@ const mockedPlatform = vi.mocked(platform);
 
 let originalWrite: typeof process.stdout.write;
 let stdoutWrites: string[];
-let nativeResolved = false;
 
 function osc52Writes(): string[] {
 	return stdoutWrites.filter((write) => write.startsWith("\x1b]52;c;"));
@@ -60,9 +59,9 @@ beforeEach(() => {
 	vi.unstubAllEnvs();
 	vi.stubEnv("SSH_CONNECTION", "");
 	vi.stubEnv("SSH_CLIENT", "");
+	vi.stubEnv("SSH_TTY", "");
 	vi.stubEnv("MOSH_CONNECTION", "");
 	stdoutWrites = [];
-	nativeResolved = false;
 	mocks.clipboard.getText.mockReset();
 	mocks.clipboard.setText.mockReset();
 	mocks.execFileSync.mockReset();
@@ -73,10 +72,7 @@ beforeEach(() => {
 	mockedPlatform.mockReturnValue("darwin");
 	mocks.isWaylandSession.mockReturnValue(false);
 	mocks.clipboard.getText.mockResolvedValue("");
-	mocks.clipboard.setText.mockImplementation(async () => {
-		await new Promise((resolve) => setTimeout(resolve, 1));
-		nativeResolved = true;
-	});
+	mocks.clipboard.setText.mockResolvedValue(undefined);
 	originalWrite = process.stdout.write.bind(process.stdout);
 	process.stdout.write = ((...args: Parameters<typeof process.stdout.write>) => {
 		const [chunk] = args;
@@ -158,19 +154,14 @@ describe("copyToClipboard", () => {
 		expect(mockedSpawn).not.toHaveBeenCalled();
 	});
 
-	test("remote native success emits OSC 52 after native write", async () => {
-		vi.stubEnv("SSH_CONNECTION", "client server");
-		mocks.clipboard.setText.mockImplementation(async () => {
-			await new Promise((resolve) => setTimeout(resolve, 1));
-			expect(osc52Writes()).toHaveLength(0);
-			nativeResolved = true;
-		});
-
-		await copyToClipboard("hello");
-
-		expect(nativeResolved).toBe(true);
-		expect(osc52Writes()).toHaveLength(1);
+	test("SSH copies exact text to the client without touching the server clipboard", async () => {
+		vi.stubEnv("SSH_TTY", "/dev/pts/1");
+		const url = "https://auth.example.invalid/authorize?client_id=fixture&state=a%2Bb&scope=openid+profile";
+		await copyToClipboard(url);
+		expect(osc52Writes()).toEqual([`\x1b]52;c;${Buffer.from(url).toString("base64")}\x07`]);
+		expect(mocks.clipboard.setText).not.toHaveBeenCalled();
 		expect(mockedExecSync).not.toHaveBeenCalled();
+		expect(mockedSpawn).not.toHaveBeenCalled();
 	});
 
 	test("local shell fallback success skips OSC 52", async () => {

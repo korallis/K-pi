@@ -162,8 +162,7 @@ export function registerOnboarding(pi: ExtensionAPI, dependencies: OnboardingDep
 	const store = dependencies.store ?? new AccountsStore();
 	const resolved: Required<OnboardingDependencies> = {
 		store,
-		loginPool:
-			dependencies.loginPool ?? ((poolId, context) => loginPoolInteractively(pi, poolId, context, { store })),
+		loginPool: dependencies.loginPool ?? ((poolId, context) => loginPoolInteractively(poolId, context, { store })),
 		researchKeys: dependencies.researchKeys ?? promptResearchKeys,
 		kstackSetup: dependencies.kstackSetup ?? runKStackSetup,
 	};

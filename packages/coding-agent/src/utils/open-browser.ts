@@ -8,6 +8,9 @@ import { spawn } from "node:child_process";
  * `start` runs, which would make attacker-controlled URLs injectable.
  */
 export function openBrowser(target: string): void {
+	// The browser must run on the SSH client's machine, not the remote desktop.
+	if (process.env.SSH_CONNECTION || process.env.SSH_CLIENT || process.env.SSH_TTY || process.env.MOSH_CONNECTION)
+		return;
 	const [cmd, args]: [string, string[]] =
 		process.platform === "darwin"
 			? ["open", [target]]

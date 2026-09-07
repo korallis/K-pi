@@ -261,6 +261,16 @@ Valid pool ids are `anthropic`, `openai`, `openai-codex`, `xai`, `zai`,
 `lmstudio`, `local-openai`. The slot name is yours: `home`, `work`, anything
 matching a lowercase identifier.
 
+**Over SSH or Mosh**, K-π leaves the remote browser closed. In `/accounts`
+and `/login`, Ctrl/Cmd+click the sign-in link, or press **Ctrl+Y** to send the
+complete URL to your local terminal's clipboard. Clipboard transfer uses
+OSC 52 and requires your terminal to permit it. If blocked, use the terminal's
+**Copy Link** action rather than selecting wrapped URL text.
+For Anthropic and OpenAI Codex, keep the login prompt open: if the browser's
+final `localhost` redirect cannot connect, copy its **entire address** and
+paste it into K-π's waiting prompt. Each attempt needs its own fresh sign-in
+URL and matching callback.
+
 **Cursor** uses browser subscription login: `/accounts login cursor home`.
 K-π implements Cursor's CLI protocol directly; it does not install OMP or
 provision Cursor Cloud Agents. After login, run `kpi update --models` and select
