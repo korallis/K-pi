@@ -10,12 +10,13 @@ import type { ExtensionCommandContext } from "../packages/coding-agent/src/core/
 import {
 	type AccountsDependencies,
 	CODEX_BILLING_CONFIRM,
-	CURSOR_BILLING_CONFIRM,
+	CURSOR_AVAILABILITY_NOTE,
 	registerAccounts,
 	ZAI_PERSONAL_USE_NOTE,
 } from "../packages/coding-agent/src/kpi/extensions/accounts/index.ts";
 import { AccountsStore } from "../packages/coding-agent/src/kpi/extensions/accounts/store.ts";
 import { renderAccountsWidget } from "../packages/coding-agent/src/kpi/extensions/accounts/widget.ts";
+import { invokeAccountAuth } from "./account-auth-harness.ts";
 
 const FIXED_TIME = new Date("2026-09-01T12:00:00.000Z");
 
@@ -97,8 +98,15 @@ async function harness(
 	const context = { cwd: directory, hasUI: true, mode: "tui", ui } as unknown as ExtensionCommandContext;
 	const route = async (provider = "anthropic", seeded: Record<string, string> = {}): Promise<string> => {
 		const headers: Record<string, string> = { ...seeded };
-		await hooks.get("before_provider_headers")!(
-			{ type: "before_provider_headers", headers, requestId: "request-1" },
+		await invokeAccountAuth(
+			hooks.get("before_provider_auth")!,
+			{
+				type: "before_provider_auth",
+				model: { provider, id: `${provider}-model` },
+				checkOnly: false,
+				headers,
+				requestId: "request-1",
+			},
 			{
 				cwd: directory,
 				model: { provider, id: `${provider}-model` },
@@ -355,10 +363,7 @@ test("an existing default slot with a live grant of its own is never overwritten
 test("each provider notice appears once per new slot and never after acceptance", async () => {
 	const subject = await harness();
 	try {
-		for (const [pool, expected] of [
-			["openai-codex", CODEX_BILLING_CONFIRM],
-			["cursor", CURSOR_BILLING_CONFIRM],
-		] as const) {
+		for (const [pool, expected] of [["openai-codex", CODEX_BILLING_CONFIRM]] as const) {
 			subject.prompts.length = 0;
 			await subject.accounts(`login ${pool} one`, subject.context);
 			assert.deepEqual(subject.prompts, [expected], `${pool} confirms once`);
@@ -375,22 +380,23 @@ test("each provider notice appears once per new slot and never after acceptance"
 			);
 		}
 
-		// z.ai states a note rather than asking, and states it once.
-		subject.notes.length = 0;
-		subject.prompts.length = 0;
-		await subject.accounts("login zai one", subject.context);
-		assert.equal(subject.prompts.length, 0, "a note is not a confirm");
-		assert.ok(
-			subject.notes.some((message) => message === ZAI_PERSONAL_USE_NOTE),
-			"the personal-use note was stated",
-		);
-		subject.notes.length = 0;
-		await subject.accounts("login zai one", subject.context);
-		assert.equal(
-			subject.notes.filter((message) => message === ZAI_PERSONAL_USE_NOTE).length,
-			0,
-			"the note is not repeated for an accepted slot",
-		);
+		for (const [pool, expected] of [
+			["zai", ZAI_PERSONAL_USE_NOTE],
+			["cursor", CURSOR_AVAILABILITY_NOTE],
+		] as const) {
+			subject.notes.length = 0;
+			subject.prompts.length = 0;
+			await subject.accounts(`login ${pool} one`, subject.context);
+			assert.equal(subject.prompts.length, 0, "an informational notice is not an approval gate");
+			assert.ok(subject.notes.includes(expected));
+			subject.notes.length = 0;
+			await subject.accounts(`login ${pool} one`, subject.context);
+			assert.equal(
+				subject.notes.filter((message) => message === expected).length,
+				0,
+				"the notice is not repeated for an existing slot",
+			);
+		}
 
 		// A pool with no notice never prompts at all.
 		subject.prompts.length = 0;

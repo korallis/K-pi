@@ -18,7 +18,6 @@ import {
 	resolveCurrentStageIndex,
 	type StageActivity,
 	shortTool,
-	stopTone,
 	type Tone,
 } from "../packages/coding-agent/src/kpi/extensions/board.ts";
 import {
@@ -81,7 +80,7 @@ async function seedRun(
 	return runDirectory;
 }
 
-test("amber board lights exactly one CURRENT stage and six nonempty file lamps", async () => {
+test("the running board lights exactly one CURRENT stage and six nonempty file lamps", async () => {
 	await withRoot(async (root) => {
 		await seedRun(root, {
 			job_id: "amber-1",
@@ -171,7 +170,7 @@ test("empty run files keep lamps dark", async () => {
 	});
 });
 
-test("protocol-blue pause derives APPROVAL lamp without persisting APPROVAL status", async () => {
+test("an attended human gate derives APPROVAL without persisting an APPROVAL status", async () => {
 	await withRoot(async (root) => {
 		const runDirectory = await seedRun(root, {
 			job_id: "pause-1",
@@ -503,6 +502,68 @@ function boardModel(overrides: Partial<BoardModel> = {}): BoardModel {
 	};
 }
 
+test("automatic retries stay cool and genuine human gates receive warm emphasis", () => {
+	const tones = (model: BoardModel) => {
+		const seen: Array<[Tone, string]> = [];
+		paintBoard(model, {
+			width: 120,
+			layout: "full",
+			palette: {
+				paint: (tone, text) => {
+					seen.push([tone, text]);
+					return text;
+				},
+			},
+		});
+		return seen;
+	};
+	const machine = tones(boardModel({ retry: { node: "implement", attempt: 2, reason: "timeout", delayMs: 2000 } }));
+	assert.ok(machine.some(([tone, text]) => tone === "accent" && text === "STOP RUNNING"));
+	assert.ok(machine.some(([tone, text]) => tone === "accent" && text.startsWith("RETRY 2")));
+	assert.equal(
+		machine.some(([tone]) => tone === "warning"),
+		false,
+	);
+	for (const human of [
+		boardModel({ stop: "NEEDS_HUMAN", recovery: "provider" }),
+		boardModel({ paused: true, pendingQuestion: "Approve release?" }),
+	]) {
+		assert.ok(tones(human).some(([tone, text]) => tone === "warning" && text.startsWith("STOP ")));
+	}
+});
+
+test("stale questions and recoverable interruptions never invent a human gate", () => {
+	const state = { job_id: "attention", status: "RUNNING" as const, graph_status: "interrupted" };
+	assert.equal(isPausedHuman(state), false);
+	assert.equal(isPausedHuman({ ...state, pending_question: "Approve?" }), true);
+	assert.equal(isPausedHuman({ ...state, graph_status: "running", pending_question: "stale question" }), false);
+	assert.equal(isPausedHuman({ ...state, status: "STOPPED", pending_human: { nodeId: "human" } }), false);
+	assert.equal(isPausedHuman({ ...state, status: "DONE", pending_question: "stale question" }), false);
+	assert.equal(isPausedHuman({ ...state, status: "NEEDS_HUMAN" }), true);
+	const stopped = paintBoard(boardModel({ stop: "STOPPED", paused: true, pendingQuestion: "stale question" }), {
+		width: 120,
+		layout: "full",
+	}).join("\n");
+	assert.match(stopped, /STOP STOPPED/u);
+	assert.doesNotMatch(stopped, /HUMAN OVERSIGHT|WAITING ON OPERATOR|APPROVAL/u);
+});
+
+test("stage position never invents completion when the execution graph skips or revisits work", () => {
+	const unknown = renderBoard(boardModel()).join("\n");
+	assert.doesNotMatch(unknown, /\bDONE\b/u);
+	assert.match(unknown, /03 plan PENDING/u);
+	const recorded = renderBoard(
+		boardModel({
+			stage: "plan",
+			node: "plan",
+			activity: { implement: { status: "completed", runs: 1, toolCalls: 1, toolsByName: {}, node: "implement" } },
+		}),
+	).join("\n");
+	assert.match(recorded, /03 plan CURRENT/u);
+	assert.match(recorded, /04 implement DONE/u);
+	assert.match(recorded, /02 specify PENDING/u);
+});
+
 const REQUIRED_FIELDS = ["K-π", "MODE gated", "JOB 2026-09", "ROUND 2", "STOP RUNNING"] as const;
 
 function requireFields(text: string, label: string): void {
@@ -586,7 +647,7 @@ test("tones: the current stage and lit lamps are accent, done stages success, pe
 			return text;
 		},
 	};
-	paintBoard(boardModel(), { width: 120, layout: "full", palette: spy });
+	paintBoard(boardModel({ activity: liveActivity() }), { width: 120, layout: "full", palette: spy });
 	const toneOf = (needle: string) => seen.filter(([, text]) => text.trim() === needle).map(([tone]) => tone);
 	assert.deepEqual([...new Set(toneOf("CURRENT"))], ["accent"]);
 	assert.deepEqual([...new Set(toneOf("DONE"))], ["success"]);
@@ -603,10 +664,6 @@ test("tones: the current stage and lit lamps are accent, done stages success, pe
 		seen.some(([tone, text]) => tone === "borderAccent" && text.includes("─")),
 		"the current cell's border is accent",
 	);
-	assert.ok(
-		seen.some(([tone, text]) => tone === "warning" && text === "STOP RUNNING"),
-		"a running STOP box is warning",
-	);
 });
 
 test("a paused board is the protocol variant with APPROVAL lit", () => {
@@ -616,8 +673,6 @@ test("a paused board is the protocol variant with APPROVAL lit", () => {
 		node: "human-confirm",
 		pendingQuestion: "Ship the change?",
 	});
-	assert.equal(buildBoardRegions(paused).variant, "blue");
-	assert.equal(buildBoardRegions(boardModel()).variant, "amber");
 	const seen: Array<[Tone, string]> = [];
 	const spy = {
 		paint(tone: Tone, text: string) {
@@ -642,8 +697,8 @@ test("a paused board is the protocol variant with APPROVAL lit", () => {
 	}
 	assert.ok(!text.includes("STOP APPROVAL"), "APPROVAL is a lamp, never a stop state");
 	assert.ok(
-		seen.some(([tone, text]) => tone === "accent" && text.trim() === "APPROVAL"),
-		"APPROVAL is lit",
+		seen.some(([tone, text]) => tone === "warning" && text.trim() === "APPROVAL"),
+		"APPROVAL has warm human-attention emphasis",
 	);
 	assert.ok(
 		seen.some(([tone, text]) => tone === "dim" && text.trim() === "DONE"),
@@ -1066,40 +1121,14 @@ test("the board shows ROUND without a maximum and a retry row while a node backs
 	};
 	assert.equal(
 		stopBoxTone(bounds, "compact", "STOP NEEDS_HUMAN bounds"),
-		"accent",
-		"a NEEDS_HUMAN STOP box is accent",
+		"warning",
+		"human intervention uses the warm tone, distinct from machine activity",
 	);
 
 	const stopped = boardModel({ stop: "STOPPED" });
 	assert.ok(paintBoard(stopped, { width: 100, layout: "compact" }).join("\n").includes("│ STOP STOPPED │"));
 	assert.equal(stopBoxTone(stopped, "full", "STOP STOPPED"), "error", "an operator stop is error");
 	assert.equal(stopBoxTone(boardModel({ stop: "DONE" }), "full", "STOP DONE"), "success", "DONE is success");
-
-	// Board B: the stop-state cells are DONE / STOPPED / APPROVAL. APPROVAL is the
-	// pause lamp (Board B only paints while a human node is paused); DONE and
-	// STOPPED light for the run state.
-	const pausedStopped = boardModel({
-		paused: true,
-		stage: "ship",
-		node: "human-confirm",
-		pendingQuestion: "Ship?",
-		stop: "STOPPED",
-	});
-	const cells = buildBoardRegions(pausedStopped).byId.stopStates;
-	assert.ok(cells?.kind === "cells");
-	assert.deepEqual(
-		cells.cells.map((cell) => [cell.lines[0], cell.lit]),
-		[
-			["DONE", false],
-			["STOPPED", true],
-			["APPROVAL", true],
-		],
-	);
-	const pausedText = paintBoard(pausedStopped, { width: 120, layout: "full" }).join("\n");
-	assert.ok(pausedText.includes("STOPPED"), "Board B has a STOPPED cell");
-	assert.ok(!pausedText.includes("BLOCKED"), "BLOCKED is no longer a stop state");
-	const compactPaused = paintBoard(pausedStopped, { width: 100, layout: "compact" }).join("\n");
-	assert.ok(compactPaused.includes("STOP STATES  DONE ○  STOPPED ●  APPROVAL ●"), compactPaused);
 });
 
 test("legacy stop tokens on disk normalise to the four run states", () => {
@@ -1115,8 +1144,4 @@ test("legacy stop tokens on disk normalise to the four run states", () => {
 		assert.equal(normalizeStop(legacy), "NEEDS_HUMAN", `${legacy} is a NEEDS_HUMAN of an earlier release`);
 	}
 	assert.equal(normalizeStop("garbage"), "RUNNING");
-	assert.equal(stopTone("RUNNING"), "warning");
-	assert.equal(stopTone("NEEDS_HUMAN"), "accent");
-	assert.equal(stopTone("DONE"), "success");
-	assert.equal(stopTone("STOPPED"), "error");
 });

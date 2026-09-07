@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,13 +7,11 @@ import test from "node:test";
 
 import type { ExtensionAPI, ProviderModelConfig } from "../packages/coding-agent/src/core/extensions/types.ts";
 
-import {
-	AccountBalancer,
-	DEFAULT_FALLBACK_CHAIN,
-} from "../packages/coding-agent/src/kpi/extensions/accounts/balancer.ts";
+import { AccountBalancer } from "../packages/coding-agent/src/kpi/extensions/accounts/balancer.ts";
 import {
 	type AccountsDocument,
 	AccountsStore,
+	DEFAULT_FALLBACK_CHAIN,
 	isLocalPool,
 	type PoolId,
 	poolIdForProvider,
@@ -182,7 +180,15 @@ test("AC-27.2 Ollama falls back to /api/tags only when the v1 list is unavailabl
 	// v1 unavailable: now the tag list answers, with exact ids.
 	const tagsOnly = await stubServer({
 		"/v1/models": { status: 404, body: {} },
-		"/api/tags": { body: { models: [{ name: "qwen3:8b", size: 1 }, { name: "deepseek-r1:14b" }] } },
+		"/api/tags": {
+			body: {
+				models: [
+					{ name: "qwen3:8b", size: 1 },
+					{ name: "deepseek-r1:14b" },
+					{ name: "remote", remote_host: "https://ollama.com", remote_model: "remote" },
+				],
+			},
+		},
 	});
 	try {
 		const models = await discoverLocalModels("ollama", { baseUrl: `${tagsOnly.origin}/v1` });
@@ -461,9 +467,24 @@ test("a live catalog is stored and restored offline, and never replaced by a gue
 	}
 });
 
-test("a stored local catalog is rehydrated through current defaults and never frozen into a models array", async () => {
+test("server metadata survives cache reload and provider registration", async () => {
 	const agentDirectory = await mkdtemp(join(tmpdir(), "kpi-local-rehydrate-"));
-	const stub = await stubServer({ "/v1/models": { body: { data: [{ id: "qwen3:8b", name: "Qwen 3" }] } } });
+	const stub = await stubServer({
+		"/v1/models": {
+			body: {
+				data: [
+					{
+						id: "qwen3:8b",
+						name: "Server model",
+						max_context_length: 65536,
+						maxTokens: 2048,
+						reasoning: true,
+						input: ["text", "image"],
+					},
+				],
+			},
+		},
+	});
 	try {
 		await refreshLocalModels(
 			"ollama",
@@ -476,8 +497,17 @@ test("a stored local catalog is rehydrated through current defaults and never fr
 
 		const [rehydrated] = readStoredLocalModels("ollama", agentDirectory) ?? [];
 		assert.equal(rehydrated.id, "qwen3:8b");
-		assert.deepEqual(rehydrated.cost, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
-		assert.equal(rehydrated.api, "openai-completions");
+		assert.equal(rehydrated.name, "Server model");
+		assert.equal(rehydrated.contextWindow, 65536);
+		assert.equal(rehydrated.maxTokens, 2048);
+		assert.equal(rehydrated.reasoning, true);
+		assert.deepEqual(rehydrated.input, ["text", "image"]);
+		assert.deepEqual(rehydrated.metadataSources, {
+			contextWindow: "discovery",
+			maxTokens: "discovery",
+			reasoning: "discovery",
+			input: "discovery",
+		});
 
 		// Registration offers the stored catalog, not a frozen literal list.
 		const registered: Array<{ id: string; models?: ProviderModelConfig[] }> = [];
@@ -502,6 +532,146 @@ test("a stored local catalog is rehydrated through current defaults and never fr
 		);
 	} finally {
 		await stub.close();
+		await rm(agentDirectory, { recursive: true, force: true });
+	}
+});
+
+test("legacy generated metadata cannot become a sourced model capacity", async () => {
+	const agentDirectory = await mkdtemp(join(tmpdir(), "kpi-local-legacy-"));
+	const baseUrl = "http://127.0.0.1:1234/v1";
+	try {
+		await writeFile(
+			storedLocalModelsPath("lmstudio", agentDirectory),
+			JSON.stringify([
+				{ id: "legacy", name: "Old model", baseUrl, contextWindow: 32768, maxTokens: 4096, reasoning: true },
+				{ id: "identity-only", name: "Identity only", baseUrl },
+			]),
+		);
+		const models = await refreshLocalModels(
+			"lmstudio",
+			{ allowNetwork: false },
+			{
+				agentDirectory,
+				resolveSlots: async () => [{ slotId: "only", baseUrl }],
+			},
+		);
+		assert.deepEqual(
+			models.map((model) => [model.id, model.baseUrl]),
+			[
+				["legacy", baseUrl],
+				["identity-only", baseUrl],
+			],
+		);
+		for (const model of models) {
+			assert.equal(model.contextWindow, 0, "legacy guesses are not supported capacities");
+			assert.equal(model.maxTokens, 0);
+			assert.deepEqual(model.metadataSources, {});
+		}
+	} finally {
+		await rm(agentDirectory, { recursive: true, force: true });
+	}
+});
+
+test("discovery rejects invalid capacities and never derives capabilities from an id", async () => {
+	const stub = await stubServer({
+		"/v1/models": {
+			body: {
+				data: [
+					{ id: "vision-thinking-128k", contextWindow: -1, maxTokens: "4096" },
+					{ id: "valid", contextWindow: 12288, maxTokens: 1.5 },
+				],
+			},
+		},
+	});
+	try {
+		const models = await discoverLocalModels("local-openai", { baseUrl: `${stub.origin}/v1` });
+		assert.deepEqual(
+			models?.map((model) => [model.contextWindow, model.maxTokens]),
+			[
+				[0, 0],
+				[12288, 0],
+			],
+		);
+		assert.deepEqual(models?.[0].metadataSources, {});
+		assert.equal(models?.[0].reasoning, false);
+		assert.deepEqual(models?.[0].input, ["text"]);
+	} finally {
+		await stub.close();
+	}
+});
+
+test("partial discovery preserves other origins and never rebinds a duplicate id", async () => {
+	const agentDirectory = await mkdtemp(join(tmpdir(), "kpi-local-partial-"));
+	const firstRoutes = {
+		"/v1/models": {
+			status: 200,
+			body: {
+				data: [
+					{ id: "shared", contextWindow: 8192 },
+					{ id: "first-only", contextWindow: 16384 },
+				],
+			},
+		},
+	};
+	const secondRoutes = {
+		"/v1/models": {
+			status: 200,
+			body: {
+				data: [
+					{ id: "shared", contextWindow: 65536 },
+					{ id: "second-only", contextWindow: 32768 },
+				],
+			},
+		},
+	};
+	const first = await stubServer(firstRoutes);
+	const second = await stubServer(secondRoutes);
+	const slots = [
+		{ slotId: "first", baseUrl: `${first.origin}/v1` },
+		{ slotId: "second", baseUrl: `${second.origin}/v1` },
+	];
+	const dependencies = { agentDirectory, resolveSlots: async () => slots };
+	try {
+		await refreshLocalModels("local-openai", { allowNetwork: true }, dependencies);
+		firstRoutes["/v1/models"].status = 503;
+		secondRoutes["/v1/models"].body.data.push({ id: "new-second", contextWindow: 4096 });
+		slots.reverse();
+		const partial = await refreshLocalModels("local-openai", { allowNetwork: true }, dependencies);
+		const shared = partial.find((model) => model.id === "shared");
+		assert.equal(shared?.baseUrl, `${first.origin}/v1`, "the responding second host cannot steal the cached id");
+		assert.equal(shared?.contextWindow, 8192);
+		assert.equal(partial.find((model) => model.id === "first-only")?.baseUrl, `${first.origin}/v1`);
+		assert.equal(partial.find((model) => model.id === "new-second")?.baseUrl, `${second.origin}/v1`);
+		const offline = await refreshLocalModels("local-openai", { allowNetwork: false }, dependencies);
+		assert.deepEqual(offline, partial, "the merged catalog, including the failed origin, survives restart");
+
+		firstRoutes["/v1/models"].status = 200;
+		firstRoutes["/v1/models"].body.data = [];
+		const emptyFirst = await refreshLocalModels("local-openai", { allowNetwork: true }, dependencies);
+		assert.equal(
+			emptyFirst.some((model) => model.id === "shared"),
+			false,
+			"an empty pinned origin does not redirect",
+		);
+		assert.equal(
+			emptyFirst.some((model) => model.id === "first-only"),
+			false,
+		);
+		const restored = await refreshLocalModels("local-openai", { allowNetwork: false }, dependencies);
+		assert.equal(restored.find((model) => model.id === "shared")?.baseUrl, `${first.origin}/v1`);
+
+		firstRoutes["/v1/models"].body.data = [{ id: "first-only", contextWindow: 16384 }];
+		await refreshLocalModels("local-openai", { allowNetwork: true }, dependencies);
+		const later = await refreshLocalModels("local-openai", { allowNetwork: true }, dependencies);
+		assert.equal(
+			later.some((model) => model.id === "shared"),
+			false,
+			"removal cannot revive an id on another origin",
+		);
+		assert.equal(later.find((model) => model.id === "first-only")?.baseUrl, `${first.origin}/v1`);
+	} finally {
+		await first.close();
+		await second.close();
 		await rm(agentDirectory, { recursive: true, force: true });
 	}
 });

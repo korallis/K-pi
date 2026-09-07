@@ -334,447 +334,168 @@ function type(view: CommandCentre, text: string): void {
 	for (const character of text) view.handleInput?.(character);
 }
 
-const CAP_TOKENS = /maxCostUsd|timeoutMs|maxRounds|maxSteps|EXHAUSTED|NO_PROGRESS|\/3\b|\/30m|╱ \$|╱ 30/u;
-
-function assertFits(lines: string[], width: number, label: string): void {
-	for (const line of lines) {
-		assert.ok(
-			visibleWidth(line) <= width,
-			`${label}: line wider than ${width}: ${JSON.stringify(line)} (${visibleWidth(line)})`,
-		);
-		if (line.startsWith("┌") || line.startsWith("│") || line.startsWith("└")) {
-			assert.equal(visibleWidth(line), width, `${label}: framed line not exactly ${width}: ${JSON.stringify(line)}`);
-		}
-	}
-}
-
-test("the command centre paints home and session views from run files at 200, 160, 120, 80 and 60 columns", async () => {
+test("home, details and session remain navigable without overflowing narrow terminals", async () => {
 	const h = harness();
-	const view = open(h);
+	const view = open(h, 30);
 	await view.settled();
-	const home = new Map<number, string[]>();
-	for (const width of [200, 160, 120, 80, 60]) {
-		const lines = view.render(width);
-		home.set(width, lines);
-		assertFits(lines, width, `home@${width}`);
-		const text = lines.join("\n");
-		assert.equal(lines.length, 47, `home@${width} fills the row budget`);
-		for (const token of [
-			"K-π",
-			"COMMAND",
-			"MODE gated",
-			"ROUND 1",
-			"STOP RUNNING",
-			"STAGES",
-			"LIVE › 04 implement",
-			"EVENTS",
-		]) {
-			assert.ok(text.includes(token), `home@${width} carries ${token}`);
+	for (let depth = 0; depth < 3; depth += 1) {
+		for (const width of [60, 80, 108, 120, 140, 160, 200]) {
+			const lines = view.render(width);
+			assert.equal(lines.length, 27);
+			for (const line of lines) assert.ok(visibleWidth(line) <= width);
 		}
-		for (const stage of [
-			"01 ac-compile",
-			"02 specify",
-			"03 plan",
-			"04 implement",
-			"05 test",
-			"06 bounds",
-			"07 review",
-			"08 ship",
-		]) {
-			assert.ok(text.includes(stage), `home@${width} lists ${stage}`);
-		}
-		assert.ok(text.includes("▸ 04 implement"), `home@${width} marks the selected stage`);
-		assert.ok(text.includes("✓ DONE"), `home@${width} paints done stages`);
-		assert.ok(text.includes("○ PENDING"), `home@${width} paints pending stages`);
-		assert.ok(text.includes("write  src/health/index.ts"), `home@${width} tails the selected session`);
-		assert.doesNotMatch(text, CAP_TOKENS, `home@${width} prints no caps`);
-		if (width >= 80) {
-			assert.ok(text.includes("TELEMETRY"), `home@${width} has telemetry`);
-			assert.match(text, /PATH {1,2}ac-compile ?━+▶ ?specify/u, `home@${width} walks the PATH row`);
-			assert.match(text, /COST {5}\$0\.20 est\./u);
-			assert.match(
-				text,
-				/ROUNDS {3}r0 ━+ 1m09s {3}r1 ━+⠋ 5m49s/u,
-				"the round's elapsed comes from node.started/node.finished",
-			);
-			assert.match(text, /STEPS {4}7 {3}NODE RUNS 4 {3}WORKERS 0\/2/u);
-			assert.match(text, /TIME {5}7m00s/u);
-		}
-		if (width >= 120) {
-			for (const token of [
-				"SHARED RUN STATE",
-				"CONTEXT LAYER",
-				"● task.json",
-				"○ evidence.json",
-				"1.2k",
-				"ROUTE     anthropic/home 71% 5h",
-				"PACK      product ●  structure ●  tech ●",
-				"node.retry",
-				"implement retry 1 · timeout · next 2s",
-			]) {
-				assert.ok(text.includes(token), `home@${width} carries ${token}`);
-			}
-		}
+		view.handleInput?.(KEY.enter);
+		await view.settled();
 	}
-	assert.ok(
-		home.get(160)?.some((line) => line.includes("[ implement ⠋ ]") && line.includes("ac-compile ━━▶ specify")),
-		"the PATH row boxes the current stage",
-	);
-
-	view.handleInput?.(KEY.enter);
+	view.handleInput?.("j");
 	await view.settled();
-	for (const width of [200, 160, 120, 80, 60]) {
-		const lines = view.render(width);
-		assertFits(lines, width, `session@${width}`);
-		const text = lines.join("\n");
-		for (const token of [
-			"› 04 implement",
-			"› session",
-			"SESSION › 04 implement",
-			"following",
-			"entries",
-			"prompt",
-			"Before production changes",
-		]) {
-			assert.ok(text.includes(token), `session@${width} carries ${token}`);
-		}
-		assert.doesNotMatch(text, CAP_TOKENS, `session@${width} prints no caps`);
-		if (width >= 120) {
-			for (const token of [
-				"STAGES",
-				"← → switch node",
-				"FILES",
-				"NODE",
-				"node     implement",
-				"status   RUNNING",
-				"retries  1",
-				"WRITES",
-				"src/health/index.ts",
-				"NEXT",
-				"test → bounds → review",
-				"model    worker-b",
-			]) {
-				assert.ok(text.includes(token), `session@${width} carries ${token}`);
-			}
-		}
-	}
-
-	// A 40-row terminal (the pty default) keeps SHARED RUN STATE and CONTEXT
-	// LAYER by giving up the stage detail lines first; a shorter one keeps
-	// every stage and the events.
-	const forty = open(h, 40);
-	await forty.settled();
-	const fortyLines = forty.render(140);
-	assertFits(fortyLines, 140, "home@140x40");
-	assert.equal(fortyLines.length, 37);
-	const fortyText = fortyLines.join("\n");
-	for (const token of [
-		"SHARED RUN STATE",
-		"CONTEXT LAYER",
-		"● task.json",
-		"TELEMETRY",
-		"EVENTS",
-		"01 ac-compile",
-		"08 ship",
-	]) {
-		assert.ok(fortyText.includes(token), `home@140x40 keeps ${token}`);
-	}
-	assert.doesNotMatch(fortyText, /41s · 1 calls/u, "the stage detail lines are what a 40-row terminal gives up");
-	forty.dispose();
-	const short = open(h, 30);
-	await short.settled();
-	const lines = short.render(160);
-	assertFits(lines, 160, "home@160x30");
-	assert.equal(lines.length, 27);
-	const text = lines.join("\n");
-	for (const stage of ["01 ac-compile", "08 ship"]) assert.ok(text.includes(stage), `short home lists ${stage}`);
-	assert.ok(text.includes("EVENTS"), "short home keeps the events panel");
-	short.dispose();
-	view.dispose();
-
-	// The scratch render the lead compares with the mockup.
-	if (process.env.KPI_RENDER === "1") {
-		for (const width of [200, 160, 120, 80, 60]) {
-			const scratch = open(h);
-			await scratch.settled();
-			console.log(`\n=== HOME ${width} ===\n${scratch.render(width).join("\n")}`);
-			scratch.handleInput?.(KEY.enter);
-			await scratch.settled();
-			console.log(`\n=== SESSION ${width} ===\n${scratch.render(width).join("\n")}`);
-			scratch.dispose();
-		}
-	}
+	assert.equal(h.calls.readNodeDetail.at(-1), 4);
+	view.handleInput?.("k");
+	await view.settled();
+	assert.equal(h.calls.readNodeDetail.at(-1), 3);
+	view.handleInput?.(KEY.escape);
+	view.handleInput?.(KEY.escape);
+	assert.equal(h.closed, 0);
+	view.handleInput?.(KEY.escape);
+	assert.equal(h.closed, 1);
 });
 
-test("the command centre follows a running job on the injected tick and stops ticking when the job ends", async () => {
+test("help intercepts navigation and input commands; escape dismisses it without closing", async () => {
 	const h = harness();
 	const view = open(h);
 	await view.settled();
-	assert.equal(h.calls.readModel, 1, "one read on open");
-	assert.equal(h.calls.readRunFiles, 1);
-	assert.deepEqual(h.calls.readTranscript, [3], "the transcript of the current stage");
-	assert.deepEqual(h.ticker.intervals, [1000], "the ticker runs at BOARD_TICK_MS while RUNNING");
-	assert.ok(h.ticker.running());
-	const before = view.render(160).join("\n");
-	assert.match(before, /STOP RUNNING ⠋ 7m00s/u);
+	const before = view.render(80).join("\n");
+	view.handleInput?.("?");
+	const help = view.render(80).join("\n");
+	assert.notEqual(help, before);
+	view.handleInput?.("j");
+	view.handleInput?.(KEY.enter);
+	assert.equal(view.render(80).join("\n"), help);
+	assert.equal(h.calls.readNodeDetail.length, 0);
+	view.handleInput?.(KEY.escape);
+	assert.equal(h.closed, 0);
+	assert.equal(view.render(80).join("\n"), before);
+	view.dispose();
+});
 
-	// A tick re-reads the model and the selected transcript; the spinner advances.
-	h.nowMs = NOW + 1_000;
-	h.snapshot = snapshotOf(runRecords(), h.nowMs);
-	h.model = modelOf(h.snapshot, "RUNNING", {
-		retry: { node: "implement", attempt: 2, reason: "timeout", delayMs: 4_000 },
-	});
+test("human attention follows runtime status, not recoverable repair, and opens the selected real job", async () => {
+	const h = harness();
+	const opened: string[] = [];
+	h.sources.fleet = {
+		read: async () => [
+			{
+				jobId: "repair",
+				model: modelOf(h.snapshot, "RUNNING", {
+					paused: true,
+					retry: { node: "implement", attempt: 2, reason: "timeout", delayMs: 4000 },
+				}),
+			},
+			{ jobId: "waiting", model: modelOf(h.snapshot, "NEEDS_HUMAN", { pendingQuestion: "Allow src/api.ts?" }) },
+			{ jobId: "finished", model: modelOf(h.snapshot, "DONE") },
+			{ jobId: "cancelled", model: modelOf(h.snapshot, "STOPPED") },
+		],
+		open: async (jobId) => {
+			opened.push(jobId);
+		},
+	};
+	const view = open(h);
+	await view.settled();
+	view.handleInput?.(KEY.tab);
+	const selected = view.render(108).find((line) => line.startsWith("▸"));
+	assert.ok(selected?.includes("waiting"));
+	type(view, "/kpi stop");
+	view.handleInput?.(KEY.enter);
+	await view.settled();
+	assert.equal(h.calls.stop, 0, "a fleet selection must never stop the locally opened job");
+	view.handleInput?.(KEY.enter);
+	await view.settled();
+	assert.deepEqual(opened, ["waiting"]);
+	assert.equal(h.closed, 1);
+});
+
+test("fleet refresh stays live when the opened job ends and selection survives snapshot order changes", async () => {
+	const h = harness();
+	const opened: string[] = [];
+	let reversed = false;
+	h.sources.fleet = {
+		read: async () => {
+			const jobs = ["first", "second"].map((jobId) => ({ jobId, model: modelOf(h.snapshot, "NEEDS_HUMAN") }));
+			return reversed ? jobs.reverse() : jobs;
+		},
+		open: async (jobId) => {
+			opened.push(jobId);
+		},
+	};
+	const view = open(h);
+	await view.settled();
+	view.handleInput?.(KEY.tab);
+	h.model = modelOf(h.snapshot, "DONE");
+	reversed = true;
 	h.ticker.fire();
 	await view.settled();
-	assert.equal(h.calls.readModel, 2);
-	assert.deepEqual(h.calls.readTranscript, [3, 3]);
-	assert.equal(h.calls.readRunFiles, 1, "run files wait for the fifth tick");
-	const after = view.render(160).join("\n");
-	assert.match(after, /STOP RUNNING ⠙ 7m01s/u, "the spinner advanced and the elapsed moved");
-	assert.match(after, /RETRY 2 · timeout · next 4s/u, "state.retry paints on the STEPS row");
-	assert.ok(h.renders > 0, "every refresh requests a render");
+	assert.ok(h.ticker.running());
+	assert.ok(
+		view
+			.render(80)
+			.find((line) => line.startsWith("▸"))
+			?.includes("first"),
+	);
+	view.handleInput?.(KEY.enter);
+	await view.settled();
+	assert.deepEqual(opened, ["first"]);
+});
 
-	// Busy guard: a tick during an in-flight read is skipped, never queued.
+test("refresh recovers after read failure, serializes slow reads, and stops after a terminal local result", async () => {
+	const h = harness();
+	h.failure = Object.assign(new Error("unreadable"), { code: "EIO" });
+	const view = open(h);
+	await view.settled();
+	assert.ok(h.ticker.running());
+	h.ticker.fire();
+	await view.settled();
+	const recovered = view.render(80).join("\n");
+	assert.ok(recovered.includes(JOB.slice(0, 25)));
 	h.hold = () => undefined;
 	h.ticker.fire();
-	const settle = Promise.withResolvers<void>();
-	setImmediate(settle.resolve);
-	await settle.promise;
-	assert.equal(h.calls.readModel, 3, "the tick's read is in flight");
+	await new Promise<void>((resolve) => setImmediate(resolve));
+	const reads = h.calls.readModel;
 	h.ticker.fire();
-	assert.equal(h.calls.readModel, 3, "the second tick was skipped while the first read was in flight");
+	assert.equal(h.calls.readModel, reads);
 	const release = h.hold;
 	h.hold = undefined;
 	release?.();
 	await view.settled();
-	assert.equal(h.calls.readModel, 3, "the skipped tick was never queued");
-
-	// The fifth tick re-reads the run files too.
-	for (let tick = 3; tick <= 5; tick += 1) {
-		h.ticker.fire();
-		await view.settled();
-		assert.equal(h.calls.readRunFiles, tick === 5 ? 2 : 1, `run files re-read on the fifth tick only (tick ${tick})`);
-	}
-
-	// A refresh failure paints in the header and never stops the ticker.
-	h.failure = Object.assign(new Error("boom"), { code: "EIO" });
-	h.ticker.fire();
-	await view.settled();
-	assert.match(view.render(160)[0] ?? "", /EVENTS ✕ EIO/u);
-	assert.ok(h.ticker.running(), "a failed refresh keeps following");
-	h.ticker.fire();
-	await view.settled();
-	assert.doesNotMatch(view.render(160)[0] ?? "", /EVENTS ✕/u, "the next good read clears it");
-
-	// The job ends: one more paint, then the ticker stops.
 	h.model = modelOf(h.snapshot, "DONE");
 	h.ticker.fire();
 	await view.settled();
-	assert.equal(h.ticker.stopCount, 1);
-	assert.ok(!h.ticker.running());
-	assert.match(view.render(160)[0] ?? "", /STOP DONE/u);
+	assert.equal(h.ticker.running(), false);
+	const endedReads = h.calls.readModel;
 	h.ticker.fire();
-	assert.equal(h.calls.readModel, 9, "no read after the ticker stopped");
+	assert.equal(h.calls.readModel, endedReads);
 	view.dispose();
-	assert.equal(h.ticker.stopCount, 1, "dispose does not stop a stopped ticker twice");
-
-	// A job that vanishes mid-run: the header says so and the ticker stops.
-	const gone = harness();
-	const goneView = open(gone);
-	await goneView.settled();
-	gone.model = undefined;
-	gone.ticker.fire();
-	await goneView.settled();
-	assert.match(goneView.render(160)[0] ?? "", /K-π no active job/u);
-	assert.equal(gone.ticker.stopCount, 1);
-	goneView.dispose();
-
-	// A NEEDS_HUMAN job never starts the ticker and names its recovery.
-	const paused = harness("NEEDS_HUMAN");
-	paused.model = modelOf(paused.snapshot, "NEEDS_HUMAN", {
-		recovery: "approval",
-		paused: true,
-		gate: "human",
-		pendingQuestion: "Approve the plan?",
-	});
-	const pausedView = open(paused);
-	await pausedView.settled();
-	assert.ok(!paused.ticker.running());
-	const pausedText = pausedView.render(160).join("\n");
-	assert.match(pausedText, /STOP NEEDS_HUMAN approval/u);
-	assert.match(pausedText, /◉ WAITING/u);
-	pausedView.dispose();
-
-	// dispose() stops a live ticker.
-	const live = harness();
-	const liveView = open(live);
-	await liveView.settled();
-	liveView.dispose();
-	assert.equal(live.ticker.stopCount, 1);
-	live.ticker.fire();
-	assert.equal(live.calls.readModel, 1, "a disposed view never reads again");
-
-	// A read that fails on open is painted, and is not terminal: the ticker
-	// starts anyway and the next tick brings the board up.
-	const late = harness();
-	late.failure = Object.assign(new Error("boom"), { code: "EIO" });
-	const lateView = open(late);
-	await lateView.settled();
-	const lateLines = lateView.render(160);
-	assert.match(
-		lateLines[0] ?? "",
-		/K-π reading run files {2}· {2}EVENTS ✕ EIO/u,
-		"the open failure paints in the header",
-	);
-	assert.ok(
-		lateLines.some((line) => line.includes("K-π reading run files ✕ EIO · r to retry")),
-		"the empty body says why and how to retry",
-	);
-	assert.ok(late.ticker.running(), "an open failure starts the ticker so the read is retried");
-	late.ticker.fire();
-	await lateView.settled();
-	const recovered = lateView.render(160).join("\n");
-	assert.doesNotMatch(recovered, /EVENTS ✕/u, "the retry clears the failure");
-	assert.ok(recovered.includes("▸ 04 implement"), "the retry paints the board on the current stage");
-	lateView.dispose();
 });
 
-test("the command centre selects stages, opens a session, and routes stop, verify and chat through its sources", async () => {
+test("commands stay in the overlay and ordinary text closes before sending to chat", async () => {
 	const h = harness();
 	const view = open(h);
 	await view.settled();
-
-	view.handleInput?.("6");
-	await view.settled();
-	assert.ok(view.render(160).join("\n").includes("▸ 06 bounds"), "1-8 jumps to a stage");
-	assert.ok(view.render(160).join("\n").includes("LIVE › 06 bounds"));
-	assert.deepEqual(h.calls.readTranscript.at(-1), 5);
-	view.handleInput?.(KEY.tab);
-	view.handleInput?.(KEY.shiftTab);
-	view.handleInput?.(KEY.down);
-	await view.settled();
-	assert.ok(view.render(160).join("\n").includes("▸ 07 review"), "tab/shift+tab/↓ move the selection");
-
-	type(view, " ");
-	view.handleInput?.(KEY.enter);
-	await view.settled();
-	assert.deepEqual(h.calls.readNodeDetail, [6], "enter on an empty prompt opens the session of the selected stage");
-	assert.ok(view.render(160).join("\n").includes("SESSION › 07 review"));
-	assert.doesNotMatch(view.render(160).join("\n"), /> +▌/u, "a whitespace-only prompt is cleared, not kept");
-	view.handleInput?.(KEY.escape);
-	assert.ok(view.render(160).join("\n").includes("LIVE › 07 review"), "esc goes back home");
-	assert.equal(h.closed, 0);
-
-	// /kpi verify → the hint line.
 	type(view, "/kpi verify");
-	assert.match(view.render(160).join("\n"), /> \/kpi verify▌/u, "the prompt echoes what is typed");
 	view.handleInput?.(KEY.enter);
 	await view.settled();
 	assert.equal(h.calls.verify, 1);
-	assert.ok(
-		view.render(160).join("\n").includes("K-π events.jsonl verified: 14 records chained"),
-		"the verify result shows on the hint line",
-	);
-
-	// Other /kpi goals and bash are refused with a K-π line.
-	type(view, "/kpi goal");
-	view.handleInput?.(KEY.enter);
-	await view.settled();
-	assert.ok(view.render(160).join("\n").includes("K-π /kpi goal is refused while a job runs; /kpi stop first"));
-	type(view, "!ls");
-	view.handleInput?.(KEY.enter);
-	await view.settled();
-	assert.ok(view.render(160).join("\n").includes("K-π bash is not available inside the command centre"));
-
-	// Backspace edits, esc clears a non-empty prompt.
-	type(view, "abc");
-	view.handleInput?.(KEY.backspace);
-	assert.match(view.render(160).join("\n"), /> ab▌/u);
-	view.handleInput?.(KEY.escape);
-	assert.equal(h.closed, 0, "esc with a prompt clears it instead of closing");
-	assert.doesNotMatch(view.render(160).join("\n"), /> ab/u);
-
-	// q, r and digits type once the prompt has text.
-	type(view, "x");
-	type(view, "q");
 	assert.equal(h.closed, 0);
-	type(view, "r1");
-	assert.match(view.render(160).join("\n"), /> xqr1▌/u);
-	view.handleInput?.(KEY.escape);
-
-	// /kpi stop → sources.stop() once, then a repaint with the new state.
 	type(view, "/kpi stop");
 	view.handleInput?.(KEY.enter);
 	await view.settled();
 	assert.equal(h.calls.stop, 1);
-	assert.match(view.render(160).join("\n"), /STOP STOPPED/u, "the repaint after stop shows the run stopped");
-	assert.equal(h.ticker.stopCount, 1, "a stopped job stops the ticker");
-	assert.equal(h.closed, 0, "stop keeps the centre open");
-
-	// Chat closes the view first, then sends.
-	const order: string[] = [];
-	const chatH = harness();
-	chatH.sources.chat = async (text) => {
-		order.push(`chat:${text}`);
+	assert.equal(h.ticker.running(), false);
+	type(view, "xjkr1?");
+	view.handleInput?.(KEY.backspace);
+	h.sources.chat = async (message) => {
+		assert.equal(h.closed, 1);
+		h.calls.chat.push(message);
 	};
-	const chatView = createCommandCentre({
-		palette: PLAIN_PALETTE,
-		sources: chatH.sources,
-		done: () => {
-			order.push("done");
-		},
-		requestRender: () => undefined,
-		rows: () => 50,
-	});
-	await chatView.settled();
-	type(chatView, "why is test pending?");
-	chatView.handleInput?.(KEY.enter);
-	await chatView.settled();
-	assert.deepEqual(order, ["done", "chat:why is test pending?"], "the view closes before the message is sent");
-	assert.equal(chatH.ticker.stopCount, 1, "closing stops the ticker");
-	view.dispose();
-});
-
-test("the status overlay selects stages with arrow keys, opens the node detail on enter and closes on q", async () => {
-	const h = harness();
-	const view = open(h);
-	await view.settled();
-	assert.ok(view.render(160).join("\n").includes("▸ 04 implement"), "opens on the current stage");
-
-	view.handleInput?.(KEY.right);
-	await view.settled();
-	assert.ok(view.render(160).join("\n").includes("▸ 05 test"));
-	view.handleInput?.(KEY.left);
-	view.handleInput?.(KEY.left);
-	await view.settled();
-	assert.ok(view.render(160).join("\n").includes("▸ 03 plan"));
-	view.handleInput?.(KEY.up);
-	view.handleInput?.(KEY.up);
-	view.handleInput?.(KEY.up);
-	view.handleInput?.(KEY.up);
-	await view.settled();
-	assert.ok(view.render(160).join("\n").includes("▸ 01 ac-compile"), "the selection clamps at the first stage");
-
 	view.handleInput?.(KEY.enter);
 	await view.settled();
-	assert.deepEqual(h.calls.readNodeDetail, [0]);
-	const session = view.render(160).join("\n");
-	assert.ok(session.includes("NODE"), "enter opens the node detail");
-	assert.ok(session.includes("node     ac-compiler"));
-	assert.ok(session.includes("status   DONE"));
-	assert.ok(session.includes("cost     $0.02 est."));
-	assert.ok(session.includes("model    worker-a"));
-
-	view.handleInput?.("q");
-	assert.equal(h.closed, 1, "q closes");
-	assert.equal(h.ticker.stopCount, 1, "closing stops the ticker");
-	view.handleInput?.(KEY.right);
-	assert.equal(h.closed, 1, "a closed view ignores input");
-
-	const otherH = harness();
-	const other = open(otherH);
-	await other.settled();
-	other.handleInput?.(KEY.ctrlC);
-	assert.equal(otherH.closed, 1, "ctrl+c closes");
-	assert.equal(otherH.ticker.stopCount, 1, "ctrl+c stops the ticker");
+	assert.deepEqual(h.calls.chat, ["xjkr1"]);
 });

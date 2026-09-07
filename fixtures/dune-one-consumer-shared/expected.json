@@ -1,6 +1,5 @@
 {
   "case": "dune-one-consumer-shared",
-  "outcome": "unsafe",
-  "reason": "shared needs two consuming slices before extraction; 1 declared",
-  "note": "One consumer means the file belongs inside that consumer. The count in the reason is the number of declared slices that depend on shared, so the map is refused with its own arithmetic rather than a generic message."
+  "outcome": "implement",
+  "note": "An existing shared dependency is permitted without an arbitrary second-consumer requirement; explicit dependency identity and cycles are still checked."
 }

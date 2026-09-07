@@ -19,7 +19,6 @@ import {
 	registerOnboarding,
 	runOnboarding,
 	shouldAutoOnboard,
-	WELCOME_LINES,
 } from "../packages/coding-agent/src/kpi/extensions/onboarding.ts";
 import { resolveResearchKeys } from "../packages/coding-agent/src/kpi/extensions/research/session.ts";
 import { promptResearchKeys } from "../packages/coding-agent/src/kpi/extensions/research/setup.ts";
@@ -478,11 +477,4 @@ test("/onboarding re-runs after setup and a failed login is reported by name", a
 	} finally {
 		await env.cleanup();
 	}
-});
-
-test("welcome copy names the plan gate, the release gate, and the worker bus", () => {
-	const joined = WELCOME_LINES.join("\n");
-	assert.match(joined, /plan gate/iu);
-	assert.match(joined, /release gate/iu);
-	assert.match(joined, /\/agents/u);
 });

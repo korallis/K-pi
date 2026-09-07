@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { closeSync, type Dirent, fsyncSync, mkdirSync, openSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { mkdir, open, readdir, readFile, rename, rm, stat } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
@@ -6,6 +6,7 @@ import { basename, dirname, join } from "node:path";
 import { CONFIG_DIR_NAME } from "../../config.ts";
 
 import type { JsonValue } from "./append-log.ts";
+import { canonicalFingerprint } from "./graph/stop.ts";
 
 /** The four run states. Only RUNNING is live; NEEDS_HUMAN and STOPPED resume with `/kpi <job>`. */
 export const RUN_STATUSES = ["RUNNING", "NEEDS_HUMAN", "DONE", "STOPPED"] as const;
@@ -77,6 +78,17 @@ export interface AcceptanceCriterion {
 	};
 }
 
+/** Initial understanding may add missing checks, never relax an existing success criterion. */
+export function preservesAcceptanceCriterion(original: AcceptanceCriterion, refined: AcceptanceCriterion): boolean {
+	return (
+		original.id === refined.id &&
+		original.statement === refined.statement &&
+		original.required === refined.required &&
+		(original.check === undefined || canonicalFingerprint(original.check) === canonicalFingerprint(refined.check)) &&
+		(original.bounds === undefined || canonicalFingerprint(original.bounds) === canonicalFingerprint(refined.bounds))
+	);
+}
+
 export interface Task {
 	job_id: string;
 	mode: "gated" | "autopilot";
@@ -111,6 +123,173 @@ export interface Task {
 	 * because a later process forgot the flag. Absent means `auto`.
 	 */
 	research_network?: "auto" | "offline";
+	/** Accepted user journeys and engineering constraints, not an execution plan. */
+	intent_details?: IntentDetails;
+}
+
+export interface IntentDetails {
+	users: string[];
+	journeys: Array<{
+		id: string;
+		actor: string;
+		entry: string;
+		steps: string[];
+		acceptance_ids: string[];
+	}>;
+	requirements?: string[];
+	nonfunctional_requirements?: string[];
+	ux_expectations?: string[];
+	technical_constraints?: string[];
+	integration_constraints?: string[];
+	security_requirements?: string[];
+	compatibility_requirements?: string[];
+	performance_requirements?: string[];
+	failure_behaviour?: string[];
+	edge_cases?: string[];
+	dependencies?: string[];
+	assumptions?: string[];
+	milestones?: string[];
+	testing_criteria?: string[];
+	definition_of_done?: string[];
+}
+
+/** Accepted desired state, independent of the currently selected execution slice. */
+export interface IntentContract {
+	version: 1;
+	job_id: string;
+	revision: number;
+	hash: string;
+	accepted_at: string;
+	task: Omit<Task, "current_module_id">;
+}
+
+export class ProtectedIntentError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "ProtectedIntentError";
+	}
+}
+
+export async function readIntentContract(runDirectory: string): Promise<IntentContract> {
+	const intent = JSON.parse(await readFile(join(runDirectory, "intent.json"), "utf8")) as IntentContract;
+	if (
+		intent.version !== 1 ||
+		!Number.isSafeInteger(intent.revision) ||
+		intent.revision < 1 ||
+		intent.task?.job_id !== intent.job_id ||
+		intent.hash !== contractHash(intent.task)
+	) {
+		throw new ProtectedIntentError("The accepted intent record is invalid; restore its authorised revision");
+	}
+	return intent;
+}
+
+/** Only control-plane job creation calls this; agents have no intent publication capability. */
+async function persistInitialIntent(directory: string, task: Task): Promise<void> {
+	const { current_module_id: _slice, ...protectedTask } = task;
+	const intent: IntentContract = {
+		version: 1,
+		job_id: task.job_id,
+		revision: 1,
+		hash: contractHash(task),
+		accepted_at: new Date().toISOString(),
+		task: protectedTask,
+	};
+	await atomicWrite(join(directory, "intent.json"), `${JSON.stringify(intent, null, 2)}\n`);
+	await atomicWrite(join(directory, "intent-history", "revision-1.json"), `${JSON.stringify(intent, null, 2)}\n`);
+}
+
+export async function assertProtectedIntent(runDirectory: string, task: Task): Promise<IntentContract> {
+	const intent = await readIntentContract(runDirectory);
+	if (intent.job_id !== task.job_id || intent.hash !== contractHash(task)) {
+		throw new ProtectedIntentError(
+			"Protected intent changed; propose an explicit operator-approved revision instead",
+		);
+	}
+	return intent;
+}
+
+/** One-time migration after the operator has inspected the legacy desired state. */
+export async function adoptLegacyIntent(runDirectory: string, task: Task): Promise<void> {
+	try {
+		await readFile(join(runDirectory, "intent.json"), "utf8");
+		throw new ProtectedIntentError("An existing intent cannot be overwritten by legacy migration");
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+	}
+	await persistInitialIntent(runDirectory, task);
+}
+
+/**
+ * Host-authorised initial refinement. The original objective and every existing
+ * criterion, constraint and non-goal remain intact; changed success is not repair.
+ */
+export async function acceptIntentRefinement(
+	runDirectory: string,
+	previous: Task,
+	refined: Task,
+	authority: "operator" | "delegated-autopilot",
+): Promise<IntentContract> {
+	const prior = await assertProtectedIntent(runDirectory, previous);
+	if (prior.task.intent_details !== undefined) {
+		throw new ProtectedIntentError("Desired state is already accepted; initial refinement cannot replace it");
+	}
+	if (
+		prior.task.goal !== refined.goal ||
+		prior.task.job_id !== refined.job_id ||
+		prior.task.mode !== refined.mode ||
+		!prior.task.nongoals.every((item) => refined.nongoals.includes(item)) ||
+		!prior.task.constraints.every((item) => refined.constraints.includes(item)) ||
+		!prior.task.quality_gates.every((item) => refined.quality_gates.includes(item)) ||
+		!prior.task.acceptance.every((criterion) =>
+			refined.acceptance.some((candidate) => preservesAcceptanceCriterion(criterion, candidate)),
+		)
+	) {
+		throw new ProtectedIntentError("Refinement would weaken or replace accepted intent");
+	}
+	const { current_module_id: _slice, ...protectedTask } = refined;
+	const intent: IntentContract = {
+		version: 1,
+		job_id: refined.job_id,
+		revision: prior.revision + 1,
+		hash: contractHash(refined),
+		accepted_at: new Date().toISOString(),
+		task: protectedTask,
+	};
+	await atomicWrite(
+		join(runDirectory, "intent.pending.json"),
+		`${JSON.stringify({ previous_hash: prior.hash, intent, task: refined, authority }, null, 2)}\n`,
+	);
+	await reconcileIntentPublication(runDirectory);
+	return intent;
+}
+
+/** Reconcile only a recorded host publication; a random changed task is rejected. */
+export async function reconcileIntentPublication(runDirectory: string): Promise<void> {
+	let pending: { previous_hash: string; intent: IntentContract; task: Task };
+	try {
+		pending = JSON.parse(await readFile(join(runDirectory, "intent.pending.json"), "utf8"));
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+		throw error;
+	}
+	const current = await readIntentContract(runDirectory);
+	if (
+		![pending.previous_hash, pending.intent.hash].includes(current.hash) ||
+		pending.intent.hash !== contractHash(pending.task) ||
+		pending.intent.hash !== contractHash(pending.intent.task) ||
+		pending.intent.job_id !== current.job_id ||
+		(pending.intent.revision !== current.revision + 1 && pending.intent.revision !== current.revision)
+	) {
+		throw new ProtectedIntentError("Interrupted intent publication does not match accepted state");
+	}
+	await atomicWrite(
+		join(runDirectory, "intent-history", `revision-${pending.intent.revision}.json`),
+		`${JSON.stringify(pending.intent, null, 2)}\n`,
+	);
+	await atomicWrite(join(runDirectory, "task.json"), `${JSON.stringify(pending.task, null, 2)}\n`);
+	await atomicWrite(join(runDirectory, "intent.json"), `${JSON.stringify(pending.intent, null, 2)}\n`);
+	await rm(join(runDirectory, "intent.pending.json"));
 }
 
 /** One step frozen into `task.json` with the selected playbook. */
@@ -261,6 +440,7 @@ export async function createJob(projectRoot: string, task: Task, context = ""): 
 	await mkdir(directory);
 
 	await atomicWrite(join(directory, "task.json"), `${JSON.stringify(task, null, 2)}\n`);
+	await persistInitialIntent(directory, task);
 	await atomicWrite(join(directory, "context.md"), context);
 
 	const eventsPath = join(directory, "events.jsonl");
@@ -291,7 +471,7 @@ export async function createJob(projectRoot: string, task: Task, context = ""): 
  */
 export function contractHash(task: Task): string {
 	const { current_module_id: _slice, ...contract } = task;
-	return `sha256:${createHash("sha256").update(JSON.stringify(contract)).digest("hex")}`;
+	return canonicalFingerprint(JSON.parse(JSON.stringify(contract)));
 }
 
 /**
@@ -334,21 +514,17 @@ export async function readTaskForJob(projectRoot: string, jobId: string): Promis
 	if (task.job_id !== jobId) {
 		throw new Error(`Job id mismatch: expected ${jobId}, found ${task.job_id}`);
 	}
+	await assertProtectedIntent(join(projectRoot, CONFIG_DIR_NAME, "runs", jobId), task);
 	return task;
 }
 
 export async function readJob(projectRoot: string, jobId: string): Promise<Job> {
 	assertJobId(jobId);
 	const directory = join(projectRoot, CONFIG_DIR_NAME, "runs", jobId);
-	const [taskSource, context] = await Promise.all([
-		readFile(join(directory, "task.json"), "utf8"),
+	const [task, context] = await Promise.all([
+		readTaskForJob(projectRoot, jobId),
 		readFile(join(directory, "context.md"), "utf8"),
 	]);
-	const task = JSON.parse(taskSource) as Task;
-
-	if (task.job_id !== jobId) {
-		throw new Error(`Job id mismatch: expected ${jobId}, found ${task.job_id}`);
-	}
 
 	return {
 		jobId,
@@ -433,7 +609,7 @@ export function isLiveJob(job: ActiveJob | undefined): job is ActiveJob {
 }
 
 /** Every started run under `.kpi/runs`, newest progress document first. */
-async function stateCandidates(cwd: string): Promise<(ActiveJob & { modifiedAt: number })[]> {
+export async function readJobs(cwd: string): Promise<(ActiveJob & { modifiedAt: number })[]> {
 	const runsDirectory = join(cwd, CONFIG_DIR_NAME, "runs");
 	let entries: Dirent[];
 	try {
@@ -457,7 +633,7 @@ async function stateCandidates(cwd: string): Promise<(ActiveJob & { modifiedAt: 
 }
 
 export async function readActiveJob(cwd: string): Promise<ActiveJob | undefined> {
-	return (await stateCandidates(cwd))[0];
+	return (await readJobs(cwd))[0];
 }
 
 /**
@@ -470,6 +646,6 @@ export async function readActiveJob(cwd: string): Promise<ActiveJob | undefined>
  * it were live is exactly how a dead `UNSAFE` job haunted a whole session.
  */
 export async function readLiveJob(cwd: string): Promise<ActiveJob | undefined> {
-	const newest = (await stateCandidates(cwd))[0];
+	const newest = (await readJobs(cwd))[0];
 	return isLiveJob(newest) ? newest : undefined;
 }

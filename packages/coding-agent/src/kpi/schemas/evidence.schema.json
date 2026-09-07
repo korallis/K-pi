@@ -1,43 +1,325 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "evidence.schema.json",
-  "title": "K-pi evidence",
+  "title": "K-pi host-owned verification evidence",
   "type": "object",
-  "required": ["head", "commands", "ac_results"],
+  "required": [
+    "version",
+    "run_id",
+    "job_id",
+    "intent_hash",
+    "tree_hash",
+    "verifier_id",
+    "cwd",
+    "head",
+    "started_at",
+    "completed_at",
+    "record_path",
+    "commands",
+    "ac_results",
+    "passed",
+    "unverified_reasons"
+  ],
   "properties": {
+    "version": {
+      "const": 1
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "job_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "intent_hash": {
+      "type": "string",
+      "minLength": 1
+    },
+    "tree_hash": {
+      "type": "string",
+      "minLength": 1
+    },
+    "verifier_id": {
+      "const": "host:verification"
+    },
+    "cwd": {
+      "type": "string",
+      "minLength": 1
+    },
     "head": {
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "started_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "completed_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "record_path": {
       "type": "string",
       "minLength": 1
     },
     "commands": {
       "type": "array",
-      "items": { "$ref": "#/$defs/commandRecord" }
+      "items": {
+        "$ref": "#/$defs/commandReceipt"
+      }
     },
     "ac_results": {
       "type": "array",
-      "items": { "$ref": "#/$defs/acResult" }
+      "items": {
+        "$ref": "#/$defs/acResult"
+      }
+    },
+    "passed": {
+      "type": "boolean"
+    },
+    "unverified_reasons": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
     }
   },
+  "additionalProperties": false,
   "$defs": {
-    "commandRecord": {
+    "outputArtifact": {
       "type": "object",
-      "required": ["cmd", "exit"],
+      "required": [
+        "path",
+        "sha256",
+        "bytes",
+        "excerpt"
+      ],
       "properties": {
-        "cmd": { "type": "string", "minLength": 1 },
-        "exit": { "type": "integer" },
-        "excerpt": { "type": "string" }
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "excerpt": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "commandReceipt": {
+      "type": "object",
+      "required": [
+        "run_id",
+        "job_id",
+        "intent_hash",
+        "tree_hash",
+        "verifier_id",
+        "cwd",
+        "command_id",
+        "source",
+        "cmd",
+        "expected_exit",
+        "stdout_includes",
+        "receipt_id",
+        "started_at",
+        "completed_at",
+        "status",
+        "exit",
+        "signal",
+        "error",
+        "stdout",
+        "stderr",
+        "expectation",
+        "passed"
+      ],
+      "properties": {
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "job_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "intent_hash": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tree_hash": {
+          "type": "string",
+          "minLength": 1
+        },
+        "verifier_id": {
+          "const": "host:verification"
+        },
+        "cwd": {
+          "type": "string",
+          "minLength": 1
+        },
+        "command_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source": {
+          "enum": [
+            "quality_gate",
+            "acceptance"
+          ]
+        },
+        "criterion_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "cmd": {
+          "type": "string",
+          "minLength": 1
+        },
+        "expected_exit": {
+          "type": "integer"
+        },
+        "stdout_includes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "receipt_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "started_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "completed_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "status": {
+          "enum": [
+            "exited",
+            "signaled",
+            "cancelled",
+            "launch_failed"
+          ]
+        },
+        "exit": {
+          "oneOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "signal": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "error": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "stdout": {
+          "$ref": "#/$defs/outputArtifact"
+        },
+        "stderr": {
+          "$ref": "#/$defs/outputArtifact"
+        },
+        "expectation": {
+          "type": "object",
+          "required": [
+            "exit_matches",
+            "stdout_matches"
+          ],
+          "properties": {
+            "exit_matches": {
+              "type": "boolean"
+            },
+            "stdout_matches": {
+              "type": "array",
+              "items": {
+                "type": "boolean"
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        "passed": {
+          "type": "boolean"
+        }
       },
       "additionalProperties": false
     },
     "acResult": {
       "type": "object",
-      "required": ["id", "passed"],
+      "required": [
+        "id",
+        "passed",
+        "status",
+        "receipt_ids",
+        "reasons"
+      ],
       "properties": {
-        "id": { "type": "string", "minLength": 1 },
-        "passed": { "type": "boolean" }
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "passed": {
+          "type": "boolean"
+        },
+        "status": {
+          "enum": [
+            "unverified",
+            "passed",
+            "failed",
+            "blocked"
+          ]
+        },
+        "receipt_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "reasons": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
       },
       "additionalProperties": false
     }
-  },
-  "additionalProperties": false
+  }
 }

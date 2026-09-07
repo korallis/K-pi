@@ -20,7 +20,7 @@ function copyToX11Clipboard(options: NativeClipboardExecOptions): void {
 const MAX_OSC52_ENCODED_LENGTH = 100_000;
 
 function isRemoteSession(env: NodeJS.ProcessEnv = process.env): boolean {
-	return Boolean(env.SSH_CONNECTION || env.SSH_CLIENT || env.MOSH_CONNECTION);
+	return Boolean(env.SSH_CONNECTION || env.SSH_CLIENT || env.SSH_TTY || env.MOSH_CONNECTION);
 }
 
 function emitOsc52(text: string): boolean {
@@ -71,6 +71,12 @@ export async function readClipboardText(): Promise<string | null> {
 }
 
 export async function copyToClipboard(text: string): Promise<void> {
+	// Remote copies belong to the client terminal. Do not also put auth URLs or
+	// other copied text on the server's desktop clipboard.
+	if (isRemoteSession()) {
+		if (!emitOsc52(text)) throw new Error("Failed to copy to clipboard");
+		return;
+	}
 	let copied = false;
 
 	const p = platform();
@@ -94,8 +100,7 @@ export async function copyToClipboard(text: string): Promise<void> {
 		// Fall through to platform-specific clipboard tools.
 	}
 
-	const remote = isRemoteSession();
-	if (copied && !remote) {
+	if (copied) {
 		return;
 	}
 
@@ -164,7 +169,7 @@ export async function copyToClipboard(text: string): Promise<void> {
 		}
 	}
 
-	if (remote || !copied) {
+	if (!copied) {
 		const osc52Copied = emitOsc52(text);
 		copied = copied || osc52Copied;
 	}

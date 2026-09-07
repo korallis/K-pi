@@ -38,7 +38,6 @@ import {
 	runLoop,
 	writeStopMarker,
 } from "./gated-loop.ts";
-import { loadNamedGraph } from "./graph/engine.ts";
 import { type GraphDefinition, isJsonObject } from "./graph/schema.ts";
 import type { TransientReason } from "./graph/stop.ts";
 import {
@@ -49,6 +48,7 @@ import {
 	type LoopRecovery,
 	type RunState,
 	readActiveJob,
+	readJobs,
 	readLiveJob,
 } from "./run-store.ts";
 import { isRoutingMode, type RoutingMode, routingState } from "./settings.ts";
@@ -75,7 +75,7 @@ function booleanValue(value: JsonValue | undefined): boolean | undefined {
 	return typeof value === "boolean" ? value : undefined;
 }
 
-const TRANSIENT_REASONS: Record<TransientReason, true> = { http: true, timeout: true, transport: true };
+const TRANSIENT_REASONS: Record<TransientReason, true> = { http: true, timeout: true, transport: true, resource: true };
 
 /** The backoff row state.json carries while a node waits, or nothing. */
 function retryValue(value: JsonValue | undefined): BoardModel["retry"] {
@@ -104,18 +104,22 @@ function recoveryValue(value: JsonValue | undefined): LoopRecovery | undefined {
 }
 
 /**
- * Paused human node: graph interrupted and/or a pending operator question.
- * Never derived from a persisted APPROVAL stop status.
+ * Human attention is authoritative NEEDS_HUMAN or a live attended gate.
+ * Automatic interruptions and stale questions after resume/stop are not gates.
  */
 export function isPausedHuman(state: RunState): boolean {
-	if (state.graph_status === "interrupted") return true;
+	if (state.status === "NEEDS_HUMAN") return true;
+	if (state.status !== "RUNNING" || state.graph_status !== "interrupted") return false;
 	const question = state.pending_question;
 	if (typeof question === "string" && question.trim().length > 0) return true;
 	const pending = state.pending_human ?? state.pendingHuman;
-	if (pending !== null && typeof pending === "object" && !Array.isArray(pending)) {
-		return true;
-	}
-	return false;
+	return (
+		pending !== null &&
+		typeof pending === "object" &&
+		!Array.isArray(pending) &&
+		typeof pending.nodeId === "string" &&
+		pending.nodeId.trim().length > 0
+	);
 }
 
 export function displayStop(state: RunState): StopDisplay {
@@ -604,11 +608,20 @@ function releaseLive(controller: AbortController): void {
 }
 
 /** The graph a job's node sessions were named by: its thread keys are the session directories. */
-async function jobGraph(cwd: string, state: RunState): Promise<GraphDefinition> {
-	return loadNamedGraph(
-		cwd,
-		stringValue(state.mode, "gated") === "autopilot" ? "coding-loop.auto" : "coding-loop.gated",
-	);
+async function jobGraph(job: ActiveJob): Promise<GraphDefinition | undefined> {
+	try {
+		const directory = join(job.directory, "graph");
+		const name = (await readdir(directory))
+			.filter((entry) => /^checkpoint-\d+\.json$/u.test(entry))
+			.sort()
+			.at(-1);
+		if (name === undefined) return undefined;
+		const checkpoint = JSON.parse(await readFile(join(directory, name), "utf8")) as { definition?: GraphDefinition };
+		return checkpoint.definition;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+		throw error;
+	}
 }
 
 /** One session message as the transcript shows it; entries the view has no row for are skipped. */
@@ -735,12 +748,10 @@ function commandCentreSources(
 	dependencies: ControlPlaneDependencies,
 ): CommandCentreSources {
 	const now = dependencies.now ?? Date.now;
-	let graph: Promise<GraphDefinition> | undefined;
 	const threadKeyFor = async (stage: number): Promise<string> => {
 		const key = BOARD_STAGES[stage]?.key ?? String(stage);
 		const nodeId = reader.last()?.stages[key]?.node ?? key;
-		graph ??= jobGraph(ctx.cwd, job.state);
-		const node = (await graph).nodes.find((candidate) => candidate.id === nodeId);
+		const node = (await jobGraph(job))?.nodes.find((candidate) => candidate.id === nodeId);
 		return node?.type === "agent" ? (node.context.threadKey ?? node.id) : nodeId;
 	};
 	return {
@@ -751,9 +762,33 @@ function commandCentreSources(
 		// input line ends it, and the board must then read STOP STOPPED. Only a
 		// different newest job (or a deleted run) is "no active job".
 		readModel: async () => {
-			const current = await readActiveJob(ctx.cwd);
-			if (current === undefined || current.jobId !== job.jobId) return undefined;
+			const current = (await readJobs(ctx.cwd)).find((candidate) => candidate.jobId === job.jobId);
+			if (current === undefined) return undefined;
 			return buildBoardModel(ctx.cwd, { now, activity: reader, surface: "overlay", job: current });
+		},
+		fleet: {
+			read: async () => {
+				const rows = await Promise.all(
+					(await readJobs(ctx.cwd)).map(async (candidate) => {
+						const model = await buildBoardModel(ctx.cwd, { now, surface: "overlay", job: candidate });
+						return model === undefined
+							? undefined
+							: {
+									jobId: candidate.jobId,
+									model,
+									...(typeof candidate.state.goal === "string" ? { title: candidate.state.goal } : {}),
+								};
+					}),
+				);
+				return rows.filter((row) => row !== undefined);
+			},
+			open: async (jobId) => {
+				try {
+					await showStatus(ctx, dependencies, jobId);
+				} catch (error) {
+					ctx.ui.notify(`Cannot open job ${jobId}: ${String(error)}`, "error");
+				}
+			},
 		},
 		activity: () => reader.last(),
 		readNodeDetail: async (stage) => {
@@ -769,7 +804,7 @@ function commandCentreSources(
 			const usage = formatUsage(snapshot.remainingPercent, snapshot.slotKind);
 			return snapshot.route === undefined ? "—" : `${snapshot.route}${usage === undefined ? "" : ` ${usage}`}`;
 		},
-		stop: () => stopJob(ctx, dependencies),
+		stop: () => stopJob(ctx, dependencies, job.jobId),
 		verify: async () => {
 			const report = await inspectChain(job.eventsPath);
 			return report.ok
@@ -787,8 +822,13 @@ function commandCentreSources(
 	};
 }
 
-async function showStatus(ctx: ExtensionCommandContext, dependencies: ControlPlaneDependencies): Promise<void> {
-	const job = await readLiveJob(ctx.cwd);
+async function showStatus(
+	ctx: ExtensionCommandContext,
+	dependencies: ControlPlaneDependencies,
+	selectedJobId?: string,
+): Promise<void> {
+	const jobs = await readJobs(ctx.cwd);
+	const job = selectedJobId === undefined ? jobs[0] : jobs.find((candidate) => candidate.jobId === selectedJobId);
 	if (job === undefined) {
 		ctx.ui.setWidget("kpi", undefined);
 		// The last run is still worth a line: it says why the board is empty.
@@ -808,6 +848,7 @@ async function showStatus(ctx: ExtensionCommandContext, dependencies: ControlPla
 	const overlay = ctx.mode === "tui" && ctx.hasUI;
 	const reader = activityReaderFor(job.eventsPath);
 	const model = await buildBoardModel(ctx.cwd, {
+		job,
 		now: dependencies.now,
 		activity: reader,
 		...(overlay ? { surface: "overlay" as const } : {}),
@@ -847,8 +888,12 @@ async function showStatus(ctx: ExtensionCommandContext, dependencies: ControlPla
  * at once and records its own STOPPED terminal; otherwise the control plane
  * records it here. Either way the job is STOPPED and resumes with `/kpi <id>`.
  */
-async function stopJob(ctx: ExtensionCommandContext, dependencies: ControlPlaneDependencies): Promise<void> {
-	const handle = live;
+async function stopJob(
+	ctx: ExtensionCommandContext,
+	dependencies: ControlPlaneDependencies,
+	selectedJobId?: string,
+): Promise<void> {
+	const handle = selectedJobId === undefined || live?.jobId === selectedJobId ? live : undefined;
 	if (handle !== undefined) {
 		// The marker goes into a run that exists; a loop still preparing its
 		// contract sees the abort before it creates one and creates nothing.
@@ -866,8 +911,11 @@ async function stopJob(ctx: ExtensionCommandContext, dependencies: ControlPlaneD
 		);
 		return;
 	}
-	const job = await readLiveJob(ctx.cwd);
-	if (job === undefined) {
+	const job =
+		selectedJobId === undefined
+			? await readLiveJob(ctx.cwd)
+			: (await readJobs(ctx.cwd)).find((candidate) => candidate.jobId === selectedJobId);
+	if (job === undefined || job.state.status === "DONE" || job.state.status === "STOPPED") {
 		ctx.ui.notify("no active job", "info");
 		return;
 	}

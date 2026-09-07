@@ -5,9 +5,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import type { Context, Model } from "@earendil-works/pi-ai";
-import { openAICompletionsApi } from "../packages/ai/src/api/openai-completions.lazy.ts";
-import type { ExtensionAPI, ProviderModelConfig } from "../packages/coding-agent/src/core/extensions/types.ts";
+import { type AuthResult, type Context, InMemoryCredentialStore, type Model } from "@earendil-works/pi-ai";
+import type {
+	BeforeProviderAuthEvent,
+	ExtensionAPI,
+	ProviderModelConfig,
+} from "../packages/coding-agent/src/core/extensions/types.ts";
+import { ModelRegistry } from "../packages/coding-agent/src/core/model-registry.ts";
+import { ModelRuntime } from "../packages/coding-agent/src/core/model-runtime.ts";
 import { registerAccounts } from "../packages/coding-agent/src/kpi/extensions/accounts/index.ts";
 import { AccountsStore } from "../packages/coding-agent/src/kpi/extensions/accounts/store.ts";
 import {
@@ -46,7 +51,7 @@ async function localServer(modelId: string): Promise<Stub> {
 			});
 			if (path.endsWith("/models")) {
 				response.writeHead(200, { "content-type": "application/json" });
-				response.end(JSON.stringify({ data: [{ id: modelId }] }));
+				response.end(JSON.stringify({ data: [{ id: modelId, contextWindow: 8192, maxTokens: 1024 }] }));
 				return;
 			}
 			if (path.endsWith("/chat/completions")) {
@@ -80,7 +85,7 @@ async function localServer(modelId: string): Promise<Stub> {
 	};
 }
 
-type HeaderHook = (event: { headers: Record<string, string | null> }, context: unknown) => Promise<void>;
+type AuthHook = (event: BeforeProviderAuthEvent, context: unknown) => Promise<void>;
 
 /** A hook context carrying the same surface a real session provides. */
 function hookContext(model: unknown, directory: string): unknown {
@@ -89,7 +94,8 @@ function hookContext(model: unknown, directory: string): unknown {
 
 interface Harness {
 	models: ProviderModelConfig[];
-	headerHook: HeaderHook;
+	runtime: ModelRuntime;
+	auth: (model: Model<"openai-completions">) => Promise<AuthResult | false | undefined>;
 	registered: Map<string, { baseUrl?: string; apiKey?: string; models?: ProviderModelConfig[] }>;
 }
 
@@ -118,17 +124,24 @@ async function harness(
 		}
 	}
 
-	let headerHook: HeaderHook | undefined;
+	let authHook: AuthHook | undefined;
+	const runtime = await ModelRuntime.create({
+		credentials: new InMemoryCredentialStore(),
+		modelsPath: null,
+		refreshOnCreate: false,
+	});
+	const registry = new ModelRegistry(runtime);
 	const registered = new Map<string, { baseUrl?: string; apiKey?: string; models?: ProviderModelConfig[] }>();
 	const pi = {
 		on(event: string, handler: unknown) {
-			if (event === "before_provider_headers") {
-				headerHook = handler as HeaderHook;
+			if (event === "before_provider_auth") {
+				authHook = handler as AuthHook;
 			}
 		},
 		registerCommand() {},
 		registerProvider(name: string, config: { baseUrl?: string; apiKey?: string; models?: ProviderModelConfig[] }) {
 			registered.set(name, config);
+			registry.registerProvider(name, config);
 		},
 	} as unknown as ExtensionAPI;
 
@@ -155,8 +168,18 @@ async function harness(
 	};
 	registerLocalProviders(pi, dependencies);
 	const models = await refreshLocalModels(poolId, { allowNetwork: true }, dependencies);
-	assert.ok(headerHook !== undefined, "the accounts extension registers the header hook");
-	return { models, headerHook, registered };
+	const auth = async (model: Model<"openai-completions">, checkOnly = false) => {
+		const event: BeforeProviderAuthEvent = {
+			type: "before_provider_auth",
+			model,
+			checkOnly,
+			requestId: "local-inference",
+		};
+		await authHook!(event, { ...(hookContext(model, directory) as object), modelRegistry: registry });
+		return event.auth;
+	};
+	runtime.setRequestAuthResolver((model, checkOnly) => auth(model as Model<"openai-completions">, checkOnly));
+	return { models, runtime, auth, registered };
 }
 
 function localModelFor(
@@ -184,8 +207,7 @@ function promptContext(): Context {
 /** Executes the live request path and returns the assistant text. */
 async function runInference(
 	model: Model<"openai-completions">,
-	headers: Record<string, string | null>,
-	apiKey: string,
+	runtime: ModelRuntime,
 ): Promise<{ text: string; urls: string[] }> {
 	const urls: string[] = [];
 	const realFetch = globalThis.fetch;
@@ -194,7 +216,7 @@ async function runInference(
 		return realFetch(input, init);
 	}) as typeof fetch;
 	try {
-		const stream = openAICompletionsApi().stream(model, promptContext(), { apiKey, headers });
+		const stream = runtime.streamSimple(model, promptContext());
 		const message = await stream.result();
 		const text = message.content.flatMap((block) => (block.type === "text" ? [block.text] : [])).join("");
 		return { text, urls };
@@ -227,15 +249,9 @@ test("each local slot's own origin carries its own inference requests", async ()
 			"no dummy provider-wide local origin is ever registered",
 		);
 
-		// Whatever the product registered is what a session would resolve.
-		const registeredKey = subject.registered.get("local-openai")?.apiKey ?? "";
-		assert.ok(registeredKey.length > 0, "the client has a constructible key without a credential claim");
-
 		for (const entry of subject.models) {
 			const model = localModelFor(entry, "local-openai", subject.registered.get("local-openai"));
-			const headers: Record<string, string | null> = {};
-			await subject.headerHook({ headers }, hookContext(model, directory));
-			const { text, urls } = await runInference(model, headers, registeredKey);
+			const { text, urls } = await runInference(model, subject.runtime);
 
 			assert.equal(text, `served by ${entry.id}`, `${entry.id} was answered by its own server`);
 			const expected = entry.id === "first-model" ? first : second;
@@ -296,9 +312,7 @@ test("a stored catalog keeps serving its own origin, and an unconfigured origin 
 		);
 
 		const model = localModelFor(offline[0], "lmstudio", subject.registered.get("lmstudio"));
-		const headers: Record<string, string | null> = {};
-		await subject.headerHook({ headers }, hookContext(model, directory));
-		const { urls } = await runInference(model, headers, subject.registered.get("lmstudio")?.apiKey ?? "");
+		const { urls } = await runInference(model, subject.runtime);
 		assert.ok(
 			urls.every((url) => url.startsWith(server.origin)),
 			"the restored model still requests its own server",
@@ -306,20 +320,13 @@ test("a stored catalog keeps serving its own origin, and an unconfigured origin 
 
 		// A model naming an origin no slot owns gets no credential: the hook has no
 		// slot to speak for, so it must not attach one belonging to another server.
-		const foreign: Record<string, string | null> = {};
-		await subject.headerHook(
-			{ headers: foreign },
-			hookContext({ ...model, baseUrl: "http://127.0.0.1:65535/v1" }, directory),
-		);
-		assert.equal(foreign.authorization, undefined, "an unconfigured origin is never handed a secret");
+		assert.equal(await subject.auth({ ...model, baseUrl: "http://127.0.0.1:65535/v1" }), false);
 
 		// And a cloud model in the same session is untouched by local wiring.
-		const cloud: Record<string, string | null> = {};
-		await subject.headerHook(
-			{ headers: cloud },
-			hookContext({ ...model, provider: "anthropic", baseUrl: "https://api.anthropic.com" }, directory),
+		assert.equal(
+			await subject.auth({ ...model, provider: "anthropic", baseUrl: "https://api.anthropic.com" }),
+			undefined,
 		);
-		assert.equal(cloud.authorization, undefined, "no local secret leaks onto a cloud provider");
 	} finally {
 		await server.close();
 		await rm(directory, { recursive: true, force: true });

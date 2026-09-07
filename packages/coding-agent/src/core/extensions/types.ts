@@ -19,6 +19,7 @@ import type {
 	Api,
 	AssistantMessageEvent,
 	AssistantMessageEventStream,
+	AuthResult,
 	ConstrainedSamplingConfig,
 	Context,
 	ImageContent,
@@ -706,6 +707,16 @@ export interface BeforeProviderRequestEvent {
 	payload: unknown;
 }
 
+/** Resolve request-scoped auth before native provider preparation. Errors fail closed. */
+export interface BeforeProviderAuthEvent {
+	type: "before_provider_auth";
+	model: Model<Api>;
+	requestId?: string;
+	checkOnly: boolean;
+	/** Undefined delegates to native auth; false denies this resource. */
+	auth?: AuthResult | false;
+}
+
 /**
  * Fired after request headers are assembled, before the provider HTTP call.
  * Handlers mutate `headers` in place (e.g. to inject tracing/session headers);
@@ -1119,6 +1130,7 @@ export type ExtensionEvent =
 	| SessionEvent
 	| ContextEvent
 	| BeforeProviderRequestEvent
+	| BeforeProviderAuthEvent
 	| BeforeProviderHeadersEvent
 	| AfterProviderResponseEvent
 	| BeforeAgentStartEvent
@@ -1148,6 +1160,9 @@ export type ExtensionEvent =
 
 export interface ContextEventResult {
 	messages?: AgentMessage[];
+	/** Fail closed before inference when mandatory context cannot be supplied. */
+	block?: boolean;
+	reason?: string;
 }
 
 export type BeforeProviderRequestEventResult = unknown;
@@ -1307,6 +1322,7 @@ export interface ExtensionAPI {
 		event: "before_provider_request",
 		handler: ExtensionHandler<BeforeProviderRequestEvent, BeforeProviderRequestEventResult>,
 	): void;
+	on(event: "before_provider_auth", handler: ExtensionHandler<BeforeProviderAuthEvent>): void;
 	on(event: "before_provider_headers", handler: ExtensionHandler<BeforeProviderHeadersEvent>): void;
 	on(event: "after_provider_response", handler: ExtensionHandler<AfterProviderResponseEvent>): void;
 	on(event: "before_agent_start", handler: ExtensionHandler<BeforeAgentStartEvent, BeforeAgentStartEventResult>): void;

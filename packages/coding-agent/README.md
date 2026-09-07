@@ -2,12 +2,25 @@
 
 > **This is K-π source, not the Pi distribution.** This workspace is the upstream Pi coding-agent package, forked at `v0.84.4` (commit `b79e4cc834970cca69daebffab7df1da7d1e52c4`) and maintained inside K-π. It builds the `kpi` / `k-pi` executable, uses `.kpi/` and `~/.kpi/agent/` for config, and compiles K-π's control plane (`src/kpi/`) in as a built-in extension.
 >
-> - **Do not `npm install` this package.** It is not published under this name. The internal package name is kept upstream-compatible only so upstream releases merge cleanly; nothing resolves it from a registry.
+> - **Install the published executable as `@korallis/k-pi`.** This internal workspace name is not published; it is kept upstream-compatible so upstream releases merge cleanly.
 > - **Build from the repository root:** `npm install && npm run build`, then `node packages/coding-agent/dist/bundle/cli.js` or `npm link --workspace @earendil-works/pi-coding-agent` and run `kpi`.
 > - **Product documentation is the repository root:** [`README.md`](../../README.md), [`AGENTS.md`](../../AGENTS.md), [`docs/`](../../docs), and the fork policy in [`UPSTREAM.md`](../../UPSTREAM.md).
 > - **Issues belong to this fork**, not to the Pi maintainers. Attribution and licence: [`NOTICE`](../../NOTICE), [`LICENSE`](../../LICENSE).
 >
 > Everything below is upstream's reference documentation for the harness base, kept close to upstream to keep merges cheap. Where it says `pi`, read `kpi`; where it says `~/.pi/agent` or `.pi/`, read `~/.kpi/agent` or `.kpi/`; the global-install and package-publishing instructions do not apply to K-π.
+
+## Cursor subscription testing
+
+Install the testing channel with `npm install -g @korallis/k-pi@next`, then run
+`kpi` and `/accounts login cursor home`. Approve the browser login, run
+`kpi update --models` from your shell, and select a discovered Cursor model.
+
+K-π uses Cursor's CLI protocol directly, with native tools and permission hooks.
+It does not install OMP or provision Cursor Cloud Agents. Model limits and
+subscription prices not reported by Cursor remain unknown; native `models.json`
+model overrides may supply explicit operator metadata. Protocol compatibility
+and seat eligibility can change. Release-candidate fixture proof is not a claim
+that your subscription has passed live verification.
 
 ---
 
@@ -61,7 +74,7 @@ I regularly publish my own `pi-mono` work sessions here:
 
 ## Quick Start
 
-K-π is built from source, not installed from a registry:
+Install the published executable with `npm install -g @korallis/k-pi`, or build from source:
 
 ```bash
 npm install          # repository root

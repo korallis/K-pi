@@ -13,6 +13,7 @@ import {
 	ZAI_PERSONAL_USE_NOTE,
 } from "../packages/coding-agent/src/kpi/extensions/accounts/index.ts";
 import { AccountsStore } from "../packages/coding-agent/src/kpi/extensions/accounts/store.ts";
+import { invokeAccountAuth } from "./account-auth-harness.ts";
 
 const EXPECTED_ANTHROPIC_WARNING = `Claude Pro/Max in this harness uses Anthropic’s subscription OAuth, same as Pi and Atomic.
 
@@ -137,10 +138,6 @@ test("Anthropic warning precedes the official OAuth window", async () => {
 		registerCommand(name: string, options: { handler: CommandHandler }) {
 			commands.set(name, options.handler);
 		},
-		async exec(command: string, args: string[]) {
-			sequence.push(`open:${command}:${args.at(-1)}`);
-			return { code: 0, stdout: "", stderr: "" };
-		},
 	};
 	registerAccounts(pi as unknown as Parameters<typeof registerAccounts>[0], {
 		store,
@@ -155,16 +152,15 @@ test("Anthropic warning precedes the official OAuth window", async () => {
 			getProvider() {
 				return { auth: { oauth: {} } };
 			},
-			async login(_providerId: string, _method: string, interaction: ProviderAuthInteraction) {
+			async login() {
 				sequence.push("oauth");
-				interaction.notify({
-					type: "auth_url",
-					url: "https://example.test/oauth",
-				});
 				return oauthCredential("home");
 			},
 		},
 		ui: {
+			onTerminalInput() {
+				return () => {};
+			},
 			async confirm() {
 				sequence.push("confirm");
 				return true;
@@ -176,7 +172,6 @@ test("Anthropic warning precedes the official OAuth window", async () => {
 		await commands.get("accounts")!("login anthropic home", context);
 
 		assert.deepEqual(sequence.slice(0, 2), ["confirm", "oauth"]);
-		assert.match(sequence[2] ?? "", /^open:.*:https:\/\/example\.test\/oauth$/u);
 		assert.equal((await store.read()).pools.anthropic?.slots[0]?.id, "home");
 	} finally {
 		await rm(directory, { recursive: true, force: true });
@@ -253,6 +248,15 @@ function anthropicModel(id = "claude-opus-4-6") {
 	return { provider: "anthropic", id, name: id };
 }
 
+async function requestAuth(
+	subject: RoutingHarness,
+	context: Record<string, unknown>,
+	requestId: string,
+	headers: Record<string, string | null>,
+): Promise<unknown> {
+	return subject.hooks.get("before_provider_auth")!({ type: "before_provider_auth", headers, requestId }, context);
+}
+
 /** Captures the registered provider hooks, exactly as the harness calls them. */
 async function routingHarness(readerPercent: number | undefined = 42, setModelResult = true): Promise<RoutingHarness> {
 	const directory = await mkdtemp(join(tmpdir(), "k-pi-routing-"));
@@ -265,7 +269,12 @@ async function routingHarness(readerPercent: number | undefined = 42, setModelRe
 	const notifications: string[] = [];
 	const pi = {
 		on(event: string, handler: ProviderHook) {
-			hooks.set(event, handler);
+			hooks.set(
+				event,
+				event === "before_provider_auth"
+					? (request, context) => invokeAccountAuth(handler, request, context)
+					: handler,
+			);
 		},
 		registerCommand(name: string, options: { handler: CommandHandler }) {
 			commands.set(name, options.handler);
@@ -384,8 +393,8 @@ test("the request-header hook reads cached usage and never refreshes on the hot 
 		await subject.command("login cursor default", subject.context);
 		const headers: Record<string, string> = {};
 
-		await subject.hooks.get("before_provider_headers")!(
-			{ type: "before_provider_headers", headers, requestId: "request-1" },
+		await subject.hooks.get("before_provider_auth")!(
+			{ type: "before_provider_auth", headers, requestId: "request-1" },
 			subject.hookContext({ provider: "cursor", id: "cursor-fast" }),
 		);
 
@@ -415,10 +424,7 @@ test("the widget follows the route from unknown, to selected, to parsed usage, t
 		assert.doesNotMatch(initial, /ROUTE/u, "no route before a slot is selected");
 
 		// 2. The header hook selects a slot: the route appears.
-		await subject.hooks.get("before_provider_headers")!(
-			{ type: "before_provider_headers", headers: {}, requestId: "request-2" },
-			subject.hookContext(),
-		);
+		await requestAuth(subject, subject.hookContext(), "request-2", {});
 		const routed = subject.status.at(-1) ?? "";
 		assert.match(routed, /ROUTE {3}anthropic\/claude-opus-4-6 {2}via home/u);
 		assert.match(routed, /home \?%/u, "usage is still unknown until a response states it");
@@ -457,10 +463,7 @@ test("the widget follows the route from unknown, to selected, to parsed usage, t
 		// counts, so the real zero is published against the slot that just ran.
 		// Attribution is per request: this response may not be charged to the slot
 		// the previous request used.
-		await subject.hooks.get("before_provider_headers")!(
-			{ type: "before_provider_headers", headers: {}, requestId: "request-2b" },
-			subject.hookContext(),
-		);
+		await requestAuth(subject, subject.hookContext(), "request-2b", {});
 		await subject.hooks.get("after_provider_response")!(
 			{
 				type: "after_provider_response",
@@ -492,10 +495,7 @@ test("a 98%-used Codex plan hands the same model to its sibling before the next 
 		await subject.command("login openai-codex plan-1", subject.context);
 		await subject.command("login openai-codex plan-2", subject.context);
 		const model = { provider: "openai-codex", id: "gpt-5.6-sol", name: "gpt-5.6-sol" };
-		await subject.hooks.get("before_provider_headers")!(
-			{ type: "before_provider_headers", headers: {}, requestId: "codex-near-limit" },
-			subject.hookContext(model, [model]),
-		);
+		await requestAuth(subject, subject.hookContext(model, [model]), "codex-near-limit", {});
 		await subject.hooks.get("after_provider_response")!(
 			{
 				type: "after_provider_response",
@@ -511,10 +511,7 @@ test("a 98%-used Codex plan hands the same model to its sibling before the next 
 		);
 
 		const nextHeaders: Record<string, string> = {};
-		await subject.hooks.get("before_provider_headers")!(
-			{ type: "before_provider_headers", headers: nextHeaders, requestId: "codex-sibling" },
-			subject.hookContext(model, [model]),
-		);
+		await requestAuth(subject, subject.hookContext(model, [model]), "codex-sibling", nextHeaders);
 		assert.equal(nextHeaders.authorization, "Bearer access-plan-2");
 		assert.deepEqual(subject.setModelCalls, [], "same-provider handoff preserves the exact GPT model");
 	} finally {
@@ -527,10 +524,7 @@ test("a classified 402 marks the moved sibling route for an automatic retry", as
 	try {
 		await subject.command("login anthropic home", subject.context);
 		await subject.command("login anthropic work", subject.context);
-		await subject.hooks.get("before_provider_headers")!(
-			{ type: "before_provider_headers", headers: {}, requestId: "payment-home" },
-			subject.hookContext(anthropicModel(), [anthropicModel()]),
-		);
+		await requestAuth(subject, subject.hookContext(anthropicModel(), [anthropicModel()]), "payment-home", {});
 		await subject.hooks.get("after_provider_response")!(
 			{ type: "after_provider_response", requestId: "payment-home", status: 402, headers: {} },
 			subject.hookContext(anthropicModel(), [anthropicModel()]),
@@ -563,10 +557,7 @@ test("quota-shaped 400 assistant errors exhaust sibling plans before changing pr
 			errorMessage: '400 {"error":{"message":"You are out of extra usage"}}',
 		};
 
-		await subject.hooks.get("before_provider_headers")!(
-			{ type: "before_provider_headers", headers: {}, requestId: "quota-home" },
-			subject.hookContext(anthropicModel(), available),
-		);
+		await requestAuth(subject, subject.hookContext(anthropicModel(), available), "quota-home", {});
 		await subject.hooks.get("after_provider_response")!(
 			{ type: "after_provider_response", requestId: "quota-home", status: 400, headers: {} },
 			subject.hookContext(anthropicModel(), available),
@@ -578,10 +569,7 @@ test("quota-shaped 400 assistant errors exhaust sibling plans before changing pr
 		assert.deepEqual(subject.setModelCalls, [], "the same GPT/Claude model survives sibling-plan handoff");
 		assert.equal(siblingRetry?.message?.diagnostics?.at(-1)?.type, "kpi_account_failover");
 
-		await subject.hooks.get("before_provider_headers")!(
-			{ type: "before_provider_headers", headers: {}, requestId: "quota-work" },
-			subject.hookContext(anthropicModel(), available),
-		);
+		await requestAuth(subject, subject.hookContext(anthropicModel(), available), "quota-work", {});
 		await subject.hooks.get("after_provider_response")!(
 			{ type: "after_provider_response", requestId: "quota-work", status: 400, headers: {} },
 			subject.hookContext(anthropicModel(), available),
@@ -604,10 +592,7 @@ test("a cross-family failover republishes the widget with the mapped model and p
 		await subject.command("login xai grok", subject.context);
 
 		const available = [anthropicModel(), { provider: "xai", id: "grok-5", name: "grok-5" }];
-		await subject.hooks.get("before_provider_headers")!(
-			{ type: "before_provider_headers", headers: {}, requestId: "request-3" },
-			subject.hookContext(anthropicModel(), available),
-		);
+		await requestAuth(subject, subject.hookContext(anthropicModel(), available), "request-3", {});
 		assert.match(subject.status.at(-1) ?? "", /ROUTE {3}anthropic\/claude-opus-4-6 {2}via home/u);
 
 		await subject.hooks.get("after_provider_response")!(
@@ -635,10 +620,7 @@ test("login and logout republish the widget", async () => {
 		await subject.command("login anthropic home", subject.context);
 		assert.match(subject.status.at(-1) ?? "", /home \?%/u, "login publishes the new slot");
 
-		await subject.hooks.get("before_provider_headers")!(
-			{ type: "before_provider_headers", headers: {}, requestId: "request-4" },
-			subject.hookContext(),
-		);
+		await requestAuth(subject, subject.hookContext(), "request-4", {});
 		assert.match(subject.status.at(-1) ?? "", /ROUTE {3}anthropic\/claude-opus-4-6 {2}via home/u);
 
 		await subject.command("logout anthropic/home", subject.context);
@@ -654,14 +636,11 @@ test("M-05 through the live hooks: an exhausted slot is never selected in 100 re
 		await subject.command("login anthropic home", subject.context);
 		await subject.command("login anthropic work", subject.context);
 
-		const beforeHeaders = subject.hooks.get("before_provider_headers")!;
+		const beforeHeaders = subject.hooks.get("before_provider_auth")!;
 		const afterResponse = subject.hooks.get("after_provider_response")!;
 		const route = async (): Promise<string> => {
 			const headers: Record<string, string> = {};
-			await beforeHeaders(
-				{ type: "before_provider_headers", headers, requestId: "request-5" },
-				subject.hookContext(),
-			);
+			await beforeHeaders({ type: "before_provider_auth", headers, requestId: "request-5" }, subject.hookContext());
 			return headers.authorization ?? "";
 		};
 
@@ -699,10 +678,7 @@ test("same-family failover through the hook keeps the model and thinking level u
 
 		const session = { model: anthropicModel(), thinkingLevel: "xhigh" as const };
 		const available = [anthropicModel(), { provider: "xai", id: "grok-5", name: "grok-5" }];
-		await subject.hooks.get("before_provider_headers")!(
-			{ type: "before_provider_headers", headers: {}, requestId: "request-6" },
-			subject.hookContext(session.model, available),
-		);
+		await requestAuth(subject, subject.hookContext(session.model, available), "request-6", {});
 		await subject.hooks.get("after_provider_response")!(
 			{ type: "after_provider_response", requestId: "request-6", status: 429, headers: {} },
 			subject.hookContext(session.model, available),
@@ -714,8 +690,8 @@ test("same-family failover through the hook keeps the model and thinking level u
 
 		// The next request routes to the sibling, still on the same model.
 		const headers: Record<string, string> = {};
-		await subject.hooks.get("before_provider_headers")!(
-			{ type: "before_provider_headers", headers, requestId: "request-7" },
+		await subject.hooks.get("before_provider_auth")!(
+			{ type: "before_provider_auth", headers, requestId: "request-7" },
 			subject.hookContext(session.model, available),
 		);
 		assert.equal(headers.authorization, "Bearer access-work");
@@ -731,10 +707,7 @@ test("cross-family failover through the hook re-points the model only after the 
 		await subject.command("login xai grok", subject.context);
 
 		const available = [anthropicModel(), { provider: "xai", id: "grok-5", name: "grok-5" }];
-		await subject.hooks.get("before_provider_headers")!(
-			{ type: "before_provider_headers", headers: {}, requestId: "request-8" },
-			subject.hookContext(anthropicModel(), available),
-		);
+		await requestAuth(subject, subject.hookContext(anthropicModel(), available), "request-8", {});
 		await subject.hooks.get("after_provider_response")!(
 			{ type: "after_provider_response", requestId: "request-8", status: 429, headers: {} },
 			subject.hookContext(anthropicModel(), available),
@@ -754,8 +727,8 @@ test("logout of the pinned slot releases the session pin", async () => {
 
 		const route = async (): Promise<string> => {
 			const headers: Record<string, string> = {};
-			await subject.hooks.get("before_provider_headers")!(
-				{ type: "before_provider_headers", headers, requestId: "request-9" },
+			await subject.hooks.get("before_provider_auth")!(
+				{ type: "before_provider_auth", headers, requestId: "request-9" },
 				subject.hookContext(),
 			);
 			return headers.authorization ?? "";
@@ -798,8 +771,8 @@ test("an unavailable fallback model never substitutes another provider's credent
 		// The catalog offers no xai equivalent, so there is nothing to re-point to.
 		const available = [anthropicModel()];
 		const headers: Record<string, string> = {};
-		await subject.hooks.get("before_provider_headers")!(
-			{ type: "before_provider_headers", headers, requestId: "request-10" },
+		await subject.hooks.get("before_provider_auth")!(
+			{ type: "before_provider_auth", headers, requestId: "request-10" },
 			subject.hookContext(anthropicModel(), available),
 		);
 		assert.equal(headers.authorization, "Bearer access-home");
@@ -815,10 +788,7 @@ test("an unavailable fallback model never substitutes another provider's credent
 		// The next anthropic request has no healthy sibling, so it carries no token
 		// at all rather than the xai credential.
 		const retry: Record<string, string | null> = { authorization: "Bearer primary-auth-json-token" };
-		await subject.hooks.get("before_provider_headers")!(
-			{ type: "before_provider_headers", headers: retry, requestId: "request-11" },
-			subject.hookContext(anthropicModel(), available),
-		);
+		await requestAuth(subject, subject.hookContext(anthropicModel(), available), "request-11", retry);
 		assert.equal(retry.authorization, null, "a cooled pool must not fall through to auth.json's primary token");
 	} finally {
 		await rm(subject.directory, { recursive: true, force: true });
@@ -832,10 +802,7 @@ test("a rejected setModel leaves no mismatched active route or token", async () 
 		await subject.command("login xai grok", subject.context);
 
 		const available = [anthropicModel(), { provider: "xai", id: "grok-5", name: "grok-5" }];
-		await subject.hooks.get("before_provider_headers")!(
-			{ type: "before_provider_headers", headers: {}, requestId: "request-12" },
-			subject.hookContext(anthropicModel(), available),
-		);
+		await requestAuth(subject, subject.hookContext(anthropicModel(), available), "request-12", {});
 		await subject.hooks.get("after_provider_response")!(
 			{ type: "after_provider_response", requestId: "request-12", status: 429, headers: {} },
 			subject.hookContext(anthropicModel(), available),
@@ -847,10 +814,7 @@ test("a rejected setModel leaves no mismatched active route or token", async () 
 		assert.match(rejected, /ROUTE {3}anthropic\/claude-opus-4-6 {2}via home/u);
 
 		const retry: Record<string, string> = {};
-		await subject.hooks.get("before_provider_headers")!(
-			{ type: "before_provider_headers", headers: retry, requestId: "request-13" },
-			subject.hookContext(anthropicModel(), available),
-		);
+		await requestAuth(subject, subject.hookContext(anthropicModel(), available), "request-13", retry);
 		assert.equal(retry.authorization, undefined, "no xai token may be attached to an anthropic request");
 	} finally {
 		await rm(subject.directory, { recursive: true, force: true });
@@ -868,8 +832,8 @@ test("the header hook only ever attaches a slot from the request's own family", 
 			["xai", "Bearer access-grok"],
 		] as const) {
 			const headers: Record<string, string> = {};
-			await subject.hooks.get("before_provider_headers")!(
-				{ type: "before_provider_headers", headers, requestId: "request-14" },
+			await subject.hooks.get("before_provider_auth")!(
+				{ type: "before_provider_auth", headers, requestId: "request-14" },
 				subject.hookContext({ provider, id: `${provider}-model` }),
 			);
 			assert.equal(headers.authorization, expected, provider);
@@ -877,10 +841,7 @@ test("the header hook only ever attaches a slot from the request's own family", 
 
 		// A provider with no configured pool gets nothing, never a chain neighbour.
 		const unconfigured: Record<string, string> = {};
-		await subject.hooks.get("before_provider_headers")!(
-			{ type: "before_provider_headers", headers: unconfigured, requestId: "request-15" },
-			subject.hookContext({ provider: "zai", id: "glm" }),
-		);
+		await requestAuth(subject, subject.hookContext({ provider: "zai", id: "glm" }), "request-15", unconfigured);
 		assert.equal(unconfigured.authorization, undefined);
 	} finally {
 		await rm(subject.directory, { recursive: true, force: true });
@@ -896,7 +857,7 @@ test("two same-provider requests that finish in reverse order each cool only the
 		await subject.command("login anthropic work", subject.context);
 		await subject.command("login anthropic spare", subject.context);
 
-		const beforeHeaders = subject.hooks.get("before_provider_headers")!;
+		const beforeHeaders = subject.hooks.get("before_provider_auth")!;
 		const afterResponse = subject.hooks.get("after_provider_response")!;
 
 		// Request A is built on `work`. The route then moves - an operator pin here,
@@ -905,13 +866,13 @@ test("two same-provider requests that finish in reverse order each cool only the
 		await subject.command("pin anthropic/work", subject.context);
 		const firstHeaders: Record<string, string> = {};
 		await beforeHeaders(
-			{ type: "before_provider_headers", headers: firstHeaders, requestId: "A" },
+			{ type: "before_provider_auth", headers: firstHeaders, requestId: "A" },
 			subject.hookContext(),
 		);
 		await subject.command("pin anthropic/spare", subject.context);
 		const secondHeaders: Record<string, string> = {};
 		await beforeHeaders(
-			{ type: "before_provider_headers", headers: secondHeaders, requestId: "B" },
+			{ type: "before_provider_auth", headers: secondHeaders, requestId: "B" },
 			subject.hookContext(),
 		);
 		assert.equal(firstHeaders.authorization, "Bearer access-work");
@@ -948,7 +909,7 @@ test("an assistant error pairs only with the one failed response still pending",
 		await subject.command("login anthropic home", subject.context);
 		await subject.command("login anthropic work", subject.context);
 		await subject.command("login anthropic spare", subject.context);
-		const beforeHeaders = subject.hooks.get("before_provider_headers")!;
+		const beforeHeaders = subject.hooks.get("before_provider_auth")!;
 		const afterResponse = subject.hooks.get("after_provider_response")!;
 		const messageEnd = subject.hooks.get("message_end")!;
 		const context = () => subject.hookContext(anthropicModel(), [anthropicModel()]);
@@ -961,9 +922,9 @@ test("an assistant error pairs only with the one failed response still pending",
 		// A on `work` answers 400 with no headers to classify; B on `spare` answers
 		// 200 and is still streaming when A's assistant error ends.
 		await subject.command("pin anthropic/work", subject.context);
-		await beforeHeaders({ type: "before_provider_headers", headers: {}, requestId: "A" }, context());
+		await beforeHeaders({ type: "before_provider_auth", headers: {}, requestId: "A" }, context());
 		await subject.command("pin anthropic/spare", subject.context);
-		await beforeHeaders({ type: "before_provider_headers", headers: {}, requestId: "B" }, context());
+		await beforeHeaders({ type: "before_provider_auth", headers: {}, requestId: "B" }, context());
 		await afterResponse({ type: "after_provider_response", requestId: "B", status: 200, headers: {} }, context());
 		await afterResponse({ type: "after_provider_response", requestId: "A", status: 400, headers: {} }, context());
 		// The route is on `spare` now, so A's failure cools `work` without moving
@@ -976,9 +937,9 @@ test("an assistant error pairs only with the one failed response still pending",
 		// Two failed responses pending at once is ambiguous: neither is charged,
 		// and the pair is dropped rather than guessed at.
 		await subject.command("pin anthropic/spare", subject.context);
-		await beforeHeaders({ type: "before_provider_headers", headers: {}, requestId: "C" }, context());
+		await beforeHeaders({ type: "before_provider_auth", headers: {}, requestId: "C" }, context());
 		await subject.command("pin anthropic/home", subject.context);
-		await beforeHeaders({ type: "before_provider_headers", headers: {}, requestId: "D" }, context());
+		await beforeHeaders({ type: "before_provider_auth", headers: {}, requestId: "D" }, context());
 		await afterResponse({ type: "after_provider_response", requestId: "C", status: 400, headers: {} }, context());
 		await afterResponse({ type: "after_provider_response", requestId: "D", status: 400, headers: {} }, context());
 		const unattributed = (await messageEnd({ type: "message_end", message: quotaError }, context())) as
@@ -1015,7 +976,7 @@ test("an assistant error pairs only with the one failed response still pending",
 
 		// A failed transport the runtime recovered from ends well and, alone, is
 		// released like any other lone response.
-		await beforeHeaders({ type: "before_provider_headers", headers: {}, requestId: "R" }, context());
+		await beforeHeaders({ type: "before_provider_auth", headers: {}, requestId: "R" }, context());
 		await afterResponse({ type: "after_provider_response", requestId: "R", status: 400, headers: {} }, context());
 		await messageEnd({ type: "message_end", message: { role: "assistant", stopReason: "stop" } }, context());
 		assert.equal(
@@ -1026,17 +987,17 @@ test("an assistant error pairs only with the one failed response still pending",
 
 		// A successful end releases the one pending success; with two pending it
 		// releases neither, because which one ended is not known.
-		await beforeHeaders({ type: "before_provider_headers", headers: {}, requestId: "E" }, context());
+		await beforeHeaders({ type: "before_provider_auth", headers: {}, requestId: "E" }, context());
 		await afterResponse({ type: "after_provider_response", requestId: "E", status: 200, headers: {} }, context());
 		await messageEnd({ type: "message_end", message: { role: "assistant", stopReason: "stop" } }, context());
-		await beforeHeaders({ type: "before_provider_headers", headers: {}, requestId: "F" }, context());
+		await beforeHeaders({ type: "before_provider_auth", headers: {}, requestId: "F" }, context());
 		await afterResponse({ type: "after_provider_response", requestId: "F", status: 200, headers: {} }, context());
 		const late = (await messageEnd({ type: "message_end", message: quotaError }, context())) as
 			| { message?: { diagnostics?: Array<{ type: string }> } }
 			| undefined;
 		assert.notEqual(late?.message?.diagnostics?.at(-1)?.type, "kpi_account_unattributed", "F alone: one candidate");
-		await beforeHeaders({ type: "before_provider_headers", headers: {}, requestId: "G" }, context());
-		await beforeHeaders({ type: "before_provider_headers", headers: {}, requestId: "H" }, context());
+		await beforeHeaders({ type: "before_provider_auth", headers: {}, requestId: "G" }, context());
+		await beforeHeaders({ type: "before_provider_auth", headers: {}, requestId: "H" }, context());
 		await afterResponse({ type: "after_provider_response", requestId: "G", status: 200, headers: {} }, context());
 		await afterResponse({ type: "after_provider_response", requestId: "H", status: 200, headers: {} }, context());
 		await messageEnd({ type: "message_end", message: { role: "assistant", stopReason: "stop" } }, context());
@@ -1053,14 +1014,11 @@ test("a request that never answers leaks no attribution and blocks nothing", asy
 	const subject = await routingHarness();
 	try {
 		await subject.command("login anthropic home", subject.context);
-		const beforeHeaders = subject.hooks.get("before_provider_headers")!;
+		const beforeHeaders = subject.hooks.get("before_provider_auth")!;
 		const afterResponse = subject.hooks.get("after_provider_response")!;
 
 		// A transport failure: the request is built, no response ever arrives.
-		await beforeHeaders(
-			{ type: "before_provider_headers", headers: {}, requestId: "abandoned" },
-			subject.hookContext(),
-		);
+		await beforeHeaders({ type: "before_provider_auth", headers: {}, requestId: "abandoned" }, subject.hookContext());
 
 		// An unrelated response - a compaction turn, or an adapter that never
 		// reports - must not be charged to the abandoned request's slot.
@@ -1072,13 +1030,13 @@ test("a request that never answers leaks no attribution and blocks nothing", asy
 
 		// The next real request still routes, and the pool is not stuck.
 		const headers: Record<string, string> = {};
-		await beforeHeaders({ type: "before_provider_headers", headers, requestId: "next" }, subject.hookContext());
+		await beforeHeaders({ type: "before_provider_auth", headers, requestId: "next" }, subject.hookContext());
 		assert.equal(headers.authorization, "Bearer access-home", "the pool still serves after an abandoned request");
 
 		// Many abandoned requests cannot grow attribution without bound.
 		for (let index = 0; index < 200; index += 1) {
 			await beforeHeaders(
-				{ type: "before_provider_headers", headers: {}, requestId: `leak-${index}` },
+				{ type: "before_provider_auth", headers: {}, requestId: `leak-${index}` },
 				subject.hookContext(),
 			);
 		}
@@ -1091,61 +1049,6 @@ test("a request that never answers leaks no attribution and blocks nothing", asy
 			/cd \d+m/u,
 			"an evicted request records nothing rather than charging a stale slot",
 		);
-	} finally {
-		await rm(subject.directory, { recursive: true, force: true });
-	}
-});
-
-test("a credential travels in the header its own provider reads", async () => {
-	const subject = await routingHarness();
-	try {
-		await subject.command("login anthropic home", subject.context);
-		const beforeHeaders = subject.hooks.get("before_provider_headers")!;
-
-		// An api_key slot for Anthropic must arrive as x-api-key, never as a bearer
-		// token the provider does not read.
-		await subject.store.putSlot(
-			"anthropic",
-			{ id: "keyed", kind: "api_key", label: "keyed" },
-			{ type: "api_key", key: "sk-ant-key" },
-		);
-		const cases: { api: string; provider: string; header: string; value: string }[] = [
-			{ api: "anthropic-messages", provider: "anthropic", header: "x-api-key", value: "sk-ant-key" },
-			{ api: "openai-completions", provider: "anthropic", header: "authorization", value: "Bearer sk-ant-key" },
-			{ api: "google-generative-ai", provider: "anthropic", header: "x-goog-api-key", value: "sk-ant-key" },
-			{ api: "azure-openai-responses", provider: "anthropic", header: "api-key", value: "sk-ant-key" },
-		];
-
-		for (const scenario of cases) {
-			await subject.command("pin anthropic/keyed", subject.context);
-			const headers: Record<string, string | null> = {};
-			await beforeHeaders(
-				{ type: "before_provider_headers", headers, requestId: `api-${scenario.api}` },
-				{
-					...subject.hookContext({ provider: scenario.provider, id: "model-1" }),
-					model: { provider: scenario.provider, id: "model-1", api: scenario.api },
-				},
-			);
-			const attached = Object.entries(headers).filter(([, value]) => typeof value === "string");
-			assert.deepEqual(
-				attached,
-				[[scenario.header, scenario.value]],
-				`${scenario.api} reads ${scenario.header} and nothing else is invented`,
-			);
-		}
-
-		// A subscription token is a bearer token everywhere, including Anthropic.
-		await subject.command("pin anthropic/home", subject.context);
-		const oauthHeaders: Record<string, string | null> = {};
-		await beforeHeaders(
-			{ type: "before_provider_headers", headers: oauthHeaders, requestId: "oauth-anthropic" },
-			{
-				...subject.hookContext(),
-				model: { provider: "anthropic", id: "claude-opus-4-6", api: "anthropic-messages" },
-			},
-		);
-		assert.equal(oauthHeaders.authorization, "Bearer access-home", "an OAuth token stays a bearer token");
-		assert.equal(oauthHeaders["x-api-key"], undefined);
 	} finally {
 		await rm(subject.directory, { recursive: true, force: true });
 	}
@@ -1211,6 +1114,9 @@ async function providerLoginHarness(
 			},
 		},
 		ui: {
+			onTerminalInput() {
+				return () => {};
+			},
 			async confirm() {
 				sequence.push("confirm");
 				return true;
@@ -1354,7 +1260,7 @@ test("a Claude Code version rejection is surfaced once and never cools or fails 
 	const subject = await routingHarness();
 	try {
 		await subject.command("login anthropic home", subject.context);
-		const beforeHeaders = subject.hooks.get("before_provider_headers")!;
+		const beforeHeaders = subject.hooks.get("before_provider_auth")!;
 		const afterResponse = subject.hooks.get("after_provider_response")!;
 		const messageEnd = subject.hooks.get("message_end")!;
 		const context = () => subject.hookContext(anthropicModel(), [anthropicModel()]);
@@ -1367,7 +1273,7 @@ test("a Claude Code version rejection is surfaced once and never cools or fails 
 		};
 
 		const headers: Record<string, string> = {};
-		await beforeHeaders({ type: "before_provider_headers", headers, requestId: "request-1" }, context());
+		await beforeHeaders({ type: "before_provider_auth", headers, requestId: "request-1" }, context());
 		assert.equal(headers.authorization, "Bearer access-home");
 		await afterResponse(
 			{ type: "after_provider_response", requestId: "request-1", status: 400, headers: {} },
@@ -1393,7 +1299,7 @@ test("a Claude Code version rejection is surfaced once and never cools or fails 
 
 		// The slot is not cooled: the next request on it still carries its credential.
 		const again: Record<string, string> = {};
-		await beforeHeaders({ type: "before_provider_headers", headers: again, requestId: "request-2" }, context());
+		await beforeHeaders({ type: "before_provider_auth", headers: again, requestId: "request-2" }, context());
 		assert.equal(again.authorization, "Bearer access-home");
 		assert.doesNotMatch(subject.status.at(-1) ?? "", /home \?% cd/u);
 

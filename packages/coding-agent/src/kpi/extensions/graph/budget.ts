@@ -22,11 +22,21 @@ export function isBudgetState(value: unknown): value is GraphBudgetState {
  * Ready nodes split into superstep-internal batches of at most
  * `maxConcurrency`. A wide ready set is bounded here, never rejected.
  */
-export function batchReadyNodes<T>(nodes: readonly T[], maxConcurrency: number): T[][] {
+export function batchReadyNodes<T>(
+	nodes: readonly T[],
+	maxConcurrency: number,
+	conflicts?: (left: T, right: T) => boolean,
+): T[][] {
 	const size = Math.max(1, Math.floor(maxConcurrency));
 	const batches: T[][] = [];
-	for (let index = 0; index < nodes.length; index += size) {
-		batches.push(nodes.slice(index, index + size));
+	let current: T[] = [];
+	for (const node of nodes) {
+		if (current.length >= size || current.some((other) => conflicts?.(other, node))) {
+			batches.push(current);
+			current = [];
+		}
+		current.push(node);
 	}
+	if (current.length) batches.push(current);
 	return batches;
 }

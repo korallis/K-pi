@@ -48,6 +48,8 @@ export interface WorkerDescriptor {
 	 * carries any.
 	 */
 	readonly qualityGates?: readonly string[];
+	/** Parent-pinned candidate paths; never widened by a resumed session. */
+	readonly writePaths?: readonly string[];
 }
 
 /**
@@ -74,6 +76,7 @@ export function mintWorkerDescriptor(options: {
 	tools: readonly string[];
 	capabilityId?: string;
 	qualityGates?: readonly string[];
+	writePaths?: readonly string[];
 }): WorkerDescriptor {
 	const contract = ROLE_CONTRACT_FILE[options.role];
 	return Object.freeze({
@@ -85,6 +88,7 @@ export function mintWorkerDescriptor(options: {
 		tools: Object.freeze([...options.tools]),
 		capabilityId: contract === undefined ? undefined : options.capabilityId,
 		qualityGates: hasTestShellOnly(options.role) ? Object.freeze(normalizeGates(options.qualityGates)) : undefined,
+		writePaths: options.writePaths === undefined ? undefined : Object.freeze([...options.writePaths]),
 	});
 }
 
@@ -133,7 +137,7 @@ function parseDescriptor(raw: string): WorkerDescriptor {
 	if (!isJsonObject(parsed)) {
 		throw new WorkerIdentityError(`${WORKER_DESCRIPTOR_ENV} is not an object`);
 	}
-	const { agentId, jobId, role, runDirectory, contractPath, tools, capabilityId, qualityGates } = parsed;
+	const { agentId, jobId, role, runDirectory, contractPath, tools, capabilityId, qualityGates, writePaths } = parsed;
 	if (typeof agentId !== "string" || agentId.trim().length === 0) {
 		throw new WorkerIdentityError("worker descriptor has no agentId");
 	}
@@ -177,6 +181,10 @@ function parseDescriptor(raw: string): WorkerDescriptor {
 		tools: Object.freeze(granted),
 		capabilityId: declared === undefined ? undefined : (capabilityId as string),
 		qualityGates: gates,
+		writePaths:
+			Array.isArray(writePaths) && writePaths.every((path) => typeof path === "string")
+				? Object.freeze([...writePaths])
+				: undefined,
 	});
 }
 
@@ -219,7 +227,7 @@ export async function resolveWorkerIdentity(cwd: string, env?: NodeJS.ProcessEnv
 		throw new WorkerIdentityError(`worker descriptor run directory does not exist: ${descriptor.runDirectory}`);
 	}
 	// The job's own contract has to agree that this job is this job.
-	const task = await readTaskForJob(cwd, descriptor.jobId).catch(() => undefined);
+	const task = await readTaskForJob(cwd, descriptor.jobId);
 	if (task === undefined) {
 		throw new WorkerIdentityError(`worker descriptor names job ${descriptor.jobId}, which has no task.json`);
 	}

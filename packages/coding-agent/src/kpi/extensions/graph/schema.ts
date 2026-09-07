@@ -1,5 +1,5 @@
 import type { LoopRecovery } from "../run-store.ts";
-import type { TransientReason } from "./stop.ts";
+import type { RecoveryDecision, TransientReason } from "./stop.ts";
 
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonObject | JsonValue[];
@@ -11,7 +11,7 @@ export function isJsonObject(value: unknown): value is JsonObject {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-export type GraphNodeType = "agent" | "set" | "human" | "pause";
+export type GraphNodeType = "agent" | "set" | "human" | "pause" | "verify";
 export type AgentContextMode = "isolated" | "thread";
 
 export interface AgentResponseContract {
@@ -28,7 +28,16 @@ export interface AgentResponseContract {
  */
 export type AgentWorkerRole = "reviewer";
 
-export interface AgentGraphNode {
+export interface ExecutionTask {
+	/** Stable protected goal IDs, not model-authored acceptance text. */
+	goalIds?: string[];
+	assumptionIds?: string[];
+	/** Prerequisite DAG, distinct from conditional/retry control edges. */
+	dependencies?: string[];
+	required?: boolean;
+}
+
+export interface AgentGraphNode extends ExecutionTask {
 	id: string;
 	type: "agent";
 	prompt: string;
@@ -37,8 +46,11 @@ export interface AgentGraphNode {
 		threadKey?: string;
 	};
 	tools: string[];
+	role?: "planner" | "diagnostic" | "architect" | "builder" | "reviewer" | "researcher" | "release";
 	readOnly: boolean;
 	response?: AgentResponseContract;
+	/** Host-generated arena judge must reference every independent proposal. */
+	arenaProposalRefs?: string[];
 	/** When set, run as an RP-13 background worker of this role. */
 	workerRole?: AgentWorkerRole;
 	/**
@@ -49,13 +61,13 @@ export interface AgentGraphNode {
 	feedbackPath?: string;
 }
 
-export interface SetGraphNode {
+export interface SetGraphNode extends ExecutionTask {
 	id: string;
 	type: "set";
 	assignments: Record<string, JsonValue>;
 }
 
-export interface HumanGraphNode {
+export interface HumanGraphNode extends ExecutionTask {
 	id: string;
 	type: "human";
 	title: string;
@@ -88,7 +100,7 @@ export interface HumanAnswer {
  * paused, and where it picks up, are readable in the topology instead of
  * buried in the driver.
  */
-export interface PauseGraphNode {
+export interface PauseGraphNode extends ExecutionTask {
 	id: string;
 	type: "pause";
 	recovery: LoopRecovery;
@@ -97,7 +109,39 @@ export interface PauseGraphNode {
 	resume: string[];
 }
 
-export type GraphNode = AgentGraphNode | SetGraphNode | HumanGraphNode | PauseGraphNode;
+export interface VerifyGraphNode extends ExecutionTask {
+	id: string;
+	type: "verify";
+}
+
+export type GraphNode = AgentGraphNode | SetGraphNode | HumanGraphNode | PauseGraphNode | VerifyGraphNode;
+
+export type GraphMutationOperation =
+	| { type: "create"; task: AgentGraphNode; template: string }
+	| { type: "replace" | "split"; taskId: string; tasks: AgentGraphNode[] }
+	| { type: "supersede"; taskId: string; replacementIds: string[] }
+	| { type: "dependencies"; taskId: string; dependencies: string[] }
+	| { type: "insert_arena"; afterTaskId: string; definition: GraphDefinition }
+	| { type: "route"; from: string; edges: GraphEdge[] };
+
+export interface GraphMutation {
+	expectedRevision: number;
+	reason: string;
+	evidenceRefs: string[];
+	affectedGoalIds: string[];
+	affectedAssumptionIds: string[];
+	affectedTaskIds: string[];
+	operations: GraphMutationOperation[];
+}
+
+export interface ExecutionRevision {
+	revision: number;
+	previousHash: string;
+	hash: string;
+	at: string;
+	actorId: string;
+	mutation: GraphMutation;
+}
 
 export interface GraphCondition {
 	path: string;
@@ -141,6 +185,10 @@ export interface GraphDefinition {
 	edges: GraphEdge[];
 	limits: GraphLimits;
 	policy: GraphPolicy;
+	intentHash?: string;
+	requiredGoalIds?: string[];
+	assumptionIds?: string[];
+	repairNodeId?: string;
 }
 
 /**
@@ -175,6 +223,12 @@ export interface GraphNodeRunState {
 	retryReason?: TransientReason;
 	/** Epoch ms the current backoff ends; a resume sleeps the remainder. */
 	retryAtMs?: number;
+	recovery?: RecoveryDecision;
+	model?: string;
+	modelReason?: string[];
+	/** An arena's independence claim is bound to these host-selected assignments. */
+	modelPinned?: boolean;
+	dependencyRuns?: Record<string, number>;
 }
 
 export interface PendingHumanInput {
@@ -230,4 +284,14 @@ export interface GraphRunState {
 	budget: GraphBudgetState;
 	/** Present exactly while the run is paused. */
 	pause?: GraphPauseState;
+	/** Actual topology is checkpointed atomically with execution state. */
+	definition?: GraphDefinition;
+	revision?: number;
+	revisions?: ExecutionRevision[];
+	/** Superseded task tombstones retain results and logical identity. */
+	superseded?: Record<string, string[]>;
+	blockers?: GraphPauseState[];
+	recoveries?: RecoveryDecision[];
+	/** Results awaiting durable edge propagation after an interrupted batch. */
+	pendingRoutes?: string[];
 }

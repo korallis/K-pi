@@ -292,6 +292,29 @@ async function main() {
 		ok: false,
 	};
 
+	// Missing acceptance bindings must remain a failed proof, even when callers
+	// skip expensive gates. Publish the failure rather than leave an older green report.
+	const uncovered = Array.isArray(map.entries) && map.entries.length
+		? map.entries.filter((entry) => entry.coverage !== "covered")
+		: [{ id: "REL-01", primary_owner: "RP-19", uncovered_reason: "acceptance inventory is empty or missing" }];
+	if (uncovered.length) {
+		report.traceability.complete = false;
+		report.secrets_scan.pass = false;
+		for (const entry of uncovered) {
+			failures.push({
+				id: entry.id,
+				owner: entry.primary_owner,
+				check: "acceptance-coverage",
+				message: entry.uncovered_reason ?? "acceptance coverage is unknown",
+			});
+		}
+		ensureDir(dirname(jsonPath));
+		writeFileSync(jsonPath, `${JSON.stringify(report, null, 2)}\n`);
+		process.stderr.write(`verify-product: blocked by ${uncovered.length} uncovered acceptance entries; wrote ${relative(repoRoot, jsonPath)}\n`);
+		process.exitCode = 1;
+		return;
+	}
+
 	try {
 		report.upstream_pin = JSON.parse(readFileSync(join(repoRoot, "upstream.json"), "utf8"));
 	} catch {

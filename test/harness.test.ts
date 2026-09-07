@@ -59,7 +59,7 @@ const runtimeResourceRoots: readonly string[] = [
 ];
 
 const secretShapedPath =
-	/(^|\/)(\.env(\.[^/]+)?|\.netrc|\.npmrc|\.pgpass|id_[a-z]+|[^/]*(secret|credential|password|token)[^/]*|[^/]+\.(pem|key|p12|pfx|jks|keystore|asc))$/i;
+	/(^|\/)(\.env(\.[^/]+)?|\.netrc|\.npmrc|\.pgpass|id_[a-z]+|auth\.json|(?:[^/]*[._-])?(?:secret|credential|password|token)s?(?:[._-][^/]*)?|[^/]+\.(pem|key|p12|pfx|jks|keystore|asc))$/i;
 
 /**
  * Paths that must never reach a K-π user. The shipped resource tree is the
@@ -279,6 +279,7 @@ test("the shipped K-π resource tree carries no secrets and no test, fixture or 
 	for (const canary of [
 		"themes/.env",
 		"extensions/.env.local",
+		"extensions/auth.json",
 		"skills/id_rsa",
 		"prompts/.npmrc",
 		"graphs/api-token.txt",
@@ -306,18 +307,6 @@ test("themes expose required semantic colors", async () => {
 			assert.ok(theme.colors[color], `${name} must define ${color}`);
 		}
 	}
-});
-
-test("themes use the required protocol accents", async () => {
-	const amber = await readTheme("loop-amber");
-	const blue = await readTheme("protocol-blue");
-
-	assert.equal(amber.name, "loop-amber");
-	assert.equal(amber.colors.accent, "#ff6a1a");
-	assert.equal(amber.colors.borderAccent, "#ff6a1a");
-	assert.equal(blue.name, "protocol-blue");
-	assert.equal(blue.colors.accent, "#3da9fc");
-	assert.equal(blue.colors.borderAccent, "#3da9fc");
 });
 
 test("APPEND_SYSTEM is additive and concise-output is progressive", async () => {

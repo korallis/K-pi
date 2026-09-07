@@ -6,14 +6,19 @@ import test from "node:test";
 
 import { type JsonSchema, validateJsonSchema } from "../packages/coding-agent/src/kpi/extensions/graph/json-schema.ts";
 import {
+	acceptIntentRefinement,
+	assertProtectedIntent,
 	atomicWrite,
+	contractHash,
 	createJob,
 	isFinishedRunStatus,
 	isLiveJob,
 	RUN_STATUSES,
 	readActiveJob,
+	readIntentContract,
 	readJob,
 	readLiveJob,
+	reconcileIntentPublication,
 	resetUnreadableStateReportsForTests,
 	runStatus,
 	type Task,
@@ -85,6 +90,70 @@ test("createJob writes and readJob reads the run contract", async () => {
 
 		const errors = validateJsonSchema(persisted, taskSchema);
 		assert.deepEqual(errors, [], `persisted task must satisfy task.schema.json: ${errors.join("; ")}`);
+	});
+});
+
+test("changed desired success is rejected without changing the accepted revision", async () => {
+	await withTempDirectory("protected-intent", async (directory) => {
+		const run = await createJob(directory, task);
+		const original = await readIntentContract(run.directory);
+		const weakened = structuredClone(task);
+		weakened.acceptance[0].check!.expect!.exit = 1;
+		await assert.rejects(acceptIntentRefinement(run.directory, task, weakened, "operator"), /weaken|replace/i);
+		assert.equal((await readIntentContract(run.directory)).hash, original.hash);
+		await writeFile(join(run.directory, "task.json"), JSON.stringify(weakened));
+		await assert.rejects(readJob(directory, task.job_id), /Protected intent changed/);
+		assert.equal((await readIntentContract(run.directory)).hash, original.hash);
+	});
+});
+
+test("initial refinement fills missing evidence but cannot be used again after acceptance", async () => {
+	await withTempDirectory("initial-understanding", async (directory) => {
+		const initial = structuredClone(task);
+		delete initial.acceptance[0].check;
+		initial.ac.quality = "partial";
+		const run = await createJob(directory, initial);
+		const refined: Task = {
+			...initial,
+			acceptance: task.acceptance,
+			ac: task.ac,
+			intent_details: {
+				users: ["operator"],
+				journeys: [],
+				testing_criteria: ["Use the executable acceptance check"],
+			},
+		};
+		const accepted = await acceptIntentRefinement(run.directory, initial, refined, "operator");
+		assert.equal((await readJob(directory, task.job_id)).task.acceptance[0].check?.expect?.exit, 0);
+		assert.equal(accepted.revision, 2);
+		await assert.rejects(acceptIntentRefinement(run.directory, refined, refined, "operator"), /already accepted/);
+		assert.equal((await readIntentContract(run.directory)).hash, accepted.hash);
+	});
+});
+
+test("interrupted host publication reconciles task and intent without trusting a changed task alone", async () => {
+	await withTempDirectory("intent-recovery", async (directory) => {
+		const run = await createJob(directory, task);
+		const prior = await readIntentContract(run.directory);
+		const refined: Task = { ...task, intent_details: { users: ["operator"], journeys: [] } };
+		const { current_module_id: _slice, ...protectedTask } = refined;
+		const next = { ...prior, revision: prior.revision + 1, hash: contractHash(refined), task: protectedTask };
+		await writeFile(
+			join(run.directory, "intent.pending.json"),
+			JSON.stringify({
+				previous_hash: prior.hash,
+				intent: next,
+				task: refined,
+				authority: "operator",
+			}),
+		);
+		await writeFile(join(run.directory, "task.json"), JSON.stringify(refined));
+		await reconcileIntentPublication(run.directory);
+		await reconcileIntentPublication(run.directory);
+		assert.equal((await assertProtectedIntent(run.directory, refined)).hash, next.hash);
+		assert.deepEqual((await readJob(directory, task.job_id)).task, refined);
+		const original = JSON.parse(await readFile(join(run.directory, "intent-history", "revision-1.json"), "utf8"));
+		assert.equal(original.hash, prior.hash);
 	});
 });
 

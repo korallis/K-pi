@@ -21,14 +21,14 @@
     "ac": 197,
     "metric": 7,
     "gap": 54,
-    "rp": 23,
+    "rp": 24,
     "req": 28,
     "nfr": 8,
-    "schema": 4,
+    "schema": 10,
     "event": 26,
-    "total": 347,
-    "covered": 347,
-    "uncovered": 0
+    "total": 354,
+    "covered": 353,
+    "uncovered": 1
   },
   "shared_titles": [
     {
@@ -78,7 +78,7 @@
       ]
     },
     {
-      "key": "test/milestone.test.ts::forbidden runtime dependencies and official model overlays remain absent",
+      "key": "test/milestone.test.ts::repository manifests exclude prohibited harness, footer, agent-bus, and research dependencies",
       "ids": [
         "AC-01.6",
         "AC-15.8",
@@ -94,14 +94,11 @@
       ]
     },
     {
-      "key": "test/schema-conformance.test.ts::task, evidence, and verdict schemas match live payloads",
+      "key": "test/schema-conformance.test.ts::task and verdict schemas match live payloads",
       "ids": [
         "AC-02.2",
-        "AC-04.4",
         "RP-01",
-        "REQ-RS-05",
         "SCH-task",
-        "SCH-evidence",
         "SCH-verdict"
       ]
     },
@@ -112,6 +109,13 @@
         "AC-08.2",
         "M-01",
         "RP-05"
+      ]
+    },
+    {
+      "key": "test/gated-loop.test.ts::the ship node commits on the job branch, pushes only that branch, and opens the pull request",
+      "ids": [
+        "AC-02.6",
+        "AC-20.2"
       ]
     },
     {
@@ -131,9 +135,8 @@
       ]
     },
     {
-      "key": "test/autopilot.test.ts::narrative acceptance criteria refuse forced autopilot before graph load",
+      "key": "test/autopilot.test.ts::narrative acceptance cannot authorize autopilot without executable checks",
       "ids": [
-        "AC-03.4",
         "AC-04.1",
         "M-03"
       ]
@@ -144,6 +147,15 @@
         "AC-04.2",
         "AC-04.5",
         "M-02"
+      ]
+    },
+    {
+      "key": "test/verification.test.ts::real host receipts honor nonzero expected exits and preserve complete large stdout/stderr",
+      "ids": [
+        "AC-04.4",
+        "SCH-evidence",
+        "SCH-goal",
+        "SCH-intent"
       ]
     },
     {
@@ -161,7 +173,7 @@
       ]
     },
     {
-      "key": "test/gated-loop.test.ts::no progress after a re-plan pauses NEEDS_HUMAN offering guidance, keep going, or stop",
+      "key": "test/gated-loop.test.ts::repeated real command failures replan without changing accepted success",
       "ids": [
         "AC-05.3",
         "GRAPH-03",
@@ -183,7 +195,21 @@
       ]
     },
     {
-      "key": "test/operator-ui.test.ts::amber board lights exactly one CURRENT stage and six nonempty file lamps",
+      "key": "test/operator-ui.test.ts::automatic retries stay cool and genuine human gates receive warm emphasis",
+      "ids": [
+        "AC-06.1",
+        "AC-16.1"
+      ]
+    },
+    {
+      "key": "test/command-centre.test.ts::human attention follows runtime status, not recoverable repair, and opens the selected real job",
+      "ids": [
+        "AC-06.2",
+        "AC-16.8"
+      ]
+    },
+    {
+      "key": "test/operator-ui.test.ts::the running board lights exactly one CURRENT stage and six nonempty file lamps",
       "ids": [
         "AC-06.3",
         "AC-16.1",
@@ -245,6 +271,7 @@
       "key": "test/accounts-commands.test.ts::pool strategy and chain persist and survive a reload",
       "ids": [
         "AC-10.1",
+        "ACCT-03",
         "RP-07",
         "REQ-PR-01"
       ]
@@ -257,13 +284,11 @@
       ]
     },
     {
-      "key": "test/provider-contracts.test.ts::no official provider id is registered, so none can receive a models array",
+      "key": "test/provider-contracts.test.ts::official catalogs survive pooled key login, replacement, pin, logout, and offline refresh without account aliases",
       "ids": [
         "AC-10.3",
-        "AC-26.1",
-        "AC-26.5",
-        "AC-26.6",
-        "REQ-PR-02"
+        "AC-26.2",
+        "AC-26.4"
       ]
     },
     {
@@ -284,10 +309,9 @@
       ]
     },
     {
-      "key": "test/provider-contracts.test.ts::no source file passes a models array to an official provider id",
+      "key": "test/accounts-commands.test.ts::a pin holds until the slot is exhausted",
       "ids": [
-        "AC-11.1",
-        "AC-26.4",
+        "AC-10.8",
         "ACCT-03"
       ]
     },
@@ -342,6 +366,7 @@
       "ids": [
         "AC-14.3",
         "REQ-RS-03",
+        "REQ-RS-05",
         "NFR-01"
       ]
     },
@@ -394,7 +419,7 @@
       ]
     },
     {
-      "key": "test/operator-ui.test.ts::protocol-blue pause derives APPROVAL lamp without persisting APPROVAL status",
+      "key": "test/operator-ui.test.ts::an attended human gate derives APPROVAL without persisting an APPROVAL status",
       "ids": [
         "AC-16.3",
         "AC-25.2",
@@ -421,17 +446,6 @@
         "AC-18.1",
         "AC-18.3",
         "KSTACK-02"
-      ]
-    },
-    {
-      "key": "test/bus.test.ts::caps hold, and five concurrent spawns start exactly two",
-      "ids": [
-        "AC-20.4",
-        "AC-23.4",
-        "BUS-01",
-        "RP-13",
-        "REQ-SB-02",
-        "NFR-08"
       ]
     },
     {
@@ -464,6 +478,16 @@
       ]
     },
     {
+      "key": "test/bus.test.ts::caps hold, and five concurrent spawns start exactly two",
+      "ids": [
+        "AC-23.4",
+        "BUS-01",
+        "RP-13",
+        "REQ-SB-02",
+        "NFR-08"
+      ]
+    },
+    {
       "key": "test/operator-ui.test.ts::BUS lamp tracks bus.jsonl history independent of AGENTS count",
       "ids": [
         "AC-23.6",
@@ -493,6 +517,14 @@
         "BUS-04",
         "REQ-RS-06",
         "NFR-04"
+      ]
+    },
+    {
+      "key": "test/provider-contracts.test.ts::native coding pools resolve only their documented key environment and keep built-in endpoints",
+      "ids": [
+        "AC-26.1",
+        "AC-26.5",
+        "AC-26.6"
       ]
     },
     {
@@ -559,18 +591,35 @@
       "key": "test/stack.test.ts::claim_path and implement bounds share one boundary",
       "ids": [
         "AC-30.2",
+        "AC-30.9",
         "DUNE-02"
       ]
     },
     {
-      "key": "test/stack.test.ts::layer folders are nested-only and generic folders need a tight purpose",
+      "key": "test/stack.test.ts::existing Python layers and feature names retain explicit ownership without layout ceremony",
       "ids": [
         "AC-30.4",
+        "AC-30.6",
         "AC-30.7"
       ]
     },
     {
-      "key": "test/stack.test.ts::scaffold creates folder, interface, then test twin, before any behaviour",
+      "key": "test/schema-conformance.test.ts::stack schema accepts explicit existing-layout ownership and rejects missing ownership shape",
+      "ids": [
+        "AC-30.4",
+        "SCH-stack"
+      ]
+    },
+    {
+      "key": "test/stack.test.ts::unknown and cyclic dependencies fail while shared ownership is explicitly declared",
+      "ids": [
+        "AC-30.4",
+        "AC-30.8",
+        "AC-30.11"
+      ]
+    },
+    {
+      "key": "test/stack.test.ts::scaffold creates only declared directories and never manufactures source or tests",
       "ids": [
         "AC-30.5",
         "DUNE-01",
@@ -578,16 +627,8 @@
       ]
     },
     {
-      "key": "test/stack.test.ts::shared is extracted only when a second slice needs it",
+      "key": "test/stack.test.ts::horizontal delivery requires a declared reason",
       "ids": [
-        "AC-30.8",
-        "AC-30.11"
-      ]
-    },
-    {
-      "key": "test/stack.test.ts::vertical delivery cannot stage a layer sweep, and horizontal needs a reason",
-      "ids": [
-        "AC-30.9",
         "AC-30.10",
         "DUNE-03"
       ]
@@ -668,7 +709,13 @@
       ]
     }
   ],
-  "uncovered": [],
+  "uncovered": [
+    {
+      "id": "RP-22",
+      "owner": "RP-22",
+      "reason": "no curated package-level acceptance binding"
+    }
+  ],
   "entries": [
     {
       "id": "AC-01.1",
@@ -775,10 +822,10 @@
       "coverage": "covered",
       "named_checks": [
         {
-          "name": "forbidden_runtime_dependencies_and_official_model_overlays_remain_absent",
+          "name": "repository_manifests_exclude_prohibited_harness_footer_agent_bus_and_research_de",
           "file": "test/milestone.test.ts",
-          "test_title": "forbidden runtime dependencies and official model overlays remain absent",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^forbidden runtime dependencies and official model overlays remain absent$' test/milestone.test.ts",
+          "test_title": "repository manifests exclude prohibited harness, footer, agent-bus, and research dependencies",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^repository manifests exclude prohibited harness, footer, agent-bus, and research dependencies$' test/milestone.test.ts",
           "observable": "package manifests do not list oh-my-pi, atomic, pi-graph, pi-multi-account, pi-multi-pass, or pi-cursor-*"
         }
       ],
@@ -790,7 +837,7 @@
       "primary_owner": "RP-05",
       "prd_us": "US-02",
       "uat_row": "UAT-02",
-      "summary": "A directory `.kpi/runs/<job_id>/` is created containing `task.json`, `context.md`, `events.jsonl`.",
+      "summary": "A directory `.kpi/runs/<job_id>/` contains `task.json`, `intent.json`, `intent-history/revision-1.json`, `context.md` and `events.jsonl`. The host protects the ",
       "coverage": "covered",
       "named_checks": [
         {
@@ -809,15 +856,15 @@
       "primary_owner": "RP-05",
       "prd_us": "US-02",
       "uat_row": "UAT-02",
-      "summary": "`task.json` has `goal`, `acceptance[]`, `nongoals`, `constraints`, `quality_gates`.",
+      "summary": "The task snapshot carries `goal`, `acceptance[]`, `nongoals`, `constraints` and `quality_gates`. Its protected intent hash excludes only the execution slice `cu",
       "coverage": "covered",
       "named_checks": [
         {
-          "name": "task_evidence_and_verdict_schemas_match_live_payloads",
+          "name": "task_and_verdict_schemas_match_live_payloads",
           "file": "test/schema-conformance.test.ts",
-          "test_title": "task, evidence, and verdict schemas match live payloads",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^task, evidence, and verdict schemas match live payloads$' test/schema-conformance.test.ts",
-          "observable": "task.json validates with goal, acceptance[], nongoals, constraints, quality_gates"
+          "test_title": "task and verdict schemas match live payloads",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^task and verdict schemas match live payloads$' test/schema-conformance.test.ts",
+          "observable": "task.json validates desired-state and executable acceptance payloads; malformed task shape is rejected"
         }
       ],
       "failure_route": "Reopen RP-05 for AC-02.2; RP-19 does not patch feature behavior"
@@ -828,7 +875,7 @@
       "primary_owner": "RP-05",
       "prd_us": "US-02",
       "uat_row": "UAT-02",
-      "summary": "If `ac.quality != executable`, mode stays `gated` even if autopilot was requested without `--mode autopilot` force.",
+      "summary": "Before planning/implementation, specify or plan-check proposes additive users, journeys, requirements, engineering constraints, testing criteria and definition ",
       "coverage": "covered",
       "named_checks": [
         {
@@ -847,7 +894,7 @@
       "primary_owner": "RP-05",
       "prd_us": "US-02",
       "uat_row": "UAT-02",
-      "summary": "Implementer tools include write/edit/bash. Planner, reviewer, and tester hold no general `write` or `edit`; their product tools are read-only (`read`,`grep`,`fi",
+      "summary": "Implementer tools include write/edit/bash. Planner, specify/plan-check and reviewer are product-read-only. The engine publishes schema-validated proposal/plan r",
       "coverage": "covered",
       "named_checks": [
         {
@@ -866,7 +913,7 @@
       "primary_owner": "RP-05",
       "prd_us": "US-02",
       "uat_row": "UAT-02",
-      "summary": "After isolated review `approved: true`, a human confirm dialog is shown before `git commit`.",
+      "summary": "After isolated review approval and final host verification, gated release asks the operator to approve the exact candidate. `release-approval.json` binds the ac",
       "coverage": "covered",
       "named_checks": [
         {
@@ -885,7 +932,7 @@
       "primary_owner": "RP-05",
       "prd_us": "US-02",
       "uat_row": "UAT-02",
-      "summary": "The ship node commits on the job branch `kpi/<job_id>`, pushes only that branch to `origin` after release approval, and opens a pull request; it never pushes an",
+      "summary": "Ship creates exactly one conventional job commit on `kpi/<job_id>` with the job trailer. When `origin` exists, scoped release authorization permits pushing only",
       "coverage": "covered",
       "named_checks": [
         {
@@ -923,15 +970,15 @@
       "primary_owner": "RP-05",
       "prd_us": "US-02",
       "uat_row": "UAT-02",
-      "summary": "After plan writes `stack.json` the graph pauses on the human node `plan-approval` (operator plan approval, distinct from the Dune structural plan gate of US-30)",
+      "summary": "Gated mode presents the derived desired-state summary before plan/implement and requires explicit **Accept intent / Request changes / Stop**; unresolved questio",
       "coverage": "covered",
       "named_checks": [
         {
-          "name": "the_gated_loop_asks_the_operator_to_approve_the_plan_before_implement_and_record",
+          "name": "dismissed_intent_resumes_without_repeating_an_accepted_desired_state_gate",
           "file": "test/gated-loop.test.ts",
-          "test_title": "the gated loop asks the operator to approve the plan before implement and records the approval",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^the gated loop asks the operator to approve the plan before implement and records the approval$' test/gated-loop.test.ts",
-          "observable": "plan approval with the stack.json summary and file path in the dialog before the first write; approval.result node plan-approval precedes the release approval; the waiting-on-you notification"
+          "test_title": "dismissed intent resumes without repeating an accepted desired-state gate",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^dismissed intent resumes without repeating an accepted desired-state gate$' test/gated-loop.test.ts",
+          "observable": "dismissal blocks implementation; resume records one accepted desired-state gate and completed runs never ask again"
         }
       ],
       "failure_route": "Reopen RP-05 for AC-02.8; RP-19 does not patch feature behavior"
@@ -942,15 +989,15 @@
       "primary_owner": "RP-05",
       "prd_us": "US-02",
       "uat_row": "UAT-02",
-      "summary": "Request changes requires non-empty feedback (at most 4000 characters), records it in `approval.result.feedback` and the run state `plan.feedback`, and re-runs p",
+      "summary": "Desired-state change requests or unresolved decisions collect non-empty clarification and rerun specify or plan-check. After detailed intent is accepted, planne",
       "coverage": "covered",
       "named_checks": [
         {
-          "name": "request_changes_re_plans_with_the_operator_s_feedback_and_refuses_empty_feedback",
+          "name": "intent_clarification_reaches_a_fresh_proposer_before_any_implementation",
           "file": "test/gated-loop.test.ts",
-          "test_title": "request changes re-plans with the operator's feedback and refuses empty feedback",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^request changes re-plans with the operator's feedback and refuses empty feedback$' test/gated-loop.test.ts",
-          "observable": "empty feedback refused and re-asked; feedback recorded in approval.result.feedback and checkpoint plan.feedback; the re-run planner prompt carries the feedback; the re-planned stack.json is the one frozen before implement"
+          "test_title": "intent clarification reaches a fresh proposer before any implementation",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^intent clarification reaches a fresh proposer before any implementation$' test/gated-loop.test.ts",
+          "observable": "blank clarification never revises intent; meaningful feedback reaches a fresh proposer and the accepted requirements before implementation"
         }
       ],
       "failure_route": "Reopen RP-05 for AC-02.9; RP-19 does not patch feature behavior"
@@ -961,7 +1008,7 @@
       "primary_owner": "RP-05",
       "prd_us": "US-02",
       "uat_row": "UAT-02",
-      "summary": "Plan revisions are unbounded: the dialog shows `Revision N` and no cap; the operator is the only bound.",
+      "summary": "Execution revisions are unbounded and audited. Only planner/diagnostic roles may create, replace, split, supersede or reroute admissible tasks with revision com",
       "coverage": "covered",
       "named_checks": [
         {
@@ -980,15 +1027,15 @@
       "primary_owner": "RP-05",
       "prd_us": "US-02",
       "uat_row": "UAT-02",
-      "summary": "A human gate reached without dialog UI, or dismissed, ends `NEEDS_HUMAN` with recovery `approval` and the exact resume command; it is never answered by the harn",
+      "summary": "Missing UI or dismissed gated intent/release confirmation pauses `NEEDS_HUMAN` (`approval`) with the resume command, never an invented answer. Checkpoints retai",
       "coverage": "covered",
       "named_checks": [
         {
-          "name": "a_plan_gate_without_dialog_ui_stops_needs_human_with_the_resume_command_and_neve",
+          "name": "unattended_gated_intent_cannot_authorize_implementation",
           "file": "test/gated-loop.test.ts",
-          "test_title": "a plan gate without dialog UI stops NEEDS_HUMAN with the resume command and never answers itself",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^a plan gate without dialog UI stops NEEDS_HUMAN with the resume command and never answers itself$' test/gated-loop.test.ts",
-          "observable": "hasUI false: NEEDS_HUMAN, recovery approval, reason ends with the resume command, one loop.terminal, no approval.result, implement never ran"
+          "test_title": "unattended gated intent cannot authorize implementation",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^unattended gated intent cannot authorize implementation$' test/gated-loop.test.ts",
+          "observable": "without dialog UI: NEEDS_HUMAN approval, no implementation, no self-generated approval or accepted refinement"
         }
       ],
       "failure_route": "Reopen RP-05 for AC-02.11; RP-19 does not patch feature behavior"
@@ -1037,15 +1084,15 @@
       "primary_owner": "RP-05",
       "prd_us": "US-03",
       "uat_row": "UAT-03",
-      "summary": "A `plan-check` node verifies the plan still matches the repo; if not, status is `NEEDS_HUMAN` in autopilot and a replan prompt in gated.",
+      "summary": "`plan-check` reads the frozen plan and repository to produce the same additive desired-state proposal as specify. The host resolves initial intent consent/deleg",
       "coverage": "covered",
       "named_checks": [
         {
-          "name": "a_stale_stack_stops_implement_and_re_freezing_it_lets_the_round_proceed",
+          "name": "a_stale_ownership_map_is_repaired_by_the_planner_before_implementation_without_a",
           "file": "test/gated-loop.test.ts",
-          "test_title": "a stale stack stops implement, and re-freezing it lets the round proceed",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^a stale stack stops implement, and re-freezing it lets the round proceed$' test/gated-loop.test.ts",
-          "observable": "plan-check style freshness: stale plan/stack stops with NEEDS_HUMAN or replan path"
+          "test_title": "a stale ownership map is repaired by the planner before implementation without another approval gate",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^a stale ownership map is repaired by the planner before implementation without another approval gate$' test/gated-loop.test.ts",
+          "observable": "stale ownership never authorizes a write; planner repairs the map without renewing accepted desired-state approval"
         }
       ],
       "failure_route": "Reopen RP-05 for AC-03.3; RP-19 does not patch feature behavior"
@@ -1056,15 +1103,15 @@
       "primary_owner": "RP-05",
       "prd_us": "US-03",
       "uat_row": "UAT-03",
-      "summary": "Changing acceptance criteria mid-run is a mode violation and stops autopilot.",
+      "summary": "Changing accepted criteria, bounds, constraints or quality commands is not a repair operation. Protected-intent mismatch pauses for operator authority; the impl",
       "coverage": "covered",
       "named_checks": [
         {
-          "name": "narrative_acceptance_criteria_refuse_forced_autopilot_before_graph_load",
-          "file": "test/autopilot.test.ts",
-          "test_title": "narrative acceptance criteria refuse forced autopilot before graph load",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^narrative acceptance criteria refuse forced autopilot before graph load$' test/autopilot.test.ts",
-          "observable": "changing acceptance mid-run / non-executable AC is a mode violation that stops autopilot"
+          "name": "resume_rejects_changed_accepted_intent_and_continues_only_after_the_accepted_con",
+          "file": "test/gated-loop.test.ts",
+          "test_title": "resume rejects changed accepted intent and continues only after the accepted contract is restored",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^resume rejects changed accepted intent and continues only after the accepted contract is restored$' test/gated-loop.test.ts",
+          "observable": "changed accepted success blocks all resumed nodes until the accepted contract is restored"
         }
       ],
       "failure_route": "Reopen RP-05 for AC-03.4; RP-19 does not patch feature behavior"
@@ -1075,15 +1122,15 @@
       "primary_owner": "RP-05",
       "prd_us": "US-04",
       "uat_row": "UAT-04",
-      "summary": "Autopilot is refused if any required AC lacks `check` and `bounds`. Refusal writes `ac.quality` of `partial` or `narrative` and does not load `coding-loop.auto.",
+      "summary": "Autopilot may perform initial desired-state discovery, but required acceptance must have executable checks and explicit bounds before engineering. Missing quali",
       "coverage": "covered",
       "named_checks": [
         {
-          "name": "narrative_acceptance_criteria_refuse_forced_autopilot_before_graph_load",
+          "name": "narrative_acceptance_cannot_authorize_autopilot_without_executable_checks",
           "file": "test/autopilot.test.ts",
-          "test_title": "narrative acceptance criteria refuse forced autopilot before graph load",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^narrative acceptance criteria refuse forced autopilot before graph load$' test/autopilot.test.ts",
-          "observable": "autopilot refused when AC lacks check+bounds; ac.quality partial/narrative recorded"
+          "test_title": "narrative acceptance cannot authorize autopilot without executable checks",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^narrative acceptance cannot authorize autopilot without executable checks$' test/autopilot.test.ts",
+          "observable": "narrative acceptance cannot authorize implementation or shipping and leaves HEAD unchanged"
         }
       ],
       "failure_route": "Reopen RP-05 for AC-04.1; RP-19 does not patch feature behavior"
@@ -1094,7 +1141,7 @@
       "primary_owner": "RP-05",
       "prd_us": "US-04",
       "uat_row": "UAT-04",
-      "summary": "Happy path has no `human` node. `release.approved` is written by a deterministic set node only when `test.passed && review.approved && bounds.held && fingerprin",
+      "summary": "The auto graph has no human release node. Final host verification precedes deterministic `release.set`, reached only with passed tests, approved review, held bo",
       "coverage": "covered",
       "named_checks": [
         {
@@ -1113,7 +1160,7 @@
       "primary_owner": "RP-05",
       "prd_us": "US-04",
       "uat_row": "UAT-04",
-      "summary": "Implementer does not write `verdict.json` or `release.approved`. `write_contract` is pinned to the calling agent, job, role, and declared contract path, so no o",
+      "summary": "Implementer cannot publish verdict, host evidence, goal statuses or release authority. Planner graph mutation preserves safety-node reachability, protected goal",
       "coverage": "covered",
       "named_checks": [
         {
@@ -1132,15 +1179,15 @@
       "primary_owner": "RP-05",
       "prd_us": "US-04",
       "uat_row": "UAT-04",
-      "summary": "Tester binds `evidence.json` to `git rev-parse HEAD`.",
+      "summary": "The host seals exact command/expectation, job, intent, candidate tree, verifier, cwd, timestamps, actual exit/signal and full stdout/stderr hashes. Re-reading v",
       "coverage": "covered",
       "named_checks": [
         {
-          "name": "task_evidence_and_verdict_schemas_match_live_payloads",
-          "file": "test/schema-conformance.test.ts",
-          "test_title": "task, evidence, and verdict schemas match live payloads",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^task, evidence, and verdict schemas match live payloads$' test/schema-conformance.test.ts",
-          "observable": "evidence.json binds to git HEAD per evidence schema"
+          "name": "real_host_receipts_honor_nonzero_expected_exits_and_preserve_complete_large_stdo",
+          "file": "test/verification.test.ts",
+          "test_title": "real host receipts honor nonzero expected exits and preserve complete large stdout/stderr",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^real host receipts honor nonzero expected exits and preserve complete large stdout/stderr$' test/verification.test.ts",
+          "observable": "actual command receipts validate against the evidence schema and preserve complete output bytes and hashes"
         }
       ],
       "failure_route": "Reopen RP-05 for AC-04.4; RP-19 does not patch feature behavior"
@@ -1151,7 +1198,7 @@
       "primary_owner": "RP-05",
       "prd_us": "US-04",
       "uat_row": "UAT-04",
-      "summary": "On success, status is `DONE` and a conventional commit is created on the job feature branch.",
+      "summary": "`DONE` requires every required AC and quality gate plus every declared journey's linked AC to pass for the current accepted intent/candidate, release approval, ",
       "coverage": "covered",
       "named_checks": [
         {
@@ -1170,7 +1217,7 @@
       "primary_owner": "RP-05",
       "prd_us": "US-04",
       "uat_row": "UAT-04",
-      "summary": "Push/deploy/delete/new-dependency attempts are denied and do not execute; a job that reaches one shows `NEEDS_HUMAN` with its recovery.",
+      "summary": "Policy hard denies, protected credential access and unavailable external authority remain boundaries. Only the scoped approved job-branch delivery path is permi",
       "coverage": "covered",
       "named_checks": [
         {
@@ -1208,7 +1255,7 @@
       "primary_owner": "RP-21",
       "prd_us": "US-05",
       "uat_row": "UAT-05",
-      "summary": "A failed round that repeats a witness — a review whose `output_fingerprint` or failing-AC set was seen before, or a failed test round whose evidence is identica",
+      "summary": "A repeated failed-test or review witness routes to plan with `repair.json` (round, reason, failing AC, evidence reference, witness, recovery decision and option",
       "coverage": "covered",
       "named_checks": [
         {
@@ -1227,15 +1274,15 @@
       "primary_owner": "RP-21",
       "prd_us": "US-05",
       "uat_row": "UAT-05",
-      "summary": "Rounds are unbounded. Two automatic re-plans are allowed per operator touch; the same witness repeating after them pauses `NEEDS_HUMAN` (`no_progress`), offerin",
+      "summary": "Rounds and repair attempts are unbounded; there is no two-replan allowance or mandatory no-progress approval prompt. Recovery decisions advance through diagnosi",
       "coverage": "covered",
       "named_checks": [
         {
-          "name": "no_progress_after_a_re_plan_pauses_needs_human_offering_guidance_keep_going_or_s",
+          "name": "repeated_real_command_failures_replan_without_changing_accepted_success",
           "file": "test/gated-loop.test.ts",
-          "test_title": "no progress after a re-plan pauses NEEDS_HUMAN offering guidance, keep going, or stop",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^no progress after a re-plan pauses NEEDS_HUMAN offering guidance, keep going, or stop$' test/gated-loop.test.ts",
-          "observable": "after two automatic re-plans the run pauses NEEDS_HUMAN (no_progress); the TUI select offers Give guidance / Keep going / Stop; unattended the pause stands with the resume command"
+          "test_title": "repeated real command failures replan without changing accepted success",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^repeated real command failures replan without changing accepted success$' test/gated-loop.test.ts",
+          "observable": "six real failing candidates trigger more than two strategy replans, preserve accepted success and complete without extra human gates"
         }
       ],
       "failure_route": "Reopen RP-21 for AC-05.3; RP-19 does not patch feature behavior"
@@ -1246,7 +1293,7 @@
       "primary_owner": "RP-21",
       "prd_us": "US-05",
       "uat_row": "UAT-05",
-      "summary": "A write outside `write_allow` pauses `NEEDS_HUMAN` (`bounds`) without a commit; the resume re-runs test.",
+      "summary": "A write outside accepted bounds routes to an `unsafe` blocker without ship. Its tasks and dependency descendants wait while independent ready work drains; resum",
       "coverage": "covered",
       "named_checks": [
         {
@@ -1265,15 +1312,15 @@
       "primary_owner": "RP-21",
       "prd_us": "US-05",
       "uat_row": "UAT-05",
-      "summary": "An untestable reviewer issue, or an approved review over failed or stale receipts, pauses `NEEDS_HUMAN` (`review`); the resume re-runs implement.",
+      "summary": "Ordinary blocked/repeated review or approval over failed/stale receipts routes to planner repair. Stale release evidence or previously delivered proof still req",
       "coverage": "covered",
       "named_checks": [
         {
-          "name": "an_untestable_reviewer_issue_stops_autopilot_at_needs_human",
+          "name": "an_untestable_reviewer_issue_returns_to_planning_and_can_recover_without_a_routi",
           "file": "test/autopilot.test.ts",
-          "test_title": "an untestable reviewer issue stops autopilot at NEEDS_HUMAN",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^an untestable reviewer issue stops autopilot at NEEDS_HUMAN$' test/autopilot.test.ts",
-          "observable": "untestable reviewer issue → NEEDS_HUMAN (review)"
+          "test_title": "an untestable reviewer issue returns to planning and can recover without a routine human gate",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^an untestable reviewer issue returns to planning and can recover without a routine human gate$' test/autopilot.test.ts",
+          "observable": "blocked review replans and reaches independently verified delivery without another human gate"
         }
       ],
       "failure_route": "Reopen RP-21 for AC-05.5; RP-19 does not patch feature behavior"
@@ -1360,15 +1407,15 @@
       "primary_owner": "RP-18",
       "prd_us": "US-06",
       "uat_row": "UAT-06",
-      "summary": "Theme `loop-amber` uses accent `#ff6a1a` on a dark board.",
+      "summary": "Historical theme registrations `loop-amber` and `protocol-blue` retain a dark, restrained palette; machine activity uses cool cyan (`#70ced1`), not amber-runnin",
       "coverage": "covered",
       "named_checks": [
         {
-          "name": "themes_use_the_required_protocol_accents",
-          "file": "test/harness.test.ts",
-          "test_title": "themes use the required protocol accents",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^themes use the required protocol accents$' test/harness.test.ts",
-          "observable": "loop-amber accent is #ff6a1a on a dark board"
+          "name": "automatic_retries_stay_cool_and_genuine_human_gates_receive_warm_emphasis",
+          "file": "test/operator-ui.test.ts",
+          "test_title": "automatic retries stay cool and genuine human gates receive warm emphasis",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^automatic retries stay cool and genuine human gates receive warm emphasis$' test/operator-ui.test.ts",
+          "observable": "rendered machine/retry activity stays cool while actual human gates use warm emphasis"
         }
       ],
       "failure_route": "Reopen RP-18 for AC-06.1; RP-19 does not patch feature behavior"
@@ -1379,15 +1426,15 @@
       "primary_owner": "RP-18",
       "prd_us": "US-06",
       "uat_row": "UAT-06",
-      "summary": "While a human node is paused, theme switches to `protocol-blue` accent `#3da9fc`.",
+      "summary": "Genuine human intervention uses warm peach (`#e9ad86`): a parked `NEEDS_HUMAN` run or an attended `RUNNING` gate with graph interruption and an explicit pending",
       "coverage": "covered",
       "named_checks": [
         {
-          "name": "human_pause_selects_protocol_blue_and_running_selects_loop_amber",
-          "file": "test/runtime-milestone.test.ts",
-          "test_title": "human pause selects protocol-blue and running selects loop-amber",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^human pause selects protocol-blue and running selects loop-amber$' test/runtime-milestone.test.ts",
-          "observable": "human pause switches theme to protocol-blue accent #3da9fc"
+          "name": "human_attention_follows_runtime_status_not_recoverable_repair_and_opens_the_sele",
+          "file": "test/command-centre.test.ts",
+          "test_title": "human attention follows runtime status, not recoverable repair, and opens the selected real job",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^human attention follows runtime status, not recoverable repair, and opens the selected real job$' test/command-centre.test.ts",
+          "observable": "human oversight appears only for actual attended or parked NEEDS_HUMAN work, never stale running metadata"
         }
       ],
       "failure_route": "Reopen RP-18 for AC-06.2; RP-19 does not patch feature behavior"
@@ -1402,10 +1449,10 @@
       "coverage": "covered",
       "named_checks": [
         {
-          "name": "amber_board_lights_exactly_one_current_stage_and_six_nonempty_file_lamps",
+          "name": "the_running_board_lights_exactly_one_current_stage_and_six_nonempty_file_lamps",
           "file": "test/operator-ui.test.ts",
-          "test_title": "amber board lights exactly one CURRENT stage and six nonempty file lamps",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^amber board lights exactly one CURRENT stage and six nonempty file lamps$' test/operator-ui.test.ts",
+          "test_title": "the running board lights exactly one CURRENT stage and six nonempty file lamps",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^the running board lights exactly one CURRENT stage and six nonempty file lamps$' test/operator-ui.test.ts",
           "observable": "widget shows LOOP name, MODE, ROUND, STAGE, NODE, GATE, STOP, FILES"
         }
       ],
@@ -1569,7 +1616,7 @@
       "primary_owner": "RP-14",
       "prd_us": "US-08",
       "uat_row": "UAT-08",
-      "summary": "Implementer on non-trivial work writes or updates a failing test and stores the red output in `evidence.json` before production code.",
+      "summary": "Implementer on non-trivial work writes or updates a failing test and captures red output before production code. This is development evidence, never permission ",
       "coverage": "covered",
       "named_checks": [
         {
@@ -1588,7 +1635,7 @@
       "primary_owner": "RP-14",
       "prd_us": "US-08",
       "uat_row": "UAT-08",
-      "summary": "Quality gates are exact commands from project `AGENTS.md` (or `task.json.quality_gates`).",
+      "summary": "Exact quality commands are discovered from the repository and frozen into protected intent (`task.json.quality_gates` mirrors it); a model cannot substitute eas",
       "coverage": "covered",
       "named_checks": [
         {
@@ -1763,10 +1810,10 @@
       "coverage": "covered",
       "named_checks": [
         {
-          "name": "no_official_provider_id_is_registered_so_none_can_receive_a_models_array",
+          "name": "official_catalogs_survive_pooled_key_login_replacement_pin_logout_and_offline_re",
           "file": "test/provider-contracts.test.ts",
-          "test_title": "no official provider id is registered, so none can receive a models array",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^no official provider id is registered, so none can receive a models array$' test/provider-contracts.test.ts",
+          "test_title": "official catalogs survive pooled key login, replacement, pin, logout, and offline refresh without account aliases",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^official catalogs survive pooled key login, replacement, pin, logout, and offline refresh without account aliases$' test/provider-contracts.test.ts",
           "observable": "official /model ids stay anthropic/<official-id>; no duplicate provider catalogs"
         }
       ],
@@ -1915,11 +1962,11 @@
       "coverage": "covered",
       "named_checks": [
         {
-          "name": "no_source_file_passes_a_models_array_to_an_official_provider_id",
+          "name": "loading_the_built_in_extension_preserves_every_official_provider_catalog",
           "file": "test/provider-contracts.test.ts",
-          "test_title": "no source file passes a models array to an official provider id",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^no source file passes a models array to an official provider id$' test/provider-contracts.test.ts",
-          "observable": "extensions do not pass models arrays for official anthropic/openai/… ids"
+          "test_title": "loading the built-in extension preserves every official provider catalog",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^loading the built-in extension preserves every official provider catalog$' test/provider-contracts.test.ts",
+          "observable": "the native extension factory leaves all seven official native catalogs unchanged, without network discovery or inference"
         }
       ],
       "failure_route": "Reopen RP-07 for AC-11.1; RP-19 does not patch feature behavior"
@@ -1930,15 +1977,57 @@
       "primary_owner": "RP-07",
       "prd_us": "US-11",
       "uat_row": "UAT-11",
-      "summary": "Cursor provider implements `refreshModels` and a short fallback list only for pre-sync emptiness.",
+      "summary": "Cursor uses a first-party adapter for Cursor's CLI protocol: authenticated `GetUsableModels` discovery and `AgentService/Run`, not Cloud Agent provisioning or a",
       "coverage": "covered",
       "named_checks": [
         {
-          "name": "cursor_keeps_a_bounded_bootstrap_list_and_pi_compatible_login_callbacks",
+          "name": "cursor_live_discovery_publishes_only_usable_ids_with_unknown_metadata_and_preser",
+          "file": "test/cursor-provider.test.ts",
+          "test_title": "Cursor live discovery publishes only usable IDs with unknown metadata and preserves native cache offline",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^Cursor live discovery publishes only usable IDs with unknown metadata and preserves native cache offline$' test/cursor-provider.test.ts",
+          "observable": "binary CLI-protocol discovery and native caching preserve real IDs and unknown metadata; loopback fixture, not authenticated vendor acceptance"
+        },
+        {
+          "name": "cursor_pending_polling_binds_fresh_browser_pkce_to_the_grant_without_publishing_",
+          "file": "test/cursor-auth.test.ts",
+          "test_title": "Cursor pending polling binds fresh browser PKCE to the grant without publishing the verifier",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^Cursor pending polling binds fresh browser PKCE to the grant without publishing the verifier$' test/cursor-auth.test.ts",
+          "observable": "real protocol-shaped PKCE/polling grant lifecycle; fixture transport"
+        },
+        {
+          "name": "cursor_refresh_rotates_only_a_returned_refresh_token_and_preserves_only_an_omitt",
+          "file": "test/cursor-auth.test.ts",
+          "test_title": "Cursor refresh rotates only a returned refresh token and preserves only an omitted rotation",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^Cursor refresh rotates only a returned refresh token and preserves only an omitted rotation$' test/cursor-auth.test.ts",
+          "observable": "refresh ownership and actual token rotation semantics"
+        },
+        {
+          "name": "cursor_successful_empty_discovery_clears_cache_failed_discovery_reports_error_wi",
+          "file": "test/cursor-provider.test.ts",
+          "test_title": "Cursor successful empty discovery clears cache; failed discovery reports error without publishing",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^Cursor successful empty discovery clears cache; failed discovery reports error without publishing$' test/cursor-provider.test.ts",
+          "observable": "empty and failed discovery remain distinct without invented fallback models"
+        },
+        {
+          "name": "cursor_yields_native_tools_and_replays_genuine_results_across_the_native_permiss",
+          "file": "test/cursor-provider.test.ts",
+          "test_title": "Cursor yields native tools and replays genuine results across the native permission hook",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^Cursor yields native tools and replays genuine results across the native permission hook$' test/cursor-provider.test.ts",
+          "observable": "native execution permission and true tool-result continuation"
+        },
+        {
+          "name": "cursor_refuses_cloud_subagent_execution_and_hosted_tool_completions",
+          "file": "test/cursor-provider.test.ts",
+          "test_title": "Cursor refuses cloud/subagent execution and hosted tool completions",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^Cursor refuses cloud/subagent execution and hosted tool completions$' test/cursor-provider.test.ts",
+          "observable": "no replacement Cloud/subagent executor or invented hosted success"
+        },
+        {
+          "name": "cursor_registration_never_promotes_a_stored_api_key_to_oauth_or_invents_bootstra",
           "file": "test/provider-contracts.test.ts",
-          "test_title": "Cursor keeps a bounded bootstrap list and Pi-compatible login callbacks",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^Cursor keeps a bounded bootstrap list and Pi-compatible login callbacks$' test/provider-contracts.test.ts",
-          "observable": "Cursor implements refreshModels and short fallback only for pre-sync emptiness"
+          "test_title": "Cursor registration never promotes a stored API key to OAuth or invents bootstrap models",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^Cursor registration never promotes a stored API key to OAuth or invents bootstrap models$' test/provider-contracts.test.ts",
+          "observable": "legacy stored keys are not silently converted to subscription grants"
         }
       ],
       "failure_route": "Reopen RP-07 for AC-11.2; RP-19 does not patch feature behavior"
@@ -2215,7 +2304,7 @@
       "primary_owner": "RP-01",
       "prd_us": "US-14",
       "uat_row": "UAT-14",
-      "summary": "Kill mid-implementer leaves a checkpoint that `/kpi status` can read. Resume is in scope for M7.",
+      "summary": "Kill mid-implementer leaves a checkpoint with actual topology, revision audit, superseded-task history, blockers, recoveries and pending result routes. Resume u",
       "coverage": "covered",
       "named_checks": [
         {
@@ -2390,10 +2479,10 @@
       "coverage": "covered",
       "named_checks": [
         {
-          "name": "forbidden_runtime_dependencies_and_official_model_overlays_remain_absent",
+          "name": "repository_manifests_exclude_prohibited_harness_footer_agent_bus_and_research_de",
           "file": "test/milestone.test.ts",
-          "test_title": "forbidden runtime dependencies and official model overlays remain absent",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^forbidden runtime dependencies and official model overlays remain absent$' test/milestone.test.ts",
+          "test_title": "repository manifests exclude prohibited harness, footer, agent-bus, and research dependencies",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^repository manifests exclude prohibited harness, footer, agent-bus, and research dependencies$' test/milestone.test.ts",
           "observable": "no runtime dependency on oh-my-pi or community footer packages"
         }
       ],
@@ -2443,15 +2532,22 @@
       "primary_owner": "RP-18",
       "prd_us": "US-16",
       "uat_row": "UAT-16",
-      "summary": "While a job is active, a widget above the editor shows the amber board: header (`K-π`, MODE, JOB, ROUND), context-layer lamps, stages 01–08 with current stage l",
+      "summary": "While a job is active, the compact above-editor widget retains header (`K-π`, MODE, JOB, ROUND), context-layer lamps, stages 01–08 with current stage identified",
       "coverage": "covered",
       "named_checks": [
         {
-          "name": "amber_board_lights_exactly_one_current_stage_and_six_nonempty_file_lamps",
+          "name": "automatic_retries_stay_cool_and_genuine_human_gates_receive_warm_emphasis",
           "file": "test/operator-ui.test.ts",
-          "test_title": "amber board lights exactly one CURRENT stage and six nonempty file lamps",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^amber board lights exactly one CURRENT stage and six nonempty file lamps$' test/operator-ui.test.ts",
-          "observable": "active job shows amber board with K-π MODE JOB ROUND stages and file lamps"
+          "test_title": "automatic retries stay cool and genuine human gates receive warm emphasis",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^automatic retries stay cool and genuine human gates receive warm emphasis$' test/operator-ui.test.ts",
+          "observable": "automatic work and retry state use cool machine emphasis; actual human gates use warm attention"
+        },
+        {
+          "name": "the_running_board_lights_exactly_one_current_stage_and_six_nonempty_file_lamps",
+          "file": "test/operator-ui.test.ts",
+          "test_title": "the running board lights exactly one CURRENT stage and six nonempty file lamps",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^the running board lights exactly one CURRENT stage and six nonempty file lamps$' test/operator-ui.test.ts",
+          "observable": "truthful running widget fields and file lamps"
         }
       ],
       "failure_route": "Reopen RP-18 for AC-16.1; RP-19 does not patch feature behavior"
@@ -2481,15 +2577,22 @@
       "primary_owner": "RP-18",
       "prd_us": "US-16",
       "uat_row": "UAT-16",
-      "summary": "When a human node is paused, the board flips to protocol-blue and shows SHARED RUN STATE, STOP STATES with APPROVAL lit, THREE LAWS, and WAITING ON OPERATOR wit",
+      "summary": "Authoritative human intervention uses warm emphasis and shows the pending question with WAITING ON OPERATOR, SHARED RUN STATE and STOP STATES with derived APPRO",
       "coverage": "covered",
       "named_checks": [
         {
-          "name": "protocol_blue_pause_derives_approval_lamp_without_persisting_approval_status",
+          "name": "stale_questions_and_recoverable_interruptions_never_invent_a_human_gate",
           "file": "test/operator-ui.test.ts",
-          "test_title": "protocol-blue pause derives APPROVAL lamp without persisting APPROVAL status",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^protocol-blue pause derives APPROVAL lamp without persisting APPROVAL status$' test/operator-ui.test.ts",
-          "observable": "human pause flips board to protocol-blue with SHARED RUN STATE and STOP STATE"
+          "test_title": "stale questions and recoverable interruptions never invent a human gate",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^stale questions and recoverable interruptions never invent a human gate$' test/operator-ui.test.ts",
+          "observable": "interruption alone and stale metadata on RUNNING/DONE/STOPPED never invent human attention; genuine pending gates remain visible"
+        },
+        {
+          "name": "an_attended_human_gate_derives_approval_without_persisting_an_approval_status",
+          "file": "test/operator-ui.test.ts",
+          "test_title": "an attended human gate derives APPROVAL without persisting an APPROVAL status",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^an attended human gate derives APPROVAL without persisting an APPROVAL status$' test/operator-ui.test.ts",
+          "observable": "pending human question and derived approval lamp remain visible"
         }
       ],
       "failure_route": "Reopen RP-18 for AC-16.3; RP-19 does not patch feature behavior"
@@ -2538,7 +2641,7 @@
       "primary_owner": "RP-18",
       "prd_us": "US-16",
       "uat_row": "UAT-16",
-      "summary": "Pixel match to the JPEGs is not required. Required fields in US-25 are. Narrow terminals may wrap. See `visual-targets.md` §honesty.",
+      "summary": "Pixel matching is not required. The widget/printed board retain US-25's required fields, with current stage and STOP visible at narrow widths. Jobs home retains",
       "coverage": "covered",
       "named_checks": [
         {
@@ -2576,15 +2679,36 @@
       "primary_owner": "RP-18",
       "prd_us": "US-16",
       "uat_row": "UAT-16",
-      "summary": "`/kpi status` in the TUI opens the Command Centre as a full-width overlay with HOME (STAGES 01–08, LIVE › <NN stage>, TELEMETRY without cap tokens, SHARED RUN S",
+      "summary": "`/kpi status` opens a full-width, model-free Command Centre: HOME groups actual Jobs as NEEDS YOU (`NEEDS_HUMAN`), RUNNING, DONE and separately STOPPED, with se",
       "coverage": "covered",
       "named_checks": [
         {
-          "name": "the_status_overlay_selects_stages_with_arrow_keys_opens_the_node_detail_on_enter",
+          "name": "home_details_and_session_remain_navigable_without_overflowing_narrow_terminals",
           "file": "test/command-centre.test.ts",
-          "test_title": "the status overlay selects stages with arrow keys, opens the node detail on enter and closes on q",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^the status overlay selects stages with arrow keys, opens the node detail on enter and closes on q$' test/command-centre.test.ts",
-          "observable": "/kpi status opens the Command Centre: arrow keys select a stage, enter opens the NODE detail, q closes"
+          "test_title": "home, details and session remain navigable without overflowing narrow terminals",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^home, details and session remain navigable without overflowing narrow terminals$' test/command-centre.test.ts",
+          "observable": "Jobs home, selected-job details and session navigation preserve wireframe structure and narrow-terminal bounds"
+        },
+        {
+          "name": "help_intercepts_navigation_and_input_commands_escape_dismisses_it_without_closin",
+          "file": "test/command-centre.test.ts",
+          "test_title": "help intercepts navigation and input commands; escape dismisses it without closing",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^help intercepts navigation and input commands; escape dismisses it without closing$' test/command-centre.test.ts",
+          "observable": "help intercepts navigation and dismisses independently"
+        },
+        {
+          "name": "human_attention_follows_runtime_status_not_recoverable_repair_and_opens_the_sele",
+          "file": "test/command-centre.test.ts",
+          "test_title": "human attention follows runtime status, not recoverable repair, and opens the selected real job",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^human attention follows runtime status, not recoverable repair, and opens the selected real job$' test/command-centre.test.ts",
+          "observable": "fleet selection cannot stop the wrong job and opens the selected real identity"
+        },
+        {
+          "name": "commands_stay_in_the_overlay_and_ordinary_text_closes_before_sending_to_chat",
+          "file": "test/command-centre.test.ts",
+          "test_title": "commands stay in the overlay and ordinary text closes before sending to chat",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^commands stay in the overlay and ordinary text closes before sending to chat$' test/command-centre.test.ts",
+          "observable": "verify/stop execute once; ordinary text is sent only after overlay closes"
         }
       ],
       "failure_route": "Reopen RP-18 for AC-16.8; RP-19 does not patch feature behavior"
@@ -2595,15 +2719,22 @@
       "primary_owner": "RP-18",
       "prd_us": "US-16",
       "uat_row": "UAT-16",
-      "summary": "The Command Centre is live mid-run: while the run is `RUNNING` it re-reads the run files on the same 1 s tick as the widget (run files every fifth tick), paints",
+      "summary": "The Command Centre refreshes on the 1 s ticker (run-file metadata every fifth tick), serializes slow reads and surfaces read errors without throwing; later tick",
       "coverage": "covered",
       "named_checks": [
         {
-          "name": "the_command_centre_follows_a_running_job_on_the_injected_tick_and_stops_ticking_",
+          "name": "fleet_refresh_stays_live_when_the_opened_job_ends_and_selection_survives_snapsho",
           "file": "test/command-centre.test.ts",
-          "test_title": "the command centre follows a running job on the injected tick and stops ticking when the job ends",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^the command centre follows a running job on the injected tick and stops ticking when the job ends$' test/command-centre.test.ts",
-          "observable": "while RUNNING the centre re-reads run files on the BOARD_TICK_MS tick, paints EVENTS ✕ <code> on a read failure, and stops ticking when the run ends or the job is gone"
+          "test_title": "fleet refresh stays live when the opened job ends and selection survives snapshot order changes",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^fleet refresh stays live when the opened job ends and selection survives snapshot order changes$' test/command-centre.test.ts",
+          "observable": "fleet refresh survives a selected job finishing and preserves selected identity when snapshots reorder"
+        },
+        {
+          "name": "refresh_recovers_after_read_failure_serializes_slow_reads_and_stops_after_a_term",
+          "file": "test/command-centre.test.ts",
+          "test_title": "refresh recovers after read failure, serializes slow reads, and stops after a terminal local result",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^refresh recovers after read failure, serializes slow reads, and stops after a terminal local result$' test/command-centre.test.ts",
+          "observable": "read failure recovers without concurrent reads; local-only terminal ticker disposes"
         }
       ],
       "failure_route": "Reopen RP-18 for AC-16.9; RP-19 does not patch feature behavior"
@@ -2842,7 +2973,7 @@
       "primary_owner": "RP-16",
       "prd_us": "US-19",
       "uat_row": "UAT-19",
-      "summary": "Ship todo cannot complete unless `verdict.json.approved == true` and evidence is fresh.",
+      "summary": "Ship todo cannot complete from a verdict alone: required host goal coverage, fresh candidate proof, release authority and verified delivery are necessary.",
       "coverage": "covered",
       "named_checks": [
         {
@@ -2918,15 +3049,15 @@
       "primary_owner": "RP-16",
       "prd_us": "US-20",
       "uat_row": "UAT-20",
-      "summary": "Those playbooks do not merge to origin. Terminal is `DONE` + local commit per K-π mode.",
+      "summary": "These playbooks cannot merge to origin or bypass the graph's release and host-verification boundaries. `DONE` requires the same verified one-commit/delivery con",
       "coverage": "covered",
       "named_checks": [
         {
-          "name": "arena_and_swarm_never_exceed_the_bus_s_own_worker_cap",
-          "file": "test/kstack-runtime.test.ts",
-          "test_title": "arena and swarm never exceed the bus's own worker cap",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^arena and swarm never exceed the bus's own worker cap$' test/kstack-runtime.test.ts",
-          "observable": "those playbooks do not merge to origin; terminal is DONE + local commit"
+          "name": "the_ship_node_commits_on_the_job_branch_pushes_only_that_branch_and_opens_the_pu",
+          "file": "test/gated-loop.test.ts",
+          "test_title": "the ship node commits on the job branch, pushes only that branch, and opens the pull request",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^the ship node commits on the job branch, pushes only that branch, and opens the pull request$' test/gated-loop.test.ts",
+          "observable": "delivery uses the exact job branch and pull request rather than merging or pushing another branch"
         }
       ],
       "failure_route": "Reopen RP-16 for AC-20.2; RP-19 does not patch feature behavior"
@@ -2956,15 +3087,15 @@
       "primary_owner": "RP-16",
       "prd_us": "US-20",
       "uat_row": "UAT-20",
-      "summary": "Swarm/arena honor `maxConcurrency = 2`.",
+      "summary": "Swarm/arena honor the configured graph concurrency and native worker admission limits, with one mutating owner per checkout. Static playbook wording cannot crea",
       "coverage": "covered",
       "named_checks": [
         {
-          "name": "caps_hold_and_five_concurrent_spawns_start_exactly_two",
-          "file": "test/bus.test.ts",
-          "test_title": "caps hold, and five concurrent spawns start exactly two",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^caps hold, and five concurrent spawns start exactly two$' test/bus.test.ts",
-          "observable": "swarm/arena honor maxConcurrency = 2"
+          "name": "worker_admission_preserves_one_writer_and_exclusive_paths_within_configured_capa",
+          "file": "test/milestone.test.ts",
+          "test_title": "worker admission preserves one writer and exclusive paths within configured capacity",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^worker admission preserves one writer and exclusive paths within configured capacity$' test/milestone.test.ts",
+          "observable": "native configured worker capacity and exclusive mutating ownership are enforced"
         }
       ],
       "failure_route": "Reopen RP-16 for AC-20.4; RP-19 does not patch feature behavior"
@@ -3127,7 +3258,7 @@
       "primary_owner": "RP-15",
       "prd_us": "US-22",
       "uat_row": "UAT-22",
-      "summary": "A new runtime dependency not named in `task.json` fails bounds and cannot ship.",
+      "summary": "A new runtime dependency outside protected intent fails bounds and cannot ship; declaring one in a mutable candidate/task artifact is not authorization.",
       "coverage": "covered",
       "named_checks": [
         {
@@ -3245,10 +3376,10 @@
       "coverage": "covered",
       "named_checks": [
         {
-          "name": "forbidden_runtime_dependencies_and_official_model_overlays_remain_absent",
+          "name": "repository_manifests_exclude_prohibited_harness_footer_agent_bus_and_research_de",
           "file": "test/milestone.test.ts",
-          "test_title": "forbidden runtime dependencies and official model overlays remain absent",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^forbidden runtime dependencies and official model overlays remain absent$' test/milestone.test.ts",
+          "test_title": "repository manifests exclude prohibited harness, footer, agent-bus, and research dependencies",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^repository manifests exclude prohibited harness, footer, agent-bus, and research dependencies$' test/milestone.test.ts",
           "observable": "package.json has no pi-intercom, pi-mesh, pi-agents-talk-to-each-other, pi-bus, pi-side-agents"
         }
       ],
@@ -3450,14 +3581,14 @@
       "primary_owner": "RP-18",
       "prd_us": "US-25",
       "uat_row": "UAT-25",
-      "summary": "Required fields always present when a job is active: brand `K-π`, MODE, JOB, ROUND, stages 01–08, PASS/FAIL, six file lamps, STOP.",
+      "summary": "The active-job widget and printed board retain brand `K-π`, MODE, JOB, ROUND, stages 01–08, PASS/FAIL, six file lamps and STOP. Jobs home/detail placement follo",
       "coverage": "covered",
       "named_checks": [
         {
-          "name": "amber_board_lights_exactly_one_current_stage_and_six_nonempty_file_lamps",
+          "name": "the_running_board_lights_exactly_one_current_stage_and_six_nonempty_file_lamps",
           "file": "test/operator-ui.test.ts",
-          "test_title": "amber board lights exactly one CURRENT stage and six nonempty file lamps",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^amber board lights exactly one CURRENT stage and six nonempty file lamps$' test/operator-ui.test.ts",
+          "test_title": "the running board lights exactly one CURRENT stage and six nonempty file lamps",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^the running board lights exactly one CURRENT stage and six nonempty file lamps$' test/operator-ui.test.ts",
           "observable": "required fields when job active: brand K-π, MODE, JOB, ROUND, stages 01–08, PATH, STOP, file lamps"
         }
       ],
@@ -3473,10 +3604,10 @@
       "coverage": "covered",
       "named_checks": [
         {
-          "name": "protocol_blue_pause_derives_approval_lamp_without_persisting_approval_status",
+          "name": "an_attended_human_gate_derives_approval_without_persisting_an_approval_status",
           "file": "test/operator-ui.test.ts",
-          "test_title": "protocol-blue pause derives APPROVAL lamp without persisting APPROVAL status",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^protocol-blue pause derives APPROVAL lamp without persisting APPROVAL status$' test/operator-ui.test.ts",
+          "test_title": "an attended human gate derives APPROVAL without persisting an APPROVAL status",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^an attended human gate derives APPROVAL without persisting an APPROVAL status$' test/operator-ui.test.ts",
           "observable": "paused human node shows WAITING ON OPERATOR plus pending question"
         }
       ],
@@ -3511,10 +3642,10 @@
       "coverage": "covered",
       "named_checks": [
         {
-          "name": "amber_board_lights_exactly_one_current_stage_and_six_nonempty_file_lamps",
+          "name": "the_running_board_lights_exactly_one_current_stage_and_six_nonempty_file_lamps",
           "file": "test/operator-ui.test.ts",
-          "test_title": "amber board lights exactly one CURRENT stage and six nonempty file lamps",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^amber board lights exactly one CURRENT stage and six nonempty file lamps$' test/operator-ui.test.ts",
+          "test_title": "the running board lights exactly one CURRENT stage and six nonempty file lamps",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^the running board lights exactly one CURRENT stage and six nonempty file lamps$' test/operator-ui.test.ts",
           "observable": "matching JPEG pixels not required; missing a required field fails the story"
         }
       ],
@@ -3530,10 +3661,10 @@
       "coverage": "covered",
       "named_checks": [
         {
-          "name": "no_official_provider_id_is_registered_so_none_can_receive_a_models_array",
+          "name": "native_coding_pools_resolve_only_their_documented_key_environment_and_keep_built",
           "file": "test/provider-contracts.test.ts",
-          "test_title": "no official provider id is registered, so none can receive a models array",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^no official provider id is registered, so none can receive a models array$' test/provider-contracts.test.ts",
+          "test_title": "native coding pools resolve only their documented key environment and keep built-in endpoints",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^native coding pools resolve only their documented key environment and keep built-in endpoints$' test/provider-contracts.test.ts",
           "observable": "official pool ids only for zai / zai-coding-cn / kimi-coding via built-in providers"
         }
       ],
@@ -3554,6 +3685,13 @@
           "test_title": "each provider notice appears once per new slot and never after acceptance",
           "runner": "node --test --experimental-strip-types --test-name-pattern '^each provider notice appears once per new slot and never after acceptance$' test/accounts-commands.test.ts",
           "observable": "/accounts login zai and kimi-coding add slots without freezing catalogs"
+        },
+        {
+          "name": "official_catalogs_survive_pooled_key_login_replacement_pin_logout_and_offline_re",
+          "file": "test/provider-contracts.test.ts",
+          "test_title": "official catalogs survive pooled key login, replacement, pin, logout, and offline refresh without account aliases",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^official catalogs survive pooled key login, replacement, pin, logout, and offline refresh without account aliases$' test/provider-contracts.test.ts",
+          "observable": "native key login and independent pooled slots preserve official catalog identities"
         }
       ],
       "failure_route": "Reopen RP-07 for AC-26.2; RP-19 does not patch feature behavior"
@@ -3587,10 +3725,10 @@
       "coverage": "covered",
       "named_checks": [
         {
-          "name": "no_source_file_passes_a_models_array_to_an_official_provider_id",
+          "name": "official_catalogs_survive_pooled_key_login_replacement_pin_logout_and_offline_re",
           "file": "test/provider-contracts.test.ts",
-          "test_title": "no source file passes a models array to an official provider id",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^no source file passes a models array to an official provider id$' test/provider-contracts.test.ts",
+          "test_title": "official catalogs survive pooled key login, replacement, pin, logout, and offline refresh without account aliases",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^official catalogs survive pooled key login, replacement, pin, logout, and offline refresh without account aliases$' test/provider-contracts.test.ts",
           "observable": "model ids stay zai/<official>, kimi-coding/<official>; new models via official refresh"
         }
       ],
@@ -3606,10 +3744,10 @@
       "coverage": "covered",
       "named_checks": [
         {
-          "name": "no_official_provider_id_is_registered_so_none_can_receive_a_models_array",
+          "name": "native_coding_pools_resolve_only_their_documented_key_environment_and_keep_built",
           "file": "test/provider-contracts.test.ts",
-          "test_title": "no official provider id is registered, so none can receive a models array",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^no official provider id is registered, so none can receive a models array$' test/provider-contracts.test.ts",
+          "test_title": "native coding pools resolve only their documented key environment and keep built-in endpoints",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^native coding pools resolve only their documented key environment and keep built-in endpoints$' test/provider-contracts.test.ts",
           "observable": "do not hand-roll api.z.ai coding path in models.json; use Pi built-in zai"
         }
       ],
@@ -3625,10 +3763,10 @@
       "coverage": "covered",
       "named_checks": [
         {
-          "name": "no_official_provider_id_is_registered_so_none_can_receive_a_models_array",
+          "name": "native_coding_pools_resolve_only_their_documented_key_environment_and_keep_built",
           "file": "test/provider-contracts.test.ts",
-          "test_title": "no official provider id is registered, so none can receive a models array",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^no official provider id is registered, so none can receive a models array$' test/provider-contracts.test.ts",
+          "test_title": "native coding pools resolve only their documented key environment and keep built-in endpoints",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^native coding pools resolve only their documented key environment and keep built-in endpoints$' test/provider-contracts.test.ts",
           "observable": "Kimi Coding Plan is kimi-coding, not moonshot Open Platform"
         }
       ],
@@ -3891,10 +4029,10 @@
       "coverage": "covered",
       "named_checks": [
         {
-          "name": "forbidden_runtime_dependencies_and_official_model_overlays_remain_absent",
+          "name": "repository_manifests_exclude_prohibited_harness_footer_agent_bus_and_research_de",
           "file": "test/milestone.test.ts",
-          "test_title": "forbidden runtime dependencies and official model overlays remain absent",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^forbidden runtime dependencies and official model overlays remain absent$' test/milestone.test.ts",
+          "test_title": "repository manifests exclude prohibited harness, footer, agent-bus, and research dependencies",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^repository manifests exclude prohibited harness, footer, agent-bus, and research dependencies$' test/milestone.test.ts",
           "observable": "package.json has no exa-js or @perplexity-ai/perplexity_ai runtime dependency"
         }
       ],
@@ -4039,7 +4177,7 @@
       "primary_owner": "RP-10",
       "prd_us": "US-29",
       "uat_row": "UAT-29",
-      "summary": "Implement pauses `NEEDS_HUMAN` (`research`) if research files are missing or older than the current `task.json` hash.",
+      "summary": "Research must bind to the accepted task/intent hash. The driver refreshes it before specification/planning and checks it before implement; missing or stale file",
       "coverage": "covered",
       "named_checks": [
         {
@@ -4115,7 +4253,7 @@
       "primary_owner": "RP-11",
       "prd_us": "US-30",
       "uat_row": "UAT-30",
-      "summary": "Plan writes `stack.json` with `folder`, `interface`, `allowed_paths`, `scaffold_first` per module.",
+      "summary": "Plan writes version-1 `stack.json` with `shape: \"dune\"`, root, delivery and modules declaring `id`, non-empty `purpose`, `folder`, `interface`, `allowed_paths` ",
       "coverage": "covered",
       "named_checks": [
         {
@@ -4134,7 +4272,7 @@
       "primary_owner": "RP-11",
       "prd_us": "US-30",
       "uat_row": "UAT-30",
-      "summary": "Implement `claim_path` outside the current module folder + test twin is refused as an `UNSAFE` claim and denied; that boundary is the implementer's `write_allow",
+      "summary": "Only the selected module's explicit `allowed_paths` grants writes or `claim_path`; a folder label or inferred test twin grants nothing. Claims and implement bou",
       "coverage": "covered",
       "named_checks": [
         {
@@ -4153,7 +4291,7 @@
       "primary_owner": "RP-11",
       "prd_us": "US-30",
       "uat_row": "UAT-30",
-      "summary": "Feature playbooks copy the dune checklist. `no-stack` playbooks (typo, unslop) are exempt.",
+      "summary": "Feature work requires a fresh valid ownership map before writes. Only the named typo, unslop and comment-strip playbooks are exempt; planner repair cannot silen",
       "coverage": "covered",
       "named_checks": [
         {
@@ -4172,15 +4310,29 @@
       "primary_owner": "RP-11",
       "prd_us": "US-30",
       "uat_row": "UAT-30",
-      "summary": "Top-level `utils`, `helpers`, `common`, or `misc` without a tight purpose fails the plan gate.",
+      "summary": "Every feature, including one mapped to an existing generic folder, declares a non-empty purpose and explicit ownership prefix. Empty purposes and catch-all owne",
       "coverage": "covered",
       "named_checks": [
         {
-          "name": "layer_folders_are_nested_only_and_generic_folders_need_a_tight_purpose",
+          "name": "existing_python_layers_and_feature_names_retain_explicit_ownership_without_layou",
           "file": "test/stack.test.ts",
-          "test_title": "layer folders are nested-only and generic folders need a tight purpose",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^layer folders are nested-only and generic folders need a tight purpose$' test/stack.test.ts",
-          "observable": "top-level utils/helpers/common/misc without tight purpose fails plan gate"
+          "test_title": "existing Python layers and feature names retain explicit ownership without layout ceremony",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^existing Python layers and feature names retain explicit ownership without layout ceremony$' test/stack.test.ts",
+          "observable": "existing layer and root layouts retain explicit path ownership rather than being rejected by folder naming"
+        },
+        {
+          "name": "stack_schema_accepts_explicit_existing_layout_ownership_and_rejects_missing_owne",
+          "file": "test/schema-conformance.test.ts",
+          "test_title": "stack schema accepts explicit existing-layout ownership and rejects missing ownership shape",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^stack schema accepts explicit existing-layout ownership and rejects missing ownership shape$' test/schema-conformance.test.ts",
+          "observable": "empty purpose or missing ownership is rejected without imposing folder names"
+        },
+        {
+          "name": "unknown_and_cyclic_dependencies_fail_while_shared_ownership_is_explicitly_declar",
+          "file": "test/stack.test.ts",
+          "test_title": "unknown and cyclic dependencies fail while shared ownership is explicitly declared",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^unknown and cyclic dependencies fail while shared ownership is explicitly declared$' test/stack.test.ts",
+          "observable": "catch-all ownership and invalid dependency graphs are refused"
         }
       ],
       "failure_route": "Reopen RP-11 for AC-30.4; RP-19 does not patch feature behavior"
@@ -4191,15 +4343,15 @@
       "primary_owner": "RP-11",
       "prd_us": "US-30",
       "uat_row": "UAT-30",
-      "summary": "Scaffold creates the feature folder, interface file, and test twin before behaviour.",
+      "summary": "Optional `module.scaffold` creates only exact authorized directories needed by the task, preserving existing contents. It never manufactures interface source, a",
       "coverage": "covered",
       "named_checks": [
         {
-          "name": "scaffold_creates_folder_interface_then_test_twin_before_any_behaviour",
+          "name": "scaffold_creates_only_declared_directories_and_never_manufactures_source_or_test",
           "file": "test/stack.test.ts",
-          "test_title": "scaffold creates folder, interface, then test twin, before any behaviour",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^scaffold creates folder, interface, then test twin, before any behaviour$' test/stack.test.ts",
-          "observable": "scaffold creates feature folder, interface file, and test twin before behaviour"
+          "test_title": "scaffold creates only declared directories and never manufactures source or tests",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^scaffold creates only declared directories and never manufactures source or tests$' test/stack.test.ts",
+          "observable": "only declared directories are created; real source remains unchanged and source/test placeholders are not invented"
         }
       ],
       "failure_route": "Reopen RP-11 for AC-30.5; RP-19 does not patch feature behavior"
@@ -4210,15 +4362,15 @@
       "primary_owner": "RP-11",
       "prd_us": "US-30",
       "uat_row": "UAT-30",
-      "summary": "Folder name equals module `id`. Auth code is not written under `services/` or `lib/` as the home.",
+      "summary": "Module identity need not equal folder name. Existing Python/Go/Rust, layered, `services/`, `lib/` and root-level layouts remain valid; `root` and `folder` may b",
       "coverage": "covered",
       "named_checks": [
         {
-          "name": "folder_name_equals_id_and_auth_never_lives_in_a_layer_bucket",
+          "name": "existing_python_layers_and_feature_names_retain_explicit_ownership_without_layou",
           "file": "test/stack.test.ts",
-          "test_title": "folder name equals id, and auth never lives in a layer bucket",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^folder name equals id, and auth never lives in a layer bucket$' test/stack.test.ts",
-          "observable": "folder name equals module id; auth code not under services/ or lib/ as home"
+          "test_title": "existing Python layers and feature names retain explicit ownership without layout ceremony",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^existing Python layers and feature names retain explicit ownership without layout ceremony$' test/stack.test.ts",
+          "observable": "module identity may differ from folder name; existing implementation is retained and unrelated paths remain unowned"
         }
       ],
       "failure_route": "Reopen RP-11 for AC-30.6; RP-19 does not patch feature behavior"
@@ -4229,15 +4381,15 @@
       "primary_owner": "RP-11",
       "prd_us": "US-30",
       "uat_row": "UAT-30",
-      "summary": "Layer folders (`components`, `hooks`) may exist inside a feature folder, not as the top-level map.",
+      "summary": "Existing top-level or nested layers and test locations are permitted. The interface must lie inside its declared folder and be admitted by `allowed_paths`; test",
       "coverage": "covered",
       "named_checks": [
         {
-          "name": "layer_folders_are_nested_only_and_generic_folders_need_a_tight_purpose",
+          "name": "existing_python_layers_and_feature_names_retain_explicit_ownership_without_layou",
           "file": "test/stack.test.ts",
-          "test_title": "layer folders are nested-only and generic folders need a tight purpose",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^layer folders are nested-only and generic folders need a tight purpose$' test/stack.test.ts",
-          "observable": "layer folders may exist inside feature folder, not as top-level map"
+          "test_title": "existing Python layers and feature names retain explicit ownership without layout ceremony",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^existing Python layers and feature names retain explicit ownership without layout ceremony$' test/stack.test.ts",
+          "observable": "existing language and layer layouts are usable under explicit feature/path ownership"
         }
       ],
       "failure_route": "Reopen RP-11 for AC-30.7; RP-19 does not patch feature behavior"
@@ -4248,15 +4400,15 @@
       "primary_owner": "RP-11",
       "prd_us": "US-30",
       "uat_row": "UAT-30",
-      "summary": "A file that only one feature uses cannot live in `shared/`.",
+      "summary": "Shared code is owned explicitly, not inferred from a `shared/` label or consumer count. Dependencies name declared module identities; unknown dependencies, self",
       "coverage": "covered",
       "named_checks": [
         {
-          "name": "shared_is_extracted_only_when_a_second_slice_needs_it",
+          "name": "unknown_and_cyclic_dependencies_fail_while_shared_ownership_is_explicitly_declar",
           "file": "test/stack.test.ts",
-          "test_title": "shared is extracted only when a second slice needs it",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^shared is extracted only when a second slice needs it$' test/stack.test.ts",
-          "observable": "a file only one feature uses cannot live in shared/"
+          "test_title": "unknown and cyclic dependencies fail while shared ownership is explicitly declared",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^unknown and cyclic dependencies fail while shared ownership is explicitly declared$' test/stack.test.ts",
+          "observable": "declared shared ownership works without a manufactured consumer-count minimum; unknown or cyclic dependencies are refused"
         }
       ],
       "failure_route": "Reopen RP-11 for AC-30.8; RP-19 does not patch feature behavior"
@@ -4267,15 +4419,22 @@
       "primary_owner": "RP-11",
       "prd_us": "US-30",
       "uat_row": "UAT-30",
-      "summary": "Default `delivery` is `vertical`. One implement round = one slice through that feature folder.",
+      "summary": "Vertical feature delivery remains the planning default. Each implement invocation owns its explicitly selected slice, never the union of every module; missing o",
       "coverage": "covered",
       "named_checks": [
         {
-          "name": "vertical_delivery_cannot_stage_a_layer_sweep_and_horizontal_needs_a_reason",
+          "name": "claim_path_and_implement_bounds_share_one_boundary",
           "file": "test/stack.test.ts",
-          "test_title": "vertical delivery cannot stage a layer sweep, and horizontal needs a reason",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^vertical delivery cannot stage a layer sweep, and horizontal needs a reason$' test/stack.test.ts",
-          "observable": "default delivery is vertical; one implement round = one slice through feature folder"
+          "test_title": "claim_path and implement bounds share one boundary",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^claim_path and implement bounds share one boundary$' test/stack.test.ts",
+          "observable": "one selected vertical slice admits its own declared paths, never the union of other modules"
+        },
+        {
+          "name": "the_current_slice_is_named_never_inferred_from_modules_0",
+          "file": "test/stack.test.ts",
+          "test_title": "the current slice is named, never inferred from modules[0]",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^the current slice is named, never inferred from modules\\[0\\]$' test/stack.test.ts",
+          "observable": "explicit slice selection rather than positional ownership"
         }
       ],
       "failure_route": "Reopen RP-11 for AC-30.9; RP-19 does not patch feature behavior"
@@ -4286,15 +4445,15 @@
       "primary_owner": "RP-11",
       "prd_us": "US-30",
       "uat_row": "UAT-30",
-      "summary": "A plan that schedules “all APIs then all UI” without `delivery: \"horizontal\"` and a reason fails the plan gate.",
+      "summary": "Horizontal delivery is permitted only with `delivery: \"horizontal\"` and a non-empty reason. A plan that intentionally schedules all APIs before all UI must decl",
       "coverage": "covered",
       "named_checks": [
         {
-          "name": "vertical_delivery_cannot_stage_a_layer_sweep_and_horizontal_needs_a_reason",
+          "name": "horizontal_delivery_requires_a_declared_reason",
           "file": "test/stack.test.ts",
-          "test_title": "vertical delivery cannot stage a layer sweep, and horizontal needs a reason",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^vertical delivery cannot stage a layer sweep, and horizontal needs a reason$' test/stack.test.ts",
-          "observable": "all APIs then all UI without delivery:horizontal + reason fails plan gate"
+          "test_title": "horizontal delivery requires a declared reason",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^horizontal delivery requires a declared reason$' test/stack.test.ts",
+          "observable": "horizontal delivery without an explicit reason is rejected"
         }
       ],
       "failure_route": "Reopen RP-11 for AC-30.10; RP-19 does not patch feature behavior"
@@ -4305,15 +4464,15 @@
       "primary_owner": "RP-11",
       "prd_us": "US-30",
       "uat_row": "UAT-30",
-      "summary": "Shared abstractions are extracted only when a second slice needs them.",
+      "summary": "Existing shared abstractions and necessary task-scoped changes are not forced through a second-consumer threshold or a folder migration. Shared ownership/depend",
       "coverage": "covered",
       "named_checks": [
         {
-          "name": "shared_is_extracted_only_when_a_second_slice_needs_it",
+          "name": "unknown_and_cyclic_dependencies_fail_while_shared_ownership_is_explicitly_declar",
           "file": "test/stack.test.ts",
-          "test_title": "shared is extracted only when a second slice needs it",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^shared is extracted only when a second slice needs it$' test/stack.test.ts",
-          "observable": "shared abstractions extracted only when a second slice needs them"
+          "test_title": "unknown and cyclic dependencies fail while shared ownership is explicitly declared",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^unknown and cyclic dependencies fail while shared ownership is explicitly declared$' test/stack.test.ts",
+          "observable": "shared boundaries require explicit declaration and valid dependencies rather than an arbitrary second-consumer count"
         }
       ],
       "failure_route": "Reopen RP-11 for AC-30.11; RP-19 does not patch feature behavior"
@@ -4452,11 +4611,11 @@
       "coverage": "covered",
       "named_checks": [
         {
-          "name": "narrative_acceptance_criteria_refuse_forced_autopilot_before_graph_load",
+          "name": "narrative_acceptance_cannot_authorize_autopilot_without_executable_checks",
           "file": "test/autopilot.test.ts",
-          "test_title": "narrative acceptance criteria refuse forced autopilot before graph load",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^narrative acceptance criteria refuse forced autopilot before graph load$' test/autopilot.test.ts",
-          "observable": "narrative AC refuses autopilot and records ac.refused / non-executable quality"
+          "test_title": "narrative acceptance cannot authorize autopilot without executable checks",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^narrative acceptance cannot authorize autopilot without executable checks$' test/autopilot.test.ts",
+          "observable": "narrative acceptance cannot authorize a product write or commit"
         }
       ],
       "failure_route": "Reopen RP-05 for M-03"
@@ -4564,11 +4723,46 @@
       "coverage": "covered",
       "named_checks": [
         {
-          "name": "no_source_file_passes_a_models_array_to_an_official_provider_id",
-          "file": "test/provider-contracts.test.ts",
-          "test_title": "no source file passes a models array to an official provider id",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^no source file passes a models array to an official provider id$' test/provider-contracts.test.ts",
-          "observable": "gap ACCT-03: no models array on official provider ids"
+          "name": "pool_strategy_and_chain_persist_and_survive_a_reload",
+          "file": "test/accounts-commands.test.ts",
+          "test_title": "pool strategy and chain persist and survive a reload",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^pool strategy and chain persist and survive a reload$' test/accounts-commands.test.ts",
+          "observable": "gap ACCT-03: account pool commands persist strategy and chain through independent store reload"
+        },
+        {
+          "name": "an_invalid_pool_strategy_chain_or_slot_fails_without_a_partial_write",
+          "file": "test/accounts-commands.test.ts",
+          "test_title": "an invalid pool, strategy, chain, or slot fails without a partial write",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^an invalid pool, strategy, chain, or slot fails without a partial write$' test/accounts-commands.test.ts",
+          "observable": "invalid account commands preserve stored metadata"
+        },
+        {
+          "name": "a_pin_holds_until_the_slot_is_exhausted",
+          "file": "test/accounts-commands.test.ts",
+          "test_title": "a pin holds until the slot is exhausted",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^a pin holds until the slot is exhausted$' test/accounts-commands.test.ts",
+          "observable": "pin persists until quota-triggered sibling failover"
+        },
+        {
+          "name": "next_advances_past_the_slot_the_session_is_pinned_to",
+          "file": "test/accounts-commands.test.ts",
+          "test_title": "next advances past the slot the session is pinned to",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^next advances past the slot the session is pinned to$' test/accounts-commands.test.ts",
+          "observable": "next changes the actual routed credential"
+        },
+        {
+          "name": "logout_of_the_pinned_slot_releases_the_pin",
+          "file": "test/accounts-commands.test.ts",
+          "test_title": "logout of the pinned slot releases the pin",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^logout of the pinned slot releases the pin$' test/accounts-commands.test.ts",
+          "observable": "logout restores healthy sibling routing"
+        },
+        {
+          "name": "a_temporary_auth_json_imports_one_default_slot_without_exposing_its_secret",
+          "file": "test/accounts-commands.test.ts",
+          "test_title": "a temporary auth.json imports one default slot without exposing its secret",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^a temporary auth\\.json imports one default slot without exposing its secret$' test/accounts-commands.test.ts",
+          "observable": "official grant import is idempotent and keeps secrets out of metadata"
         }
       ],
       "failure_route": "Reopen RP-07 for gap ACCT-03"
@@ -4772,11 +4966,11 @@
       "coverage": "covered",
       "named_checks": [
         {
-          "name": "scaffold_creates_folder_interface_then_test_twin_before_any_behaviour",
+          "name": "scaffold_creates_only_declared_directories_and_never_manufactures_source_or_test",
           "file": "test/stack.test.ts",
-          "test_title": "scaffold creates folder, interface, then test twin, before any behaviour",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^scaffold creates folder, interface, then test twin, before any behaviour$' test/stack.test.ts",
-          "observable": "gap DUNE-01: Dune scaffold order"
+          "test_title": "scaffold creates only declared directories and never manufactures source or tests",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^scaffold creates only declared directories and never manufactures source or tests$' test/stack.test.ts",
+          "observable": "gap DUNE-01: operator-selected ownership cutover preserves source and only creates explicitly declared directories"
         }
       ],
       "failure_route": "Reopen RP-11 for gap DUNE-01"
@@ -4804,11 +4998,11 @@
       "coverage": "covered",
       "named_checks": [
         {
-          "name": "vertical_delivery_cannot_stage_a_layer_sweep_and_horizontal_needs_a_reason",
+          "name": "horizontal_delivery_requires_a_declared_reason",
           "file": "test/stack.test.ts",
-          "test_title": "vertical delivery cannot stage a layer sweep, and horizontal needs a reason",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^vertical delivery cannot stage a layer sweep, and horizontal needs a reason$' test/stack.test.ts",
-          "observable": "gap DUNE-03: vertical vs horizontal delivery gate"
+          "test_title": "horizontal delivery requires a declared reason",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^horizontal delivery requires a declared reason$' test/stack.test.ts",
+          "observable": "gap DUNE-03: horizontal delivery needs an explicit reason; the selected slice still owns its declared paths"
         }
       ],
       "failure_route": "Reopen RP-11 for gap DUNE-03"
@@ -4852,11 +5046,11 @@
       "coverage": "covered",
       "named_checks": [
         {
-          "name": "no_progress_after_a_re_plan_pauses_needs_human_offering_guidance_keep_going_or_s",
+          "name": "repeated_real_command_failures_replan_without_changing_accepted_success",
           "file": "test/gated-loop.test.ts",
-          "test_title": "no progress after a re-plan pauses NEEDS_HUMAN offering guidance, keep going, or stop",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^no progress after a re-plan pauses NEEDS_HUMAN offering guidance, keep going, or stop$' test/gated-loop.test.ts",
-          "observable": "gap GRAPH-03: rounds are unbounded; the same witness after its re-plans pauses NEEDS_HUMAN (no_progress)"
+          "test_title": "repeated real command failures replan without changing accepted success",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^repeated real command failures replan without changing accepted success$' test/gated-loop.test.ts",
+          "observable": "gap GRAPH-03: RP-22 supersedes the repair-count stop; persistent failures replan beyond two repairs without weakening accepted success"
         }
       ],
       "failure_route": "Reopen RP-03 for gap GRAPH-03"
@@ -4916,11 +5110,11 @@
       "coverage": "covered",
       "named_checks": [
         {
-          "name": "an_autopilot_graph_cannot_contain_a_human_node",
+          "name": "noninteractive_graphs_reject_human_gates_instead_of_answering_on_their_behalf",
           "file": "test/graph-routing.test.ts",
-          "test_title": "an autopilot graph cannot contain a human node",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^an autopilot graph cannot contain a human node$' test/graph-routing.test.ts",
-          "observable": "gap GRAPH-07: autopilot graph has no human node"
+          "test_title": "noninteractive graphs reject human gates instead of answering on their behalf",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^noninteractive graphs reject human gates instead of answering on their behalf$' test/graph-routing.test.ts",
+          "observable": "gap GRAPH-07: noninteractive graph validation rejects an inserted human approval node"
         }
       ],
       "failure_route": "Reopen RP-05 for gap GRAPH-07"
@@ -4932,11 +5126,11 @@
       "coverage": "covered",
       "named_checks": [
         {
-          "name": "release_is_reachable_only_from_evidence_and_only_in_one_place",
+          "name": "independent_verification_must_pass_before_either_release_path_is_scheduled",
           "file": "test/graph-routing.test.ts",
-          "test_title": "release is reachable only from evidence, and only in one place",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^release is reachable only from evidence, and only in one place$' test/graph-routing.test.ts",
-          "observable": "gap GRAPH-08: release only from evidence on one edge"
+          "test_title": "independent verification must pass before either release path is scheduled",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^independent verification must pass before either release path is scheduled$' test/graph-routing.test.ts",
+          "observable": "gap GRAPH-08: both shipped modes schedule release only after verification; failed verification replans without release authority"
         }
       ],
       "failure_route": "Reopen RP-05 for gap GRAPH-08"
@@ -5348,11 +5542,11 @@
       "coverage": "covered",
       "named_checks": [
         {
-          "name": "amber_board_lights_exactly_one_current_stage_and_six_nonempty_file_lamps",
+          "name": "the_running_board_lights_exactly_one_current_stage_and_six_nonempty_file_lamps",
           "file": "test/operator-ui.test.ts",
-          "test_title": "amber board lights exactly one CURRENT stage and six nonempty file lamps",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^amber board lights exactly one CURRENT stage and six nonempty file lamps$' test/operator-ui.test.ts",
-          "observable": "gap UI-03: amber board required fields and lamps"
+          "test_title": "the running board lights exactly one CURRENT stage and six nonempty file lamps",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^the running board lights exactly one CURRENT stage and six nonempty file lamps$' test/operator-ui.test.ts",
+          "observable": "gap UI-03: running widget required fields and truthful lamps"
         }
       ],
       "failure_route": "Reopen RP-18 for gap UI-03"
@@ -5364,11 +5558,11 @@
       "coverage": "covered",
       "named_checks": [
         {
-          "name": "protocol_blue_pause_derives_approval_lamp_without_persisting_approval_status",
+          "name": "an_attended_human_gate_derives_approval_without_persisting_an_approval_status",
           "file": "test/operator-ui.test.ts",
-          "test_title": "protocol-blue pause derives APPROVAL lamp without persisting APPROVAL status",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^protocol-blue pause derives APPROVAL lamp without persisting APPROVAL status$' test/operator-ui.test.ts",
-          "observable": "gap UI-04: protocol-blue pause board"
+          "test_title": "an attended human gate derives APPROVAL without persisting an APPROVAL status",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^an attended human gate derives APPROVAL without persisting an APPROVAL status$' test/operator-ui.test.ts",
+          "observable": "gap UI-04: attended human gate keeps the pending question and derived approval lamp"
         }
       ],
       "failure_route": "Reopen RP-18 for gap UI-04"
@@ -5412,11 +5606,11 @@
       "coverage": "covered",
       "named_checks": [
         {
-          "name": "task_evidence_and_verdict_schemas_match_live_payloads",
+          "name": "task_and_verdict_schemas_match_live_payloads",
           "file": "test/schema-conformance.test.ts",
-          "test_title": "task, evidence, and verdict schemas match live payloads",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^task, evidence, and verdict schemas match live payloads$' test/schema-conformance.test.ts",
-          "observable": "schemas match live payloads"
+          "test_title": "task and verdict schemas match live payloads",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^task and verdict schemas match live payloads$' test/schema-conformance.test.ts",
+          "observable": "task/verdict payload shape; host evidence is bound separately under SCH-evidence"
         }
       ],
       "failure_route": "Reopen RP-01"
@@ -5588,11 +5782,11 @@
       "coverage": "covered",
       "named_checks": [
         {
-          "name": "scaffold_creates_folder_interface_then_test_twin_before_any_behaviour",
+          "name": "scaffold_creates_only_declared_directories_and_never_manufactures_source_or_test",
           "file": "test/stack.test.ts",
-          "test_title": "scaffold creates folder, interface, then test twin, before any behaviour",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^scaffold creates folder, interface, then test twin, before any behaviour$' test/stack.test.ts",
-          "observable": "Dune scaffold order"
+          "test_title": "scaffold creates only declared directories and never manufactures source or tests",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^scaffold creates only declared directories and never manufactures source or tests$' test/stack.test.ts",
+          "observable": "RP-22 ownership cutover: create declared directories only, preserve real source and refuse scaffold outside ownership"
         }
       ],
       "failure_route": "Reopen RP-11"
@@ -5748,14 +5942,23 @@
       "coverage": "covered",
       "named_checks": [
         {
-          "name": "no_progress_after_a_re_plan_pauses_needs_human_offering_guidance_keep_going_or_s",
+          "name": "repeated_real_command_failures_replan_without_changing_accepted_success",
           "file": "test/gated-loop.test.ts",
-          "test_title": "no progress after a re-plan pauses NEEDS_HUMAN offering guidance, keep going, or stop",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^no progress after a re-plan pauses NEEDS_HUMAN offering guidance, keep going, or stop$' test/gated-loop.test.ts",
-          "observable": "self-healing loop: re-plan, then NEEDS_HUMAN (no_progress) with Give guidance / Keep going / Stop; the operator is the only stop"
+          "test_title": "repeated real command failures replan without changing accepted success",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^repeated real command failures replan without changing accepted success$' test/gated-loop.test.ts",
+          "observable": "RP-22 supersedes the two-replan pause: repeated real failures continue repairing while accepted success remains immutable"
         }
       ],
       "failure_route": "Reopen RP-21"
+    },
+    {
+      "id": "RP-22",
+      "kind": "rp",
+      "primary_owner": "RP-22",
+      "coverage": "uncovered",
+      "named_checks": [],
+      "uncovered_reason": "no curated package-level acceptance binding",
+      "failure_route": "Complete scoped acceptance for RP-22"
     },
     {
       "id": "REQ-CX-01",
@@ -5924,11 +6127,11 @@
       "coverage": "covered",
       "named_checks": [
         {
-          "name": "no_official_provider_id_is_registered_so_none_can_receive_a_models_array",
-          "file": "test/provider-contracts.test.ts",
-          "test_title": "no official provider id is registered, so none can receive a models array",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^no official provider id is registered, so none can receive a models array$' test/provider-contracts.test.ts",
-          "observable": "spec REQ-PR-02: official /model ids stay anthropic/<official-id>; no duplicate provider catalogs"
+          "name": "the_normative_accounts_failover_fixture_never_selects_the_cooling_sibling_in_100",
+          "file": "test/accounts-routing.test.ts",
+          "test_title": "the normative accounts-failover fixture never selects the cooling sibling in 100 attempts",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^the normative accounts-failover fixture never selects the cooling sibling in 100 attempts$' test/accounts-routing.test.ts",
+          "observable": "spec REQ-PR-02: all three account strategies exclude the cooling sibling despite its greater cached quota"
         }
       ],
       "failure_route": "Reopen RP-07 for REQ-PR-02"
@@ -6004,11 +6207,11 @@
       "coverage": "covered",
       "named_checks": [
         {
-          "name": "task_evidence_and_verdict_schemas_match_live_payloads",
-          "file": "test/schema-conformance.test.ts",
-          "test_title": "task, evidence, and verdict schemas match live payloads",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^task, evidence, and verdict schemas match live payloads$' test/schema-conformance.test.ts",
-          "observable": "spec REQ-RS-05: task.json validates with goal, acceptance[], nongoals, constraints, quality_gates"
+          "name": "secrets_are_redacted_inside_allowed_semantic_fields",
+          "file": "test/append-log.test.ts",
+          "test_title": "secrets are redacted inside allowed semantic fields",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^secrets are redacted inside allowed semantic fields$' test/append-log.test.ts",
+          "observable": "spec REQ-RS-05: persisted events and returned records redact bearer, token, cookie and password canaries while preserving the hash chain"
         }
       ],
       "failure_route": "Reopen RP-01 for REQ-RS-05"
@@ -6334,52 +6537,36 @@
       "failure_route": "Reopen RP-13 for NFR-08"
     },
     {
-      "id": "SCH-task",
+      "id": "SCH-arena-judge",
       "kind": "schema",
-      "primary_owner": "RP-01",
+      "primary_owner": "RP-22",
       "coverage": "covered",
       "named_checks": [
         {
-          "name": "task_evidence_and_verdict_schemas_match_live_payloads",
+          "name": "arena_judge_schema_rejects_duplicate_and_insufficient_proposal_references",
           "file": "test/schema-conformance.test.ts",
-          "test_title": "task, evidence, and verdict schemas match live payloads",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^task, evidence, and verdict schemas match live payloads$' test/schema-conformance.test.ts",
-          "observable": "task.schema.json validates live payloads / event branches"
+          "test_title": "arena judge schema rejects duplicate and insufficient proposal references",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^arena judge schema rejects duplicate and insufficient proposal references$' test/schema-conformance.test.ts",
+          "observable": "arena-judge.schema.json validates live payloads / event branches"
         }
       ],
-      "failure_route": "Reopen RP-01 for schema drift"
+      "failure_route": "Reopen RP-22 for schema drift"
     },
     {
-      "id": "SCH-evidence",
+      "id": "SCH-arena-proposal",
       "kind": "schema",
-      "primary_owner": "RP-01",
+      "primary_owner": "RP-22",
       "coverage": "covered",
       "named_checks": [
         {
-          "name": "task_evidence_and_verdict_schemas_match_live_payloads",
+          "name": "arena_proposal_schema_requires_tradeoffs_and_risks_without_granting_verdict_auth",
           "file": "test/schema-conformance.test.ts",
-          "test_title": "task, evidence, and verdict schemas match live payloads",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^task, evidence, and verdict schemas match live payloads$' test/schema-conformance.test.ts",
-          "observable": "evidence.schema.json validates live payloads / event branches"
+          "test_title": "arena proposal schema requires tradeoffs and risks without granting verdict authority",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^arena proposal schema requires tradeoffs and risks without granting verdict authority$' test/schema-conformance.test.ts",
+          "observable": "arena-proposal.schema.json validates live payloads / event branches"
         }
       ],
-      "failure_route": "Reopen RP-01 for schema drift"
-    },
-    {
-      "id": "SCH-verdict",
-      "kind": "schema",
-      "primary_owner": "RP-01",
-      "coverage": "covered",
-      "named_checks": [
-        {
-          "name": "task_evidence_and_verdict_schemas_match_live_payloads",
-          "file": "test/schema-conformance.test.ts",
-          "test_title": "task, evidence, and verdict schemas match live payloads",
-          "runner": "node --test --experimental-strip-types --test-name-pattern '^task, evidence, and verdict schemas match live payloads$' test/schema-conformance.test.ts",
-          "observable": "verdict.schema.json validates live payloads / event branches"
-        }
-      ],
-      "failure_route": "Reopen RP-01 for schema drift"
+      "failure_route": "Reopen RP-22 for schema drift"
     },
     {
       "id": "SCH-event",
@@ -6393,6 +6580,118 @@
           "test_title": "event schema has one valid normalized branch per event type",
           "runner": "node --test --experimental-strip-types --test-name-pattern '^event schema has one valid normalized branch per event type$' test/schema-conformance.test.ts",
           "observable": "event.schema.json validates live payloads / event branches"
+        }
+      ],
+      "failure_route": "Reopen RP-01 for schema drift"
+    },
+    {
+      "id": "SCH-evidence",
+      "kind": "schema",
+      "primary_owner": "RP-01",
+      "coverage": "covered",
+      "named_checks": [
+        {
+          "name": "real_host_receipts_honor_nonzero_expected_exits_and_preserve_complete_large_stdo",
+          "file": "test/verification.test.ts",
+          "test_title": "real host receipts honor nonzero expected exits and preserve complete large stdout/stderr",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^real host receipts honor nonzero expected exits and preserve complete large stdout/stderr$' test/verification.test.ts",
+          "observable": "evidence.schema.json validates live payloads / event branches"
+        }
+      ],
+      "failure_route": "Reopen RP-01 for schema drift"
+    },
+    {
+      "id": "SCH-goal",
+      "kind": "schema",
+      "primary_owner": "RP-22",
+      "coverage": "covered",
+      "named_checks": [
+        {
+          "name": "real_host_receipts_honor_nonzero_expected_exits_and_preserve_complete_large_stdo",
+          "file": "test/verification.test.ts",
+          "test_title": "real host receipts honor nonzero expected exits and preserve complete large stdout/stderr",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^real host receipts honor nonzero expected exits and preserve complete large stdout/stderr$' test/verification.test.ts",
+          "observable": "goal.schema.json validates live payloads / event branches"
+        }
+      ],
+      "failure_route": "Reopen RP-22 for schema drift"
+    },
+    {
+      "id": "SCH-intent",
+      "kind": "schema",
+      "primary_owner": "RP-22",
+      "coverage": "covered",
+      "named_checks": [
+        {
+          "name": "real_host_receipts_honor_nonzero_expected_exits_and_preserve_complete_large_stdo",
+          "file": "test/verification.test.ts",
+          "test_title": "real host receipts honor nonzero expected exits and preserve complete large stdout/stderr",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^real host receipts honor nonzero expected exits and preserve complete large stdout/stderr$' test/verification.test.ts",
+          "observable": "intent.schema.json validates live payloads / event branches"
+        }
+      ],
+      "failure_route": "Reopen RP-22 for schema drift"
+    },
+    {
+      "id": "SCH-intent-proposal",
+      "kind": "schema",
+      "primary_owner": "RP-22",
+      "coverage": "covered",
+      "named_checks": [
+        {
+          "name": "intent_proposal_schema_accepts_desired_state_detail_but_rejects_task_authority_a",
+          "file": "test/schema-conformance.test.ts",
+          "test_title": "intent proposal schema accepts desired-state detail but rejects task authority and malformed journeys",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^intent proposal schema accepts desired-state detail but rejects task authority and malformed journeys$' test/schema-conformance.test.ts",
+          "observable": "intent-proposal.schema.json validates live payloads / event branches"
+        }
+      ],
+      "failure_route": "Reopen RP-22 for schema drift"
+    },
+    {
+      "id": "SCH-stack",
+      "kind": "schema",
+      "primary_owner": "RP-22",
+      "coverage": "covered",
+      "named_checks": [
+        {
+          "name": "stack_schema_accepts_explicit_existing_layout_ownership_and_rejects_missing_owne",
+          "file": "test/schema-conformance.test.ts",
+          "test_title": "stack schema accepts explicit existing-layout ownership and rejects missing ownership shape",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^stack schema accepts explicit existing-layout ownership and rejects missing ownership shape$' test/schema-conformance.test.ts",
+          "observable": "stack.schema.json validates live payloads / event branches"
+        }
+      ],
+      "failure_route": "Reopen RP-22 for schema drift"
+    },
+    {
+      "id": "SCH-task",
+      "kind": "schema",
+      "primary_owner": "RP-01",
+      "coverage": "covered",
+      "named_checks": [
+        {
+          "name": "task_and_verdict_schemas_match_live_payloads",
+          "file": "test/schema-conformance.test.ts",
+          "test_title": "task and verdict schemas match live payloads",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^task and verdict schemas match live payloads$' test/schema-conformance.test.ts",
+          "observable": "task.schema.json validates live payloads / event branches"
+        }
+      ],
+      "failure_route": "Reopen RP-01 for schema drift"
+    },
+    {
+      "id": "SCH-verdict",
+      "kind": "schema",
+      "primary_owner": "RP-01",
+      "coverage": "covered",
+      "named_checks": [
+        {
+          "name": "task_and_verdict_schemas_match_live_payloads",
+          "file": "test/schema-conformance.test.ts",
+          "test_title": "task and verdict schemas match live payloads",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^task and verdict schemas match live payloads$' test/schema-conformance.test.ts",
+          "observable": "verdict.schema.json validates live payloads / event branches"
         }
       ],
       "failure_route": "Reopen RP-01 for schema drift"

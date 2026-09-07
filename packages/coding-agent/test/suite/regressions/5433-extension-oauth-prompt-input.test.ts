@@ -1,5 +1,5 @@
-import { setKeybindings, type TUI } from "@earendil-works/pi-tui";
-import { beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
+import { getOsc8LinkAtColumn, setKeybindings, type TUI } from "@earendil-works/pi-tui";
+import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { KeybindingsManager } from "../../../src/core/keybindings.ts";
 import { LoginDialogComponent } from "../../../src/modes/interactive/components/login-dialog.ts";
 import { initTheme } from "../../../src/modes/interactive/theme/theme.ts";
@@ -35,6 +35,36 @@ describe("LoginDialogComponent OAuth prompts", () => {
 
 	beforeEach(() => {
 		setKeybindings(new KeybindingsManager());
+	});
+
+	afterEach(() => vi.unstubAllEnvs());
+
+	test("copies the complete SSH authorization link without changing the callback input", async () => {
+		vi.stubEnv("SSH_CONNECTION", "fixture");
+		const dialog = createDialog();
+		const url = `https://auth.example.invalid/authorize?client_id=fixture&code_challenge=${"x".repeat(43)}&scope=openid+profile&state=a%2Bb`;
+		dialog.showAuth(url);
+		const answer = dialog.showManualInput("Paste the final redirect URL");
+		dialog.handleInput("http://localhost/callback?code=fixture");
+		let wire = "";
+		const originalWrite = process.stdout.write;
+		try {
+			process.stdout.write = ((chunk: string | Uint8Array) => {
+				wire += chunk.toString();
+				return true;
+			}) as typeof process.stdout.write;
+			dialog.handleInput("\x19");
+		} finally {
+			process.stdout.write = originalWrite;
+		}
+		expect(wire).toContain(`\x1b]52;c;${Buffer.from(url).toString("base64")}\x07`);
+		const targets = dialog
+			.render(80)
+			.flatMap((row) => Array.from({ length: 80 }, (_, col) => getOsc8LinkAtColumn(row, col)));
+		expect(targets).toContain(url);
+		dialog.handleInput("&state=fixture");
+		dialog.handleInput("\n");
+		await expect(answer).resolves.toBe("http://localhost/callback?code=fixture&state=fixture");
 	});
 
 	test("keeps previous prompt input stable when a later prompt is active", async () => {

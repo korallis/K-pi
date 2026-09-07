@@ -4,6 +4,45 @@ K-π's own release history. Upstream Pi's changelog is kept beside this file as
 `CHANGELOG.upstream.md` for merge history; the version this file is compared
 against at startup is K-π's, so only K-π entries belong here.
 
+## [0.4.0] - 2026-09-07
+
+### Fixed
+
+- SSH/Mosh subscription login preserves the complete OAuth URL in clickable links and adds Ctrl+Y clipboard transfer in pooled and native login prompts. Remote sessions no longer launch a server-side browser or write the server's desktop clipboard. Anthropic/Codex prompts explain how to paste the final callback URL when the browser runs on another machine.
+
+### Changed
+
+- Published as a normal GitHub release and on npm `latest`, replacing `0.3.0` for default installs. Includes the Cursor adapter and runtime changes described in `0.4.0-rc.1`.
+
+The operator requested the normal release channel for testing. Live provider login and the wider RP-22 acceptance matrix remain open; normal release labeling does not establish their completion.
+
+## [0.4.0-rc.1] - 2026-09-06
+
+### Changed
+
+- Protected, versioned intent is separate from mutable execution. Initial gated consent and candidate-bound release approval remain; routine planning and diagnosis-driven repair no longer require repeated plan approval or a fixed re-plan allowance.
+- The runtime executes acceptance checks and quality commands independently, retaining immutable raw receipts bound to intent and candidate content. Model testimony and graph exhaustion cannot authorize DONE.
+- Execution mutations retain audited topology and checkpointed branch progress. Persistent logical peers use authenticated direct/room communication, replay, and exact-session writer ownership.
+- Protected graph inference receives fresh canonical context, scoped repository/feature maps, and capacity-aware serialization. Role routing records actual authenticated model choices and locally evidenced outcomes; unknown capabilities remain unknown.
+- The Command Centre opens a grouped Jobs home with Now/Next/Done and labelled input. Machine work is cool, human intervention warm, and stage completion requires recorded activity.
+- Local discovery retains source-attributed capacities and stable endpoint identities; missing metadata is unknown, not an invented context limit.
+- Cursor subscription support uses first-party browser PKCE login/token renewal, dynamic CLI-protocol model discovery and HTTP/2 streaming. Native K-π tools, permission hooks and genuine result replay remain in control; no OMP runtime dependency or Cursor Cloud/subagent execution.
+- Testing releases publish to npm's `next` channel and are marked GitHub prereleases without replacing stable `latest`.
+
+### Fixed
+
+- Independent host checks do not inherit Node's enclosing test-worker context, which could make nested test commands report success without running.
+- Resource refusal refreshes the account display and clears a stale active route.
+- Startup help identifies K-π and describes intent consent and runtime-owned verification rather than the retired plan/tester path.
+- A provider response lost after commit cannot repeat the commit. A separate host delivery node reconciles the real remote ref and existing pull request, retrying only missing authorised actions with the engine's durable backoff.
+- Delivery-record publication now stays inside the checkpointed host action. A redundant final PR lookup can no longer strand a delivered job on a transient error; lost records reconcile delivery without another commit.
+- Acceptance-map regeneration exposes retired/conflicting checks and inventories every shipped JSON schema. Product proof refuses uncovered or empty inventories before gates/probes and replaces stale green reports with an explicit failure. Native built-in loading, not a source regex, now checks official catalog preservation.
+- Schema validation enforces `uniqueItems`; duplicate arena proposal references no longer pass payload validation.
+- Automatic retries and RUNNING status use cool machine emphasis. Genuine attended gates remain warm; interrupted repair, stale questions after resume, and completed/stopped runs cannot invent human-attention prompts.
+- Missing reviewer publication returns to autonomous repair instead of being mistaken for a completed review; a valid unchanged ownership map no longer traps the planner in a validation loop.
+
+This release candidate is for operator testing. Live Cursor seat eligibility/login/renewal/inference and the broader multi-provider, multi-account, greenfield and context-quality acceptance remain tracked by RP-22; offline protocol and package checks do not accept that live matrix.
+
 ## [0.3.0] - 2026-09-03
 
 ### Fixed

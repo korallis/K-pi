@@ -5,8 +5,11 @@ import type {
 	Credential,
 	ProviderAuthInteraction,
 } from "@earendil-works/pi-ai";
+import { hyperlink, matchesKey } from "@earendil-works/pi-tui";
 import { VERSION } from "../../../config.ts";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "../../../core/extensions/types.ts";
+import { copyToClipboard } from "../../../utils/clipboard.ts";
+import { openBrowser } from "../../../utils/open-browser.ts";
 import { resolveFallbackModels } from "../../kstack/models.ts";
 import { appendEvent } from "../append-log.ts";
 import { DEFAULT_LOCAL_BASE_URLS, type LocalProviderId } from "../local/providers.ts";
@@ -48,8 +51,8 @@ Continue?`;
 export const CODEX_BILLING_CONFIRM =
 	"OpenAI Codex in this harness bills your Codex plan for every token this seat sends. Continue?";
 
-export const CURSOR_BILLING_CONFIRM =
-	"Cursor in this harness bills your Cursor plan for every token this seat sends. Continue?";
+export const CURSOR_AVAILABILITY_NOTE =
+	"Cursor uses its CLI protocol and your subscription entitlement. Compatibility and model access may change; usage is not advertised as free. K-π keeps native tools and approvals and does not provision Cursor Cloud Agents.";
 
 export const ZAI_PERSONAL_USE_NOTE =
 	"z.ai Coding Plan is personal-use and official-tool-only; K-\u03c0 routes it through Pi's supported zai provider.";
@@ -67,52 +70,6 @@ interface ProviderNotice {
  * proceeds. Either way the acceptance is stamped on the slot, so a later
  * session never repeats it.
  */
-/**
- * Where a credential travels for each API family.
- *
- * A key is only a credential if the provider reads it where it looks. Anthropic
- * reads `x-api-key`, Google reads `x-goog-api-key`, Azure reads `api-key`; for
- * those, an `Authorization: Bearer` header is an unauthenticated request with a
- * valid key attached. Subscription tokens are bearer tokens everywhere,
- * including Anthropic OAuth and Codex.
- */
-export function authHeaderName(api: string | undefined, credentialType: "oauth" | "api_key" | undefined): string {
-	if (credentialType !== "api_key") {
-		return "authorization";
-	}
-	switch (api) {
-		case "anthropic-messages":
-			return "x-api-key";
-		case "google-generative-ai":
-		case "google-vertex":
-			return "x-goog-api-key";
-		case "azure-openai-responses":
-			return "api-key";
-		default:
-			return "authorization";
-	}
-}
-
-/**
- * Attaches the credential using the family's own header and clears the ones it
- * would otherwise be mistaken for: Anthropic and Google both skip their key
- * header when an `Authorization` is already present, so a stale bearer would
- * silently win over the key we mean to send.
- */
-function setAuthHeader(
-	headers: Record<string, string | null>,
-	api: string | undefined,
-	credentialType: "oauth" | "api_key" | undefined,
-	token: string,
-): void {
-	const name = authHeaderName(api, credentialType);
-	for (const competing of ["authorization", "x-api-key", "x-goog-api-key", "api-key"]) {
-		if (competing !== name && headers[competing] !== undefined) {
-			headers[competing] = null;
-		}
-	}
-	headers[name] = name === "authorization" ? `Bearer ${token}` : token;
-}
 
 function providerNotice(poolId: PoolId): ProviderNotice | undefined {
 	if (poolId === "anthropic") {
@@ -122,7 +79,7 @@ function providerNotice(poolId: PoolId): ProviderNotice | undefined {
 		return { kind: "confirm", title: "Codex billing", message: CODEX_BILLING_CONFIRM };
 	}
 	if (poolId === "cursor") {
-		return { kind: "confirm", title: "Cursor billing", message: CURSOR_BILLING_CONFIRM };
+		return { kind: "note", title: "Cursor subscription", message: CURSOR_AVAILABILITY_NOTE };
 	}
 	if (poolId === "zai" || poolId === "zai-coding-cn") {
 		return { kind: "note", title: "z.ai Coding Plan", message: ZAI_PERSONAL_USE_NOTE };
@@ -151,10 +108,17 @@ class LoginCancelledError extends Error {
 
 function authEventMessage(event: AuthEvent): string {
 	if (event.type === "auth_url") {
-		return [event.instructions, event.url].filter(Boolean).join("\n");
+		return [
+			event.instructions,
+			hyperlink(event.url, event.url),
+			"Ctrl/Cmd+click the link, or press Ctrl+Y to copy the complete URL.",
+			"If your browser is on another machine, paste its final redirect URL here even if localhost cannot connect.",
+		]
+			.filter(Boolean)
+			.join("\n");
 	}
 	if (event.type === "device_code") {
-		return `${event.verificationUri}\nCode: ${event.userCode}`;
+		return `${hyperlink(event.verificationUri, event.verificationUri)}\nCode: ${event.userCode}\nCtrl+Y copies the complete sign-in URL.`;
 	}
 	const links = event.type === "info" ? (event.links ?? []) : [];
 	return [event.message, ...links.map((link) => link.url)].join("\n");
@@ -182,16 +146,6 @@ async function answerAuthPrompt(prompt: AuthPrompt, context: ExtensionContext): 
 	return answer;
 }
 
-function openAuthUrl(pi: ExtensionAPI, url: string): void {
-	const command =
-		process.platform === "darwin"
-			? { name: "open", args: [url] }
-			: process.platform === "win32"
-				? { name: "cmd", args: ["/c", "start", "", url] }
-				: { name: "xdg-open", args: [url] };
-	void pi.exec(command.name, command.args).catch(() => undefined);
-}
-
 /**
  * Acquires the credential the pool's provider actually offers, rather than
  * assuming every official pool is a subscription. Subscription OAuth wins
@@ -206,22 +160,56 @@ async function loginWithOfficialProvider(
 	providerId: PoolId,
 	_slotId: string,
 	context: ExtensionContext,
-	showAuthUrl: (url: string) => void,
 ): Promise<Credential> {
 	const auth = context.modelRegistry.getProvider(providerId)?.auth;
 	if (auth?.oauth !== undefined) {
 		const signal = context.signal ?? new AbortController().signal;
+		let authUrl: string | undefined;
+		let authMessage = "";
+		const unsubscribe =
+			context.mode === "tui"
+				? context.ui.onTerminalInput((data) => {
+						if (!authUrl || !matchesKey(data, "ctrl+y")) return undefined;
+						const url = authUrl;
+						void copyToClipboard(url)
+							.then(() => {
+								if (authUrl === url)
+									context.ui.notify(
+										`${authMessage}\nSign-in URL sent to terminal clipboard. Allow clipboard access if your terminal asks.`,
+										"info",
+									);
+							})
+							.catch(() =>
+								context.ui.notify(
+									"Could not copy the sign-in URL. Use the terminal's copy-link action.",
+									"warning",
+								),
+							);
+						return { consume: true };
+					})
+				: undefined;
 		const interaction: ProviderAuthInteraction = {
 			signal,
 			prompt: (prompt) => answerAuthPrompt(prompt, context),
 			notify: (event) => {
+				const message = authEventMessage(event);
 				if (event.type === "auth_url") {
-					showAuthUrl(event.url);
+					authUrl = event.url;
+					authMessage = message;
+					openBrowser(event.url);
+				} else if (event.type === "device_code") {
+					authUrl = event.verificationUri;
+					authMessage = message;
 				}
-				context.ui.notify(authEventMessage(event), "info");
+				context.ui.notify(message, "info");
 			},
 		};
-		return context.modelRegistry.login(providerId, "oauth", interaction);
+		try {
+			return await context.modelRegistry.login(providerId, "oauth", interaction);
+		} finally {
+			authUrl = undefined;
+			unsubscribe?.();
+		}
 	}
 	if (auth?.apiKey !== undefined) {
 		const answer = await context.ui.input(auth.apiKey.name, "Paste the key, or Enter to cancel", {
@@ -522,12 +510,6 @@ async function handlePoolCommand(
 	throw new Error("Usage: /pool strategy <provider> <name> | /pool chain a,b,c");
 }
 
-/** The default login registerAccounts wires up: the official provider flow, its auth URL opened by pi.exec. */
-function defaultLogin(pi: ExtensionAPI): NonNullable<AccountsDependencies["login"]> {
-	return (providerId, slotId, context) =>
-		loginWithOfficialProvider(providerId, slotId, context, (url) => openAuthUrl(pi, url));
-}
-
 /**
  * Logs into one pool the same way `/accounts login <pool>` does — same provider
  * notices, slots, and secrets — so onboarding and the command share one path.
@@ -535,7 +517,6 @@ function defaultLogin(pi: ExtensionAPI): NonNullable<AccountsDependencies["login
  * (including `LoginCancelledError`) propagates for the caller to report.
  */
 export async function loginPoolInteractively(
-	pi: ExtensionAPI,
 	poolId: PoolId,
 	context: ExtensionContext,
 	dependencies: Pick<AccountsDependencies, "store" | "now" | "login"> = {},
@@ -544,7 +525,7 @@ export async function loginPoolInteractively(
 		poolId,
 		undefined,
 		dependencies.store ?? new AccountsStore(),
-		dependencies.login ?? defaultLogin(pi),
+		dependencies.login ?? loginWithOfficialProvider,
 		dependencies.now ?? (() => new Date()),
 		context,
 	);
@@ -554,7 +535,7 @@ export function registerAccounts(pi: ExtensionAPI, dependencies: AccountsDepende
 	const resolved: Required<AccountsDependencies> = {
 		store: dependencies.store ?? new AccountsStore(),
 		now: dependencies.now ?? (() => new Date()),
-		login: dependencies.login ?? defaultLogin(pi),
+		login: dependencies.login ?? loginWithOfficialProvider,
 		usageReaders: dependencies.usageReaders ?? {},
 		fallbackModels: dependencies.fallbackModels ?? resolveFallbackModels,
 	};
@@ -565,7 +546,7 @@ export function registerAccounts(pi: ExtensionAPI, dependencies: AccountsDepende
 	let active: SelectedSlot | undefined;
 	let activeModel: string | undefined;
 	/**
-	 * Accounting is per request, not per session. Each `before_provider_headers`
+	 * Accounting is per request, not per session. Each `before_provider_auth`
 	 * carries the id of the request it is building, and that request's
 	 * `after_provider_response` carries the same id, so a response is always
 	 * matched to the credential this extension actually attached - even when two
@@ -638,8 +619,12 @@ export function registerAccounts(pi: ExtensionAPI, dependencies: AccountsDepende
 					continue;
 				}
 				try {
-					const refreshed = await oauth.refresh(credential, context.signal ?? new AbortController().signal);
-					await resolved.store.putSlot(poolName, slot, refreshed);
+					await resolved.store.refreshCredential(
+						poolName,
+						slot.id,
+						(current) => oauth.refresh(current, context.signal ?? new AbortController().signal),
+						nowMs(),
+					);
 				} catch (error) {
 					const failure = summarizeRefreshFailure(error);
 					if (failure.kind === "invalid_grant") {
@@ -652,6 +637,7 @@ export function registerAccounts(pi: ExtensionAPI, dependencies: AccountsDepende
 						continue;
 					}
 					balancer.markCooling(poolName, slot.id, nowMs() + DEFAULT_COOLDOWN_MS);
+					await resolved.store.markCooling(poolName, slot.id, nowMs() + DEFAULT_COOLDOWN_MS);
 					context.ui.notify(
 						`K-π accounts: could not refresh ${poolName}/${slot.id}: ${failure.summary}; cooling ${Math.round(DEFAULT_COOLDOWN_MS / 60_000)}m`,
 						"warning",
@@ -672,6 +658,12 @@ export function registerAccounts(pi: ExtensionAPI, dependencies: AccountsDepende
 		accounts?: AccountsDocument,
 	): Promise<void> => {
 		const doc = accounts ?? (await resolved.store.read());
+		for (const [poolName, pool] of Object.entries(doc.pools)) {
+			if (!isPoolId(poolName)) continue;
+			for (const slot of pool?.slots ?? []) {
+				if ((slot.cooldownUntil ?? 0) > nowMs()) balancer.markCooling(poolName, slot.id, slot.cooldownUntil!);
+			}
+		}
 		const route =
 			active === undefined || activeModel === undefined
 				? undefined
@@ -713,7 +705,12 @@ export function registerAccounts(pi: ExtensionAPI, dependencies: AccountsDepende
 		}
 	};
 
-	const applyFailure = async (served: SelectedSlot, until: number, context: ExtensionContext): Promise<boolean> => {
+	const applyFailure = async (
+		served: SelectedSlot,
+		until: number,
+		context: ExtensionContext,
+		proactive = false,
+	): Promise<boolean> => {
 		balancer.markCooling(served.poolId, served.slot.id, until);
 		const accounts = await resolved.store.read();
 		const preferredModels = await resolved.fallbackModels().catch(() => undefined);
@@ -725,6 +722,13 @@ export function registerAccounts(pi: ExtensionAPI, dependencies: AccountsDepende
 			usage,
 			preferredModels,
 		);
+		if (proactive && !plan) {
+			balancer.releaseSlot(served.poolId, served.slot.id);
+			balancer.pinSlot(served.poolId, served.slot.id);
+			await publishWidget(context, accounts);
+			return false;
+		}
+		await resolved.store.markCooling(served.poolId, served.slot.id, until);
 		if (plan === undefined) {
 			await publishWidget(context, accounts);
 			return false;
@@ -853,85 +857,121 @@ export function registerAccounts(pi: ExtensionAPI, dependencies: AccountsDepende
 	const explainedVersionRejections = new Set<string>();
 
 	if (typeof pi.on === "function") {
-		pi.on("before_provider_headers", async (event, context) => {
-			const modelProvider = context.model?.provider;
-			// `llama` is served by Pi's built-in `llama.cpp`, so the pool a request
-			// belongs to is not always the provider id it carries.
-			const provider = modelProvider === undefined ? undefined : poolIdForProvider(modelProvider);
+		pi.on("before_provider_auth", async (event, context) => {
+			const provider = poolIdForProvider(event.model.provider);
 			if (provider === undefined) return;
 			const accounts = await resolved.store.read();
-			// Hot path: the cache is read synchronously and never refreshed here,
-			// so no provider call stands between a turn and its headers.
-			//
-			// Family-scoped on purpose. A request built for one provider may only
-			// carry a slot from that provider, so a fallback family's credential can
-			// never be attached to it. Crossing families is the failover path's job,
-			// and only after the model has actually been re-pointed.
-			active = balancer.selectInFamily(provider, accounts, usage);
-			// A local pool may hold several servers. The model carries the origin it
-			// was discovered on, so the slot that serves this request is the one
-			// pinned to that origin, not whichever the rotation happened to pick.
-			if (isLocalPool(provider)) {
-				const origin = context.model?.baseUrl;
-				const pinned = (accounts.pools[provider]?.slots ?? []).find(
-					(slot) => slot.kind === "local" && slot.baseUrl === origin,
-				);
-				if (pinned !== undefined) {
-					active = { poolId: provider, slot: pinned };
-				} else if (origin !== undefined) {
-					// The request names an origin no configured slot owns. Attaching a
-					// credential, or claiming a route, would be a silent redirect.
+			const pool = accounts.pools[provider];
+			if (!pool) return; // Unmanaged official providers retain native auth.
+			const secrets = await resolved.store.readSecrets();
+			const eligible = pool.slots.filter((slot) => {
+				if (slot.needsLogin || (slot.cooldownUntil ?? 0) > nowMs() || !balancer.isHealthy(provider, slot.id))
+					return false;
+				if (isLocalPool(provider) && slot.baseUrl !== event.model.baseUrl) return false;
+				if (slot.official || (slot.kind === "local" && !slot.secretRef)) return true;
+				const credential = secrets[slot.kind === "local" ? slot.secretRef! : `${provider}/${slot.id}`];
+				return credential?.type === "oauth"
+					? Boolean(credential.access)
+					: credential?.type === "api_key" && Boolean(credential.key);
+			});
+			let selection = event.checkOnly
+				? (() => {
+						const slot = eligible.find((candidate) => !candidate.official) ?? eligible[0];
+						return slot && { poolId: provider, slot };
+					})()
+				: balancer.selectInFamily(
+						provider,
+						{ ...accounts, pools: { ...accounts.pools, [provider]: { ...pool, slots: eligible } } },
+						usage,
+					);
+			if (!selection) {
+				event.auth = false;
+				if (!event.checkOnly) {
 					active = undefined;
+					activeModel = undefined;
+					await publishWidget(context, accounts);
 				}
+				return;
 			}
-			activeModel = context.model?.id;
-			// The route is only real once a slot is chosen, so publish here.
-			await publishWidget(context, accounts);
-			if (active === undefined || active.poolId !== provider) {
-				// Once a provider has a pool, pool health is authoritative. Leaving the
-				// runtime's primary auth header intact here would silently reuse a cooled
-				// subscription from auth.json after every slot was exhausted.
-				if (accounts.pools[provider] !== undefined) {
-					for (const name of ["authorization", "x-api-key", "x-goog-api-key", "api-key"]) {
-						if (event.headers[name] !== undefined) event.headers[name] = null;
+			if (!event.checkOnly && selection.slot.official) {
+				try {
+					event.auth = await context.modelRegistry.getProviderAuth(event.model.provider);
+					if (!event.auth) throw new Error("Official grant is not configured");
+				} catch {
+					await resolved.store.markCooling(provider, selection.slot.id, nowMs() + DEFAULT_COOLDOWN_MS);
+					balancer.markCooling(provider, selection.slot.id, nowMs() + DEFAULT_COOLDOWN_MS);
+					selection = balancer.selectInFamily(
+						provider,
+						{
+							...accounts,
+							pools: {
+								...accounts.pools,
+								[provider]: { ...pool, slots: eligible.filter((slot) => !slot.official) },
+							},
+						},
+						usage,
+					);
+					if (!selection) {
+						event.auth = false;
+						active = undefined;
+						activeModel = undefined;
+						await publishWidget(context, accounts);
+						return;
 					}
 				}
+			}
+			if (event.checkOnly) {
+				// Official grant eligibility remains the native registry's decision.
+				if (!selection.slot.official) event.auth = { auth: {} };
 				return;
 			}
-			if (active.slot.official === true) {
-				// The runtime built this request's auth header from auth.json, which is
-				// by definition this slot's grant: K-π neither reads auth.json nor
-				// rewrites the header, and only records whose response this will be.
-				recordRequestSlot(event.requestId, active);
-				return;
+			const selected = { poolId: provider, slot: selection.slot };
+			if (!selected.slot.official) {
+				const native = context.modelRegistry.getProvider(event.model.provider);
+				if (!native) throw new Error(`Unknown account provider: ${event.model.provider}`);
+				const key = selected.slot.kind === "local" ? selected.slot.secretRef : `${provider}/${selected.slot.id}`;
+				let credential = key === undefined ? undefined : secrets[key];
+				if (credential?.type === "oauth") {
+					if (!native.auth.oauth) throw new Error(`Provider has no OAuth auth method: ${provider}`);
+					if (!(credential.expires > nowMs() + 300_000)) {
+						credential = await resolved.store.refreshCredential(
+							provider,
+							selected.slot.id,
+							(current) => native.auth.oauth!.refresh(current, context.signal ?? new AbortController().signal),
+							nowMs(),
+						);
+					}
+					if (credential?.type !== "oauth")
+						throw new Error(`Account credential unavailable: ${provider}/${selected.slot.id}`);
+					event.auth = { auth: await native.auth.oauth.toAuth(credential), source: "account-pool" };
+				} else if (credential?.type === "api_key") {
+					event.auth = await native.auth.apiKey?.resolve({
+						credential,
+						ctx: { env: async () => undefined, fileExists: async () => false },
+						signal: context.signal ?? new AbortController().signal,
+					});
+					if (!event.auth) throw new Error(`Account credential unavailable: ${provider}/${selected.slot.id}`);
+				} else if (selected.slot.kind === "local" && key === undefined) {
+					const construction = await native.auth.apiKey?.resolve({
+						ctx: { env: async () => undefined, fileExists: async () => false },
+						signal: context.signal ?? new AbortController().signal,
+					});
+					event.auth = {
+						...construction,
+						auth: {
+							...construction?.auth,
+							baseUrl: selected.slot.baseUrl,
+							headers: { ...construction?.auth.headers, authorization: null },
+						},
+					};
+				} else {
+					throw new Error(`Account credential unavailable: ${provider}/${selected.slot.id}`);
+				}
 			}
-			// A local slot carries no credential unless the operator referenced one:
-			// a placeholder token would be a secret K-π invented, so the header is
-			// nulled rather than left for the client's construction key to fill.
-			const secretName = active.slot.kind === "local" ? active.slot.secretRef : `${active.poolId}/${active.slot.id}`;
-			const credential = secretName === undefined ? undefined : (await resolved.store.readSecrets())[secretName];
-			const token =
-				credential?.type === "oauth"
-					? credential.access
-					: credential?.type === "api_key"
-						? credential.key
-						: undefined;
-			if (token !== undefined) {
-				// Provider-native semantics: Anthropic reads `x-api-key`, Google
-				// `x-goog-api-key`, Azure `api-key`. Forcing every key into a bearer
-				// header would send a valid credential where the provider never looks.
-				setAuthHeader(event.headers, context.model?.api, credential?.type, token);
-				// This request now carries this slot's credential, so its response is
-				// attributable to it by id.
-				recordRequestSlot(event.requestId, active);
-			} else if (active.slot.kind === "local") {
-				// A local server the operator gave no credential is sent none. The
-				// provider's `apiKey` exists only so the client can be constructed;
-				// nulling the header keeps it off the wire instead of inventing a
-				// bearer this server never asked for.
-				event.headers.authorization = null;
-				recordRequestSlot(event.requestId, active);
-			}
+			active = selected;
+			activeModel = event.model.id;
+			if (event.requestId) recordRequestSlot(event.requestId, selected);
+			await publishWidget(context, accounts);
 		});
 		pi.on("after_provider_response", async (event, context) => {
 			// Exactly the request this response answers. A response for a request
@@ -968,7 +1008,7 @@ export function registerAccounts(pi: ExtensionAPI, dependencies: AccountsDepende
 				return;
 			}
 			if (lowQuota && snapshot !== undefined) {
-				await applyFailure(served, snapshot.resetAt ?? nowMs() + DEFAULT_COOLDOWN_MS, context);
+				await applyFailure(served, snapshot.resetAt ?? nowMs() + DEFAULT_COOLDOWN_MS, context, true);
 				return;
 			}
 			await publishWidget(context);
@@ -1181,6 +1221,7 @@ export function registerAccounts(pi: ExtensionAPI, dependencies: AccountsDepende
 					},
 				);
 				if (changed) {
+					await context.modelRegistry?.refresh?.({ allowNetwork: false });
 					// A steer moves the route now, so the widget must not keep showing
 					// the slot the session has just been moved off.
 					await publishWidget(context);

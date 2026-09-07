@@ -4,7 +4,9 @@ import test from "node:test";
 
 import { EVENT_TYPES } from "../packages/coding-agent/src/kpi/extensions/append-log.ts";
 import { type JsonSchema, validateJsonSchema } from "../packages/coding-agent/src/kpi/extensions/graph/json-schema.ts";
-import type { Evidence, Task, Verdict } from "../packages/coding-agent/src/kpi/extensions/run-store.ts";
+import type { IntentProposal } from "../packages/coding-agent/src/kpi/extensions/intent.ts";
+import type { Task, Verdict } from "../packages/coding-agent/src/kpi/extensions/run-store.ts";
+import type { DuneStack } from "../packages/coding-agent/src/kpi/extensions/stack.ts";
 
 async function loadSchema(name: string): Promise<JsonSchema> {
 	return JSON.parse(
@@ -45,12 +47,6 @@ const task: Task = {
 	current_module_id: "schema-contract",
 };
 
-const evidence: Evidence = {
-	head: "0123456789abcdef",
-	commands: [{ cmd: "pnpm test", exit: 0, excerpt: "ok" }],
-	ac_results: [{ id: "AC-01", passed: true }],
-};
-
 const verdict: Verdict = {
 	status: "PASS",
 	approved: true,
@@ -61,23 +57,120 @@ const verdict: Verdict = {
 	output_fingerprint: `sha256:${"a".repeat(64)}`,
 };
 
-test("task, evidence, and verdict schemas match live payloads", async () => {
-	const [taskSchema, evidenceSchema, verdictSchema] = await Promise.all([
-		loadSchema("task"),
-		loadSchema("evidence"),
-		loadSchema("verdict"),
-	]);
+test("task and verdict schemas match live payloads", async () => {
+	const [taskSchema, verdictSchema] = await Promise.all([loadSchema("task"), loadSchema("verdict")]);
 
 	assertValid(task, taskSchema);
-	assertValid(evidence, evidenceSchema);
 	assertValid(verdict, verdictSchema);
 
 	assertInvalid({ ...task, current_module_id: "" }, taskSchema);
 	assertInvalid({ ...task, limits: { maxRounds: 0 } }, taskSchema);
 	assertInvalid({ ...task, limits: { maxCostUsd: 5 } }, taskSchema);
-	const { head: _head, ...evidenceWithoutHead } = evidence;
-	assertInvalid(evidenceWithoutHead, evidenceSchema);
 	assertInvalid({ ...verdict, status: "GREEN" }, verdictSchema);
+});
+
+test("arena judge schema rejects duplicate and insufficient proposal references", async () => {
+	const schema = await loadSchema("arena-judge");
+	const judgment = {
+		decision: "Retain the existing module and change its implementation",
+		rationale: "Both independent proposals preserve the public interface; the smaller change avoids migration",
+		proposalRefs: ["arena/keep-module.json", "arena/replace-module.json"],
+		unresolvedRisks: ["The changed implementation still needs host verification"],
+	};
+
+	assertValid(judgment, schema);
+	assertInvalid({ ...judgment, proposalRefs: [judgment.proposalRefs[0]] }, schema);
+	assertInvalid({ ...judgment, proposalRefs: [judgment.proposalRefs[0], judgment.proposalRefs[0]] }, schema);
+	assertInvalid({ ...judgment, proposalRefs: [judgment.proposalRefs[0], ""] }, schema);
+	assertInvalid({ ...judgment, approved: true }, schema);
+	// The engine separately verifies that these references are the configured proposals.
+});
+
+test("arena proposal schema requires tradeoffs and risks without granting verdict authority", async () => {
+	const schema = await loadSchema("arena-proposal");
+	const proposal = {
+		proposal: "Retain the public interface and replace the failing implementation",
+		rationale: "Callers do not need a migration",
+		tradeoffs: ["The compatibility layer remains"],
+		risks: ["Existing callers may depend on undocumented behavior"],
+		evidenceRefs: ["diagnostic.json"],
+	};
+
+	assertValid(proposal, schema);
+	assertValid({ ...proposal, evidenceRefs: [] }, schema);
+	assertInvalid({ ...proposal, tradeoffs: [] }, schema);
+	assertInvalid({ ...proposal, risks: [] }, schema);
+	assertInvalid({ ...proposal, evidenceRefs: [""] }, schema);
+	assertInvalid({ ...proposal, approved: true }, schema);
+	// Evidence references are descriptive strings here, not verified host receipts.
+});
+
+test("intent proposal schema accepts desired-state detail but rejects task authority and malformed journeys", async () => {
+	const schema = await loadSchema("intent-proposal");
+	const proposal: IntentProposal = {
+		users: ["Operator"],
+		journeys: [
+			{
+				id: "J-01",
+				actor: "Operator",
+				entry: "Open Jobs",
+				steps: ["Select the active job", "Read its recovery reason"],
+				acceptance_ids: ["AC-01"],
+			},
+		],
+		acceptance: [
+			{
+				id: "AC-01",
+				statement: "The active job exposes its recovery reason",
+				required: true,
+				check: { kind: "command", cmd: "npm run verify:jobs", expect: { exit: 0 } },
+				bounds: { write_allow: ["src/jobs/**"], write_deny: ["src/accounts/**"] },
+			},
+		],
+		questions: [],
+	};
+
+	assertValid(proposal, schema);
+	assertInvalid({ ...proposal, goal: "Replace the accepted goal" }, schema);
+	assertInvalid({ ...proposal, mode: "autopilot" }, schema);
+	assertInvalid({ ...proposal, journeys: [{ ...proposal.journeys[0], steps: [] }] }, schema);
+	assertInvalid({ ...proposal, journeys: [{ ...proposal.journeys[0], acceptance_ids: [""] }] }, schema);
+	assertInvalid(
+		{ ...proposal, acceptance: [{ ...proposal.acceptance[0], check: { kind: "model_approval" } }] },
+		schema,
+	);
+	// Accepted-criterion preservation, duplicate IDs and journey links belong to readIntentRefinement.
+});
+
+test("stack schema accepts explicit existing-layout ownership and rejects missing ownership shape", async () => {
+	const schema = await loadSchema("stack");
+	const module = {
+		id: "account-recovery",
+		purpose: "Recover an account without disturbing active jobs",
+		folder: "app/services",
+		interface: "app/services/accounts.py",
+		allowed_paths: ["app/services/accounts.py", "tests/test_accounts.py"],
+		depends_on: [],
+	};
+	const stack: DuneStack = {
+		version: 1,
+		shape: "dune",
+		delivery: "vertical",
+		root: ".",
+		modules: [module],
+		current_module_id: module.id,
+	};
+
+	assertValid(stack, schema);
+	assertInvalid({ ...stack, modules: [] }, schema);
+	assertInvalid({ ...stack, modules: [{ ...module, purpose: "" }] }, schema);
+	assertInvalid({ ...stack, modules: [{ ...module, allowed_paths: [] }] }, schema);
+	const { allowed_paths: _paths, ...unownedModule } = module;
+	assertInvalid({ ...stack, modules: [unownedModule] }, schema);
+	assertInvalid({ ...stack, modules: [{ ...module, allowed_paths: "app/**" }] }, schema);
+	assertInvalid({ ...stack, shape: "unrestricted" }, schema);
+	assertInvalid({ ...stack, modules: [{ ...module, approved: true }] }, schema);
+	// Path containment, dependency identity and write authority are enforced by stack.ts, not this schema.
 });
 
 function eventPayload(type: (typeof EVENT_TYPES)[number]): Record<string, unknown> {

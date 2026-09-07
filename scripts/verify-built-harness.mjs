@@ -122,12 +122,12 @@ function assertNoDiagnostics(label, combined) {
 	}
 }
 
-function assertVersion(env, scratch) {
+function assertVersion(env, scratch, version) {
 	const result = runCli(["--version"], env, scratch);
 	if (result.status !== 0) fail("cli --version failed", result);
 	const text = `${result.stdout}\n${result.stderr}`.trim();
-	if (!/\b0\.3\.0\b/.test(text)) {
-		fail("cli --version must report fork version 0.3.0", { text });
+	if (result.stdout.trim() !== version) {
+		fail("cli --version must match the fork package version", { expected: version, text });
 	}
 	assertNoDiagnostics("version", text);
 	return text.split("\n")[0]?.trim() ?? text;
@@ -170,7 +170,7 @@ function assertPackageIdentity() {
 	if (peers.some((p) => p.startsWith("@earendil-works/pi-"))) {
 		fail("must not peer-depend on @earendil-works/pi-*", { peers });
 	}
-	return { bins, piConfig };
+	return { version: pkg.version, bins, piConfig };
 }
 
 function main() {
@@ -194,7 +194,7 @@ function main() {
 		};
 		summary.inventory = assertInventory();
 		summary.package = assertPackageIdentity();
-		summary.version = assertVersion(env, scratch);
+		summary.version = assertVersion(env, scratch, summary.package.version);
 		summary.help = assertHelp(env, scratch);
 		summary.rpc = assertRpcOffline(env, scratch);
 		summary.ok = true;

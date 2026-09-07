@@ -74,14 +74,18 @@ function header(headers: ProviderFailure["headers"], name: string): string | und
 	return key === undefined ? undefined : headers[key];
 }
 
+/** HTTP Retry-After is relative seconds or an absolute HTTP date, never epoch seconds. */
+export function parseRetryAfter(value: string | undefined, now: number): number | undefined {
+	if (value === undefined || value.trim() === "") return undefined;
+	const seconds = Number(value);
+	if (Number.isFinite(seconds)) return seconds >= 0 ? now + seconds * 1_000 : undefined;
+	const timestamp = Date.parse(value);
+	return Number.isFinite(timestamp) ? timestamp : undefined;
+}
+
 function parsedReset(failure: ProviderFailure, now: number): number | undefined {
-	const retryAfter = header(failure.headers, "retry-after");
-	if (retryAfter !== undefined) {
-		const seconds = Number(retryAfter);
-		if (Number.isFinite(seconds) && seconds >= 0) return now + seconds * 1000;
-		const timestamp = Date.parse(retryAfter);
-		if (Number.isFinite(timestamp)) return timestamp;
-	}
+	const retryAfter = parseRetryAfter(header(failure.headers, "retry-after"), now);
+	if (retryAfter !== undefined) return retryAfter;
 	for (const name of ["x-ratelimit-reset", "x-rate-limit-reset", "anthropic-ratelimit-unified-reset"]) {
 		const value = header(failure.headers, name);
 		if (value === undefined) continue;

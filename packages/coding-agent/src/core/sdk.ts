@@ -10,7 +10,7 @@ import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
 import type { ExtensionRunner, LoadExtensionsResult, SessionStartEvent, ToolDefinition } from "./extensions/index.ts";
 import { convertToLlm } from "./messages.ts";
 import { findInitialModel } from "./model-resolver.ts";
-import { ModelRuntime } from "./model-runtime.ts";
+import { ModelRuntime, type RequestAuthResolver } from "./model-runtime.ts";
 import { mergeProviderAttributionHeaders } from "./provider-attribution.ts";
 import type { ResourceLoader } from "./resource-loader.ts";
 import { DefaultResourceLoader } from "./resource-loader.ts";
@@ -331,6 +331,17 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	};
 
 	const extensionRunnerRef: { current?: ExtensionRunner } = {};
+	const resolveRequestAuth: RequestAuthResolver = async (requestModel, checkOnly, requestId) => {
+		const runner = extensionRunnerRef.current;
+		if (!runner?.hasHandlers("before_provider_auth")) return undefined;
+		return runner.emitBeforeProviderAuth({
+			type: "before_provider_auth",
+			model: requestModel,
+			checkOnly,
+			requestId,
+		});
+	};
+	modelRuntime.setRequestAuthResolver(resolveRequestAuth);
 
 	agent = new Agent({
 		initialState: {
@@ -357,6 +368,8 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			const requestId = randomUUID();
 			return modelRuntime.streamSimple(model, context, {
 				...options,
+				requestId,
+				resolveRequestAuth,
 				timeoutMs,
 				websocketConnectTimeoutMs,
 				maxRetries: options?.maxRetries ?? providerRetrySettings.maxRetries,
@@ -436,6 +449,13 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		sessionStartEvent: options.sessionStartEvent,
 	});
 	const extensionsResult = resourceLoader.getExtensions();
+	// Extension-owned credentials may be the only authorised resources. Publish
+	// their availability before callers attempt setModel or the first prompt.
+	const availableModels = await modelRuntime.getAvailable();
+	if (!model && availableModels[0]) {
+		await session.setModel(availableModels[0]);
+		modelFallbackMessage = undefined;
+	}
 
 	return {
 		session,

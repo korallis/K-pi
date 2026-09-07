@@ -44,12 +44,36 @@ export interface RunFileRow {
 	note: string;
 }
 
-export type CentreView = "home" | "session";
+export type CentreView = "home" | "details" | "session";
+
+/** Real job snapshots only. Optional prose must come from recorded runtime truth. */
+export interface CentreJob {
+	jobId: string;
+	title?: string;
+	model: BoardModel;
+	now?: string;
+	next?: string;
+	done?: string;
+}
+
+export function jobNeedsHuman(job: CentreJob): boolean {
+	return job.model.stop === "NEEDS_HUMAN";
+}
+
+export function jobGroup(job: CentreJob): number {
+	return jobNeedsHuman(job) ? 0 : job.model.stop === "RUNNING" ? 1 : job.model.stop === "DONE" ? 2 : 3;
+}
 
 /** Everything the painter needs; the overlay mutates it between repaints. */
 export interface CentreState {
 	view: CentreView;
 	selected: number;
+	jobs: readonly CentreJob[];
+	selectedJob: string;
+	help: boolean;
+	/** Cached when the activity snapshot changes, not on every repaint. */
+	rounds?: readonly RoundSpan[];
+	nodeHistory?: ReadonlyMap<string, { retries: number; writes: readonly string[]; denied: number }>;
 	jobId: string;
 	model: BoardModel | undefined;
 	/** readModel() answered undefined: the job is gone. */
@@ -100,17 +124,11 @@ const RAIL_WIDTH = 24;
 const NODE_WIDTH = 31;
 const NODE_STACKED_HEIGHT = 12;
 
-export const HOME_PLACEHOLDERS = [
-	"type a message, /kpi stop, /kpi verify  ·  enter on an empty line opens the selected stage",
-	"type a message, /kpi stop, /kpi verify",
-] as const;
-export const SESSION_PLACEHOLDERS = [
-	"ask about this node, or /kpi stop  ·  esc back to command",
-	"ask about this node, or /kpi stop",
-] as const;
-export const HOME_KEY_HINT = "tab/↑↓ select stage · enter open · esc close · r refresh";
-export const SESSION_KEY_HINT = "esc back · ← → node · r refresh";
-const STAGES_KEY_HINT = "tab/↑↓ select  ·  enter stream session  ·  1-8 jump";
+export const HOME_PLACEHOLDERS = ["message to chat, or /kpi stop · /kpi verify"] as const;
+export const SESSION_PLACEHOLDERS = HOME_PLACEHOLDERS;
+export const HOME_KEY_HINT = "j/k choose · enter details · tab for you · / commands · ? help";
+export const SESSION_KEY_HINT = "j/k node · esc back · tab for you · ? help";
+const STAGES_KEY_HINT = "j/k select · enter session · 1-8 jump · tab for you";
 
 export function spinner(frame: number): string {
 	return SPINNER_FRAMES[((frame % SPINNER_FRAMES.length) + SPINNER_FRAMES.length) % SPINNER_FRAMES.length];
@@ -127,6 +145,8 @@ export type CentreKey =
 	| { kind: "escape" }
 	| { kind: "close" }
 	| { kind: "refresh" }
+	| { kind: "attention"; reverse: boolean }
+	| { kind: "help" }
 	| { kind: "backspace" }
 	| { kind: "type"; text: string };
 
@@ -147,11 +167,16 @@ function isPrintable(data: string): boolean {
 export function resolveKey(data: string, hasInput: boolean): CentreKey | undefined {
 	if (matchesKey(data, "ctrl+c")) return { kind: "close" };
 	if (matchesKey(data, "escape")) return { kind: "escape" };
-	if (matchesKey(data, "shift+tab") || matchesKey(data, "up") || matchesKey(data, "left")) return { kind: "previous" };
-	if (matchesKey(data, "tab") || matchesKey(data, "down") || matchesKey(data, "right")) return { kind: "next" };
+	if (matchesKey(data, "shift+tab")) return { kind: "attention", reverse: true };
+	if (matchesKey(data, "tab")) return { kind: "attention", reverse: false };
+	if (matchesKey(data, "up") || matchesKey(data, "left")) return { kind: "previous" };
+	if (matchesKey(data, "down") || matchesKey(data, "right")) return { kind: "next" };
 	if (matchesKey(data, "return") || matchesKey(data, "enter")) return { kind: "enter" };
 	if (matchesKey(data, "backspace")) return { kind: "backspace" };
 	if (!hasInput) {
+		if (data === "?") return { kind: "help" };
+		if (data === "j" || data === "]") return { kind: "next" };
+		if (data === "k" || data === "[") return { kind: "previous" };
 		if (data === "q") return { kind: "close" };
 		if (data === "r") return { kind: "refresh" };
 		if (/^[1-8]$/u.test(data)) return { kind: "jump", stage: Number(data) - 1 };
@@ -301,13 +326,12 @@ type StageStatus = "done" | "running" | "pending" | "failed" | "waiting";
 
 function stageStatus(index: number, model: BoardModel, current: number): StageStatus {
 	const record = model.activity?.[BOARD_STAGES[index]?.key ?? ""];
-	if (index === current && model.paused) return "waiting";
+	if (index === current && model.stop === "NEEDS_HUMAN") return "waiting";
 	if (record !== undefined) {
 		if (record.status === "running") return "running";
 		if (record.status === "completed") return "done";
 		if (record.status === "failed") return "failed";
 	}
-	if (index < current) return "done";
 	if (index === current) return model.stop === "RUNNING" ? "running" : "pending";
 	return "pending";
 }
@@ -351,7 +375,7 @@ function statusTone(status: StageStatus): Tone {
 		case "failed":
 			return "error";
 		case "waiting":
-			return "accent";
+			return "warning";
 		case "pending":
 			return "dim";
 	}
@@ -427,7 +451,7 @@ export function eventSummary(record: EventRecord): { text: string; tone: Tone } 
 			const attempt = numberField(record, "attempt") ?? 1;
 			const reason = stringField(record, "reason") ?? "transient";
 			const seconds = Math.ceil((numberField(record, "delay_ms") ?? 0) / 1000);
-			return { text: `${node} retry ${attempt} · ${reason} · next ${seconds}s`, tone: "warning" };
+			return { text: `${node} retry ${attempt} · ${reason} · next ${seconds}s`, tone: "accent" };
 		}
 		case "tool.request": {
 			const tool = stringField(record, "tool") ?? "?";
@@ -466,7 +490,7 @@ export function eventSummary(record: EventRecord): { text: string; tone: Tone } 
 		case "accounts.failover":
 			return {
 				text: `${stringField(record, "from") ?? "?"} → ${stringField(record, "to") ?? "?"}`,
-				tone: "warning",
+				tone: "accent",
 			};
 		default: {
 			const round = numberField(record, "round");
@@ -493,7 +517,7 @@ interface RoundSpan {
 }
 
 /** Each round's wall time from its first node.started to its last node.finished. */
-function roundSpans(records: readonly EventRecord[], nowMs: number): RoundSpan[] {
+export function roundSpans(records: readonly EventRecord[], nowMs: number): RoundSpan[] {
 	const byRound = new Map<number, RoundSpan & { open: number }>();
 	for (const record of records) {
 		if (record.type !== "node.started" && record.type !== "node.finished") continue;
@@ -606,7 +630,7 @@ function homeHeaderRight(state: CentreState): Row[] {
 	else stop.push(text(` ${runElapsed(state)}`, "muted"));
 	const mode: Row = [text("MODE ", "muted"), text(model.mode)];
 	const round: Row = [text("ROUND ", "muted"), text(String(model.round))];
-	const gate: Row = [text("GATE ", "muted"), text(model.gate ?? (model.paused ? "human" : "machine"))];
+	const gate: Row = [text("GATE ", "muted"), text(model.stop === "NEEDS_HUMAN" ? "human" : "machine")];
 	const clockRow: Row = [text(clock(state.nowMs), "muted")];
 	return [
 		[...mode, sep, ...round, sep, ...gate, sep, ...stop, ...problem, sep, ...clockRow],
@@ -695,7 +719,7 @@ function retryText(retry: NonNullable<BoardModel["retry"]>): string {
 }
 
 function roundsRow(state: CentreState): Row {
-	const spans = roundSpans(state.activity?.records ?? [], state.nowMs);
+	const spans = state.rounds ?? [];
 	if (spans.length === 0) return [text("—", "dim")];
 	const longest = Math.max(...spans.map((span) => span.endMs - span.startMs), 1);
 	const row: Row = [];
@@ -712,17 +736,18 @@ function roundsRow(state: CentreState): Row {
 export function telemetryRows(state: CentreState, model: BoardModel): Row[] {
 	const cost = totalCost(model);
 	const rate = state.costRates.at(-1);
-	const costRow: Row = [text(`${formatCost(cost)} est.`, "warning")];
+	const costRow: Row = [text(`${formatCost(cost)} est.`, "muted")];
 	if (rate !== undefined) costRow.push(text(`  +${formatCost(Math.max(0, rate))}/min`, "muted"));
-	if (state.costRates.length > 0) costRow.push(text(`  ${sparkline(state.costRates)}`, "warning"));
-	const nodeRuns = (state.activity?.records ?? []).filter((record) => record.type === "node.started").length;
+	if (state.costRates.length > 0) costRow.push(text(`  ${sparkline(state.costRates)}`, "muted"));
+	let nodeRuns = 0;
+	for (const node of state.activity?.nodes.values() ?? []) nodeRuns += node.runs;
 	const steps = model.superstep ?? nodeRuns;
 	const workers = model.sessions?.workers ?? 0;
 	const stepsRow: Row = [
 		text(String(steps)),
 		text(`   NODE RUNS ${nodeRuns}   WORKERS ${workers}/${state.workerCap}`, "muted"),
 	];
-	if (model.retry !== undefined) stepsRow.push(text(`   ${retryText(model.retry)}`, "warning"));
+	if (model.retry !== undefined) stepsRow.push(text(`   ${retryText(model.retry)}`, "accent"));
 	return [
 		kv("COST", 9, costRow),
 		kv("CONTEXT", 9, [text("—", "dim")]),
@@ -792,14 +817,13 @@ function contextPanel(state: CentreState, model: BoardModel, height: number): Pa
 			? []
 			: [text(` · workers ${model.sessions.workers}/${state.workerCap} · nodes ${model.sessions.nodes}`, "muted")]),
 	];
-	const gate: Row = model.paused
-		? [
-				text("human · waiting on the operator", "accent"),
-				...(model.pendingQuestion === undefined ? [] : [text(` · ${model.pendingQuestion}`, "text")]),
-			]
-		: model.mode === "autopilot"
-			? [text("machine · autopilot · commits after green receipts bound to HEAD")]
-			: [text(`${model.gate ?? "machine"} · next human gate after 07 review`)];
+	const gate: Row =
+		model.stop === "NEEDS_HUMAN"
+			? [
+					text("human · waiting on the operator", "warning"),
+					...(model.pendingQuestion === undefined ? [] : [text(` · ${model.pendingQuestion}`, "text")]),
+				]
+			: [text(`machine · ${model.mode} · runtime chooses the next transition`)];
 	const next = nextStages(current, 1)[0];
 	const graph: Row = [
 		text(`round ${model.round}`),
@@ -852,25 +876,19 @@ function eventsPanel(state: CentreState, model: BoardModel, height: number): Pan
 	const currentNode = currentKey === undefined ? undefined : model.activity?.[currentKey]?.node;
 	let live: Row | undefined;
 	if (running && currentNode !== undefined) {
-		const last = [...records]
-			.reverse()
-			.find((record) => record.type === "tool.request" && record.node === currentNode);
-		if (last !== undefined) {
-			const since = recordMs(last);
+		const activity = state.activity?.nodes.get(currentNode);
+		if (activity?.lastTool !== undefined) {
 			live = [
 				text("▸ ", "accent"),
 				text(padRight("live", 8), "accent"),
-				text(`  ${padRight(last.type, 19)} `),
-				text(eventSummary(last).text),
-				text(
-					`  ${spinner(state.spinner)} ${since === undefined ? "" : formatElapsed(state.nowMs - since)}`,
-					"accent",
-				),
+				text(`  ${padRight("tool", 19)} `),
+				text(activity.lastTool),
+				text(`  ${spinner(state.spinner)}`, "accent"),
 			];
 		}
 	}
 	const keep = Math.max(0, body - (live === undefined ? 0 : 1));
-	const rows: Row[] = records.slice(-keep).map((record) => {
+	const rows: Row[] = (keep === 0 ? [] : records.slice(-keep)).map((record) => {
 		const summary = eventSummary(record);
 		return [
 			text(clockOf(record.ts), "dim"),
@@ -956,7 +974,7 @@ function railPanel(state: CentreState, model: BoardModel, height: number, width:
 		return head;
 	});
 	rows.push([], [text("← → switch node", "dim")], [text("esc  back", "dim")], []);
-	rows.push([text(`ROUND ${model.round}`)], [text(`GATE ${model.gate ?? (model.paused ? "human" : "machine")}`)]);
+	rows.push([text(`ROUND ${model.round}`)], [text(`GATE ${model.stop === "NEEDS_HUMAN" ? "human" : "machine"}`)]);
 	rows.push(
 		[text(`STOP ${stopText(model)}`, stopTone(model.stop))],
 		[text(`${runElapsed(state)} elapsed`, "muted")],
@@ -1042,13 +1060,13 @@ function nodeRows(state: CentreState, model: BoardModel, inner: number): Row[] {
 	];
 	const rows: Row[] = [];
 	if (detail?.loadError !== undefined) rows.push([text(`✕ load error ${detail.loadError}`, "error")]);
-	const records = state.activity?.records ?? [];
 	const node = detail?.node ?? stage.key;
-	const retries = records.filter((record) => record.type === "node.retry" && record.node === node).length;
+	const history = state.nodeHistory?.get(node);
+	const retries = history?.retries ?? 0;
 	rows.push(kv("node", 9, value(node)));
 	rows.push(kv("status", 9, value(statusWord(status), statusTone(status))));
 	rows.push(kv("runs", 9, value(String(detail?.runs ?? 0))));
-	rows.push(kv("retries", 9, value(String(retries), retries > 0 ? "warning" : "text")));
+	rows.push(kv("retries", 9, value(String(retries), retries > 0 ? "accent" : "text")));
 	rows.push(kv("elapsed", 9, value(detail?.elapsedMs === undefined ? "—" : formatElapsed(detail.elapsedMs))));
 	rows.push(kv("cost", 9, value(detail?.costUsd === undefined ? "—" : `${formatCost(detail.costUsd)} est.`)));
 	rows.push(kv("tokens", 9, value("—", "dim")));
@@ -1069,22 +1087,15 @@ function nodeRows(state: CentreState, model: BoardModel, inner: number): Row[] {
 	}
 	if (detail?.error !== undefined) rows.push(kv("error", 9, value(detail.error, "error")));
 	rows.push([]);
-	const writes = records.filter(
-		(record) =>
-			record.type === "tool.request" &&
-			record.node === node &&
-			(record.tool === "write" || record.tool === "edit") &&
-			typeof record.path === "string",
-	);
+	const paths = history?.writes ?? [];
 	rows.push([text("WRITES", "accent")]);
-	if (writes.length === 0) rows.push([text("none", "dim")]);
-	const paths = [...new Set(writes.map((record) => String(record.path)))];
+	if (paths.length === 0) rows.push([text("none recorded", "dim")]);
 	for (const path of paths.slice(-4)) rows.push([text(truncatePlain(path, inner))]);
 	if (paths.length > 4) rows.push([text(`+${paths.length - 4} more`, "dim")]);
-	const denied = writes.filter((record) => record.decision === "deny").length;
-	if (writes.length > 0)
+	const denied = history?.denied ?? 0;
+	if (paths.length > 0)
 		rows.push(
-			denied === 0 ? [text("all allowed by policy ✓", "success")] : [text(`${denied} denied by policy ✕`, "error")],
+			denied === 0 ? [text("no policy denial recorded", "muted")] : [text(`${denied} denied by policy ✕`, "error")],
 		);
 	rows.push([]);
 	rows.push([text("STEP", "accent")]);
@@ -1100,8 +1111,8 @@ function nodeRows(state: CentreState, model: BoardModel, inner: number): Row[] {
 	if (model.mode === "gated" && state.selected < 7) rows.push([text("then human gate", "muted")]);
 	rows.push([]);
 	rows.push([text("TELEMETRY", "accent")]);
-	rows.push(kv("cost", 8, [text(`${formatCost(totalCost(model))} est.`, "warning")]));
-	if (state.costRates.length > 0) rows.push([text(`        ${sparkline(state.costRates)}`, "warning")]);
+	rows.push(kv("cost", 8, [text(`${formatCost(totalCost(model))} est.`, "muted")]));
+	if (state.costRates.length > 0) rows.push([text(`        ${sparkline(state.costRates)}`, "muted")]);
 	rows.push(kv("context", 8, [text("—", "dim")]));
 	rows.push(kv("tokens", 8, [text("—", "dim")]));
 	rows.push(kv("time", 8, [text(runElapsed(state))]));
@@ -1120,12 +1131,15 @@ interface Chrome {
 
 function inputRows(state: CentreState, width: number, palette: BoardPalette, chrome: Chrome): string[] {
 	const rule = palette.paint("border", "─".repeat(width));
+	const label = state.input.startsWith("/") ? "command › " : "chat › ";
 	const placeholder =
-		chrome.placeholders.find((candidate) => visibleWidth(candidate) + 4 <= width) ?? chrome.placeholders.at(-1) ?? "";
+		chrome.placeholders.find((candidate) => visibleWidth(candidate) + visibleWidth(label) <= width) ??
+		chrome.placeholders.at(-1) ??
+		"";
 	const prompt: Row =
 		state.input.length === 0
-			? [text("> ", "accent"), text("  "), text(placeholder, "dim")]
-			: [text("> ", "accent"), text(state.input), text("▌", "accent")];
+			? [text(label, "accent"), text(placeholder, "dim")]
+			: [text(label, "accent"), text(state.input), text("▌", "accent")];
 	const hint: Row =
 		state.hint === undefined ? [text(chrome.keyHint, "dim")] : [text(state.hint.text, state.hint.tone)];
 	return [rule, paintRow(prompt, width, palette), rule, paintRow(hint, width, palette)];
@@ -1140,7 +1154,134 @@ function emptyBody(message: string, height: number, width: number, palette: Boar
 	return stack([[paintRow([text(message, "dim")], width, palette)]], height, width);
 }
 
-function homeBody(state: CentreState, model: BoardModel, body: number, width: number, palette: BoardPalette): string[] {
+const PLAIN_STAGES: Readonly<Record<string, string>> = {
+	"ac-compiler": "understand",
+	"ac-compile": "understand",
+	specify: "understand",
+	plan: "plan",
+	implement: "build",
+	test: "test",
+	bounds: "check allowed folders",
+	review: "review",
+	ship: "ship",
+	deliver: "deliver",
+	"delivery-prerequisite": "restore delivery access",
+};
+
+function jobsBody(state: CentreState, height: number, width: number, palette: BoardPalette): string[] {
+	if (state.jobs.length === 0) {
+		return emptyBody(
+			state.refreshError
+				? `Cannot read jobs: ${state.refreshError} · r refresh`
+				: state.jobGone
+					? "No active job"
+					: "Reading run files…",
+			height,
+			width,
+			palette,
+		);
+	}
+	const rows: Row[] = [];
+	let group = -1;
+	let selectedLine = 0;
+	for (const job of state.jobs) {
+		const nextGroup = jobGroup(job);
+		if (nextGroup !== group) {
+			if (rows.length > 0) rows.push([]);
+			rows.push([
+				text(
+					["NEEDS YOU", "RUNNING", "DONE", "STOPPED"][nextGroup] ?? "STOPPED",
+					nextGroup === 0 ? "warning" : "muted",
+				),
+			]);
+			group = nextGroup;
+		}
+		const model = job.model;
+		const selected = job.jobId === state.selectedJob;
+		const tone: Tone = group === 0 ? "warning" : group === 1 ? "accent" : group === 2 ? "success" : "muted";
+		const glyph = group === 0 ? "◆" : group === 1 ? spinner(state.spinner) : group === 2 ? "✓" : "■";
+		const phase = PLAIN_STAGES[model.node ?? model.stage] ?? model.stage;
+		const activity = model.activity?.[BOARD_STAGES[currentStage(model)]?.key ?? ""];
+		const now =
+			job.now ??
+			(group === 0
+				? (model.pendingQuestion ?? `Waiting for you${model.recovery ? ` · ${model.recovery}` : ""}`)
+				: group === 2
+					? "Run completed"
+					: group === 3
+						? "Run stopped"
+						: model.retry
+							? `${phase} · retrying in ${Math.ceil(model.retry.delayMs / 1000)}s · ${model.retry.reason}`
+							: (activity?.lastTool ?? `${phase} · round ${model.round}`));
+		const name = truncatePlain(job.title ?? job.jobId, width < 100 ? 26 : 40);
+		if (selected) selectedLine = rows.length;
+		rows.push([
+			text(`${selected ? "▸" : " "}${glyph} `, tone),
+			text(name),
+			text(`  ${truncatePlain(now, Math.max(8, width - visibleWidth(name) - 15))}`, "muted"),
+			text("  ↵ details", "dim"),
+		]);
+		if (!selected) continue;
+		rows.push([text("   Now   ", tone), text(now)]);
+		rows.push([
+			text("   Next  ", "muted"),
+			text(
+				job.next ??
+					(group === 0
+						? "Open details; answer in the job's operator dialog"
+						: group === 2 || group === 3
+							? "No active work"
+							: "The runtime chooses the next step from its results"),
+			),
+		]);
+		const completed = BOARD_STAGES.filter((stage) => model.activity?.[stage.key]?.status === "completed").map(
+			(stage) => PLAIN_STAGES[stage.key] ?? stage.label,
+		);
+		rows.push([
+			text("   Done  ", "muted"),
+			text(job.done ?? ([...new Set(completed)].join(" · ") || "No completed steps recorded"), "muted"),
+		]);
+		const facts: string[] = [];
+		if (model.agents !== undefined) facts.push(`${model.agents} agents`);
+		if (activity?.toolCalls !== undefined) facts.push(`${activity.toolCalls} tools this step`);
+		const cost = totalCost(model);
+		if (cost !== undefined) facts.push(`${formatCost(cost)} est.`);
+		if (facts.length > 0) rows.push([text(`         ${facts.join(" · ")}`, "dim")]);
+	}
+	// Keep the selected row and its unfolded explanation visible in large fleets.
+	const start = Math.max(0, selectedLine + 5 - height);
+	const visible = rows.slice(start, start + height).map((row) => paintRow(row, width, palette));
+	return stack([visible], height, width);
+}
+
+function helpBody(height: number, width: number, palette: BoardPalette): string[] {
+	const rows: Row[] = [
+		[text("How K-π works", "accent")],
+		[text("Jobs show recorded work. Details keep the graph, files and sessions.")],
+		[text("Cool: machine working", "accent"), text(" · Warm: waiting for you", "warning")],
+		[text("✓ completed · working spinner · ○ not yet · ◆ your turn · ■ stopped", "muted")],
+		[],
+		[text("j/k or arrows  choose a job; in details, choose a stage")],
+		[text("enter          open details; enter again opens the session")],
+		[text("esc            clear input, close help, back one level, then close")],
+		[text("tab / shift-tab  next / previous job actually waiting for you")],
+		[text("1–8 or [ ]     choose a stage in details or session")],
+		[text("r refresh · q / ctrl+c close · ? toggle this help")],
+		[],
+		[text("command › /kpi stop · /kpi verify (the opened job only)")],
+		[text("chat › sends to chat after closing; it does not steer or approve.")],
+		[text("Type a space first to begin a message with a shortcut letter.", "dim")],
+	];
+	return stack([rows.map((row) => paintRow(row, width, palette))], height, width);
+}
+
+function detailsBody(
+	state: CentreState,
+	model: BoardModel,
+	body: number,
+	width: number,
+	palette: BoardPalette,
+): string[] {
 	const paint = (panel: Panel, panelWidth: number) => box(panel, panelWidth, palette);
 	if (width >= COLUMNS_MIN_WIDTH) {
 		const leftWidth = Math.floor(width * 0.475);
@@ -1262,7 +1403,7 @@ export function renderCommandCentre(state: CentreState, width: number, rows: num
 	const model = state.model;
 	const stage = BOARD_STAGES[state.selected] ?? BOARD_STAGES[0];
 	const session = state.view === "session";
-	const crumbs = session ? [`${stage.id} ${stage.label}`, "session"] : [];
+	const crumbs = session ? [`${stage.id} ${stage.label}`, "session"] : state.view === "details" ? ["details"] : [];
 	let right: Row[];
 	if (!session || model === undefined) {
 		right = homeHeaderRight(state);
@@ -1292,13 +1433,31 @@ export function renderCommandCentre(state: CentreState, width: number, rows: num
 			],
 		];
 	}
-	const top = header(state, width, palette, crumbs, right);
+	const attention = state.jobs.filter(jobNeedsHuman).length;
+	const top =
+		state.view === "home"
+			? [
+					paintRow(
+						[
+							text("K-π  Jobs", "accent"),
+							text(`  · ${attention} need you`, attention > 0 ? "warning" : "muted"),
+							text(` · ${state.jobs.filter((job) => job.model.stop === "RUNNING").length} running`, "muted"),
+							...(state.refreshError ? [text(` · read failed: ${state.refreshError}`, "error")] : []),
+						],
+						width,
+						palette,
+					),
+					palette.paint("border", "─".repeat(width)),
+				]
+			: header(state, width, palette, crumbs, right);
 	const chrome: Chrome = session
 		? { placeholders: SESSION_PLACEHOLDERS, keyHint: SESSION_KEY_HINT }
-		: { placeholders: HOME_PLACEHOLDERS, keyHint: HOME_KEY_HINT };
+		: { placeholders: HOME_PLACEHOLDERS, keyHint: state.view === "details" ? STAGES_KEY_HINT : HOME_KEY_HINT };
 	const bottom = inputRows(state, width, palette, chrome);
-	const showPath = !session && width >= ESSENTIALS_MIN_WIDTH && model !== undefined;
+	const showPath = !state.help && state.view === "details" && width >= ESSENTIALS_MIN_WIDTH && model !== undefined;
 	const body = height - top.length - bottom.length - (showPath ? 1 : 0);
+	if (state.help) return [...top, ...helpBody(body, width, palette), ...bottom];
+	if (state.view === "home") return [...top, ...jobsBody(state, body, width, palette), ...bottom];
 	if (model === undefined) {
 		const message = state.jobGone
 			? "K-π no active job"
@@ -1309,7 +1468,7 @@ export function renderCommandCentre(state: CentreState, width: number, rows: num
 	}
 	const middle = session
 		? sessionBody(state, model, body, width, palette)
-		: homeBody(state, model, body, width, palette);
+		: detailsBody(state, model, body, width, palette);
 	const path = showPath ? [paintRow(pathRow(state, model, width), width, palette)] : [];
 	return [...top, ...middle, ...path, ...bottom];
 }

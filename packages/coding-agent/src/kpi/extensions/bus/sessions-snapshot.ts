@@ -21,6 +21,8 @@ export interface LiveNodeSession {
 	jobId: string;
 	nodeId: string;
 	sessionId: string;
+	/** Stable graph identity; sessionId remains a replaceable incarnation. */
+	agentId?: string;
 	contextMode: "isolated" | "thread";
 	threadKey: string;
 	model?: string;
@@ -58,7 +60,7 @@ export interface SessionsSnapshot {
 }
 
 export const MECHANISM_SENTENCE =
-	"K-π runs graph nodes as in-process sessions in this kpi process; a node with workerRole (the reviewer) and the spawn_background tool start separate kpi --mode rpc processes that talk over .kpi/runs/<job>/bus.jsonl. No sub-agent API is used.";
+	"K-π uses owned CLI RPC sessions; authenticated peers exchange durable messages through one job-owned local socket. bus.jsonl is an audit log, not a transport.";
 
 const nodeSessions = new Set<LiveNodeSession>();
 const buses = new Set<BackgroundBus>();
@@ -77,6 +79,16 @@ export function registerLiveBus(bus: BackgroundBus): () => void {
 	return () => {
 		buses.delete(bus);
 	};
+}
+
+/** Remove only after owned processes have actually stopped. */
+export function unregisterLiveBus(bus: BackgroundBus): void {
+	buses.delete(bus);
+}
+
+/** Addressing and UI share this registry; no private parent-only lookup table. */
+export function registeredBuses(): BackgroundBus[] {
+	return [...buses];
 }
 
 /** Test seam: forgets every registration. */
@@ -102,9 +114,6 @@ export function liveNodeSessions(jobId?: string): LiveNodeSession[] {
 export function liveWorkerSessions(jobId?: string): LiveWorkerSession[] {
 	const rows: LiveWorkerSession[] = [];
 	for (const bus of buses) {
-		if (bus.isClosing) {
-			continue;
-		}
 		if (jobId !== undefined && bus.jobId !== jobId) {
 			continue;
 		}
@@ -158,7 +167,7 @@ export function sessionsSnapshot(options: {
 		const toolCalls = nodeToolCalls(record);
 		rows.push({
 			kind: "node",
-			id: record.nodeId,
+			id: record.agentId ?? record.nodeId,
 			role: `node:${record.contextMode}`,
 			...(record.model === undefined ? {} : { model: record.model }),
 			pid: process.pid,

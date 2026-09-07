@@ -7,13 +7,6 @@ export const DEFAULT_RETRY_BASE_MS = 1_000;
 export const RETRY_MAX_DELAY_MS = 60_000;
 
 /**
- * Automatic re-plans the driver may trigger for repeated witnesses before it
- * pauses for the operator. An operator touch (guidance, keep going) starts a
- * fresh allowance.
- */
-export const MAX_AUTOMATIC_REPLANS = 2;
-
-/**
  * The backoff before the retry that follows `spent` earlier retries: doubling
  * from the base, capped at the ceiling, no jitter. A 12th retry waits as long
  * as the 7th, and the run never ends because of it.
@@ -33,6 +26,7 @@ export interface PlanRepair {
 	failing_ac: string[];
 	evidence_ref: "verdict.json" | "evidence.json";
 	witness: string;
+	decision?: RecoveryDecision;
 	guidance?: string;
 }
 
@@ -66,6 +60,95 @@ export interface VerifierEvent {
 	readonly outputFingerprint?: string;
 	/** Ids of the acceptance criteria that failed this round, in any order. */
 	readonly failingAcIds?: readonly string[];
+}
+
+export type FailureKind = "transient" | "engineering" | "contract" | "dependency" | "authorization" | "operator";
+export type FailureClassification =
+	| "IMPLEMENTATION_ERROR"
+	| "ARCHITECTURAL_ERROR"
+	| "TEST_ERROR"
+	| "SPEC_MISINTERPRETATION"
+	| "REQUIREMENT_CONTRADICTION"
+	| "MISSING_REQUIREMENT"
+	| "INTEGRATION_ERROR"
+	| "DEPENDENCY_ERROR"
+	| "ENVIRONMENT_ERROR"
+	| "TOOL_ERROR"
+	| "DATA_ERROR"
+	| "PERMISSION_ERROR"
+	| "AUTHENTICATION_ERROR"
+	| "RESOURCE_ERROR"
+	| "CONTEXT_ERROR"
+	| "MODEL_ERROR"
+	| "FLAKY_TEST"
+	| "TRANSIENT_FAILURE"
+	| "UNKNOWN_FAILURE";
+export interface RecoveryDecision {
+	kind: FailureKind;
+	failure: { classification: FailureClassification; evidenceRefs: string[] };
+	action: "wait" | "diagnose" | "replan" | "decompose" | "reconsider" | "request_authority" | "stop";
+	attempt: number;
+	witness: string;
+	/** Must explain the changed strategy, not merely say retry. */
+	reason: string;
+	evidenceRefs: string[];
+	taskIds: string[];
+	goalIds: string[];
+}
+
+export function decideRecovery(input: {
+	kind: FailureKind;
+	witness: string;
+	classification?: FailureClassification;
+	prior?: readonly RecoveryDecision[];
+	evidenceRefs?: string[];
+	taskIds?: string[];
+	goalIds?: string[];
+}): RecoveryDecision {
+	const attempt =
+		(input.prior ?? []).reduce(
+			(latest, entry) => (entry.witness === input.witness ? Math.max(latest, entry.attempt) : latest),
+			0,
+		) + 1;
+	let action: RecoveryDecision["action"];
+	let change: string;
+	switch (input.kind) {
+		case "transient":
+			action = "wait";
+			change = "wait for transport or capacity recovery; preserve the current engineering strategy";
+			break;
+		case "operator":
+			action = "stop";
+			change = "honour the operator stop; do not dispatch further work";
+			break;
+		case "authorization":
+			action = "request_authority";
+			change = "request the missing external authority; do not expand capabilities";
+			break;
+		default:
+			action = attempt === 1 ? "diagnose" : attempt === 2 ? "replan" : attempt === 3 ? "decompose" : "reconsider";
+			change =
+				action === "diagnose"
+					? "isolate the failing assumption with a new diagnostic experiment"
+					: action === "replan"
+						? "replace the failed implementation approach using the diagnostic evidence"
+						: action === "decompose"
+							? "split the blocked task into independently verifiable smaller tasks"
+							: `revisit the remaining assumptions and acquire new evidence before strategy revision ${attempt}; do not replay the identical implementation`;
+	}
+	const evidenceRefs = [...(input.evidenceRefs ?? [])];
+	const classification = evidenceRefs.length ? (input.classification ?? "UNKNOWN_FAILURE") : "UNKNOWN_FAILURE";
+	return {
+		kind: input.kind,
+		failure: { classification, evidenceRefs },
+		action,
+		attempt,
+		witness: input.witness,
+		reason: change,
+		evidenceRefs,
+		taskIds: [...(input.taskIds ?? [])],
+		goalIds: [...(input.goalIds ?? [])],
+	};
 }
 
 /** Sleeps the injected backoff. Tests record the delays instead of waiting. */
@@ -130,7 +213,7 @@ export function stopFingerprint(value: unknown): string {
 }
 
 /** Why a failure may be retried inside the same round. */
-export type TransientReason = "http" | "timeout" | "transport";
+export type TransientReason = "http" | "timeout" | "transport" | "resource";
 
 const ABORT_CODES: Record<string, true> = { ABORT_ERR: true, ERR_CANCELED: true };
 const TIMEOUT_CODES: Record<string, true> = {
@@ -215,6 +298,7 @@ export function classifyTransientFailure(error: unknown): TransientReason | unde
 	if (shape === undefined) {
 		return undefined;
 	}
+	if (shape.code === "WORKSPACE_BUSY") return "resource";
 	const cause = failureShape((error as { cause?: unknown }).cause);
 	if (statesTimeout(shape) || (cause !== undefined && statesTimeout(cause))) {
 		return "timeout";
@@ -292,8 +376,9 @@ function witnesses(event: VerifierEvent): {
  */
 export function repeatedWitness(state: StopState, event: VerifierEvent): string | undefined {
 	const seen = witnesses(event);
+	if (event.passed) return undefined;
 	if (seen.source === "test") {
-		return !event.passed && seen.evidence === state.lastTestEvidence ? `evidence:${seen.evidence}` : undefined;
+		return seen.evidence === state.lastTestEvidence ? `evidence:${seen.evidence}` : undefined;
 	}
 	if (seen.output !== undefined && state.outputFingerprints.includes(seen.output)) {
 		return seen.output;

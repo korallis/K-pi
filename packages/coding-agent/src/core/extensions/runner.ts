@@ -15,6 +15,7 @@ import type { BuildSystemPromptOptions } from "../system-prompt.ts";
 import type {
 	BeforeAgentStartEvent,
 	BeforeAgentStartEventResult,
+	BeforeProviderAuthEvent,
 	BeforeProviderHeadersEvent,
 	BeforeProviderRequestEvent,
 	CompactOptions,
@@ -1040,13 +1041,10 @@ export class ExtensionRunner {
 			if (!handlers || handlers.length === 0) continue;
 
 			for (const handler of handlers) {
+				let contextResult: ContextEventResult | undefined;
 				try {
 					const event: ContextEvent = { type: "context", messages: currentMessages };
-					const handlerResult = await handler(event, ctx);
-
-					if (handlerResult && (handlerResult as ContextEventResult).messages) {
-						currentMessages = (handlerResult as ContextEventResult).messages!;
-					}
+					contextResult = (await handler(event, ctx)) as ContextEventResult | undefined;
 				} catch (err) {
 					const message = err instanceof Error ? err.message : String(err);
 					const stack = err instanceof Error ? err.stack : undefined;
@@ -1057,6 +1055,10 @@ export class ExtensionRunner {
 						stack,
 					});
 				}
+				if (contextResult?.block) {
+					throw new Error(`Context blocked: ${contextResult.reason ?? "mandatory context is unavailable"}`);
+				}
+				if (contextResult?.messages) currentMessages = contextResult.messages;
 			}
 		}
 
@@ -1095,6 +1097,17 @@ export class ExtensionRunner {
 		}
 
 		return currentPayload;
+	}
+
+	async emitBeforeProviderAuth(event: BeforeProviderAuthEvent): Promise<BeforeProviderAuthEvent["auth"]> {
+		const ctx = this.createContext();
+		for (const ext of this.extensions) {
+			for (const handler of ext.handlers.get("before_provider_auth") ?? []) {
+				// Authentication is load-bearing: never catch and continue with another grant.
+				await handler(event, ctx);
+			}
+		}
+		return event.auth;
 	}
 
 	async emitBeforeProviderHeaders(headers: ProviderHeaders, requestId: string): Promise<ProviderHeaders> {

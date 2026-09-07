@@ -1,5 +1,5 @@
-import type { Dirent, Stats } from "node:fs";
-import { lstat, mkdir, readdir, readFile, readlink, realpath, stat, writeFile } from "node:fs/promises";
+import type { Stats } from "node:fs";
+import { lstat, mkdir, readFile, readlink, realpath, stat } from "node:fs/promises";
 import { dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
 
 import { isJsonObject } from "./graph/schema.ts";
@@ -12,6 +12,8 @@ export interface StackModule {
 	interface: string;
 	allowed_paths: string[];
 	depends_on: string[];
+	/** Explicit directories needed by this task; never generates source or tests. */
+	scaffold?: string[];
 }
 
 export interface DuneStack {
@@ -21,7 +23,7 @@ export interface DuneStack {
 	delivery_reason?: string;
 	root: string;
 	modules: StackModule[];
-	scaffold_first: true;
+	scaffold_first?: boolean;
 	/**
 	 * The `task.json` this stack was frozen against. Present once the control
 	 * plane has frozen the contract; an absent hash falls back to file order.
@@ -69,39 +71,8 @@ export function renderPlanSummary(stack: DuneStack): string {
 	return lines.join("\n");
 }
 
-/** Folders that are a layer, not a capability. Legal inside a feature, never as the map. */
-const LAYER_FOLDERS = new Set([
-	"components",
-	"hooks",
-	"lib",
-	"libs",
-	"services",
-	"controllers",
-	"models",
-	"views",
-	"api",
-	"apis",
-	"ui",
-	"frontend",
-	"backend",
-	"routes",
-	"handlers",
-	"middleware",
-	"pages",
-]);
-
-/** Folders that mean "somewhere else": allowed only with a tight purpose. */
-const GENERIC_FOLDERS = new Set(["utils", "helpers", "common", "misc", "core", "shared-utils"]);
-
-/** Files a generic folder may hold before it stops being tight. */
-export const GENERIC_FOLDER_FILE_BUDGET = 5;
-
 /** Playbooks that legitimately touch code without a capability map. */
 export const NO_STACK_PLAYBOOKS = new Set(["typo", "unslop", "comment-strip"]);
-
-/** Staging language that describes a layer sweep rather than a slice. */
-const LAYER_SWEEP_PATTERN =
-	/\ball\s+(?:the\s+)?(?:apis?|endpoints?|controllers?|routes?|screens?|uis?|views?|pages?|components?)\b/iu;
 
 export class DuneStackError extends Error {
 	constructor(message: string) {
@@ -225,11 +196,6 @@ function assertDeclaredPath(value: unknown, label: string, options: { allowGlob:
 	return parts;
 }
 
-/** The test twin a module owns, whether or not it is spelled in `allowed_paths`. */
-export function testTwinFor(module: StackModule): string {
-	return `test/${module.id}`;
-}
-
 /**
  * Whether this module may write this path. One predicate, used by implement
  * bounds and by `claim_path`, so a worker and the graph cannot disagree about
@@ -240,8 +206,7 @@ export function moduleOwnsPath(projectRoot: string, module: StackModule, path: s
 	if (normalized === undefined) {
 		return false;
 	}
-	const patterns = [...module.allowed_paths, module.folder, module.interface, testTwinFor(module)];
-	return patterns.some((pattern) => matchesPathPattern(pattern, normalized));
+	return module.allowed_paths.some((pattern) => matchesPathPattern(pattern, normalized));
 }
 
 function assertStringField(value: unknown, label: string): asserts value is string {
@@ -259,7 +224,7 @@ function assertModuleShape(value: unknown, index: number): asserts value is Stac
 		throw new DuneStackError(`modules[${index}].id must be a single path segment: ${String(value.id)}`);
 	}
 	assertStringField(value.purpose, `modules[${index}].purpose`);
-	assertDeclaredPath(value.folder, `modules[${index}].folder`, { allowGlob: false });
+	if (value.folder !== ".") assertDeclaredPath(value.folder, `modules[${index}].folder`, { allowGlob: false });
 	assertDeclaredPath(value.interface, `modules[${index}].interface`, { allowGlob: false });
 	if (!Array.isArray(value.allowed_paths) || value.allowed_paths.some((entry) => typeof entry !== "string")) {
 		throw new DuneStackError(`modules[${index}].allowed_paths must be an array of strings`);
@@ -273,18 +238,34 @@ function assertModuleShape(value: unknown, index: number): asserts value is Stac
 	if (!Array.isArray(value.depends_on) || value.depends_on.some((entry) => typeof entry !== "string")) {
 		throw new DuneStackError(`modules[${index}].depends_on must be an array of strings`);
 	}
+	if (value.scaffold !== undefined) {
+		if (!Array.isArray(value.scaffold)) throw new DuneStackError(`modules[${index}].scaffold must be an array`);
+		for (const path of value.scaffold) {
+			assertDeclaredPath(path, `modules[${index}].scaffold`, { allowGlob: false });
+			if (
+				!value.allowed_paths.some(
+					(pattern) =>
+						typeof pattern === "string" &&
+						typeof path === "string" &&
+						(matchesPathPattern(pattern, path) || matchesPathPattern(pattern, `${path}/file`)),
+				)
+			) {
+				throw new DuneStackError(`Scaffold directory is outside declared ownership: ${String(path)}`);
+			}
+		}
+	}
 }
 
-/**
- * Validates the whole map. Every rule here is a plan-gate rule from
- * `dune-architecture.md`: a stranger must be able to read the product from the
- * folder names, and one implement round must be one slice.
- */
+/** Validate explicit ownership and dependency identity, not language or layout style. */
 export function assertDuneStack(value: unknown): asserts value is DuneStack {
 	if (!isJsonObject(value)) {
 		throw new DuneStackError("stack must be an object");
 	}
-	if (value.version !== 1 || value.shape !== "dune" || value.scaffold_first !== true) {
+	if (
+		value.version !== 1 ||
+		value.shape !== "dune" ||
+		(value.scaffold_first !== undefined && typeof value.scaffold_first !== "boolean")
+	) {
 		throw new DuneStackError("Invalid Dune stack header");
 	}
 	if (value.delivery !== "vertical" && value.delivery !== "horizontal") {
@@ -297,7 +278,7 @@ export function assertDuneStack(value: unknown): asserts value is DuneStack {
 		throw new DuneStackError("Horizontal delivery requires a reason");
 	}
 	assertStringField(value.root, "root");
-	assertDeclaredPath(value.root, "root", { allowGlob: false });
+	if (value.root !== ".") assertDeclaredPath(value.root, "root", { allowGlob: false });
 	if (!Array.isArray(value.modules) || value.modules.length === 0) {
 		throw new DuneStackError("stack must declare at least one module");
 	}
@@ -313,83 +294,38 @@ export function assertDuneStack(value: unknown): asserts value is DuneStack {
 		modules.push(entry);
 	}
 
-	const root = patternSegments(value.root);
 	for (const module of modules) {
-		const folder = patternSegments(module.folder);
-		if (folder.length === 0) {
-			throw new DuneStackError(`Module ${module.id} has no folder`);
-		}
-		// Folder name is the capability name. No clever aliases.
-		if (folder.at(-1) !== module.id) {
-			throw new DuneStackError(`Module folder must match id: ${module.id}`);
-		}
-		// A layer is not a capability, and a layer folder is legal only inside a
-		// feature folder - never as the top-level map.
-		// The map lives under the declared root; a module folder outside it is not
-		// part of the map at all.
-		if (folder.length <= root.length || !root.every((part, index) => part === folder[index])) {
+		if (value.root !== "." && !matchesPathPattern(value.root, module.folder)) {
 			throw new DuneStackError(`Module ${module.id} folder must live under root ${value.root}: ${module.folder}`);
 		}
-		const isTopLevel = folder.length === root.length + 1;
-		if (LAYER_FOLDERS.has(module.id) && isTopLevel) {
-			throw new DuneStackError(`Layer folder ${module.id} cannot be a top-level module`);
-		}
-		if (GENERIC_FOLDERS.has(module.id) && module.purpose.trim().split(/\s+/u).length < 3) {
-			throw new DuneStackError(`Generic module needs a tight purpose: ${module.id}`);
-		}
-		// Auth's home is its own folder, not a layer bucket.
-		if (module.id === "auth" && folder.slice(0, -1).some((part) => LAYER_FOLDERS.has(part))) {
-			throw new DuneStackError("Auth must live in its auth folder");
-		}
-		if (!matchesPathPattern(module.folder, module.interface)) {
+		if (module.folder !== "." && !matchesPathPattern(module.folder, module.interface)) {
 			throw new DuneStackError(`Interface must live inside ${module.folder}`);
 		}
-		// Coverage is asked the way a claim asks it: does some declared pattern
-		// admit a representative path inside the folder? Matching pattern against
-		// pattern is the inverted question and answers a different one.
-		const folderProbe = `${folder.join("/")}/index.ts`;
-		if (!module.allowed_paths.some((pattern) => matchesPathPattern(pattern, folderProbe))) {
-			throw new DuneStackError(`Module ${module.id} does not allow its own folder`);
+		if (!module.allowed_paths.some((pattern) => matchesPathPattern(pattern, module.interface))) {
+			throw new DuneStackError(`Module ${module.id} does not allow its interface`);
 		}
-		const twinProbe = `${testTwinFor(module)}/index.test.ts`;
-		if (!module.allowed_paths.some((pattern) => matchesPathPattern(pattern, twinProbe))) {
-			throw new DuneStackError(`Module ${module.id} lacks its test twin`);
+		for (const pattern of module.allowed_paths) {
+			if (/[*?[\]]/u.test(patternSegments(pattern)[0] ?? "")) {
+				throw new DuneStackError(`Module ${module.id} ownership requires an explicit path prefix: ${pattern}`);
+			}
 		}
 		for (const dependency of module.depends_on) {
-			if (!ids.has(dependency)) {
+			if (!ids.has(dependency))
 				throw new DuneStackError(`Module ${module.id} depends on unknown module ${dependency}`);
-			}
 		}
 	}
-
-	// `shared/` holds what two or more slices need. One consumer means it belongs
-	// inside that consumer, and a shared abstraction with no second slice is an
-	// extraction that has not earned itself yet.
-	for (const module of modules) {
-		if (module.id !== "shared") {
-			continue;
-		}
-		const consumers = modules.filter((candidate) => candidate.depends_on.includes(module.id));
-		if (consumers.length < 2) {
-			throw new DuneStackError(`shared needs two consuming slices before extraction; ${consumers.length} declared`);
-		}
-	}
-
-	// Vertical delivery ships one capability at a time. A plan that stages every
-	// API and then every screen is horizontal work, and must say so with a reason.
-	if (value.delivery === "vertical") {
-		for (const module of modules) {
-			if (LAYER_SWEEP_PATTERN.test(module.purpose) || LAYER_SWEEP_PATTERN.test(module.id)) {
-				throw new DuneStackError(`Vertical delivery cannot stage a layer sweep: ${module.id} (${module.purpose})`);
-			}
-		}
-		const layerModules = modules.filter((module) => LAYER_FOLDERS.has(module.id));
-		if (layerModules.length >= 2) {
-			throw new DuneStackError(
-				`Vertical delivery cannot be a layer staging plan: ${layerModules.map((module) => module.id).join(", ")}`,
-			);
-		}
-	}
+	const byId = new Map(modules.map((module) => [module.id, module]));
+	const visiting = new Set<string>();
+	const visited = new Set<string>();
+	const visit = (id: string): void => {
+		if (visiting.has(id)) throw new DuneStackError(`Module dependency cycle at ${id}`);
+		if (visited.has(id)) return;
+		visiting.add(id);
+		for (const dependency of byId.get(id)!.depends_on) visit(dependency);
+		visiting.delete(id);
+		visited.add(id);
+	};
+	for (const id of ids) visit(id);
 }
 
 /** A stack is required unless the playbook is one of the named exemptions. */
@@ -420,45 +356,6 @@ export function resolveCurrentModule(stack: DuneStack, task: Pick<Task, "current
 		throw new DuneStackError(`current_module_id ${requested} does not name exactly one module`);
 	}
 	return matches[0];
-}
-
-/**
- * Files under a folder. Only an absent folder is empty: a permission or I/O
- * failure must not make a generic folder look small enough to pass its budget.
- */
-async function countFiles(directory: string): Promise<number> {
-	let entries: Dirent[];
-	try {
-		entries = await readdir(directory, { withFileTypes: true });
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-			return 0;
-		}
-		throw error;
-	}
-	let total = 0;
-	for (const entry of entries) {
-		total += entry.isDirectory() ? await countFiles(join(directory, entry.name)) : 1;
-	}
-	return total;
-}
-
-/**
- * A generic folder stays legal only while it is small. Past the budget it is the
- * soup the map exists to prevent, whatever its purpose field claims.
- */
-export async function assertGenericFolderBudget(projectRoot: string, stack: DuneStack): Promise<void> {
-	for (const module of stack.modules) {
-		if (!GENERIC_FOLDERS.has(module.id)) {
-			continue;
-		}
-		const files = await countFiles(join(projectRoot, module.folder));
-		if (files >= GENERIC_FOLDER_FILE_BUDGET) {
-			throw new DuneStackError(
-				`Generic folder ${module.folder} holds ${files} files; the budget is ${GENERIC_FOLDER_FILE_BUDGET}`,
-			);
-		}
-	}
 }
 
 /**
@@ -520,16 +417,29 @@ export interface FrozenSlice {
 	module: StackModule;
 }
 
-/**
- * The whole precondition in one call: a stack exists, is valid, describes this
- * task, names this slice, and keeps its generic folders tight. Implement and
- * `claim_path` both go through here, so they cannot disagree.
- */
+/** Validate the frozen map and task before selecting a writable slice. */
 
 export async function freezeCurrentSlice(projectRoot: string, runDirectory: string, task: Task): Promise<FrozenSlice> {
 	const stack = await readDuneStack(runDirectory);
 	await assertStackFresh(runDirectory, task, stack);
-	await assertGenericFolderBudget(projectRoot, stack);
+	const selected = resolveCurrentModule(stack, {
+		current_module_id: task.current_module_id ?? stack.current_module_id,
+	});
+	const allowed = task.acceptance.flatMap((criterion) => criterion.bounds?.write_allow ?? []);
+	for (const module of stack.modules) {
+		if (module.folder !== ".") await canonicalProjectPath(projectRoot, module.folder);
+		await assertClaimInModule(projectRoot, module.interface, module);
+		if (module.id === selected.id && allowed.length > 0) {
+			for (const pattern of module.allowed_paths) {
+				const prefix = patternSegments(pattern)
+					.filter((_part, index, parts) => parts.slice(0, index + 1).every((segment) => !/[*?[\]]/u.test(segment)))
+					.join("/");
+				if (!allowed.some((bound) => bound === pattern || matchesPathPattern(bound, prefix))) {
+					throw new DuneStackError(`Module ${module.id} ownership exceeds task bounds: ${pattern}`);
+				}
+			}
+		}
+	}
 
 	// The plan names the slice; the control plane writes it into the job contract
 	// so implement reads a frozen pointer instead of guessing one. The contract
@@ -714,93 +624,26 @@ export async function assertClaimInModule(projectRoot: string, path: string, mod
 	return canonical;
 }
 
-/**
- * Creates an empty placeholder, or leaves what is already there alone. A later
- * round re-scaffolds the same module, and appending stubs to a real interface
- * would corrupt the file the map exists to publish.
- */
-async function createIfAbsent(path: string): Promise<void> {
-	try {
-		await writeFile(path, "export {};\n", { flag: "wx" });
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
-			throw error;
-		}
-	}
-}
-
 export interface ScaffoldResult {
-	/** In order: the folder, the public interface, then the test twin. */
+	/** Only explicitly declared directories, in declaration order. */
 	steps: string[];
 	folder: string;
 	interface: string;
-	testTwin: string;
 }
 
-/**
- * Creates the empty map before any behaviour: feature folder, public interface,
- * matching test folder. The order is the contract, so it is what this returns.
- */
+/** Preserve existing projects. Creating source and meaningful tests is the implementer's task. */
 export async function scaffoldModule(projectRoot: string, module: StackModule): Promise<ScaffoldResult> {
-	const folder = join(projectRoot, module.folder);
-	const interfacePath = join(projectRoot, module.interface);
-	const testTwin = join(projectRoot, testTwinFor(module), "index.test.ts");
 	const steps: string[] = [];
-
-	await mkdir(folder, { recursive: true });
-	steps.push(module.folder);
-
-	await mkdir(dirname(interfacePath), { recursive: true });
-	await createIfAbsent(interfacePath);
-	steps.push(module.interface);
-
-	await mkdir(dirname(testTwin), { recursive: true });
-	await createIfAbsent(testTwin);
-	steps.push(`${testTwinFor(module)}/index.test.ts`);
-
-	return { steps, folder, interface: interfacePath, testTwin };
-}
-
-/**
- * Behaviour may only exist once the map does. A folder holding implementation
- * files while its public interface or test twin is missing is the case
- * `dune-architecture.md` calls UNSAFE.
- */
-export async function assertScaffoldedBeforeBehavior(projectRoot: string, module: StackModule): Promise<void> {
-	const behaviour: string[] = [];
-	const scan = async (directory: string, prefix: string): Promise<void> => {
-		let entries: Dirent[];
-		try {
-			entries = await readdir(join(projectRoot, directory), { withFileTypes: true });
-		} catch {
-			return;
+	for (const path of module.scaffold ?? []) {
+		const canonical = await canonicalProjectPath(projectRoot, path);
+		if (
+			!moduleOwnsPath(projectRoot, module, canonical) &&
+			!moduleOwnsPath(projectRoot, module, `${canonical}/file`)
+		) {
+			throw new DuneStackError(`Scaffold directory is outside declared ownership: ${path}`);
 		}
-		for (const entry of entries) {
-			const child = `${directory}/${entry.name}`;
-			if (entry.isDirectory()) {
-				await scan(child, prefix);
-				continue;
-			}
-			if (child !== module.interface) {
-				behaviour.push(child);
-			}
-		}
-	};
-	await scan(patternSegments(module.folder).join("/"), module.id);
-	if (behaviour.length === 0) {
-		return;
+		await mkdir(join(projectRoot, canonical), { recursive: true });
+		steps.push(canonical);
 	}
-	const missing: string[] = [];
-	for (const required of [module.interface, `${testTwinFor(module)}/index.test.ts`]) {
-		try {
-			await stat(join(projectRoot, required));
-		} catch {
-			missing.push(required);
-		}
-	}
-	if (missing.length > 0) {
-		throw new DuneStackError(
-			`Module ${module.id} has behaviour (${behaviour[0]}) before its scaffold: missing ${missing.join(", ")}`,
-		);
-	}
+	return { steps, folder: join(projectRoot, module.folder), interface: join(projectRoot, module.interface) };
 }

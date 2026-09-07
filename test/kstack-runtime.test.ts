@@ -10,6 +10,7 @@ import {
 	LADDER_FILE,
 	LadderError,
 	ladderCandidates,
+	modelFamily,
 	PANEL_CAP,
 	parseModelLadder,
 	REQUIRED_ROLES,
@@ -40,8 +41,6 @@ import {
 	readKStackModels,
 	renderPlan,
 	resolveFallbackModels,
-	resolvePanel,
-	resolveRoleModel,
 	suggestFallbackModels,
 	writeKStackModels,
 } from "../packages/coding-agent/src/kpi/kstack/models.ts";
@@ -800,7 +799,7 @@ test("the review panel is ordered, cross-family, and capped", () => {
 	);
 	// Opus 5 outranks Opus 4.8 by the ladder's own working order, not by name.
 	assert.deepEqual(panel, ["anthropic/claude-opus-5-thinking", "openai/gpt-5.6-sol-max", "kimi-coding/kimi-k3"]);
-	assert.equal(new Set(panel.map((slug) => slug.split("/")[0])).size, panel.length, "one entry per family");
+	assert.equal(new Set(panel.map(modelFamily)).size, panel.length, "one entry per identified model family");
 	assert.ok(panel.length <= PANEL_CAP);
 
 	// One family live means a panel of one, not a slug repeated to look like two.
@@ -901,16 +900,7 @@ test("the model map is written atomically and read back per role", async () => {
 		const readBack = await readKStackModels(path);
 		assert.equal(readBack?.version, 1);
 		assert.equal(readBack?.inherit_parent, false);
-		assert.equal(await resolveRoleModel("judgment", path), "anthropic/claude-opus-5-thinking");
 		assert.deepEqual(await resolveFallbackModels(path), fallbackModels);
-		assert.deepEqual(await resolvePanel(path), [
-			"anthropic/claude-opus-5-thinking",
-			"openai/gpt-5.6-sol-max",
-			"kimi-coding/kimi-k3",
-		]);
-		// An inherited role resolves to undefined, which means "use the parent".
-		assert.equal(await resolveRoleModel("fast", path), undefined);
-		assert.equal(await resolveRoleModel("judgment", join(directory, "absent.json")), undefined);
 
 		// A slug outside the live set never reaches disk.
 		await assert.rejects(
@@ -930,11 +920,11 @@ test("the model map is written atomically and read back per role", async () => {
 			),
 			/panel exceeds/u,
 		);
-		assert.deepEqual(await resolvePanel(path), [
-			"anthropic/claude-opus-5-thinking",
-			"openai/gpt-5.6-sol-max",
-			"kimi-coding/kimi-k3",
-		]);
+		assert.deepEqual(
+			await readKStackModels(path),
+			readBack,
+			"rejected changes preserve the last valid routing policy",
+		);
 	} finally {
 		await rm(directory, { recursive: true, force: true });
 	}
@@ -1023,43 +1013,6 @@ test("the plain forbidden list catches a string no pattern would match", async (
 // Harness and bus integration
 // ---------------------------------------------------------------------------
 
-test("the shipped resource declaration points at the generated runtime", async () => {
-	// The same declaration the harness proof loads: one K-stack skill root, and it
-	// is the generated tree.
-	const index = await readFile(
-		new URL("../packages/coding-agent/src/kpi/extensions/index.ts", import.meta.url).pathname,
-		"utf8",
-	);
-	assert.match(index, /\["kstack", "generated", "skills"\]/u, "the generated tree is declared as a skill root");
-	assert.equal(
-		/kstack", "overlay|kstack", "upstream|kstack", "playbooks/u.test(index),
-		false,
-		"no build input is a skill root",
-	);
-});
-
-test("the build ships the runtime, its attribution, and the ladder, and no build input", async () => {
-	const manifest = JSON.parse(
-		await readFile(new URL("../packages/coding-agent/package.json", import.meta.url).pathname, "utf8"),
-	) as { scripts: Record<string, string> };
-	const copy = manifest.scripts["copy-kpi-assets"];
-	assert.ok(copy !== undefined);
-	assert.match(copy, /kstack\/generated\/skills/u, "the loadable runtime ships");
-	assert.match(copy, /kstack\/generated\/LICENSE/u, "the upstream licence ships");
-	assert.match(copy, /kstack\/NOTICE/u, "attribution ships");
-	assert.match(copy, /kstack\/UPSTREAM\.md/u, "the pin ships");
-	assert.match(copy, /docs\/model-ladder\.md/u, "the ladder ships where setup can read it");
-	for (const input of [
-		"kstack/overlay",
-		"kstack/upstream",
-		"kstack/playbooks",
-		"kstack/principles.md",
-		"kstack/k-agent.md",
-	]) {
-		assert.equal(copy.includes(input), false, `${input} is a build input and must not ship`);
-	}
-});
-
 test("no K-π source outside the overlay carries a K-stack playbook table", async () => {
 	for (const file of ["mode.ts", "models.ts", "ladder.ts"]) {
 		const source = await readFile(join(KSTACK_ROOT, file), "utf8");
@@ -1074,75 +1027,6 @@ test("no K-π source outside the overlay carries a K-stack playbook table", asyn
 	const mode = await readFile(join(KSTACK_ROOT, "mode.ts"), "utf8");
 	assert.match(mode, /loadPlaybooks/u, "playbooks are loaded from the runtime");
 	assert.match(mode, /generated", "skills"/u, "and the runtime is the generated tree");
-});
-
-test("a playbook step names a bus tool the bus actually registers", async () => {
-	const playbooks = await loadPlaybooks();
-	const busSource = await readFile(
-		new URL("../packages/coding-agent/src/kpi/extensions/bus/communicate.ts", import.meta.url).pathname,
-		"utf8",
-	);
-	const mentioned = new Set<string>();
-	for (const playbook of playbooks) {
-		for (const step of playbook.steps) {
-			for (const match of step.text.matchAll(
-				/`(spawn_background|communicate|claim_path|release_path|write_contract)`/gu,
-			)) {
-				mentioned.add(match[1]);
-			}
-		}
-	}
-	assert.ok(mentioned.size > 0, "the fan-out playbooks name bus tools");
-	for (const tool of mentioned) {
-		assert.match(busSource, new RegExp(`name: "${tool}"`, "u"), `the bus registers ${tool}`);
-	}
-});
-
-test("arena and swarm never exceed the bus's own worker cap", async () => {
-	const spawn = await readFile(
-		new URL("../packages/coding-agent/src/kpi/extensions/bus/spawn.ts", import.meta.url).pathname,
-		"utf8",
-	);
-	const workers = /export const MAX_LIVE_WORKERS = (\d+);/u.exec(spawn);
-	const writers = /export const MAX_LIVE_WRITERS = (\d+);/u.exec(spawn);
-	assert.ok(workers !== null && writers !== null);
-	assert.equal(Number(workers[1]), 2, "the bus caps workers at two");
-	assert.equal(Number(writers[1]), 1, "and writers at one");
-
-	// The skills state the same numbers, so a reader is never told a wider bound.
-	const tree = await generatedFiles();
-	for (const skill of ["arena", "swarm"]) {
-		const source = tree.get(`skills/${skill}/SKILL.md`) ?? "";
-		assert.equal(/at most (?:three|four|five|\d\d+)/iu.test(source), false, `${skill} promises a wider fan-out`);
-	}
-});
-
-test("a role resolved for a worker is a model id or an inherited parent, never a slot", async () => {
-	const directory = await mkdtemp(join(tmpdir(), "kpi-role-"));
-	const path = join(directory, "models.json");
-	try {
-		await writeKStackModels(
-			{
-				version: 1,
-				roles: { implementer: "anthropic/claude-opus-5-thinking", fast: INHERIT_PARENT },
-				inherit_parent: false,
-			},
-			["anthropic/claude-opus-5-thinking"],
-			path,
-		);
-		// What a spawn would pass as `model`.
-		assert.equal(await resolveRoleModel("implementer", path), "anthropic/claude-opus-5-thinking");
-		assert.equal(await resolveRoleModel("fast", path), undefined, "an inherited role passes no model");
-		// A slot id is never a role value.
-		const document = await readKStackModels(path);
-		for (const value of Object.values(document?.roles ?? {})) {
-			for (const slug of Array.isArray(value) ? value : [value]) {
-				assert.ok(slug === INHERIT_PARENT || slug.includes("/"), `${slug} is a provider/id model slug`);
-			}
-		}
-	} finally {
-		await rm(directory, { recursive: true, force: true });
-	}
 });
 
 test("attribution is complete: the full MIT text, the author, and the source", async () => {

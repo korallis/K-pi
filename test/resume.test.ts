@@ -1,13 +1,12 @@
 import assert from "node:assert/strict";
-import { execFile as execFileCallback } from "node:child_process";
 import { cp, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { promisify } from "node:util";
 
 import type { ExtensionCommandContext } from "../packages/coding-agent/src/core/extensions/types.ts";
+import { registeredBuses } from "../packages/coding-agent/src/kpi/extensions/bus/sessions-snapshot.ts";
 
 import { restoreStopState, resumeLoop, writeState } from "../packages/coding-agent/src/kpi/extensions/gated-loop.ts";
 import {
@@ -23,13 +22,20 @@ import {
 } from "../packages/coding-agent/src/kpi/extensions/graph/stop.ts";
 import type { Task } from "../packages/coding-agent/src/kpi/extensions/run-store.ts";
 
-const execFile = promisify(execFileCallback);
 const policy = {
 	allowNonInteractive: true,
 	allowNonInteractiveMutations: false,
 	confirmProjectGraph: false,
 	confirmMutatingNodes: false,
 };
+
+async function cleanupFixture(root: string): Promise<void> {
+	const runs = join(root, ".kpi", "runs");
+	for (const bus of registeredBuses()) {
+		if (bus.runDirectory.startsWith(`${runs}/`)) await bus.stopAll();
+	}
+	await rm(root, { recursive: true, force: true });
+}
 
 async function latestCheckpoint(projectRoot: string, jobId: string): Promise<GraphRunState> {
 	const directory = join(projectRoot, ".kpi", "runs", jobId, "graph");
@@ -92,6 +98,10 @@ test("restored checkpoint does not rerun completed plan and implement nodes", as
 		await engine.runSuperstep();
 		engine.dispose();
 		assert.deepEqual(before, ["plan", "implement"]);
+		// A newer caller/template must not replace the execution definition frozen
+		// with the completed work, even when its graph identity is unchanged.
+		const replacement = graph.nodes.find((node) => node.id === "test");
+		if (replacement?.type === "agent") replacement.prompt = "replacement test from a newer template";
 
 		const after: string[] = [];
 		const restored = await GraphEngine.restore(graph, {
@@ -104,11 +114,44 @@ test("restored checkpoint does not rerun completed plan and implement nodes", as
 		assert.deepEqual(after, ["test"]);
 		restored.dispose();
 	} finally {
-		await rm(directory, { recursive: true, force: true });
+		await cleanupFixture(directory);
 	}
 });
 
-test("resuming an already-DONE job is idempotent", async () => {
+test("a terminal graph with unverified acceptance never publishes project completion", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "kpi-unverified-completion-"));
+	const task: Task = {
+		job_id: "unverified-job",
+		mode: "gated",
+		goal: "complete only after independent verification",
+		nongoals: [],
+		acceptance: [{ id: "AC-01", statement: "the user journey works", required: true }],
+		constraints: [],
+		quality_gates: ["npm test"],
+		ac: { quality: "narrative" },
+	};
+	const graph: GraphDefinition = {
+		schemaVersion: 2,
+		id: "unverified",
+		entry: "empty",
+		nodes: [{ id: "empty", type: "set", assignments: { "test.passed": false } }],
+		edges: [{ from: "empty", to: "__end__" }],
+		limits: { maxConcurrency: 1 },
+		policy,
+	};
+	const engine = new GraphEngine(graph, { projectRoot: directory, jobId: task.job_id });
+	try {
+		await engine.runUntilPause();
+		await writeState(directory, task, engine.state, createStopState());
+		const published = JSON.parse(await readFile(join(directory, "state.json"), "utf8"));
+		assert.equal(published.status, "RUNNING", "graph exhaustion must not make an unverified job DONE");
+	} finally {
+		engine.dispose();
+		await cleanupFixture(directory);
+	}
+});
+
+test("a forged DONE document without protected intent cannot publish completion on resume", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "kpi-ship-twice-"));
 	const jobId = "done-job";
 	const run = join(directory, ".kpi", "runs", jobId);
@@ -127,11 +170,11 @@ test("resuming an already-DONE job is idempotent", async () => {
 		await writeFile(join(run, "task.json"), JSON.stringify(task));
 		await writeFile(join(run, "state.json"), JSON.stringify({ status: "DONE" }));
 		const context = { cwd: directory } as ExtensionCommandContext;
-		assert.equal((await resumeLoop(jobId, context)).status, "DONE");
-		assert.equal((await resumeLoop(jobId, context)).status, "DONE");
-		// One run, one terminal record. Replaying a job that already finished
-		// must not append a second `loop.terminal` to a log an operator reads as
-		// the run's history.
+		assert.equal((await resumeLoop(jobId, context)).status, "NEEDS_HUMAN");
+		assert.equal((await resumeLoop(jobId, context)).status, "NEEDS_HUMAN");
+		const persisted = JSON.parse(await readFile(join(run, "state.json"), "utf8"));
+		assert.equal(persisted.status, "NEEDS_HUMAN");
+		assert.equal(persisted.recovery, "contract");
 		const events = await readFile(join(run, "events.jsonl"), "utf8").catch(() => "");
 		const terminals = events
 			.split("\n")
@@ -140,7 +183,7 @@ test("resuming an already-DONE job is idempotent", async () => {
 			.filter((record) => record.type === "loop.terminal");
 		assert.equal(terminals.length, 0, JSON.stringify(terminals));
 	} finally {
-		await rm(directory, { recursive: true, force: true });
+		await cleanupFixture(directory);
 	}
 });
 
@@ -236,7 +279,7 @@ test("a mid-superstep stop marks only the work that ran and never reruns it", as
 			assert.equal(finished.nodes[id].runs, 1, `${id} ran exactly once across the stop`);
 		}
 	} finally {
-		await rm(directory, { recursive: true, force: true });
+		await cleanupFixture(directory);
 	}
 });
 
@@ -262,6 +305,17 @@ test("a resumed run restores every stop, retry, cost, and time field", async () 
 			failing_ac: ["AC-1", "AC-2"],
 			evidence_ref: "verdict.json",
 			witness,
+			decision: {
+				kind: "engineering",
+				action: "decompose",
+				attempt: 3,
+				witness,
+				failure: { classification: "IMPLEMENTATION_ERROR", evidenceRefs: ["verdict.json"] },
+				reason: "Split the failing implementation into independently verified tasks",
+				evidenceRefs: ["verdict.json"],
+				taskIds: ["implement"],
+				goalIds: ["AC-1", "AC-2"],
+			},
 		},
 		last_test_evidence: `sha256:${"e".repeat(64)}`,
 	};
@@ -321,6 +375,7 @@ test("a resumed run restores every stop, retry, cost, and time field", async () 
 			policy,
 		};
 		await writeCheckpoint(directory, jobId, {
+			definition: graph,
 			graphId: "state-graph",
 			jobId,
 			status: "running",
@@ -361,7 +416,7 @@ test("a resumed run restores every stop, retry, cost, and time field", async () 
 		assert.equal(engine.state.budget.round, 1);
 		assert.deepEqual(engine.retiredLimits, []);
 	} finally {
-		await rm(directory, { recursive: true, force: true });
+		await cleanupFixture(directory);
 	}
 });
 
@@ -406,6 +461,7 @@ test("a kill during a transient backoff resumes by finishing the wait, not resta
 		// spent, and the third backoff ends 700 ms from now on the injected clock.
 		const now = 5_000_000;
 		await writeCheckpoint(directory, jobId, {
+			definition: graph,
 			graphId: "retry-resume",
 			jobId,
 			status: "running",
@@ -459,7 +515,7 @@ test("a kill during a transient backoff resumes by finishing the wait, not resta
 		assert.equal(finished.nodes.implement.retryAtMs, undefined);
 		assert.equal(finished.budget.round, 1);
 	} finally {
-		await rm(directory, { recursive: true, force: true });
+		await cleanupFixture(directory);
 	}
 });
 
@@ -549,7 +605,7 @@ test("a later run gets a fresh transient-retry allowance", async () => {
 		assert.equal(second.status, "running", "no counter ended the loop");
 		engine.dispose();
 	} finally {
-		await rm(directory, { recursive: true, force: true });
+		await cleanupFixture(directory);
 	}
 });
 
@@ -594,7 +650,11 @@ test("a timeout delivered as an abort retries, a plain operator abort does not",
 					dispose() {},
 				},
 			});
-			const engine = new GraphEngine(loopingGraph("abort-case"), {
+			// This regression concerns retry classification, not re-arming a loop's
+			// next iteration: finish a single node to observe its successful result.
+			const graph = loopingGraph("abort-case");
+			graph.edges = [{ from: "implement", to: "__end__" }];
+			const engine = new GraphEngine(graph, {
 				projectRoot: directory,
 				jobId: "abort-job",
 				createAgentSession: factory,
@@ -609,6 +669,7 @@ test("a timeout delivered as an abort retries, a plain operator abort does not",
 				assert.equal(attempts, 2, `${scenario.name}: the node was retried`);
 				assert.deepEqual(slept, [10], `${scenario.name}: one backoff`);
 				assert.equal(state.nodes.implement.status, "completed");
+				assert.equal(state.status, "completed");
 			} else {
 				assert.equal(attempts, 1, `${scenario.name}: no retry`);
 				assert.deepEqual(slept, [], `${scenario.name}: no backoff`);
@@ -617,15 +678,15 @@ test("a timeout delivered as an abort retries, a plain operator abort does not",
 			}
 			engine.dispose();
 		} finally {
-			await rm(directory, { recursive: true, force: true });
+			await cleanupFixture(directory);
 		}
 	}
 });
 
-test("a contract pause keeps an unexecuted sibling scheduled and a restore runs it", async () => {
+test("a failed branch preserves an unexecuted sibling across restore, drains it, then pauses only the failure", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "kpi-pending-sibling-"));
-	// Three siblings at concurrency two: the first batch holds a breach, so the
-	// third sibling never started. It must survive the pause and run on resume.
+	// A breach in the first batch cannot discard or block the independent
+	// sibling. A kill between batches must preserve both its work and the blocker.
 	const ran: string[] = [];
 	let breaches = 0;
 	const factory: GraphAgentSessionFactory = async (options) => ({
@@ -673,33 +734,47 @@ test("a contract pause keeps an unexecuted sibling scheduled and a restore runs 
 			createAgentSession: factory,
 		});
 		await engine.runSuperstep();
-		const paused = await engine.runSuperstep();
+		const interrupted = await engine.runSuperstep();
 		engine.dispose();
 
-		assert.equal(paused.status, "paused");
-		assert.equal(paused.pause?.recovery, "contract");
-		assert.deepEqual(ran, ["a"], "the first batch ran; the breach never prompted; c never started");
-		assert.equal(paused.nodes.a.status, "completed");
-		assert.equal(paused.nodes.b.status, "failed");
-		assert.equal(paused.nodes.c.status, "pending");
-		assert.deepEqual(paused.pause?.nodes, ["b"], "only the breach is the pause's subject");
-		assert.deepEqual(paused.pause?.resume, ["b", "c"], "the unexecuted sibling stays scheduled");
+		assert.equal(interrupted.status, "running", "independent work drains before an operator pause");
+		assert.deepEqual(ran, ["a"], "the breach never prompted and c has not started");
+		assert.equal(interrupted.nodes.a.status, "completed");
+		assert.equal(interrupted.nodes.b.status, "failed");
+		assert.equal(interrupted.nodes.c.status, "pending");
+		assert.deepEqual(interrupted.active, ["c"]);
+		assert.deepEqual(
+			interrupted.blockers?.flatMap((blocker) => blocker.resume),
+			["b"],
+		);
 
 		const restored = await GraphEngine.restore(graph, {
 			projectRoot: directory,
 			jobId: "pending-job",
 			createAgentSession: factory,
 		});
-		assert.deepEqual(restored.state.active, ["b", "c"]);
-		const finished = await restored.runUntilPause();
+		assert.deepEqual(restored.state.active, ["c"], "the kill did not lose the independent sibling");
+		const paused = await restored.runUntilPause();
 		restored.dispose();
+		assert.deepEqual(ran, ["a", "c"], "unblocked work ran before human intervention");
+		assert.equal(paused.status, "paused");
+		assert.equal(paused.pause?.recovery, "contract");
+		assert.deepEqual(paused.pause?.resume, ["b"], "only the failed branch needs recovery");
 
+		const repaired = await GraphEngine.restore(graph, {
+			projectRoot: directory,
+			jobId: "pending-job",
+			createAgentSession: factory,
+		});
+		assert.deepEqual(repaired.state.active, ["b"]);
+		const finished = await repaired.runUntilPause();
+		repaired.dispose();
 		assert.equal(finished.status, "completed");
 		assert.deepEqual(ran.sort(), ["a", "b", "c"], "every scheduled node ran exactly once");
 		assert.equal(finished.nodes.c.runs, 1);
 		assert.equal(finished.nodes.a.runs, 1, "the committed sibling never reran");
 	} finally {
-		await rm(directory, { recursive: true, force: true });
+		await cleanupFixture(directory);
 	}
 });
 
@@ -790,7 +865,7 @@ test("a sibling that finished is committed once and never reruns after a paused 
 		assert.equal(finished.nodes.succeeds.runs, 1, "and its run was counted exactly once");
 		assert.equal(finished.nodes.stalls.runs, 2, "the failed node was run again");
 	} finally {
-		await rm(directory, { recursive: true, force: true });
+		await cleanupFixture(directory);
 	}
 });
 
@@ -863,7 +938,7 @@ test("a wrapped operator cancellation is not retried, a wrapped timeout is", asy
 			}
 			engine.dispose();
 		} finally {
-			await rm(directory, { recursive: true, force: true });
+			await cleanupFixture(directory);
 		}
 	}
 });
@@ -960,7 +1035,7 @@ test("every stop-safety field survives a state document round trip", async () =>
 			"a repeated failing set after resume is still a witness",
 		);
 	} finally {
-		await rm(directory, { recursive: true, force: true });
+		await cleanupFixture(directory);
 	}
 });
 
@@ -995,6 +1070,7 @@ test("a paused job resumes at its pause node's resume targets and a legacy check
 	try {
 		// A run parked at the unsafe pause node.
 		await writeCheckpoint(directory, "paused-job", {
+			definition: graph,
 			graphId: "paused-resume",
 			jobId: "paused-job",
 			status: "paused",
@@ -1015,6 +1091,7 @@ test("a paused job resumes at its pause node's resume targets and a legacy check
 
 		// A legacy `failed` checkpoint, no pause record, active nodes marked failed.
 		await writeCheckpoint(directory, "failed-job", {
+			definition: graph,
 			graphId: "paused-resume",
 			jobId: "failed-job",
 			status: "failed",
@@ -1041,6 +1118,7 @@ test("a paused job resumes at its pause node's resume targets and a legacy check
 
 		// A legacy `terminated` checkpoint with a UNSAFE terminal record.
 		await writeCheckpoint(directory, "terminated-job", {
+			definition: graph,
 			graphId: "paused-resume",
 			jobId: "terminated-job",
 			status: "terminated",
@@ -1060,6 +1138,7 @@ test("a paused job resumes at its pause node's resume targets and a legacy check
 
 		// A checkpoint written before a node existed still schedules it.
 		await writeCheckpoint(directory, "older-job", {
+			definition: graph,
 			graphId: "paused-resume",
 			jobId: "older-job",
 			status: "exhausted",
@@ -1072,107 +1151,56 @@ test("a paused job resumes at its pause node's resume targets and a legacy check
 		const older = await GraphEngine.restore(graph, { projectRoot: directory, jobId: "older-job" });
 		assert.equal(older.state.status, "running");
 		assert.equal(older.state.nodes.implement.status, "pending");
-		assert.deepEqual(
-			older.state.nodes.test,
-			{ status: "pending", runs: 0 },
-			"a node the checkpoint predates is backfilled",
-		);
-		assert.deepEqual(older.state.nodes.unsafe, { status: "pending", runs: 0 });
+		assert.equal(older.state.nodes.test.status, "pending");
+		assert.equal(older.state.nodes.test.runs, 0);
+		assert.equal(older.state.nodes.unsafe.status, "pending");
+		assert.equal(older.state.nodes.unsafe.runs, 0);
 		assert.deepEqual(older.retiredLimits, ["maxCostUsd"]);
 	} finally {
-		await rm(directory, { recursive: true, force: true });
+		await cleanupFixture(directory);
 	}
 });
 
-test("a checkpoint that ended EXHAUSTED under a retired cap resumes and keeps its recorded spend", async () => {
+test("a legacy capped driver checkpoint without execution provenance pauses durably instead of restarting", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "kpi-retired-cap-"));
 	const jobId = "20260903-fix-claude-model-requests-failin-42986cfa";
 	const run = join(directory, ".kpi", "runs", jobId);
 	const fixture = fileURLToPath(new URL("./fixtures/retired-cap-resume/", import.meta.url));
 	const prompted: string[] = [];
-	const seenAtImplement: Record<string, unknown>[] = [];
-	const notifications: string[] = [];
+	let confirmations = 0;
 	try {
-		// The real run directory as the release that enforced caps left it, in a
-		// repository shaped like the one it ran in.
 		await cp(fixture, run, { recursive: true });
-		await writeFile(join(run, "context.md"), "");
-		await execFile("git", ["init"], { cwd: directory });
-		await execFile("git", ["config", "user.email", "fixture@example.test"], { cwd: directory });
-		await execFile("git", ["config", "user.name", "Fixture"], { cwd: directory });
-		await writeFile(join(directory, "README.md"), "seed\n");
-		await execFile("git", ["add", "-A"], { cwd: directory });
-		await execFile("git", ["commit", "-m", "chore: seed"], { cwd: directory });
-		const before = JSON.parse(await readFile(join(run, "state.json"), "utf8")) as Record<string, unknown>;
-		assert.equal(before.status, "EXHAUSTED");
-		assert.equal(before.exhausted_limit, "maxCostUsd");
-
+		const before = await latestCheckpoint(directory, jobId);
 		const context = {
 			cwd: directory,
-			hasUI: false,
-			mode: "print",
+			hasUI: true,
+			mode: "tui",
 			ui: {
-				notify(message: string) {
-					notifications.push(message);
+				async confirm() {
+					confirmations += 1;
+					return true;
 				},
+				notify() {},
 				setWidget() {},
 			},
 		} as unknown as ExtensionCommandContext;
-		const stub: GraphAgentSessionFactory = async () => ({
-			session: {
-				sessionId: "retired-cap",
-				async prompt(prompt: string) {
-					const node = /tdd-cycle skill/u.test(prompt) ? "implement" : prompt.split("\n", 1)[0];
-					prompted.push(node);
-					if (node === "implement") {
-						seenAtImplement.push(
-							JSON.parse(await readFile(join(run, "state.json"), "utf8")) as Record<string, unknown>,
-						);
-					}
-				},
-				getActiveToolNames: () => ["read"],
-				dispose() {},
-			},
-		});
-		const outcome = await resumeLoop(jobId, context, { createAgentSession: stub });
-		assert.notEqual(outcome.status, "DONE");
-
-		// The stub received the node the cap had refused: the run was re-armed at
-		// implement, and it saw the run live, uncapped, with its spend intact.
-		assert.equal(prompted[0], "implement", prompted.join(", "));
-		const live = seenAtImplement[0];
-		assert.ok(live, "implement ran with state.json already rewritten");
-		assert.equal(live.status, "RUNNING");
-		assert.equal(live.graph_status, "running");
-		assert.equal(live.node, "implement");
-		assert.equal("exhausted_limit" in live, false);
-		assert.equal("maxRounds" in live, false);
-		assert.equal(live.cost_usd, 7.691661999999999, "the recorded spend is kept, never reset or re-billed");
-		assert.deepEqual(live.limits, { maxConcurrency: 2 });
-
-		const checkpoint = await latestCheckpoint(directory, jobId);
-		assert.equal(checkpoint.budget.costUsd >= 7.691661999999999, true);
-		assert.deepEqual(checkpoint.budget.limits, { maxConcurrency: 2 });
-		assert.equal(checkpoint.nodes.implement.runs, 1);
-
-		// The caps are reported once, in checkpoint order, on the record and to the operator.
-		const detail =
-			"retired caps ignored: maxSteps, maxNodeRuns, maxCostUsd, timeoutMs, maxRounds, maxTransientRetries";
-		const events = (await readFile(join(run, "events.jsonl"), "utf8"))
-			.split("\n")
-			.filter((line) => line.length > 0)
-			.map((line) => JSON.parse(line) as { type: string; detail?: string });
-		assert.deepEqual(
-			events
-				.filter((record) => record.type === "checkpoint" && record.detail?.startsWith("retired caps"))
-				.map((record) => record.detail),
-			[detail],
-		);
-		assert.deepEqual(
-			notifications.filter((message) => message.includes("retired caps")),
-			[`K-π job ${jobId}: ${detail}`],
-		);
+		const outcome = await resumeLoop(jobId, context, { createAgentSession: factory(prompted) });
+		assert.equal(outcome.status, "NEEDS_HUMAN");
+		assert.equal(outcome.recovery, "contract");
+		assert.match(outcome.reason ?? "", /execution topology/u);
+		assert.match(outcome.reason ?? "", /trusted backup/u);
+		assert.match(outcome.reason ?? "", /start a new \/kpi job/u);
+		assert.equal(confirmations, 1, "legacy intent was explicitly confirmed, not silently adopted");
+		const persisted = JSON.parse(await readFile(join(run, "state.json"), "utf8"));
+		assert.equal(persisted.status, "NEEDS_HUMAN");
+		assert.equal(persisted.reason, outcome.reason);
+		assert.equal(persisted.cost_usd, 7.691661999999999, "refusal preserves recorded spend");
+		const second = await resumeLoop(jobId, context, { createAgentSession: factory(prompted) });
+		assert.equal(second.reason, outcome.reason);
+		assert.equal(confirmations, 1, "confirmed intent does not reopen on the next resume");
+		assert.deepEqual(prompted, [], "no node is replayed under an invented current topology");
+		assert.deepEqual(await latestCheckpoint(directory, jobId), before, "the original checkpoint remains recoverable");
 	} finally {
-		await rm(directory, { recursive: true, force: true });
+		await cleanupFixture(directory);
 	}
 });

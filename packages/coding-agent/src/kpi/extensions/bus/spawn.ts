@@ -1,29 +1,40 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, open, readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, open, readFile, realpath } from "node:fs/promises";
+import { join, resolve } from "node:path";
 
 import { appendEvent } from "../append-log.ts";
 import { parseLadderDecision } from "../minimalist.ts";
 import { readTaskForJob } from "../run-store.ts";
+import { assertClaimInModule, freezeCurrentSlice, stackRequiredFor } from "../stack.ts";
 import { mintCapabilityId, mintWorkerDescriptor, type WorkerDescriptor } from "./identity.ts";
 import { launchWorkerProcess, type WorkerLaunch, type WorkerLauncher } from "./launch.ts";
 import {
+	assertWriterAuthority,
+	canonicalLeasePath,
 	claimLease,
 	defaultIsProcessAlive,
 	type LeaseDependencies,
+	type LeaseOwner,
 	type LeaseRecord,
+	pathsOverlap,
 	readLeasesFile,
 	releaseAllLeasesFor,
 	releaseDeadLeases,
 	releaseLease,
+	releaseWriterAuthority,
+	reserveWriterAuthority,
+	transferWriterAuthority,
+	WorkspaceBusyError,
 } from "./leases.ts";
+import { type PeerRecord, PeerRuntime } from "./peer-runtime.ts";
 import {
 	type CommunicateExpectation,
 	type DeliverAs,
 	WORKER_RESULT_TIMEOUT_MS,
 	type WorkerDiagnostics,
 } from "./protocol.ts";
-import { isWriterToolSet, ROLE_RESULT_FILE, resolveRoleTools, type WorkerRole } from "./roles.ts";
+import { hasTestShellOnly, isWriterToolSet, ROLE_RESULT_FILE, resolveRoleTools, type WorkerRole } from "./roles.ts";
+import { registeredBuses, registerLiveBus, unregisterLiveBus } from "./sessions-snapshot.ts";
 import {
 	type ContractPin,
 	describeRejection,
@@ -32,10 +43,12 @@ import {
 	mintContractPin,
 	type PublicationReceipt,
 	readPublicationReceipt,
+	writeContract,
 } from "./write-contract.ts";
 
-/** Same-tree caps. In-process only: another K-π process is not counted. */
-export const MAX_LIVE_WORKERS = 2;
+/** Operational scheduler capacity, not a fixed product ceiling. */
+export const MAX_LIVE_WORKERS = Number(process.env.KPI_MAX_PEERS ?? 8);
+/** Maximum writers for overlapping authority, not for disjoint edit-only scopes. */
 export const MAX_LIVE_WRITERS = 1;
 
 /** How long `expect: "result"` waits for an authoritative publication. */
@@ -55,7 +68,7 @@ const CONTRACT_POLL_INTERVAL_MS = 50;
  */
 export interface WorkerAdmission {
 	/** Reserve one slot; returns a release that returns the slot. */
-	acquire(slot: { key: string; isWriter: boolean }): Promise<() => void>;
+	acquire(slot: { key: string; isWriter: boolean; paths?: readonly string[]; checkout?: string }): Promise<() => void>;
 	/** Current occupancy. */
 	counts(): { workers: number; writers: number };
 }
@@ -64,7 +77,12 @@ export interface WorkerAdmission {
 export function createWorkerAdmission(limits: { maxWorkers?: number; maxWriters?: number } = {}): WorkerAdmission {
 	const maxWorkers = limits.maxWorkers ?? MAX_LIVE_WORKERS;
 	const maxWriters = limits.maxWriters ?? MAX_LIVE_WRITERS;
-	const slots = new Map<string, { isWriter: boolean }>();
+	if (!Number.isSafeInteger(maxWorkers) || maxWorkers < 1 || maxWriters !== 1) {
+		throw new Error(
+			"peer concurrency must be a positive integer and overlapping writer authority must remain exclusive",
+		);
+	}
+	const slots = new Map<string, { isWriter: boolean; paths: readonly string[]; checkout?: string }>();
 	let queue: Promise<unknown> = Promise.resolve();
 	const serialize = <T>(operation: () => T | Promise<T>): Promise<T> => {
 		const result = queue.then(operation, operation);
@@ -84,17 +102,21 @@ export function createWorkerAdmission(limits: { maxWorkers?: number; maxWriters?
 					throw new Error(`Background worker limit is ${maxWorkers}`);
 				}
 				if (slot.isWriter) {
-					let writers = 0;
-					for (const held of slots.values()) {
-						if (held.isWriter) {
-							writers += 1;
-						}
-					}
-					if (writers >= maxWriters) {
-						throw new Error("A writer worker is already live");
+					const paths = slot.paths ?? ["."];
+					if (
+						[...slots.values()].some(
+							(held) =>
+								held.isWriter &&
+								(held.checkout === undefined ||
+									slot.checkout === undefined ||
+									held.checkout === slot.checkout) &&
+								held.paths.some((a) => paths.some((b) => pathsOverlap(a, b))),
+						)
+					) {
+						throw new WorkspaceBusyError("A writer worker is already live");
 					}
 				}
-				slots.set(slot.key, { isWriter: slot.isWriter });
+				slots.set(slot.key, { isWriter: slot.isWriter, paths: slot.paths ?? ["."], checkout: slot.checkout });
 				let released = false;
 				return (): void => {
 					if (released) {
@@ -146,8 +168,14 @@ export interface WorkerRecord {
 	sessionDirectory: string;
 	tools: string[];
 	isWriter: boolean;
+	/** Immutable process incarnation used by every ownership operation. */
+	owner: LeaseOwner;
+	writePaths: readonly string[];
 	contractPin?: ContractPin;
 	descriptor: WorkerDescriptor;
+	baselinePublicationId?: string;
+	/** Prevents unrelated simultaneous result waits sharing one publication. */
+	resultPending?: boolean;
 	launch: WorkerLaunch;
 	spawnedAt: string;
 	lastEvent: string;
@@ -214,9 +242,9 @@ export interface BusDependencies extends LeaseDependencies {
  *
  * Two different serializations are at work here, because there are two different
  * kinds of shared state. The worker table and the logs live in this process, so
- * they are serialized by one promise chain. Leases live in a file that sibling
- * workers in other processes also write, so they are serialized by a lock in
- * that directory - the same primitive a worker-local `claim_path` uses.
+ * they are serialized by one promise chain. Writer reservations and path claims
+ * live in the canonical checkout's ownership directory, shared by every job and
+ * owner process and serialized by the same hard-link lock primitive.
  */
 export class BackgroundBus {
 	readonly cwd: string;
@@ -236,6 +264,86 @@ export class BackgroundBus {
 	private queue: Promise<unknown> = Promise.resolve();
 	/** Once closing, nothing new starts: shutdown cannot be outrun by a spawn. */
 	private closing = false;
+	private peerRuntime?: Promise<PeerRuntime>;
+
+	/** Opens the job's sole realtime endpoint and recovers durable peer records. */
+	async peers(): Promise<PeerRuntime> {
+		this.peerRuntime ??= PeerRuntime.open(this.runDirectory, {
+			isProcessAlive: this.isProcessAlive,
+			publish: async (peer, params) =>
+				this.serialize(async () => {
+					const worker = this.activePeer(peer);
+					const result = await writeContract({
+						pin: worker.contractPin,
+						agentId: peer.agentId,
+						jobId: this.jobId,
+						role: worker.role,
+						requestedPath: String(params.path),
+						payload: params.content,
+						now: this.now,
+					});
+					return {
+						path: result.path,
+						publication_id: result.receipt.publication_id,
+						content_sha256: result.receipt.content_sha256,
+					};
+				}),
+			claim: async (peer, path) =>
+				this.serialize(async () => {
+					const worker = this.activePeer(peer);
+					if (!worker.isWriter) throw new Error("peer holds no mutation tool to claim for");
+					const key = await this.claimKey(path);
+					return { key, ...(await this.claim(peer.agentId, worker.pid, key)) };
+				}),
+			release: async (peer, path) =>
+				this.serialize(async () => {
+					this.activePeer(peer);
+					return this.release(peer.agentId, await this.claimKey(path));
+				}),
+			authorizeMutation: async (peer, path) =>
+				this.serialize(async () => {
+					const worker = this.activePeer(peer);
+					if (!worker.isWriter) {
+						if (path !== undefined || !hasTestShellOnly(worker.role))
+							throw new Error("peer holds no writer authority");
+						// Exact quality gates can mutate arbitrary project files. They need
+						// checkout exclusion too, but do not gain result publication authority.
+						await reserveWriterAuthority(this.cwd, worker.owner, ["."], this.leaseDependencies);
+					}
+					await assertWriterAuthority(
+						this.cwd,
+						worker.owner,
+						path === undefined ? undefined : await this.claimKey(path),
+						this.leaseDependencies,
+					);
+					return { authorized: true };
+				}),
+		});
+		return this.peerRuntime;
+	}
+
+	private activePeer(peer: PeerRecord): WorkerRecord {
+		const worker = this.workers.get(peer.agentId);
+		if (
+			!worker ||
+			!worker.launch.isAlive() ||
+			!this.isProcessAlive(worker.pid) ||
+			worker.owner.pid !== worker.pid ||
+			worker.owner.incarnation !== peer.incarnation
+		) {
+			throw new Error("peer incarnation is not live");
+		}
+		return worker;
+	}
+
+	private async claimKey(path: string): Promise<string> {
+		const task = await readTaskForJob(this.cwd, this.jobId);
+		if (stackRequiredFor(task)) {
+			const { module } = await freezeCurrentSlice(this.cwd, this.runDirectory, task);
+			await assertClaimInModule(this.cwd, path, module);
+		}
+		return canonicalLeasePath(this.cwd, path);
+	}
 
 	constructor(cwd: string, runDirectory: string, jobId: string, dependencies: BusDependencies = {}) {
 		this.cwd = cwd;
@@ -257,10 +365,9 @@ export class BackgroundBus {
 	private get leaseDependencies(): LeaseDependencies {
 		return {
 			now: this.now,
-			isProcessAlive: this.isProcessAlive,
+			isProcessAlive: (pid) => pid === process.pid || this.isProcessAlive(pid),
 			sleep: this.sleep,
 			lockTimeoutMs: this.dependencies.lockTimeoutMs,
-			lockStaleMs: this.dependencies.lockStaleMs,
 			lockRetryMs: this.dependencies.lockRetryMs,
 		};
 	}
@@ -373,9 +480,13 @@ export class BackgroundBus {
 	/** Drops workers whose process is gone, releasing whatever they held. */
 	private async reapUnlocked(): Promise<void> {
 		for (const [agentId, worker] of [...this.workers]) {
-			const alive = worker.launch.isAlive() && this.isProcessAlive(worker.pid);
-			if (!alive) {
+			// Transport loss is not proof of death. A stopped or disconnected process
+			// retains admission and durable ownership until the kernel confirms exit.
+			if (!this.isProcessAlive(worker.pid)) {
 				this.workers.delete(agentId);
+				if (this.peerRuntime) (await this.peerRuntime).deactivate(agentId);
+				await releaseAllLeasesFor(this.runDirectory, worker.owner, this.leaseDependencies);
+				await releaseWriterAuthority(this.cwd, worker.owner, this.leaseDependencies);
 				worker.releaseAdmission();
 				worker.launch.protocol.close();
 			}
@@ -417,7 +528,7 @@ export class BackgroundBus {
 		return this.liveWorkers().filter((worker) => worker.alive).length;
 	}
 
-	/** Whether a live worker currently holds the single-writer slot. */
+	/** Whether this bus owns any live candidate-writing peer, including scoped writers. */
 	hasLiveWriter(): boolean {
 		for (const worker of this.workers.values()) {
 			if (worker.isWriter && worker.launch.isAlive() && this.isProcessAlive(worker.pid)) {
@@ -444,21 +555,69 @@ export class BackgroundBus {
 		tools?: readonly string[];
 		/** The graph node starting this worker, when one is. */
 		node?: string;
+		/** Stable logical identity, reused across process incarnations. */
+		agentId?: string;
+		/** Scoped edit-only authority. A general shell always requires the whole checkout. */
+		writePaths?: readonly string[];
 	}): Promise<WorkerRecord> {
 		return this.serialize(async () => {
 			if (this.closing) {
 				throw new Error("this bus is shutting down and starts no new workers");
 			}
 			await this.reapUnlocked();
-			const tools = resolveRoleTools(options.role, options.tools);
-			const isWriter = isWriterToolSet(tools);
-
-			const agentId = `${options.role}-${(this.dependencies.newAgentSuffix ?? randomUUID)()}`;
+			const peers = await this.peers();
+			const agentId = options.agentId ?? `${options.role}-${(this.dependencies.newAgentSuffix ?? randomUUID)()}`;
+			if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/u.test(agentId) || !agentId.startsWith(`${options.role}-`)) {
+				throw new Error("agentId must be a role-prefixed safe logical identity");
+			}
+			const previous = peers.get(agentId);
+			const existing = this.workers.get(agentId);
+			if (existing) {
+				if (existing.role !== options.role) throw new Error("logical peer role cannot change");
+				if (existing.resultPending) throw new Error("peer has an outstanding result assignment");
+				if (
+					(options.model !== undefined && options.model !== previous?.model) ||
+					(options.tools !== undefined && JSON.stringify(options.tools) !== JSON.stringify(existing.tools)) ||
+					(options.writePaths !== undefined &&
+						JSON.stringify(options.writePaths) !== JSON.stringify(existing.writePaths))
+				) {
+					throw new Error("stop the peer before changing model or tool authority");
+				}
+				await readTaskForJob(this.cwd, this.jobId);
+				await peers.assign(agentId, options.prompt, options.node);
+				existing.baselinePublicationId =
+					existing.contractPin === undefined
+						? undefined
+						: (await readPublicationReceipt(existing.contractPin.receiptPath))?.publication_id;
+				existing.initialSettlement = existing.launch.protocol.waitForSettled(
+					this.dependencies.contractWaitTimeoutMs ?? WORKER_RESULT_TIMEOUT_MS,
+				);
+				existing.initialSettlement.catch(() => undefined);
+				await existing.launch.protocol.deliver(options.prompt, "followUp");
+				return existing;
+			}
+			if (previous?.pid !== undefined && this.isProcessAlive(previous.pid)) {
+				throw new WorkspaceBusyError("previous peer process has not exited; refusing identity/ownership transfer");
+			}
+			const tools = resolveRoleTools(options.role, options.tools ?? previous?.descriptor.tools);
+			const isWriter = isWriterToolSet(tools, options.role);
+			const requestedPaths = options.writePaths ?? previous?.descriptor.writePaths ?? ["."];
+			if (isWriter && requestedPaths.length === 0) throw new Error("writer needs a nonempty path scope");
+			const writePaths = isWriter
+				? await Promise.all(requestedPaths.map((path) => (path === "." ? "." : this.claimKey(path))))
+				: [];
+			if (isWriter && tools.includes("bash") && !writePaths.includes("."))
+				throw new Error("unrestricted bash requires whole-checkout writer authority");
+			let owner: LeaseOwner = { jobId: this.jobId, agentId, pid: process.pid, incarnation: randomUUID() };
+			let reserved = false;
 			let releaseAdmission: () => void;
+			const checkout = await realpath(this.cwd);
 			try {
 				releaseAdmission = await this.admission.acquire({
-					key: `${this.jobId}:${agentId}`,
+					key: JSON.stringify([checkout, this.jobId, agentId]),
+					checkout,
 					isWriter,
+					paths: writePaths,
 				});
 			} catch (error) {
 				// The cap is unchanged; only the record of hitting it is new.
@@ -481,12 +640,16 @@ export class BackgroundBus {
 			};
 
 			try {
+				if (isWriter) {
+					await reserveWriterAuthority(this.cwd, owner, writePaths, this.leaseDependencies);
+					reserved = true;
+				}
 				const capabilityId = (this.dependencies.newCapabilityId ?? mintCapabilityId)();
 				const sessionDirectory = this.agentsDirectory;
-				const sessionPath = join(sessionDirectory, `${agentId}.jsonl`);
+				const sessionPath = previous?.sessionPath ?? join(sessionDirectory, `${agentId}.jsonl`);
 				// The gates are read once, here, and travel with the worker. A later edit
 				// to `task.json` cannot widen a shell that has already started.
-				const task = await readTaskForJob(this.cwd, this.jobId).catch(() => undefined);
+				const task = await readTaskForJob(this.cwd, this.jobId);
 				const descriptor = mintWorkerDescriptor({
 					agentId,
 					jobId: this.jobId,
@@ -494,7 +657,8 @@ export class BackgroundBus {
 					runDirectory: this.runDirectory,
 					tools,
 					capabilityId,
-					qualityGates: task?.quality_gates,
+					qualityGates: previous?.descriptor.qualityGates ?? task.quality_gates,
+					writePaths,
 				});
 				const contractPin = mintContractPin({
 					agentId,
@@ -509,17 +673,29 @@ export class BackgroundBus {
 				// given is the path it opens.
 				const handle = await open(sessionPath, "a", 0o600);
 				await handle.close();
+				const peerEndpoint = await peers.activate(
+					{
+						agentId,
+						descriptor,
+						sessionPath,
+						model: options.model ?? previous?.model,
+						taskId: options.node ?? previous?.taskId,
+						prompt: options.prompt,
+					},
+					owner.incarnation,
+				);
 
 				const launch = await this.launcher({
 					cwd: this.cwd,
 					sessionPath,
 					sessionDirectory,
 					tools,
-					model: options.model,
+					model: options.model ?? previous?.model,
 					descriptor,
 					cliPath: this.dependencies.cliPath,
 					execPath: this.dependencies.execPath,
 					startupTimeoutMs: this.dependencies.startupTimeoutMs,
+					peerEndpoint,
 				});
 				// Capture settlement of the initial turn before the prompt leaves this
 				// process. A worker that settles in the same tick as acceptance would
@@ -537,6 +713,8 @@ export class BackgroundBus {
 					sessionDirectory,
 					tools,
 					isWriter,
+					owner,
+					writePaths,
 					contractPin,
 					descriptor,
 					launch,
@@ -547,8 +725,14 @@ export class BackgroundBus {
 					releaseAdmission: returnAdmission,
 				};
 				this.workers.set(agentId, record);
+				// A failed durable PID record still enters the same confirmed-stop cleanup.
 
 				try {
+					owner = reserved
+						? await transferWriterAuthority(this.cwd, owner, launch.pid, this.leaseDependencies)
+						: { ...owner, pid: launch.pid };
+					record.owner = owner;
+					await peers.recordPid(agentId, launch.pid);
 					await this.logSpawned({
 						agent_id: agentId,
 						role: options.role,
@@ -558,15 +742,30 @@ export class BackgroundBus {
 					});
 					// The initial delivery is a prompt, and its response is acceptance.
 					await launch.protocol.prompt(options.prompt);
+					peers.attachDelivery(agentId, async (message) => {
+						await launch.protocol.deliver(
+							`Peer message ${message.id} (#${message.sequence}) from ${message.sender}${message.room ? ` in ${message.room}` : ""}:\n${message.text}\nAcknowledge this message with peers(action:"ack", id:"${message.id}") after handling it.`,
+							message.deliverAs ?? "followUp",
+						);
+					});
 				} catch (error) {
+					await launch.stop();
+					if (launch.isAlive() || this.isProcessAlive(launch.pid))
+						throw new Error("worker cleanup did not confirm exit; admission retained");
 					this.workers.delete(agentId);
+					peers.deactivate(agentId);
+					await releaseAllLeasesFor(this.runDirectory, record.owner, this.leaseDependencies);
+					if (reserved) await releaseWriterAuthority(this.cwd, owner, this.leaseDependencies);
 					returnAdmission();
-					await launch.stop().catch(() => undefined);
 					throw error;
 				}
 				return record;
 			} catch (error) {
-				returnAdmission();
+				if (!this.workers.has(agentId)) {
+					peers.deactivate(agentId);
+					if (reserved) await releaseWriterAuthority(this.cwd, owner, this.leaseDependencies);
+					returnAdmission();
+				}
 				throw error;
 			}
 		});
@@ -578,6 +777,21 @@ export class BackgroundBus {
 
 	list(): WorkerRecord[] {
 		return [...this.workers.values()];
+	}
+
+	/** Restart a stopped logical peer using its durable role, task and session. */
+	async restart(agentId: string): Promise<WorkerRecord> {
+		if (this.workers.has(agentId)) await this.stop(agentId);
+		const peer = (await this.peers()).get(agentId);
+		if (!peer) throw new Error(`Unknown peer: ${agentId}`);
+		return this.spawn({
+			agentId,
+			role: peer.descriptor.role,
+			prompt: peer.prompt,
+			model: peer.model,
+			tools: peer.descriptor.tools,
+			node: peer.taskId,
+		});
 	}
 
 	async status(): Promise<WorkerStatus[]> {
@@ -638,54 +852,68 @@ export class BackgroundBus {
 			});
 			return found;
 		});
-
-		if (expect === "none") {
-			// Nothing is expected back, but the bytes still have to be taken by the
-			// stream rather than queued in this process without limit.
-			await worker.launch.protocol.send(
-				deliverAs === "steer"
-					? { type: "steer", message: options.message }
-					: { type: "follow_up", message: options.message },
-			);
-			return { accepted: false };
-		}
-
-		if (expect === "ack") {
-			await worker.launch.protocol.deliver(options.message, deliverAs);
-			return { accepted: true };
-		}
-
-		const resultFile = ROLE_RESULT_FILE[worker.role];
-		if (resultFile === undefined) {
-			throw new Error(`role ${worker.role} produces no result file, so there is nothing to wait for`);
-		}
-		const pin = worker.contractPin;
-		const limit = options.timeoutMs ?? this.dependencies.contractWaitTimeoutMs ?? CONTRACT_WAIT_TIMEOUT_MS;
-
-		// Both baselines are taken before delivery, so whatever is already on disk
-		// cannot be mistaken for an answer to this message.
-		const baselineReceipt = pin === undefined ? undefined : await readPublicationReceipt(pin.receiptPath);
-		const baselineBytes = pin === undefined ? await this.readResultBytes(resultFile) : undefined;
-
-		const settled = worker.launch.protocol.waitForSettled(limit);
+		if (worker.resultPending) throw new Error("peer has an outstanding result assignment");
+		worker.resultPending = expect === "result";
 		try {
-			await worker.launch.protocol.deliver(options.message, deliverAs);
-		} catch (error) {
-			void settled.catch(() => undefined);
-			throw error;
-		}
-		await settled;
-
-		if (pin !== undefined) {
-			const outcome = await this.waitForPublication(pin, baselineReceipt?.publication_id, limit);
-			return {
-				accepted: true,
-				contractPath: outcome.receipt.declared_path,
-				publicationId: outcome.receipt.publication_id,
+			const persistedMessage = async (): Promise<string> => {
+				const { message } = await (await this.peers()).send(
+					"host",
+					{ to: worker.agentId, text: options.message, deliverAs },
+					false,
+				);
+				return `Peer message ${message.id} (#${message.sequence}) from host:\n${options.message}\nAfter handling, acknowledge with peers(action:"ack", id:"${message.id}").`;
 			};
+
+			if (expect === "none") {
+				// Nothing is expected back, but the bytes still have to be taken by the
+				// stream rather than queued in this process without limit.
+				await worker.launch.protocol.send({
+					type: "prompt",
+					message: await persistedMessage(),
+					streamingBehavior: deliverAs,
+				});
+				return { accepted: false };
+			}
+
+			if (expect === "ack") {
+				await worker.launch.protocol.deliver(await persistedMessage(), deliverAs);
+				return { accepted: true };
+			}
+
+			const resultFile = ROLE_RESULT_FILE[worker.role];
+			if (resultFile === undefined) {
+				throw new Error(`role ${worker.role} produces no result file, so there is nothing to wait for`);
+			}
+			const pin = worker.contractPin;
+			const limit = options.timeoutMs ?? this.dependencies.contractWaitTimeoutMs ?? CONTRACT_WAIT_TIMEOUT_MS;
+
+			// Both baselines are taken before delivery, so whatever is already on disk
+			// cannot be mistaken for an answer to this message.
+			const baselineReceipt = pin === undefined ? undefined : await readPublicationReceipt(pin.receiptPath);
+			const baselineBytes = pin === undefined ? await this.readResultBytes(resultFile) : undefined;
+
+			const settled = worker.launch.protocol.waitForSettled(limit);
+			try {
+				await worker.launch.protocol.deliver(await persistedMessage(), deliverAs);
+			} catch (error) {
+				void settled.catch(() => undefined);
+				throw error;
+			}
+			await settled;
+
+			if (pin !== undefined) {
+				const outcome = await this.waitForPublication(pin, baselineReceipt?.publication_id, limit);
+				return {
+					accepted: true,
+					contractPath: outcome.receipt.declared_path,
+					publicationId: outcome.receipt.publication_id,
+				};
+			}
+			const written = await this.waitForWriterResult(resultFile, baselineBytes, limit);
+			return { accepted: true, contractPath: resultFile, contentSha256: written.contentSha256 };
+		} finally {
+			worker.resultPending = false;
 		}
-		const written = await this.waitForWriterResult(resultFile, baselineBytes, limit);
-		return { accepted: true, contractPath: resultFile, contentSha256: written.contentSha256 };
 	}
 
 	/**
@@ -714,7 +942,7 @@ export class BackgroundBus {
 		}
 		await worker.initialSettlement;
 		worker.lastEvent = "agent.settled";
-		const published = await this.waitForPublication(pin, undefined, timeoutMs);
+		const published = await this.waitForPublication(pin, worker.baselinePublicationId, timeoutMs);
 		return {
 			receipt: published.receipt,
 			document: published.document,
@@ -917,13 +1145,17 @@ export class BackgroundBus {
 		if (worker === undefined) {
 			return false;
 		}
+		await worker.launch.stop();
+		if (worker.launch.isAlive() || this.isProcessAlive(worker.pid))
+			throw new Error("worker termination is not confirmed; ownership remains held");
+		if (this.peerRuntime) (await this.peerRuntime).deactivate(agentId);
+		await releaseAllLeasesFor(this.runDirectory, worker.owner, this.leaseDependencies);
+		await releaseWriterAuthority(this.cwd, worker.owner, this.leaseDependencies);
 		this.workers.delete(agentId);
 		worker.releaseAdmission();
-		await worker.launch.stop().catch(() => undefined);
 		// Always close the protocol so waitForSettled timers (initialSettlement)
 		// cannot keep the event loop alive after the worker is gone.
 		worker.launch.protocol.close();
-		await releaseAllLeasesFor(this.runDirectory, agentId, this.leaseDependencies);
 		return true;
 	}
 
@@ -942,6 +1174,8 @@ export class BackgroundBus {
 			for (const agentId of [...this.workers.keys()]) {
 				await this.stopUnlocked(agentId);
 			}
+			if (this.peerRuntime) await (await this.peerRuntime).close();
+			unregisterLiveBus(this);
 		});
 	}
 
@@ -963,12 +1197,43 @@ export class BackgroundBus {
 	 * cross-process lock a worker uses.
 	 */
 	async claim(agentId: string, pid: number, key: string): Promise<LeaseRecord> {
-		return claimLease(this.runDirectory, { agentId, pid, key }, this.leaseDependencies);
+		const worker = this.workers.get(agentId);
+		if (!worker || worker.pid !== pid || !worker.launch.isAlive() || !this.isProcessAlive(pid))
+			throw new Error("claim from inactive process");
+		const canonical = await this.claimKey(key);
+		if (!worker.writePaths.some((scope) => scope === "." || scope === canonical || canonical.startsWith(`${scope}/`)))
+			throw new Error("claim outside writer scope");
+		return claimLease(
+			this.runDirectory,
+			{ agentId, pid, key: canonical, incarnation: worker.owner.incarnation },
+			this.leaseDependencies,
+		);
 	}
 
 	async release(agentId: string, key: string): Promise<boolean> {
-		return releaseLease(this.runDirectory, { agentId, key }, this.leaseDependencies);
+		const worker = this.workers.get(agentId);
+		if (!worker || !worker.launch.isAlive() || !this.isProcessAlive(worker.pid))
+			throw new Error("release from inactive process");
+		return releaseLease(
+			this.runDirectory,
+			{ agentId, pid: worker.pid, key: await this.claimKey(key), incarnation: worker.owner.incarnation },
+			this.leaseDependencies,
+		);
 	}
+}
+
+/** Runtime-owned addressing shared by graph execution, tools and session discovery. */
+export function getOrCreateBackgroundBus(
+	cwd: string,
+	runDirectory: string,
+	jobId: string,
+	dependencies: BusDependencies = {},
+): BackgroundBus {
+	const existing = registeredBuses().find((bus) => resolve(bus.runDirectory) === resolve(runDirectory));
+	if (existing) return existing;
+	const bus = new BackgroundBus(cwd, runDirectory, jobId, dependencies);
+	registerLiveBus(bus);
+	return bus;
 }
 
 export type { WorkerLaunch, WorkerLauncher } from "./launch.ts";

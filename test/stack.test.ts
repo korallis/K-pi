@@ -7,11 +7,9 @@ import { contractHash, type Task } from "../packages/coding-agent/src/kpi/extens
 import {
 	assertClaimInModule,
 	assertDuneStack,
-	assertScaffoldedBeforeBehavior,
 	type DuneStack,
 	DuneStackError,
 	freezeCurrentSlice,
-	GENERIC_FOLDER_FILE_BUDGET,
 	MAX_LINK_RESOLUTION_STEPS,
 	matchesPathPattern,
 	moduleOwnsPath,
@@ -24,7 +22,6 @@ import {
 	scaffoldModule,
 	stackRequiredFor,
 	stackTaskHash,
-	testTwinFor,
 } from "../packages/coding-agent/src/kpi/extensions/stack.ts";
 
 function module_(overrides: Partial<StackModule> = {}): StackModule {
@@ -100,9 +97,9 @@ test("a module boundary is folder segments, never a string prefix", () => {
 		assert.equal(moduleOwnsPath(directory, auth, outside), false, outside);
 	}
 
-	// The declared test twin is owned even when `allowed_paths` omits it.
+	// Test ownership is explicit, not invented from the feature's id.
 	const spare = module_({ allowed_paths: ["src/auth/**"] });
-	assert.equal(moduleOwnsPath(directory, spare, `${testTwinFor(spare)}/login.test.ts`), true);
+	assert.equal(moduleOwnsPath(directory, spare, "test/auth/login.test.ts"), false);
 });
 
 test("the path predicate keeps legitimate globs and accepts both separators", () => {
@@ -157,267 +154,89 @@ test("traversal, absolute escapes, and links out of the tree are refused", async
 	}
 });
 
-test("folder name equals id, and auth never lives in a layer bucket", () => {
-	assertDuneStack(stack_());
-	assert.throws(
-		() => assertDuneStack(stack_({ modules: [module_({ folder: "src/authentication" })] })),
-		/must match id/u,
-	);
-	assert.throws(
-		() =>
-			assertDuneStack(
-				stack_({
-					modules: [
-						module_({
-							folder: "src/lib/auth",
-							interface: "src/lib/auth/api.ts",
-							allowed_paths: ["src/lib/auth/**", "test/auth/**"],
-						}),
-					],
-				}),
-			),
-		/Auth must live in its auth folder/u,
-	);
-	assert.throws(
-		() =>
-			assertDuneStack(
-				stack_({
-					modules: [
-						module_({
-							folder: "src/services/auth",
-							interface: "src/services/auth/api.ts",
-							allowed_paths: ["src/services/auth/**", "test/auth/**"],
-						}),
-					],
-				}),
-			),
-		/Auth must live in its auth folder/u,
-	);
-	// A non-auth capability may still be nested.
-	assertDuneStack(
-		stack_({
-			modules: [
-				module_({
-					id: "invoices",
-					purpose: "invoice rendering",
-					folder: "src/billing/invoices",
-					interface: "src/billing/invoices/api.ts",
-					allowed_paths: ["src/billing/invoices/**", "test/invoices/**"],
-				}),
-			],
-		}),
-	);
-	// The interface must live inside the folder it belongs to.
-	assert.throws(
-		() => assertDuneStack(stack_({ modules: [module_({ interface: "src/api.ts" })] })),
-		/Interface must live inside/u,
-	);
-});
-
-test("layer folders are nested-only and generic folders need a tight purpose", () => {
-	for (const layer of ["components", "hooks", "services", "controllers", "api", "ui"]) {
-		assert.throws(
-			() =>
-				assertDuneStack(
-					stack_({
-						modules: [
-							module_({
-								id: layer,
-								purpose: `all ${layer} for the app`,
-								folder: `src/${layer}`,
-								interface: `src/${layer}/api.ts`,
-								allowed_paths: [`src/${layer}/**`, `test/${layer}/**`],
-							}),
-						],
-					}),
-				),
-			/cannot be a top-level module|layer sweep/u,
-			layer,
-		);
-	}
-	// The same layer name nested inside a feature is legal.
-	assertDuneStack(
-		stack_({
-			modules: [
-				module_({
-					id: "components",
-					purpose: "auth specific components",
-					folder: "src/auth/components",
-					interface: "src/auth/components/api.ts",
-					allowed_paths: ["src/auth/components/**", "test/components/**"],
-				}),
-			],
-		}),
-	);
-
-	for (const generic of ["utils", "helpers", "common", "misc"]) {
-		assert.throws(
-			() =>
-				assertDuneStack(
-					stack_({
-						modules: [
-							module_({
-								id: generic,
-								purpose: "stuff",
-								folder: `src/${generic}`,
-								interface: `src/${generic}/api.ts`,
-								allowed_paths: [`src/${generic}/**`, `test/${generic}/**`],
-							}),
-						],
-					}),
-				),
-			/tight purpose/u,
-			generic,
-		);
-		assertDuneStack(
-			stack_({
-				modules: [
-					module_({
-						id: generic,
-						purpose: "currency formatting helpers only",
-						folder: `src/${generic}`,
-						interface: `src/${generic}/api.ts`,
-						allowed_paths: [`src/${generic}/**`, `test/${generic}/**`],
-					}),
-				],
-			}),
-		);
-	}
-});
-
-test("a generic folder past its file budget fails the gate", async () => {
+test("existing Python layers and feature names retain explicit ownership without layout ceremony", async () => {
 	const directory = await fixture();
 	try {
-		const stack = stack_({
-			current_module_id: "utils",
-			modules: [
-				module_({
-					id: "utils",
-					purpose: "currency formatting helpers only",
-					folder: "src/utils",
-					interface: "src/utils/api.ts",
-					allowed_paths: ["src/utils/**", "test/utils/**"],
-				}),
+		const feature = module_({
+			id: "login",
+			folder: "src/core",
+			interface: "src/core/login.py",
+			allowed_paths: ["src/core/**", "tests/login_test.py"],
+		});
+		const stack = stack_({ modules: [feature], current_module_id: feature.id });
+		const task = task_({ current_module_id: feature.id });
+		await mkdir(join(directory, "src/core"), { recursive: true });
+		for (let index = 0; index < 8; index++)
+			await writeFile(join(directory, `src/core/module_${index}.py`), `VALUE = ${index}\n`);
+		await writeFile(join(directory, feature.interface), "def login():\n    return True\n");
+		await writeTask(directory, task);
+		await writeStack(directory, { ...stack, task_hash: stackTaskHash(task) });
+		const frozen = await freezeCurrentSlice(directory, join(directory, "run"), task);
+		await scaffoldModule(directory, frozen.module);
+		assert.equal(await readFile(join(directory, feature.interface), "utf8"), "def login():\n    return True\n");
+		assert.equal(moduleOwnsPath(directory, feature, "tests/login_test.py"), true);
+		assert.equal(moduleOwnsPath(directory, feature, "tests/unrelated.py"), false);
+		await assert.rejects(stat(join(directory, "test/login/index.test.ts")), { code: "ENOENT" });
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+	const rootFeature = module_({
+		id: "script",
+		folder: ".",
+		interface: "main.py",
+		allowed_paths: ["main.py", "test_main.py"],
+	});
+	assertDuneStack(stack_({ root: ".", modules: [rootFeature] }));
+	assert.equal(moduleOwnsPath("/project", rootFeature, "main.py"), true);
+	assert.equal(moduleOwnsPath("/project", rootFeature, "unrelated.py"), false);
+});
+
+test("unknown and cyclic dependencies fail while shared ownership is explicitly declared", () => {
+	const shared = module_({
+		id: "shared",
+		folder: "src/shared",
+		interface: "src/shared/api.ts",
+		allowed_paths: ["src/shared/**"],
+	});
+	assertDuneStack(stack_({ modules: [module_({ depends_on: ["shared"] }), shared] }));
+	assert.throws(() => assertDuneStack(stack_({ modules: [module_({ depends_on: ["absent"] })] })), DuneStackError);
+	assert.throws(() => assertDuneStack(stack_({ modules: [module_({ depends_on: ["auth"] })] })), DuneStackError);
+	assert.throws(
+		() =>
+			assertDuneStack(
+				stack_({ modules: [module_({ depends_on: ["shared"] }), { ...shared, depends_on: ["auth"] }] }),
+			),
+		DuneStackError,
+	);
+	assert.throws(() => assertDuneStack(stack_({ modules: [module_({ allowed_paths: ["**"] })] })), DuneStackError);
+});
+
+test("a module cannot expand the protected task's declared write bounds", async () => {
+	const directory = await fixture();
+	try {
+		const task = task_({
+			current_module_id: "auth",
+			acceptance: [
+				{ id: "AC-01", statement: "login works", required: true, bounds: { write_allow: ["src/auth/**"] } },
 			],
 		});
-		const task = task_({ current_module_id: "utils" });
 		await writeTask(directory, task);
-		await writeStack(directory, stack);
-		await freezeCurrentSlice(directory, join(directory, "run"), task);
-
-		await mkdir(join(directory, "src", "utils"), { recursive: true });
-		for (let index = 0; index < GENERIC_FOLDER_FILE_BUDGET; index += 1) {
-			await writeFile(join(directory, "src", "utils", `file-${index}.ts`), "export {};\n");
-		}
-		await assert.rejects(
-			freezeCurrentSlice(directory, join(directory, "run"), task),
-			/Generic folder src\/utils holds 5 files/u,
+		await writeStack(
+			directory,
+			stack_({
+				task_hash: stackTaskHash(task),
+				modules: [module_({ allowed_paths: ["src/auth/**", "src/billing/**"] })],
+			}),
 		);
+		await assert.rejects(freezeCurrentSlice(directory, join(directory, "run"), task), DuneStackError);
 	} finally {
 		await rm(directory, { recursive: true, force: true });
 	}
 });
 
-test("shared is extracted only when a second slice needs it", () => {
-	const shared = module_({
-		id: "shared",
-		purpose: "types used by two slices",
-		folder: "src/shared",
-		interface: "src/shared/api.ts",
-		allowed_paths: ["src/shared/**", "test/shared/**"],
-	});
-	const auth = module_({ depends_on: ["shared"] });
-	const billing = module_({
-		id: "billing",
-		purpose: "invoices and plans",
-		folder: "src/billing",
-		interface: "src/billing/api.ts",
-		allowed_paths: ["src/billing/**", "test/billing/**"],
-		depends_on: ["shared"],
-	});
-
-	// One consumer: it belongs inside that consumer.
-	assert.throws(
-		() => assertDuneStack(stack_({ modules: [shared, auth] })),
-		/shared needs two consuming slices before extraction; 1 declared/u,
-	);
-	// No consumer at all is an extraction that has not earned itself.
-	assert.throws(() => assertDuneStack(stack_({ modules: [shared] })), /0 declared/u);
-	// Two consumers: legitimate.
-	assertDuneStack(stack_({ modules: [shared, auth, billing] }));
-});
-
-test("vertical delivery cannot stage a layer sweep, and horizontal needs a reason", () => {
-	assert.throws(
-		() =>
-			assertDuneStack(
-				stack_({
-					modules: [
-						module_({
-							id: "endpoints",
-							purpose: "all APIs for every feature",
-							folder: "src/endpoints",
-							interface: "src/endpoints/api.ts",
-							allowed_paths: ["src/endpoints/**", "test/endpoints/**"],
-						}),
-					],
-				}),
-			),
-		/layer sweep/u,
-	);
-	assert.throws(
-		() =>
-			assertDuneStack(
-				stack_({
-					modules: [
-						module_({
-							id: "api",
-							purpose: "http surface",
-							folder: "src/nested/api",
-							interface: "src/nested/api/api.ts",
-							allowed_paths: ["src/nested/api/**", "test/api/**"],
-						}),
-						module_({
-							id: "ui",
-							purpose: "screens",
-							folder: "src/nested/ui",
-							interface: "src/nested/ui/api.ts",
-							allowed_paths: ["src/nested/ui/**", "test/ui/**"],
-						}),
-					],
-				}),
-			),
-		/layer staging plan/u,
-		"API-then-UI staging is horizontal work, whatever the field says",
-	);
-	// Declared horizontal work with a reason is allowed.
-	assertDuneStack(
-		stack_({
-			delivery: "horizontal",
-			delivery_reason: "framework migration touches every route at once",
-			modules: [
-				module_({
-					id: "api",
-					purpose: "http surface",
-					folder: "src/nested/api",
-					interface: "src/nested/api/api.ts",
-					allowed_paths: ["src/nested/api/**", "test/api/**"],
-				}),
-				module_({
-					id: "ui",
-					purpose: "screens",
-					folder: "src/nested/ui",
-					interface: "src/nested/ui/api.ts",
-					allowed_paths: ["src/nested/ui/**", "test/ui/**"],
-				}),
-			],
-		}),
-	);
-	assert.throws(() => assertDuneStack(stack_({ delivery: "horizontal" })), /Horizontal delivery requires a reason/u);
-	assert.throws(
-		() => assertDuneStack(stack_({ delivery: "horizontal", delivery_reason: "   " })),
-		/requires a reason/u,
-	);
+test("horizontal delivery requires a declared reason", () => {
+	assert.throws(() => assertDuneStack(stack_({ delivery: "horizontal" })), DuneStackError);
+	assertDuneStack(stack_({ delivery: "horizontal", delivery_reason: "existing API migration" }));
 });
 
 test("the current slice is named, never inferred from modules[0]", () => {
@@ -462,7 +281,7 @@ test("a missing, unparseable, or stale stack stops implement before any write", 
 		await assert.rejects(freezeCurrentSlice(directory, runDirectory, task), /not valid JSON/u);
 
 		await writeStack(directory, { version: 1, shape: "dune" });
-		await assert.rejects(freezeCurrentSlice(directory, runDirectory, task), /Invalid Dune stack header/u);
+		await assert.rejects(freezeCurrentSlice(directory, runDirectory, task), DuneStackError);
 
 		// Frozen against a different contract: stale.
 		await writeStack(directory, stack_({ task_hash: `sha256:${"0".repeat(64)}` }));
@@ -535,56 +354,19 @@ test("no-stack playbooks are exempt, and every other playbook is not", () => {
 	}
 });
 
-test("scaffold creates folder, interface, then test twin, before any behaviour", async () => {
+test("scaffold creates only declared directories and never manufactures source or tests", async () => {
 	const directory = await fixture();
 	try {
-		const auth = module_();
-		const result = await scaffoldModule(directory, auth);
-		assert.deepEqual(
-			result.steps,
-			["src/auth", "src/auth/api.ts", "test/auth/index.test.ts"],
-			"the order is the contract",
-		);
-		assert.equal((await stat(join(directory, "src", "auth"))).isDirectory(), true);
-		assert.equal((await stat(result.interface)).isFile(), true);
-		assert.equal((await stat(result.testTwin)).isFile(), true);
-		await assertScaffoldedBeforeBehavior(directory, auth);
-
-		// Behaviour without the scaffold is the UNSAFE case.
-		const bare = await fixture();
-		try {
-			await mkdir(join(bare, "src", "auth"), { recursive: true });
-			await writeFile(join(bare, "src", "auth", "login.ts"), "export const login = () => {};\n");
-			await assert.rejects(
-				assertScaffoldedBeforeBehavior(bare, auth),
-				/behaviour \(src\/auth\/login\.ts\) before its scaffold/u,
-			);
-			// Interface present but no test twin is still incomplete.
-			await writeFile(join(bare, "src", "auth", "api.ts"), "export {};\n");
-			await assert.rejects(assertScaffoldedBeforeBehavior(bare, auth), /missing test\/auth\/index\.test\.ts/u);
-			await mkdir(join(bare, "test", "auth"), { recursive: true });
-			await writeFile(join(bare, "test", "auth", "index.test.ts"), "export {};\n");
-			await assertScaffoldedBeforeBehavior(bare, auth);
-		} finally {
-			await rm(bare, { recursive: true, force: true });
-		}
-	} finally {
-		await rm(directory, { recursive: true, force: true });
-	}
-});
-
-test("scaffolding is idempotent and never rewrites existing content", async () => {
-	const directory = await fixture();
-	try {
-		const auth = module_();
-		await scaffoldModule(directory, auth);
-		await writeFile(join(directory, "src", "auth", "api.ts"), "export const real = 1;\n");
-		const again = await scaffoldModule(directory, auth);
-		assert.equal(
-			await readFile(again.interface, "utf8"),
-			"export const real = 1;\n",
-			"an existing interface survives",
-		);
+		const feature = module_({ scaffold: ["src/auth", "test/auth"] });
+		await scaffoldModule(directory, feature);
+		assert.equal((await stat(join(directory, "src/auth"))).isDirectory(), true);
+		assert.equal((await stat(join(directory, "test/auth"))).isDirectory(), true);
+		await assert.rejects(stat(join(directory, feature.interface)), { code: "ENOENT" });
+		await assert.rejects(stat(join(directory, "test/auth/index.test.ts")), { code: "ENOENT" });
+		await writeFile(join(directory, feature.interface), "export const real = 1;\n");
+		await scaffoldModule(directory, feature);
+		assert.equal(await readFile(join(directory, feature.interface), "utf8"), "export const real = 1;\n");
+		await assert.rejects(scaffoldModule(directory, { ...feature, scaffold: ["src/billing"] }), DuneStackError);
 	} finally {
 		await rm(directory, { recursive: true, force: true });
 	}
@@ -657,8 +439,8 @@ test("a wildcard pattern means exactly its segments, and only a literal folder i
 	assert.equal(moduleOwnsPath("/project", shallow, "src/auth/login.ts"), true);
 	assert.equal(
 		moduleOwnsPath("/project", shallow, "src/auth/deep/login.ts"),
-		true,
-		"the declared folder itself still covers its descendants",
+		false,
+		"folder metadata cannot widen an explicit one-level allowed path",
 	);
 	const narrow = module_({ folder: "src/auth", allowed_paths: ["src/*"] });
 	assert.equal(moduleOwnsPath("/project", narrow, "src/auth"), true);
@@ -796,21 +578,13 @@ test("declared paths must be repository-relative, exact, and free of traversal",
 	);
 });
 
-test("allowed-path coverage is asked about a real path, not pattern against pattern", () => {
-	// A pattern that does not admit anything inside the folder fails, even though
-	// it shares a prefix with it.
+test("allowed paths must admit the interface but tests have no prescribed layout", () => {
+	assertDuneStack(stack_({ modules: [module_({ allowed_paths: ["src/auth", "test/other/**"] })] }));
 	assert.throws(
-		() => assertDuneStack(stack_({ modules: [module_({ allowed_paths: ["src/auth", "test/other/**"] })] })),
-		/lacks its test twin/u,
+		() => assertDuneStack(stack_({ modules: [module_({ allowed_paths: ["src/other/**"] })] })),
+		DuneStackError,
 	);
-	assert.throws(
-		() => assertDuneStack(stack_({ modules: [module_({ allowed_paths: ["src/other/**", "test/auth/**"] })] })),
-		/does not allow its own folder/u,
-	);
-	// A one-level glob covers a file directly inside the folder.
-	assertDuneStack(stack_({ modules: [module_({ allowed_paths: ["src/auth/*", "test/auth/*"] })] }));
-	// A literal folder covers it too.
-	assertDuneStack(stack_({ modules: [module_({ allowed_paths: ["src/auth", "test/auth"] })] }));
+	assertDuneStack(stack_({ modules: [module_({ allowed_paths: ["src/auth/*"] })] }));
 });
 
 test("a stack that disagrees with the contract about the slice is refused", async () => {
@@ -854,39 +628,6 @@ test("a stack with no hash and no contract to compare against is not fresh", asy
 		await assert.rejects(
 			freezeCurrentSlice(directory, runDirectory, task_({ current_module_id: "auth" })),
 			/task\.json is missing, so stack\.json freshness cannot be established/u,
-		);
-	} finally {
-		await rm(directory, { recursive: true, force: true });
-	}
-});
-
-test("an unreadable generic folder is never treated as empty", async () => {
-	const directory = await fixture();
-	try {
-		const stack = stack_({
-			current_module_id: "utils",
-			modules: [
-				module_({
-					id: "utils",
-					purpose: "currency formatting helpers only",
-					folder: "src/utils",
-					interface: "src/utils/api.ts",
-					allowed_paths: ["src/utils/**", "test/utils/**"],
-				}),
-			],
-		});
-		const task = task_({ current_module_id: "utils" });
-		await writeTask(directory, task);
-		await writeStack(directory, stack);
-
-		// A file where the folder should be: reading it is an I/O error, not an
-		// absence, and a budget check that swallowed it would report zero files.
-		await mkdir(join(directory, "src"), { recursive: true });
-		await writeFile(join(directory, "src", "utils"), "not a directory\n");
-		await assert.rejects(
-			freezeCurrentSlice(directory, join(directory, "run"), task),
-			(error: unknown) => error instanceof Error && !/holds 0 files/u.test(error.message),
-			"an I/O failure surfaces instead of passing the budget",
 		);
 	} finally {
 		await rm(directory, { recursive: true, force: true });

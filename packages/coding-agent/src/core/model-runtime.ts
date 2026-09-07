@@ -126,6 +126,16 @@ function mergeHeaders(
 	return merged;
 }
 
+export interface RequestAuthOptions {
+	requestId?: string;
+	resolveRequestAuth?: RequestAuthResolver;
+}
+
+export type RequestAuthResolver = (
+	model: Model<Api>,
+	checkOnly: boolean,
+	requestId?: string,
+) => Promise<AuthResult | false | undefined>;
 /** Configured pi-ai Models collection used by coding-agent and SDK consumers. */
 export class ModelRuntime implements Models {
 	private readonly models: MutableModels;
@@ -150,6 +160,12 @@ export class ModelRuntime implements Models {
 	private readonly providerAvailabilitySeq = new Map<string, number>();
 	private availabilityError: string | undefined;
 	private readonly credentialOperations = new Map<string, Promise<unknown>>();
+	private requestAuthResolver?: RequestAuthResolver;
+
+	/** Session-owned credential policy; provider protocol/auth shaping remains native. */
+	setRequestAuthResolver(resolver: RequestAuthResolver): void {
+		this.requestAuthResolver = resolver;
+	}
 
 	private constructor(
 		credentials: RuntimeCredentials,
@@ -303,9 +319,23 @@ export class ModelRuntime implements Models {
 				.filter((entry): entry is [string, AuthCheck] => entry[1] !== undefined)
 				.map(([providerId]) => providerId),
 		);
+		let routable = [...available];
+		if (this.requestAuthResolver) {
+			const decisions = new Map<string, AuthResult | false | undefined>();
+			const nativeAvailable = new Set(available.map((model) => `${model.provider}/${model.id}`));
+			routable = [];
+			for (const model of this.models.getModels()) {
+				const key = `${model.provider}\0${model.baseUrl}`;
+				if (!decisions.has(key)) decisions.set(key, await this.requestAuthResolver(model, true));
+				const decision = decisions.get(key);
+				if (decision !== false && (decision || nativeAvailable.has(`${model.provider}/${model.id}`)))
+					routable.push(model);
+			}
+			if (seq !== this.availabilityRefreshSeq) return;
+		}
 		this.snapshot = {
 			all: [...this.models.getModels()],
-			available: [...available],
+			available: routable,
 			configuredProviders,
 			storedProviders: new Set(credentials.map((entry) => entry.providerId)),
 			auth,
@@ -402,6 +432,12 @@ export class ModelRuntime implements Models {
 	}
 
 	async getAvailable(providerId?: string, options?: AuthOperationOptions): Promise<readonly Model<Api>[]> {
+		if (this.requestAuthResolver) {
+			await this.queueAvailabilityRefresh(options?.signal);
+			return providerId
+				? this.snapshot.available.filter((model) => model.provider === providerId)
+				: this.snapshot.available;
+		}
 		if (providerId) {
 			const errorSeq = ++this.availabilityErrorSeq;
 			try {
@@ -464,7 +500,10 @@ export class ModelRuntime implements Models {
 	}
 
 	hasConfiguredAuth(providerId: string): boolean {
-		return this.snapshot.configuredProviders.has(providerId);
+		return (
+			this.snapshot.configuredProviders.has(providerId) ||
+			this.snapshot.available.some((model) => model.provider === providerId)
+		);
 	}
 
 	getAuth(providerId: string, overrides?: ModelRuntimeAuthOverrides): Promise<AuthResult | undefined>;
@@ -473,6 +512,12 @@ export class ModelRuntime implements Models {
 		providerOrModel: string | Model<Api>,
 		overrides: ModelRuntimeAuthOverrides = {},
 	): Promise<AuthResult | undefined> {
+		if (typeof providerOrModel !== "string" && this.requestAuthResolver) {
+			const selected = await this.requestAuthResolver(providerOrModel, false);
+			if (selected === false)
+				throw new ModelsError("auth", `No authorised resource available: ${providerOrModel.provider}`);
+			if (selected) return selected;
+		}
 		if (typeof providerOrModel === "string") return this.models.getAuth(providerOrModel, overrides);
 		const resolution = await this.models.getAuth(providerOrModel, overrides);
 		if (!resolution) return undefined;
@@ -570,26 +615,51 @@ export class ModelRuntime implements Models {
 		return check ? { configured: true, source: "environment", label: check.source } : { configured: false };
 	}
 
-	private async prepareRequest<TOptions extends ProviderRequestOptions & ModelsRequestTransforms>(
+	private async prepareRequest<TOptions extends ProviderRequestOptions & ModelsRequestTransforms & RequestAuthOptions>(
 		model: Model<Api>,
 		options: TOptions | undefined,
 	): Promise<{
 		provider: Provider;
 		model: Model<Api>;
-		options: Omit<TOptions, "transformHeaders"> & ProviderRequestOptions;
+		options: Omit<TOptions, "transformHeaders" | keyof RequestAuthOptions> & ProviderRequestOptions;
 	}> {
 		const provider = this.models.getProvider(model.provider);
 		if (!provider) throw new ModelsError("provider", `Unknown provider: ${model.provider}`);
-		const resolution = await this.getAuth(model, {
-			apiKey: options?.apiKey,
-			env: options?.env,
-			signal: options?.signal,
-		});
+		const selected = await (options?.resolveRequestAuth ?? this.requestAuthResolver)?.(
+			model,
+			false,
+			options?.requestId,
+		);
+		if (selected === false) throw new ModelsError("auth", `No authorised resource available: ${model.provider}`);
+		const resolution =
+			selected ??
+			(await this.models.getAuth(model, {
+				apiKey: options?.apiKey,
+				env: options?.env,
+				signal: options?.signal,
+			}));
 		if (!resolution) throw new ModelsError("auth", `Provider is not configured: ${model.provider}`);
 
-		const { transformHeaders, ...rawProviderOptions } = options ?? {};
-		const providerOptions = rawProviderOptions as Omit<TOptions, "transformHeaders"> & ProviderRequestOptions;
-		let headers = mergeHeaders(resolution.auth.headers, providerOptions.headers);
+		const {
+			transformHeaders,
+			requestId: _requestId,
+			resolveRequestAuth: _resolveRequestAuth,
+			...rawProviderOptions
+		} = options ?? {};
+		const providerOptions = rawProviderOptions as Omit<TOptions, "transformHeaders" | keyof RequestAuthOptions> &
+			ProviderRequestOptions;
+		let headers = mergeHeaders(
+			mergeHeaders(
+				resolution.auth.headers,
+				resolveConfiguredModelHeaders(
+					model,
+					this.config.getProvider(model.provider),
+					this.extensionProviders.get(model.provider),
+					resolution.env ?? {},
+				),
+			),
+			providerOptions.headers,
+		);
 		if (transformHeaders) headers = await transformHeaders(headers ?? {});
 		const env =
 			resolution.env || providerOptions.env
@@ -600,10 +670,10 @@ export class ModelRuntime implements Models {
 			model: resolution.auth.baseUrl ? { ...model, baseUrl: resolution.auth.baseUrl } : model,
 			options: {
 				...providerOptions,
-				apiKey: providerOptions.apiKey ?? resolution.auth.apiKey,
+				apiKey: selected ? resolution.auth.apiKey : (providerOptions.apiKey ?? resolution.auth.apiKey),
 				headers,
 				env,
-			} as Omit<TOptions, "transformHeaders"> & ProviderRequestOptions,
+			} as Omit<TOptions, "transformHeaders" | keyof RequestAuthOptions> & ProviderRequestOptions,
 		};
 	}
 
@@ -633,7 +703,11 @@ export class ModelRuntime implements Models {
 		return this.stream(model, context, options).result();
 	}
 
-	streamSimple(model: Model<Api>, context: Context, options?: ModelsSimpleStreamOptions): AssistantMessageEventStream {
+	streamSimple(
+		model: Model<Api>,
+		context: Context,
+		options?: ModelsSimpleStreamOptions & RequestAuthOptions,
+	): AssistantMessageEventStream {
 		return lazyStream(model, async () => {
 			const prepared = await this.prepareRequest(model, options);
 			return prepared.provider.streamSimple(prepared.model, context, prepared.options as SimpleStreamOptions);

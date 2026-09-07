@@ -1,49 +1,13 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
 import type { ToolCallEvent } from "../packages/coding-agent/src/core/extensions/types.ts";
 
-import { EVENT_TYPES } from "../packages/coding-agent/src/kpi/extensions/append-log.ts";
 import kPi from "../packages/coding-agent/src/kpi/extensions/index.ts";
-
-test("extension factory registers commands, policy hook, and renderers", () => {
-	const commandNames: string[] = [];
-	const eventNames: string[] = [];
-	const rendererNames: string[] = [];
-
-	const pi = {
-		on(event: string) {
-			eventNames.push(event);
-		},
-		registerCommand(name: string) {
-			commandNames.push(name);
-		},
-		registerEntryRenderer(name: string) {
-			rendererNames.push(name);
-		},
-	};
-
-	assert.doesNotThrow(() => kPi(pi as unknown as Parameters<typeof kPi>[0]));
-	// `/pool` is part of the spec's command table alongside `/accounts`.
-	assert.deepEqual(commandNames, [
-		"pool",
-		"accounts",
-		// K-π's brevity prompt is installed by the product, not by hand.
-		"append-system",
-		"kpi",
-		"loop",
-		"kpi-ping",
-		"k-mode",
-		"setup-kstack",
-		"statusbar",
-		"onboarding",
-	]);
-	assert.equal(eventNames.filter((event) => event === "tool_call").length, 1);
-	assert.deepEqual(rendererNames, EVENT_TYPES);
-});
+import { createJob } from "../packages/coding-agent/src/kpi/extensions/run-store.ts";
 
 test("default policy resolves write bounds from the active job", async () => {
 	type Hook = (
@@ -67,16 +31,24 @@ test("default policy resolves write bounds from the active job", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "k-pi-extension-policy-"));
 	const runDirectory = join(directory, ".kpi", "runs", "active-job");
 	try {
-		await mkdir(runDirectory, { recursive: true });
-		await Promise.all([
-			writeFile(
-				join(runDirectory, "task.json"),
-				JSON.stringify({
-					acceptance: [{ bounds: { write_allow: ["src/**", "test/**"] } }],
-				}),
-			),
-			writeFile(join(runDirectory, "state.json"), JSON.stringify({ job_id: "active-job", status: "RUNNING" })),
-		]);
+		await createJob(directory, {
+			job_id: "active-job",
+			goal: "Restrict product edits to the accepted scope",
+			mode: "gated",
+			nongoals: [],
+			constraints: [],
+			quality_gates: [],
+			ac: { quality: "executable" },
+			acceptance: [
+				{
+					id: "AC-01",
+					statement: "Product edits stay in source and tests",
+					required: true,
+					bounds: { write_allow: ["src/**", "test/**"] },
+				},
+			],
+		});
+		await writeFile(join(runDirectory, "state.json"), JSON.stringify({ job_id: "active-job", status: "RUNNING" }));
 
 		const context = { cwd: directory };
 		const allowedWrite: ToolCallEvent = {

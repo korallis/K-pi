@@ -1,9 +1,3 @@
-# Technology context
+# Technology references
 
-- Runtime: `<runtime-and-version>`
-- Package manager: `<package-manager>`
-- Frameworks: `<frameworks>`
-- Setup: `<setup-command>`
-- Test: `<test-command>`
-- Lint: `<lint-command>`
-- Typecheck: `<typecheck-command>`
+Read the actual project manifests and applicable `AGENTS.md` command definitions via repository-map paths. Protected intent names the run's exact acceptance and quality-gate commands; raw execution receipts prove results. Do not guess runtime versions, package managers or successful commands from a template. Semantic availability comes from explicitly configured installed servers, not a language-name claim.

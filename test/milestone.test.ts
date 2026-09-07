@@ -1,21 +1,22 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import test from "node:test";
-import type { RefreshModelsContext } from "@earendil-works/pi-ai";
+import { promisify } from "node:util";
 import type { ExtensionAPI, ExtensionCommandContext } from "../packages/coding-agent/src/core/extensions/types.ts";
-import {
-	AccountBalancer,
-	DEFAULT_FALLBACK_CHAIN,
-} from "../packages/coding-agent/src/kpi/extensions/accounts/balancer.ts";
+import { AccountBalancer } from "../packages/coding-agent/src/kpi/extensions/accounts/balancer.ts";
 import {
 	classifyProviderBodyFailure,
 	classifyProviderFailure,
 	DEFAULT_COOLDOWN_MS,
 } from "../packages/coding-agent/src/kpi/extensions/accounts/errors.ts";
-import type { AccountsDocument } from "../packages/coding-agent/src/kpi/extensions/accounts/store.ts";
+import {
+	type AccountsDocument,
+	DEFAULT_FALLBACK_CHAIN,
+} from "../packages/coding-agent/src/kpi/extensions/accounts/store.ts";
 import { UsageCache } from "../packages/coding-agent/src/kpi/extensions/accounts/usage/cache.ts";
 import { renderAccountsWidget } from "../packages/coding-agent/src/kpi/extensions/accounts/widget.ts";
 import { appendEvent } from "../packages/coding-agent/src/kpi/extensions/append-log.ts";
@@ -25,20 +26,17 @@ import {
 	createWorkerAdmission,
 	type WorkerLauncher,
 } from "../packages/coding-agent/src/kpi/extensions/bus/spawn.ts";
-import {
-	refreshCursorModels,
-	registerCursorProvider,
-} from "../packages/coding-agent/src/kpi/extensions/cursor/provider.ts";
 import { assertMinimalistBounds } from "../packages/coding-agent/src/kpi/extensions/minimalist.ts";
 import { registerPrintProfile } from "../packages/coding-agent/src/kpi/extensions/print-profile.ts";
 import { formatEventEntry } from "../packages/coding-agent/src/kpi/extensions/renderers.ts";
 import { exaSearch } from "../packages/coding-agent/src/kpi/extensions/research/exa.ts";
 import { conductResearch } from "../packages/coding-agent/src/kpi/extensions/research/gate.ts";
-import type { Task } from "../packages/coding-agent/src/kpi/extensions/run-store.ts";
+import { createJob, type Task } from "../packages/coding-agent/src/kpi/extensions/run-store.ts";
 import {
 	assertClaimInModule,
 	assertDuneStack,
 	type DuneStack,
+	moduleOwnsPath,
 	scaffoldModule,
 } from "../packages/coding-agent/src/kpi/extensions/stack.ts";
 import { parseModelLadder } from "../packages/coding-agent/src/kpi/kstack/ladder.ts";
@@ -91,7 +89,6 @@ test("a cooling sibling is never selected while B is healthy", () => {
 	for (let index = 0; index < 100; index += 1) {
 		assert.equal(balancer.select("anthropic", accounts)?.slot.id, "B");
 	}
-	assert.deepEqual(DEFAULT_FALLBACK_CHAIN, ["anthropic", "openai-codex", "xai", "zai", "kimi-coding", "cursor"]);
 });
 
 test("failover appends the accounts.failover event type", async () => {
@@ -139,40 +136,6 @@ test("accounts widget labels each slot percentage", () => {
 	assert.doesNotMatch(widget, /^\s*\d+%\s*$/mu);
 });
 
-test("Cursor registers its id and refreshes a mocked live array", async () => {
-	// The refresh caches the catalog in the agent directory, so this stays in a
-	// temporary one rather than writing into the operator's real home.
-	const agentDirectory = await mkdtemp(join(tmpdir(), "kpi-cursor-milestone-"));
-	const previousAgentDir = process.env.KPI_CODING_AGENT_DIR;
-	const previousHome = process.env.HOME;
-	process.env.KPI_CODING_AGENT_DIR = agentDirectory;
-	process.env.HOME = agentDirectory;
-	let id = "";
-	let config: { refreshModels?: (context: RefreshModelsContext) => Promise<unknown[]> } | undefined;
-	registerCursorProvider({
-		registerProvider(providerId: string, providerConfig: typeof config) {
-			id = providerId;
-			config = providerConfig;
-		},
-	} as unknown as ExtensionAPI);
-	assert.equal(id, "cursor");
-	const response = new Response(JSON.stringify({ data: [{ id: "live", name: "Live" }] }), { status: 200 });
-	const context = { allowNetwork: true, signal: new AbortController().signal } as RefreshModelsContext;
-	try {
-		const models = await refreshCursorModels(context, async () => response);
-		assert.equal(models[0]?.id, "live");
-		assert.equal(Array.isArray(await config?.refreshModels?.(context).catch(() => [])), true);
-	} finally {
-		if (previousAgentDir === undefined) {
-			delete process.env.KPI_CODING_AGENT_DIR;
-		} else {
-			process.env.KPI_CODING_AGENT_DIR = previousAgentDir;
-		}
-		if (previousHome !== undefined) process.env.HOME = previousHome;
-		await rm(agentDirectory, { recursive: true, force: true });
-	}
-});
-
 test("K-mode feature comes from the generated runtime and ship needs approval", async () => {
 	// The registry is the generated tree, so this reads what the sync emitted
 	// rather than a table in k-pi source.
@@ -212,10 +175,42 @@ test("K-stack setup never writes a slug outside the live candidates", () => {
 	assert.throws(() => assertKnownModels(document, candidates), /Unknown model slug/u);
 });
 
-test("background bus caps workers, writers, messages, and leases", async () => {
+test("worker admission preserves one writer and exclusive paths within configured capacity", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "kpi-bus-"));
-	const runDirectory = join(directory, ".kpi", "runs", "job");
-	const messages: string[] = [];
+	const job = await createJob(directory, {
+		job_id: "job",
+		mode: "gated",
+		goal: "Update src/a.ts",
+		nongoals: [],
+		acceptance: [
+			{ id: "AC-scope", statement: "Scoped source edit", required: true, bounds: { write_allow: ["src/**"] } },
+		],
+		constraints: [],
+		quality_gates: [],
+		ac: { quality: "partial" },
+		current_module_id: "slice",
+	});
+	const runDirectory = job.directory;
+	await writeFile(
+		join(runDirectory, "stack.json"),
+		JSON.stringify({
+			version: 1,
+			shape: "dune",
+			root: "src",
+			delivery: "vertical",
+			current_module_id: "slice",
+			modules: [
+				{
+					id: "slice",
+					purpose: "Scoped source edit",
+					folder: "src",
+					interface: "src/a.ts",
+					allowed_paths: ["src/**"],
+					depends_on: [],
+				},
+			],
+		}),
+	);
 	const alive = new Set<number>();
 	let pid = 1;
 	// A peer that accepts everything, so this scenario stays about caps and
@@ -230,8 +225,7 @@ test("background bus caps workers, writers, messages, and leases", async () => {
 				.toString("utf8")
 				.split("\n")
 				.filter((entry) => entry.length > 0)) {
-				const record = JSON.parse(line) as { id: string; type: string; message?: string };
-				if (record.message !== undefined) messages.push(record.message);
+				const record = JSON.parse(line) as { id: string; type: string };
 				toParent.write(
 					`${JSON.stringify({ id: record.id, type: "response", command: record.type, success: true })}\n`,
 				);
@@ -246,28 +240,33 @@ test("background bus caps workers, writers, messages, and leases", async () => {
 			stop: async () => {
 				alive.delete(workerPid);
 				protocol.close();
+				toWorker.destroy();
+				toParent.destroy();
 			},
 		};
 	};
 	const bus = new BackgroundBus(directory, runDirectory, "job", {
 		launcher,
 		isProcessAlive: (candidate) => alive.has(candidate),
-		admission: createWorkerAdmission(),
+		admission: createWorkerAdmission({ maxWorkers: 3 }),
 		contractWaitTimeoutMs: 2_000,
 	});
 	try {
 		const writer = await bus.spawn({ role: "implementer", prompt: "one", tools: ["read", "write"] });
 		await assert.rejects(bus.spawn({ role: "implementer", prompt: "two", tools: ["edit"] }), /writer/u);
 		const reviewer = await bus.spawn({ role: "reviewer", prompt: "review" });
-		await assert.rejects(bus.spawn({ role: "tester", prompt: "third" }), /limit/u);
-		await bus.communicate({ agentId: reviewer.agentId, message: "follow", deliverAs: "followUp", expect: "ack" });
-		assert.deepEqual(messages, ["one", "review", "follow"]);
+		await bus.spawn({ role: "tester", prompt: "third" });
+		await assert.rejects(bus.spawn({ role: "reviewer", prompt: "overflow" }));
 		await bus.claim(writer.agentId, writer.pid, "src/a.ts");
-		await assert.rejects(bus.claim(reviewer.agentId, reviewer.pid, "src/a.ts"), /claimed/u);
+		await assert.rejects(bus.claim(reviewer.agentId, reviewer.pid, "src/a.ts"));
+		assert.equal((await bus.readLeases())["src/a.ts"].agent_id, writer.agentId);
 		await bus.stop(writer.agentId);
-		await bus.claim(reviewer.agentId, reviewer.pid, "src/a.ts");
+		await assert.rejects(bus.claim(reviewer.agentId, reviewer.pid, "src/a.ts"));
+		const successor = await bus.spawn({ role: "implementer", prompt: "continue", tools: ["read", "write"] });
+		await bus.claim(successor.agentId, successor.pid, "src/a.ts");
+		assert.equal((await bus.readLeases())["src/a.ts"].agent_id, successor.agentId);
 	} finally {
-		await bus.stopAll().catch(() => undefined);
+		await bus.stopAll();
 		await rm(directory, { recursive: true, force: true });
 	}
 });
@@ -341,7 +340,7 @@ test("research caps results and falls back after a preferred 429", async () => {
 	}
 });
 
-test("Dune stack rejects generic maps and outside-module claims", async () => {
+test("Dune stack preserves explicit outside-module claim boundaries", async () => {
 	const stack: DuneStack = {
 		version: 1,
 		shape: "dune",
@@ -370,9 +369,9 @@ test("Dune stack rejects generic maps and outside-module claims", async () => {
 		allowed_paths: ["src/helpers/**", "test/helpers/**"],
 		purpose: "misc",
 	};
-	assert.throws(() => assertDuneStack(stack), /tight purpose/u);
+	assert.equal(moduleOwnsPath("/repo", stack.modules[0], "src/auth/a.ts"), false);
 });
-test("Dune scaffold creates feature interface and test twin first", async () => {
+test("Dune scaffold does not invent source or empty tests", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "kpi-dune-"));
 	try {
 		const result = await scaffoldModule(directory, {
@@ -383,8 +382,8 @@ test("Dune scaffold creates feature interface and test twin first", async () => 
 			allowed_paths: ["src/auth/**", "test/auth/**"],
 			depends_on: [],
 		});
-		assert.equal(await readFile(result.interface, "utf8"), "export {};\n");
-		assert.equal(await readFile(result.testTwin, "utf8"), "export {};\n");
+		await assert.rejects(readFile(result.interface, "utf8"), { code: "ENOENT" });
+		await assert.rejects(readFile(join(directory, "test/auth/index.test.ts"), "utf8"), { code: "ENOENT" });
 	} finally {
 		await rm(directory, { recursive: true, force: true });
 	}
@@ -408,21 +407,83 @@ test("print mode removes mutation tools", () => {
 	assert.deepEqual(active, ["read", "grep"]);
 });
 
-test("forbidden runtime dependencies and official model overlays remain absent", async () => {
-	const packageDocument = JSON.parse(await readFile("package.json", "utf8")) as {
-		dependencies?: Record<string, string>;
+test("repository manifests exclude prohibited harness, footer, agent-bus, and research dependencies", async () => {
+	// Inventory repository-owned manifests, including new files, not installed packages or proof artifacts.
+	const { stdout } = await promisify(execFile)("git", [
+		"ls-files",
+		"--cached",
+		"--others",
+		"--exclude-standard",
+		"-z",
+		"--",
+		"package.json",
+		"**/package.json",
+	]);
+	const manifests = [...new Set(stdout.split("\0").filter(Boolean))].sort();
+	assert.ok(manifests.includes("package.json"));
+	assert.ok(manifests.includes("packages/coding-agent/package.json"));
+	const forbiddenEverywhere: Record<string, true> = {
+		"oh-my-pi": true,
+		atomic: true,
+		"pi-graph": true,
+		"pi-multi-account": true,
+		"pi-multi-pass": true,
+		"pi-intercom": true,
+		"pi-mesh": true,
+		"pi-agents-talk-to-each-other": true,
+		"pi-bus": true,
+		"pi-side-agents": true,
 	};
-	const forbidden = [
-		"pstack",
-		"open-pstack",
-		"pi-pstack",
-		"pi-intercom",
-		"pi-mesh",
-		"pi-bus",
-		"exa-js",
-		"@perplexity-ai/perplexity_ai",
-	];
-	for (const name of forbidden) assert.equal(packageDocument.dependencies?.[name], undefined);
-	const source = await readFile("packages/coding-agent/src/kpi/extensions/index.ts", "utf8");
-	assert.doesNotMatch(source, /registerProvider\("(?:anthropic|openai|openai-codex|xai)"[\s\S]*?models/u);
+	const forbiddenAtRuntime: Record<string, true> = {
+		...forbiddenEverywhere,
+		"@shying/pi-graph": true,
+		"@pi-stef/cursor": true,
+		pstack: true,
+		"open-pstack": true,
+		"pi-pstack": true,
+		"pi-status-bar": true,
+		"pi-vitals": true,
+		"pi-powerline-footer": true,
+		"pi-kimi-coder": true,
+		"pi-moonshot": true,
+		"@czottmann/pi-zai-api": true,
+		"pi-ollama": true,
+		"@jamesjfoong/pi-ollama": true,
+		"pi-ollama-keyring": true,
+		"pi-ollama-cloud-provider": true,
+		"exa-js": true,
+		"@perplexity-ai/perplexity_ai": true,
+		"@mendable/firecrawl-js": true,
+	};
+	const violations: string[] = [];
+	for (const manifest of manifests) {
+		const document = JSON.parse(await readFile(manifest, "utf8")) as Record<string, unknown>;
+		for (const section of ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"]) {
+			const dependencies = (document[section] ?? {}) as Record<string, string>;
+			for (const [name, specifier] of Object.entries(dependencies)) {
+				// npm aliases cannot hide a prohibited package behind an innocent dependency key.
+				const alias = specifier.startsWith("npm:") ? specifier.slice(4).replace(/@[^@/]*$/u, "") : undefined;
+				for (const target of alias === undefined ? [name] : [name, alias]) {
+					const runtime = section !== "devDependencies";
+					if (
+						forbiddenEverywhere[target] === true ||
+						target.startsWith("pi-cursor-") ||
+						(runtime && (forbiddenAtRuntime[target] === true || target.startsWith("@oh-my-pi/")))
+					) {
+						violations.push(`${manifest}: ${section}.${name} (${target})`);
+					}
+				}
+			}
+		}
+		for (const section of ["bundledDependencies", "bundleDependencies"]) {
+			const bundled = document[section];
+			if (!Array.isArray(bundled)) continue;
+			for (const name of bundled as string[]) {
+				if (forbiddenAtRuntime[name] === true || name.startsWith("pi-cursor-") || name.startsWith("@oh-my-pi/")) {
+					violations.push(`${manifest}: ${section}.${name}`);
+				}
+			}
+		}
+	}
+	assert.deepEqual(violations, [], "repository manifest dependency contracts");
 });

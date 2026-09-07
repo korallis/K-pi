@@ -16,6 +16,7 @@ export interface JsonSchema {
 	minLength?: number;
 	maxLength?: number;
 	minItems?: number;
+	uniqueItems?: boolean;
 	items?: JsonSchema;
 }
 
@@ -147,6 +148,16 @@ function validate(value: unknown, schema: JsonSchema, path: string, root: JsonSc
 	if (Array.isArray(value)) {
 		if (resolved.minItems !== undefined && value.length < resolved.minItems) {
 			errors.push(`${path} must have at least ${resolved.minItems} items`);
+		}
+		if (resolved.uniqueItems === true) {
+			for (let index = 1; index < value.length; index++) {
+				for (let previous = 0; previous < index; previous++) {
+					if (isDeepStrictEqual(value[index], value[previous])) {
+						errors.push(`${path}[${index}] must be unique (duplicates item ${previous})`);
+						break;
+					}
+				}
+			}
 		}
 		if (resolved.items !== undefined) {
 			for (const [index, item] of value.entries()) {

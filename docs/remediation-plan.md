@@ -4,7 +4,7 @@
 
 **How agents use this file.** Pick the lowest incomplete package whose dependencies are complete. Implement only that package. Run its scoped verification. Check its DoD only after the observable result passes. Do not use historical `[x]` boxes as proof.
 
-**Ordering.** IDs sort as written: `RP-00`, `RP-01`, `RP-01A`, `RP-02`, … `RP-19`, `RP-20`, `RP-21`. RP-00 through RP-19 are complete. RP-20 (onboarding) and RP-21 (self-healing) are the 0.3.0 batch: their code has landed and **RP-21 is the current package** — its open DoD box closes with the batch's full gates on the built 0.3.0 binary. After that, feature acceptance in [`uat.md`](uat.md) (not an RP). This plan still names the whole-product DoD and UAT hand-off as the remaining authority.
+**Ordering.** `RP-22` is the current package, authorised by the operator's complete architectural rebuild mandate on 2026-09-05. It audits and migrates the existing runtime; it does not add a competing orchestrator. RP-00 through RP-19 and the landed RP-20/RP-21 changes remain historical scoped evidence, not proof of the rebuild. RP-21's outstanding built-artifact proof remains open. The rebuild must satisfy all 122 mandate sections, all 30 execution steps, the extracted wireframes, and the complete induced-failure live graph cycle before whole-product acceptance can close.
 
 IDs: `RP-##`. Stories and ACs: `PRD.md`. Normative contracts: `spec.md`, `../UPSTREAM.md`, and focused product docs. Research and gap IDs: [`remediation-research.md`](remediation-research.md).
 
@@ -24,7 +24,7 @@ IDs: `RP-##`. Stories and ACs: `PRD.md`. Normative contracts: `spec.md`, `../UPS
 
 - Pi `0.84.4` (commit `b79e4cc834970cca69daebffab7df1da7d1e52c4`) is the forked base, tracked via the `upstream` remote per `../UPSTREAM.md`. K-π is that harness, not a package inside it. Use the base's resource loader, official catalogs, native llama.cpp provider, sessions, and RPC rather than rebuilding them.
 - No custom prompt/skill/theme loader.
-- No Cursor authorization-code requirement. Paste/manual/device login satisfies the harness OAuth surface.
+- Provider authentication follows its actual grant lifecycle; Cursor's observed CLI protocol is explicitly authorised in RP-22. A pasted permanent API key is not OAuth, and protocol compatibility is not vendor endorsement or a stability guarantee.
 - No cross-process worker cap in v1.
 - `APPROVAL` is a derived protocol-blue board lamp while a human node is paused, never a serialized stop state. Persisted run states are `RUNNING | NEEDS_HUMAN | DONE | STOPPED` (RP-21); `BLOCKED | EXHAUSTED | NO_PROGRESS | UNSAFE` written by earlier releases read as `NEEDS_HUMAN` until the run is resumed.
 - Exa, Perplexity, and Firecrawl are research credential targets, not model pools.
@@ -50,6 +50,14 @@ Gates opened by the 0.3.0 batch (`fix/operator-issues-0.3.0`). The design that r
 | ID | Status | Decided by | Decided on | Decision required | Selected decision | Aligned normative files | Blocks |
 |---|---|---|---|---|---|---|---|
 | NH-05 | CLOSED (YES) | korallis | 2026-09-03 | May AC-10.2 (`docs/PRD.md`, US-10) and `docs/spec.md` §13 be amended so that each pool's official slot is the grant `~/.kpi/agent/auth.json` holds, refreshed only by the base runtime (`model-runtime.ts:583`, `resolve.ts:139-155`), with K-π refreshing only non-official slots? | YES, answered by the product owner's instruction "fix /login anthropic so K-π synchronizes refreshed OAuth credentials into account routing and supports two distinct subscription slots" — Anthropic rotates refresh tokens, so two refreshers on one grant cannot both stay valid, and the runtime refreshes `auth.json` on every request. Each pool has at most one official slot; it has no `accounts.secrets.json` entry and K-π never calls `oauth.refresh` on it; every other slot is refreshed by K-π; a pooled login the runtime persisted becomes the official slot and the previous official slot keeps its grant; `invalid_grant` marks a slot `needsLogin`, never a cooldown. | `docs/PRD.md` (AC-10.2, AC-10.9, AC-10.10), `docs/spec.md` §13, `README.md` §4/§5/§20, `docs/uat.md` UAT-10 | RP-06, RP-07 (landed as `68da4505b`) |
+
+### Architectural rebuild decision — 2026-09-05
+
+The operator explicitly authorised replacing architecture that conflicts with the attached **K-PI COMPLETE ARCHITECTURAL REBUILD MANDATE** and using `visual/k-pi-design/K-pi Command Center Wireframes.dc.html` as adaptable visual guidance. This is not an approval to publish, push, alter credentials, weaken intent, or claim unexecuted live proofs.
+
+The mandate replaces the two-replan operator allowance (`PRD.md` AC-05.3; `spec.md` §6), static-only execution strategy (`spec.md` §7), parent-only worker communication (`agents-bus.md`), and inheritance-only intelligence selection (`spec.md` §7) as target requirements. Each affected contract must migrate with its implementation. Existing human approvals remain meaningful only for accepted intent, explicitly gated scope, security, and irreversible external actions; routine repair and execution replanning must not require renewed product approval. Detailed outcomes remain unverified until scoped evidence exists.
+
+The complete requirement inventory is [`rebuild-requirements.json`](rebuild-requirements.json). It indexes the original mandate; it neither narrows it nor acts as a second implementation queue.
 
 ## Dependency map
 
@@ -465,6 +473,8 @@ node --test --experimental-strip-types test/accounts.test.ts test/accounts-routi
 - Show the one-time z.ai personal-use note and one-time Codex/Cursor billing confirmations for new slots.
 - Keep official catalogs live: no official id receives an extension `models` array. Preserve Cursor's bounded bootstrap list, live refresh, stored last-known catalog, and Pi-compatible login callbacks.
 - Make global failure classification status/header-only. Retain body-token classification only in owned custom fetch paths that safely consume bodies.
+
+Cursor-specific bootstrap/OAuth assumptions in this earlier package are superseded by RP-22's operator-authorised CLI-protocol adapter contract. Its historical mock checks do not establish current Cursor inference support.
 
 ### Tests
 
@@ -1140,6 +1150,72 @@ node scripts/pty-rows/uat-06.mjs && node scripts/pty-rows/uat-16.mjs
 - [x] `RUNNING | NEEDS_HUMAN <recovery> | DONE | STOPPED` is the whole vocabulary on disk, on the board, in the footer and in `loop.terminal`; legacy tokens read as `NEEDS_HUMAN` until resumed
 - [x] The loop is detached; `/kpi status` opens the live Command Centre; `/kpi stop` is immediate and writes `stop.json`
 - [ ] The retired-cap fixture resumes on the built 0.3.0 binary and the pty rows uat-05/06/16 pass — recorded with the batch's full gates
+
+---
+
+## RP-22 — Autonomous runtime architectural rebuild
+
+**Depends on:** RP-21
+**Authority:** operator mandate, 2026-09-05, sections 1–122 plus execution steps 1–30 and extracted visual guidance.
+**Ownership:** Main integrates the graph/control plane and owns this queue. Concurrent slices must name exclusive file ownership before writes.
+**Status:** in progress; no rebuilt-runtime acceptance is complete.
+
+**Normal release — published 2026-09-07.** [`0.4.0`](https://github.com/korallis/K-pi/releases/tag/v0.4.0) is a non-draft, non-prerelease GitHub release and npm `latest`; `next` still points to the older `0.4.0-rc.1`. Tagged source: `25eca05703a411e883114e027f34dbc5a43bb187`. [Release workflow `34102610977`](https://github.com/korallis/K-pi/actions/runs/34102610977) succeeded through the existing build/check/smoke/pack/OIDC publication path. A fresh default install of `@korallis/k-pi` from npm reports `0.4.0` through both `kpi` and `k-pi`. The SSH fix is included. [PR #18](https://github.com/korallis/K-pi/pull/18) is updated and remains unmerged; no protection or RP-22 acceptance was changed. Complete raw receipts and precommit/tagged-revision qualifications: `.kpi/proof/RP-22/stable-release-20260907/manifest.json`. Temporary installation proof was removed after verification.
+
+**RESOLVED — Normal-release publication boundary, operator, 2026-09-07.** Direction: “push a pr and update so it creates a new release not a @next release just a normal one so we can properly test”. Authorises updating PR #18 with the SSH login repair and publishing feature-branch tag `v0.4.0` through the existing `release.yml`, as a normal GitHub release and npm `latest`, replacing `0.3.0` for default installs. This supersedes the prior prerelease-only channel restriction for this release only. No merge, protection bypass, acceptance-map weakening or RP-22 DoD completion is authorised or implied. Run the repository, workspace, separate K-π, built-harness and package gates before tagging; retain scoped login receipts and publication/install evidence under `.kpi/proof/RP-22/stable-release-20260907/`.
+
+**Normal-release local gates — passed, 2026-09-07.** The `0.4.0` candidate passed `npm run build:offline`, `npm run check`, `npm test`, separate `npm run test:kpi` (850 passing), `npm run verify:built` (`version=0.4.0`, 488 shipped resources, RPC UI present), and `npm run pack` (355-file tarball installs and runs). Raw commands, exit codes, output and precommit revision/working-tree qualification are in `.kpi/proof/RP-22/stable-release-20260907/{build,check,test,test-kpi,built-harness,pack}.json`. These are release gates, not the open RP-22 whole-product acceptance or authenticated vendor-login proof.
+
+**SSH login transport repair — locally verified, not published, 2026-09-07.** Operator reports unclickable Anthropic/Codex links and invalid/missing OAuth parameters when copying wrapped text over SSH. The pooled notification lacked hyperlink metadata and launched the remote desktop browser. `/accounts` now preserves the complete OSC 8 target and exposes Ctrl+Y OSC 52 transfer; native `/login` gains the same copy shortcut, and SSH/Mosh suppresses server browser/clipboard side effects. Callback handling remains the native provider flow, with explicit remote-browser guidance. `.kpi/proof/RP-22/ssh-auth-20260907/` contains the failing transport reproduction, scoped account/native regressions, TypeScript/build receipts and built 80-/120-column PTY transcripts: both synthetic provider fixtures preserve the exact link/clipboard URL and complete manual callback login into isolated account stores. Receipts bind commands, exit/output and source revision plus working-tree changes. This is terminal/protocol-fixture proof, not authenticated provider acceptance, and does not change an RP-22 DoD box or the published `0.4.0-rc.1`.
+
+**Cursor testing release — published 2026-09-06.** [`0.4.0-rc.1`](https://github.com/korallis/K-pi/releases/tag/v0.4.0-rc.1) is on npm `next`; stable `latest` remains `0.3.0`. Tag source: `3b245a7e4b0e4458a2d7651522694a0b29743575`. [Release workflow `34035435229`](https://github.com/korallis/K-pi/actions/runs/34035435229) built, gated, packed and published successfully through trusted OIDC. A fresh install of `@korallis/k-pi@0.4.0-rc.1` from npm reports that exact version, completes native read/result continuation and denies a native write through `tool_call` against the Cursor protocol fixture. Repository `check`, `npm test`, separate `test:kpi` (848 checks), built startup/RPC and local package proof also passed. Complete receipts and precommit versus published-revision qualification: `.kpi/proof/RP-22/cursor-release-20260906/manifest.json`. Publication used the explicit exception below; required whole-product CI remains blocked, `main` was not merged, and no DoD box is closed by fixture or release proof.
+
+**RESOLVED — Testing-release publication boundary, 2026-09-06.** PR #18 at `a707466011e3a585d04bf78d3b0322bef64b3870` passed CI build/repository/workspace/K-π/K-stack/built-runtime steps, but required run `34033253348` failed whole-product preflight on the intentionally uncovered RP-22 entry. Evidence: `.kpi/proof/RP-22/cursor-release-20260906/required-ci-result.json`. After being offered an isolated prerelease or holding publication, the operator instructed “Just create a new release”. This authorises a feature-branch-only `0.4.0-rc.1` tag and npm `next` publication through the existing release workflow as an exception to its normal green-`main` cutting sequence (`.github/workflows/release.yml` lines 3–5). No merge, stable `latest` update, required-check bypass, acceptance relaxation or claim of live feature completion is authorised. `.github/workflows/check.yml` lines 163–172 and the uncovered RP-22 acceptance entry remain unchanged.
+
+**RESOLVED — Cursor CLI-protocol adapter (RB-033, RB-036, RB-110; operator, 2026-09-06).** Operator direction: “ok spec it and inplement it then create a new release so i can test properly”. Implement a first-party adapter using OMP 18.1.11 at `b2f25dbfe1e30197bae311cd8a0bccbc381f5c7b` as a protocol/source reference, not a runtime dependency. PRD AC-11.2/Q-02 and spec §Cursor provider now replace the earlier public-standalone-only requirement with real browser PKCE login/renewal, authenticated dynamic discovery and HTTP/2 Connect/protobuf streaming. K-π retains native session/graph/tool/approval authority; no Cursor Cloud provisioning, Cursor subagents, fabricated tool success, metadata or token lifetime. Main owns registration/accounts/contracts/release; CursorAuth owns `cursor/oauth.ts` and `test/cursor-auth.test.ts`; CursorTransport owns stream/discovery/protocol modules and `test/cursor-provider.test.ts`. No concurrent validation. Scoped verification: new Cursor tests plus provider/account/traceability regressions, then offline build and packed native-runtime protocol smoke. The requested testing release uses the tag-driven NH-04 workflow after repository gates, not direct npm publishing. Authenticated Cursor proof remains distinct from fixtures and is not implied by the release. Reference findings: `.kpi/proof/RP-22/cursor-reference-20260906.json`. Implementation and release evidence must be recorded before acceptance.
+
+**Live-proof prerequisite — updated 2026-09-06.** The earlier permanent K-π inventory had no configured credentials. The operator subsequently authorised testing compatible OMP credentials. Read-only OMP metadata exposed Codex, Anthropic, z.ai, xAI OAuth, Exa and Perplexity entries. Compiled native inference returned the exact requested marker through Codex, Anthropic and z.ai using private temporary access-only snapshots; OMP's database was never modified, no refresh token was copied, and permanent K-π config remains untouched. Evidence: `.kpi/proof/RP-22/followup-20260906/native-auth-first-attempt.json` and `native-auth-live.json`. This proves short-lived compatibility, not installed onboarding, independent same-provider slots, refresh ownership, collaborative graph quality or end-to-end acceptance.
+
+**RESOLVED — terminal acceptance contract, korallis, 2026-09-06.** Operator decision: “add anything thats needed vut keep the wireframes styling and mentality”. The imported Jobs-first home, cool machine/warm human emphasis and continuing fleet refresh are authoritative; useful truthful detail may be added without reverting to the earlier technical HOME. Align `PRD.md` AC-16.1/.3/.8/.9, `spec.md` §11, `visual-targets.md` and `uat.md` with this decision. Earlier amber/protocol-blue criteria are superseded, not accepted by title substitution. Runtime styling and interaction still require their own scoped evidence.
+
+**RESOLVED — ownership acceptance contract, korallis, 2026-09-06.** Operator selected “Preserve existing layouts”: explicit feature/path ownership, vertical slices by default, source/tests only when needed, no mandatory folder/id equality or placeholder scaffolds. Align `PRD.md` AC-30.4–.11, `spec.md`, `dune-architecture.md` and `uat.md` with this decision. RP-11's earlier mandatory-layout/scaffold/consumer-count Change and DoD are historical and superseded by this RP-22 cutover; their old checked boxes do not accept the replacement.
+
+**Acceptance inventory remains fail-closed — updated 2026-09-06.** Aligned contracts and behavioral bindings reduce the earlier 40 uncovered entries to one: RP-22 whole-package acceptance. All 354 entries remain inventoried (353 bound, one uncovered); binding is not acceptance. The stable scoped regression run passed 639/639 tests across 39 files, type checking/offline build/built harness passed, and actual built terminal interaction passed at 80/108/120 columns. Product preflight still exits 1 before gates/probes. Evidence: `.kpi/proof/RP-22/followup-20260906/manifest.json`; details and qualifications: `rebuild-audit.md` §2026-09-06 follow-up.
+
+**Remaining operator prerequisites.** Configure independently authorised accounts through K-π after installation, including two distinct grants for the same-provider migration case; a duplicate of one OMP grant is not a second account and must not acquire a second refresh owner. Cursor's transport decision is resolved; live account eligibility/login/renewal/inference proof remains separate from the adapter's offline checks and testing release. Live GitHub delivery needs an authorised disposable target. The full collaborative/restart/replay/arena/low-context/greenfield/induced-failure matrix and final UAT remain open; three successful minimal inference calls do not accept them.
+
+### Read first
+
+- Existing `RP-21` source and contract lists above; load each subsystem's contracts on demand.
+- `rebuild-requirements.json`; the original operator mandate remains the full acceptance definition.
+- `visual/k-pi-design/K-pi Command Center Wireframes.dc.html`, especially 4b–4k, with current `visual-targets.md` for migration differences.
+- Existing `extensions/{graph,bus,accounts,kg}`, `gated-loop.ts`, `run-store.ts`, `stack.ts`, `command-centre.ts`, and forked session/model/RPC APIs actually used by those paths.
+
+### Change
+
+1. Reconstruct actual graph, state, agents, providers, completion, failures, context, and communication before redesign.
+2. Classify existing components KEEP / MODIFY / MERGE / REPLACE / DELETE; record concrete defects with failing reproductions.
+3. Migrate the existing runtime to protected versioned intent, stable goal coverage, mutable audited execution, canonical peer identities/context, direct realtime communication, quality-first role routing, independent evidence verification, and recoverable scheduling.
+4. Preserve credential isolation, intent protection, explicit external-action approval, exclusive file ownership, and raw evidence. Document each retained invariant gate.
+5. Update the operator surface using the extracted wireframe language without inventing successful or live state.
+6. Execute every required orchestrator/adversarial scenario and live team/provider/failover/arena/context/greenfield proof. Missing authorised credentials block those proofs; simulated providers cannot satisfy them.
+
+### Verification
+
+While slices are writing, no builds, formatters, lint or tests. At stable boundaries run only affected files from the existing RP-21 verification block plus the new RP-22 regression files named by the owning slice. Record the exact command, exit code, complete output, and `git rev-parse HEAD` under `.kpi/proof/RP-22/`. Run the built binary for terminal/peer behavior and keep proof types separate: deterministic fixture, local built-runtime smoke, and authenticated live inference.
+
+Once integrated: `npm run build:offline`, `npm run verify:built`, then the mandate's real end-to-end induced-failure cycle. Before any pull request run the repository gates once. Compile/test success never substitutes for the required live proofs.
+
+### DoD
+
+- [ ] All eight current-architecture maps and a source-backed control/prompt/gate audit are recorded.
+- [ ] All mandate requirements have implementations and their own scoped evidence; no orphan requirement is silently dropped.
+- [ ] Three persistent Pi peers communicate directly, use rooms, restart, replay, and complete coordinated work on the built runtime.
+- [ ] Authenticated cross-provider, multi-account, failover, cross-family routing, and architecture-arena proofs pass.
+- [ ] Greenfield feature navigation, context efficiency, and adaptive serialization are empirically validated without sacrificing quality.
+- [ ] UI matches the extracted design guidance and is exercised through the actual terminal.
+- [ ] The complete induced-failure self-healing graph cycle passes independently verified acceptance with preserved intent and identity.
+- [x] Final report A–R identifies removed components, retained invariants, exact evidence and all remaining risks. Scoped report: `rebuild-audit.md` §Post-migration scoped report; raw verification: `.kpi/proof/RP-22/`. This completes the report, not rebuilt-runtime acceptance.
 
 ---
 

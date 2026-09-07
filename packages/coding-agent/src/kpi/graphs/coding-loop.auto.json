@@ -5,23 +5,13 @@
 	"nodes": [
 		{
 			"id": "ac-compiler",
-			"type": "agent",
-			"prompt": "Check the frozen task contract and acceptance quality before execution. Do not change repository files.",
-			"context": {
-				"mode": "isolated"
-			},
-			"tools": [
-				"read",
-				"grep",
-				"find",
-				"ls"
-			],
-			"readOnly": true
+			"type": "set",
+			"assignments": {}
 		},
 		{
 			"id": "specify",
 			"type": "agent",
-			"prompt": "Apply the spec-first skill. Research the repository and specify requirements, design, tasks, constraints, and non-goals before implementation. Do not change production files.",
+			"prompt": "Read the protected task and repository and research. Return an additive desired-state proposal matching intent-proposal.schema.json: users, journeys (id, actor, entry, steps, acceptance_ids), requirements, nonfunctional_requirements, ux_expectations, technical_constraints, integration_constraints, security_requirements, compatibility_requirements, performance_requirements, failure_behaviour, edge_cases, dependencies, assumptions, milestones, testing_criteria, definition_of_done, acceptance, nongoals, questions. Preserve every original goal, acceptance ID and constraint; do not weaken intent. Include executable acceptance checks where grounded, and explicit unresolved questions rather than inventing product decisions. The host accepts the proposal before planning. Do not change product files. Keep every original acceptance statement byte-for-byte with its stable ID and required flag. Fill in a missing executable check or missing write bounds when evidence supports it, but never change an existing check or bound. Derived checks and scope are subject to the host initial intent-confirmation transaction.",
 			"context": {
 				"mode": "isolated"
 			},
@@ -31,12 +21,19 @@
 				"find",
 				"ls"
 			],
-			"readOnly": true
+			"readOnly": true,
+			"role": "researcher",
+			"response": {
+				"path": "intent.proposal.json",
+				"schema": "intent-proposal.schema.json",
+				"retries": 2,
+				"state": {}
+			}
 		},
 		{
 			"id": "plan",
 			"type": "agent",
-			"prompt": "Produce an implementation plan and a Dune stack.json of module boundaries from the frozen task, research, and specification. Return only JSON matching stack.schema.json (the graph engine writes stack.json). Do not change production files. If repair.json exists in the run directory, read it first: the previous plan did not deliver; it names the round, the failing acceptance criteria, the verdict or evidence and any operator guidance. Produce a materially different stack.json and plan that addresses them.",
+			"prompt": "Produce an implementation plan and a Dune stack.json of module boundaries from the frozen task, research, and specification. Return only JSON matching stack.schema.json (the graph engine writes stack.json). Do not change production files. Read repair.json and execution-repair.json when present: use their observed failures and prior attempts to revise the engineering strategy. Keep valid ownership boundaries unchanged when the repair does not require an architecture change. Use graph_mutate to create, split, replace or supersede implementation tasks and their dependencies when needed. Every task references protected goalIds; revisions require triggering evidence and an explanation of what differs. Never alter safety nodes or intent.",
 			"context": {
 				"mode": "isolated"
 			},
@@ -52,12 +49,13 @@
 				"schema": "stack.schema.json",
 				"retries": 2,
 				"state": {}
-			}
+			},
+			"role": "planner"
 		},
 		{
 			"id": "plan-check",
 			"type": "agent",
-			"prompt": "Verify the frozen plan still matches the repository and has executable tasks and bounds. Do not respecify or change files.",
+			"prompt": "Read the protected task and the frozen requirements/design/tasks files. Return an additive desired-state proposal matching intent-proposal.schema.json: users, journeys (id, actor, entry, steps, acceptance_ids), requirements, nonfunctional_requirements, ux_expectations, technical_constraints, integration_constraints, security_requirements, compatibility_requirements, performance_requirements, failure_behaviour, edge_cases, dependencies, assumptions, milestones, testing_criteria, definition_of_done, acceptance, nongoals, questions. Preserve every original goal, acceptance ID and constraint; do not weaken intent. Include executable acceptance checks where grounded, and explicit unresolved questions rather than inventing product decisions. The host accepts the proposal before planning. Do not change product files. Keep every original acceptance statement byte-for-byte with its stable ID and required flag. Fill in a missing executable check or missing write bounds when evidence supports it, but never change an existing check or bound. Derived checks and scope are subject to the host initial intent-confirmation transaction.",
 			"context": {
 				"mode": "isolated"
 			},
@@ -67,7 +65,14 @@
 				"find",
 				"ls"
 			],
-			"readOnly": true
+			"readOnly": true,
+			"role": "researcher",
+			"response": {
+				"path": "intent.proposal.json",
+				"schema": "intent-proposal.schema.json",
+				"retries": 2,
+				"state": {}
+			}
 		},
 		{
 			"id": "implement",
@@ -86,28 +91,12 @@
 				"edit",
 				"write"
 			],
-			"readOnly": false
+			"readOnly": false,
+			"role": "builder"
 		},
 		{
 			"id": "test",
-			"type": "agent",
-			"prompt": "Apply the quality-gates skill. Run the exact task.json quality_gates and acceptance checks, then return HEAD-bound evidence. Do not claim green when any required command fails.",
-			"context": {
-				"mode": "isolated"
-			},
-			"tools": [
-				"read",
-				"bash"
-			],
-			"readOnly": false,
-			"response": {
-				"path": "evidence.json",
-				"schema": "evidence.schema.json",
-				"retries": 1,
-				"state": {
-					"evidence.head": "head"
-				}
-			}
+			"type": "verify"
 		},
 		{
 			"id": "review",
@@ -133,20 +122,20 @@
 					"review.status": "status",
 					"review.output_fingerprint": "output_fingerprint"
 				}
-			}
+			},
+			"role": "reviewer"
 		},
 		{
 			"id": "release.set",
 			"type": "set",
 			"assignments": {
-				"release.approved": true,
-				"status": "DONE"
+				"release.approved": true
 			}
 		},
 		{
 			"id": "ship",
 			"type": "agent",
-			"prompt": "Apply the conventional-commit skill. The control plane has put the worktree on the job branch kpi/{{job_id}}; stay on it. Stage the approved candidate with git add, then create exactly one approved commit whose subject matches ^(feat|fix|docs|refactor|test|chore)(\\(.+\\))?: and whose message ends with this exact trailer line, with no quoting or punctuation around it:\nKPI-Job: {{job_id}}\nThat trailer is how the control plane recognises this job's commit, so it must appear exactly once. If the repository has an origin remote, push exactly that branch with: git push -u origin kpi/{{job_id}}\nthen open the pull request with: gh pr create --head kpi/{{job_id}} --fill\nNever push any other branch, never force-push, never push tags, never delete a branch, and never merge: the auto-merge workflow merges after the required check passes.",
+			"prompt": "Apply the conventional-commit skill. The control plane has put the worktree on the job branch kpi/{{job_id}}; stay on it. Stage only the approved candidate and create exactly one Conventional Commit ending with this exact trailer:\nKPI-Job: {{job_id}}\nDo not push or open a pull request. The host delivery node reconciles and performs those authorised actions. Never force-push, delete a branch, push tags or merge.",
 			"context": {
 				"mode": "thread",
 				"threadKey": "ship"
@@ -154,7 +143,8 @@
 			"tools": [
 				"bash"
 			],
-			"readOnly": false
+			"readOnly": false,
+			"role": "release"
 		},
 		{
 			"id": "unsafe",
@@ -166,22 +156,20 @@
 			]
 		},
 		{
-			"id": "needs-human",
-			"type": "pause",
-			"recovery": "review",
-			"reason": "the review reported an untestable blocking issue, or the receipts are no longer fresh",
-			"resume": [
-				"implement"
-			]
+			"id": "deliver",
+			"type": "verify",
+			"required": true
 		},
 		{
-			"id": "no-progress",
+			"id": "delivery-prerequisite",
 			"type": "pause",
-			"recovery": "no_progress",
-			"reason": "the loop repeated the same evidence or review outcome after its automatic re-plans",
-			"resume": [
-				"plan"
-			]
+			"recovery": "delivery",
+			"reason": "an external delivery prerequisite is unavailable",
+			"resume": ["deliver"]
+		},
+		{
+			"id": "verify",
+			"type": "verify"
 		}
 	],
 	"edges": [
@@ -211,7 +199,7 @@
 		},
 		{
 			"from": "plan-check",
-			"to": "implement"
+			"to": "plan"
 		},
 		{
 			"from": "implement",
@@ -258,62 +246,6 @@
 				{
 					"path": "progress.repeated",
 					"equals": true
-				},
-				{
-					"path": "plan.repair_tried",
-					"equals": false
-				},
-				{
-					"path": "plan.provided",
-					"equals": false
-				}
-			]
-		},
-		{
-			"from": "test",
-			"to": "no-progress",
-			"when": [
-				{
-					"path": "bounds.held",
-					"equals": true
-				},
-				{
-					"path": "test.passed",
-					"equals": false
-				},
-				{
-					"path": "progress.repeated",
-					"equals": true
-				},
-				{
-					"path": "plan.repair_tried",
-					"equals": true
-				}
-			]
-		},
-		{
-			"from": "test",
-			"to": "no-progress",
-			"when": [
-				{
-					"path": "bounds.held",
-					"equals": true
-				},
-				{
-					"path": "test.passed",
-					"equals": false
-				},
-				{
-					"path": "progress.repeated",
-					"equals": true
-				},
-				{
-					"path": "plan.repair_tried",
-					"equals": false
-				},
-				{
-					"path": "plan.provided",
-					"equals": true
 				}
 			]
 		},
@@ -341,7 +273,7 @@
 		},
 		{
 			"from": "review",
-			"to": "release.set",
+			"to": "verify",
 			"when": [
 				{
 					"path": "review.approved",
@@ -363,7 +295,7 @@
 		},
 		{
 			"from": "review",
-			"to": "needs-human",
+			"to": "plan",
 			"when": [
 				{
 					"path": "bounds.held",
@@ -381,7 +313,7 @@
 		},
 		{
 			"from": "review",
-			"to": "needs-human",
+			"to": "plan",
 			"when": [
 				{
 					"path": "bounds.held",
@@ -438,76 +370,12 @@
 				{
 					"path": "progress.repeated",
 					"equals": true
-				},
-				{
-					"path": "plan.repair_tried",
-					"equals": false
-				},
-				{
-					"path": "plan.provided",
-					"equals": false
 				}
 			]
 		},
 		{
 			"from": "review",
-			"to": "no-progress",
-			"when": [
-				{
-					"path": "bounds.held",
-					"equals": true
-				},
-				{
-					"path": "review.approved",
-					"equals": false
-				},
-				{
-					"path": "review.status",
-					"equals": "REVISE"
-				},
-				{
-					"path": "progress.repeated",
-					"equals": true
-				},
-				{
-					"path": "plan.repair_tried",
-					"equals": true
-				}
-			]
-		},
-		{
-			"from": "review",
-			"to": "no-progress",
-			"when": [
-				{
-					"path": "bounds.held",
-					"equals": true
-				},
-				{
-					"path": "review.approved",
-					"equals": false
-				},
-				{
-					"path": "review.status",
-					"equals": "REVISE"
-				},
-				{
-					"path": "progress.repeated",
-					"equals": true
-				},
-				{
-					"path": "plan.repair_tried",
-					"equals": false
-				},
-				{
-					"path": "plan.provided",
-					"equals": true
-				}
-			]
-		},
-		{
-			"from": "review",
-			"to": "needs-human",
+			"to": "plan",
 			"when": [
 				{
 					"path": "bounds.held",
@@ -533,7 +401,7 @@
 		},
 		{
 			"from": "release.set",
-			"to": "__end__",
+			"to": "deliver",
 			"when": {
 				"path": "ship.shipped",
 				"equals": true
@@ -541,7 +409,71 @@
 		},
 		{
 			"from": "ship",
-			"to": "__end__"
+			"to": "deliver"
+		},
+		{
+			"from": "deliver",
+			"to": "__end__",
+			"when": { "path": "delivery.passed", "equals": true }
+		},
+		{
+			"from": "deliver",
+			"to": "delivery-prerequisite",
+			"when": { "path": "delivery.passed", "equals": false }
+		},
+		{
+			"from": "verify",
+			"to": "release.set",
+			"when": [
+				{
+					"path": "test.passed",
+					"equals": true
+				},
+				{
+					"path": "bounds.held",
+					"equals": true
+				},
+				{
+					"path": "fingerprints.fresh",
+					"equals": true
+				},
+				{
+					"path": "review.approved",
+					"equals": true
+				}
+			]
+		},
+		{
+			"from": "verify",
+			"to": "plan",
+			"when": {
+				"path": "test.passed",
+				"equals": false
+			}
+		},
+		{
+			"from": "verify",
+			"to": "unsafe",
+			"when": {
+				"path": "bounds.held",
+				"equals": false
+			}
+		},
+		{
+			"from": "verify",
+			"to": "plan",
+			"when": {
+				"path": "fingerprints.fresh",
+				"equals": false
+			}
+		},
+		{
+			"from": "verify",
+			"to": "plan",
+			"when": {
+				"path": "review.approved",
+				"equals": false
+			}
 		}
 	],
 	"limits": {
@@ -552,5 +484,6 @@
 		"allowNonInteractiveMutations": true,
 		"confirmProjectGraph": true,
 		"confirmMutatingNodes": false
-	}
+	},
+	"repairNodeId": "plan"
 }

@@ -1,5 +1,5 @@
 /**
- * Operator board (Board A amber / Board B protocol-blue).
+ * Operator board: cool machine work and warm human attention.
  * Pure render from run-owned state — never starts a model.
  */
 
@@ -144,6 +144,7 @@ export function stageIndex(stage: string): number {
 	if (normalized === "ac_compile" || normalized === "accompile") return 0;
 	if (normalized === "plan-check") return 2;
 	if (normalized === "quality-green") return 4;
+	if (normalized === "deliver" || normalized === "delivery-prerequisite") return 7;
 	// node-shaped aliases (implementer → implement, ac-compiler → ac-compile)
 	if (normalized.endsWith("er")) {
 		const stem = normalized.slice(0, -2);
@@ -286,11 +287,11 @@ function shortFingerprint(value: string | undefined): string {
 export function stopTone(stop: StopDisplay): Tone {
 	switch (stop) {
 		case "RUNNING":
-			return "warning";
+			return "accent";
 		case "DONE":
 			return "success";
 		case "NEEDS_HUMAN":
-			return "accent";
+			return "warning";
 		case "STOPPED":
 			return "error";
 	}
@@ -384,7 +385,7 @@ function stageCells(
 	selected?: number,
 ): BoardCell[] {
 	return BOARD_STAGES.map((entry, index) => {
-		const status = index === current ? "CURRENT" : current >= 0 && index < current ? "DONE" : "PENDING";
+		const status = index === current ? "CURRENT" : activity?.[entry.key]?.status === "completed" ? "DONE" : "PENDING";
 		const isSelected = selected !== undefined && index === selected;
 		const tone: Tone = isSelected
 			? "warning"
@@ -536,7 +537,7 @@ function iterationRegion(model: BoardModel): RowsRegion {
 	const round = `ROUND ${model.round}`;
 	const rows: Row[] = [[{ text: round, tone: "text" }]];
 	const retry = model.retry === undefined ? undefined : retryText(model.retry);
-	if (retry !== undefined) rows.push([{ text: retry, tone: "warning" }]);
+	if (retry !== undefined) rows.push([{ text: retry, tone: "accent" }]);
 	if (verifier === "pending") {
 		rows.push([{ text: "PASS/FAIL PENDING", tone: "dim" }]);
 	} else {
@@ -793,13 +794,13 @@ function headerRegion(model: BoardModel, paused: boolean): StripRegion {
 
 /**
  * The board as regions: what each panel says, which cells are lit, and the
- * frame-less lines that mean the same thing. Board A (amber) while the loop
- * runs; Board B (protocol-blue) while a human node is paused.
+ * frame-less lines that mean the same thing. Human regions require a live
+ * gate; finished runs cannot retain stale oversight prompts.
  */
 export function buildBoardRegions(model: BoardModel): BoardRegions {
 	const current = resolveCurrentStageIndex(model.stage, model.node);
-	const paused = model.paused;
-	const gate: "human" | "machine" = model.gate ?? (paused ? "human" : "machine");
+	const paused = model.paused && (model.stop === "RUNNING" || model.stop === "NEEDS_HUMAN");
+	const gate: "human" | "machine" = paused ? "human" : "machine";
 	const question = model.pendingQuestion?.trim();
 	const pending = question !== undefined && question.length > 0 ? question : undefined;
 	const regions: Region[] = [
