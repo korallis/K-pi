@@ -1110,7 +1110,7 @@ const METRICS = {
 	"M-04": [
 		"test/autopilot.test.ts",
 		"an autopilot write outside bounds pauses NEEDS_HUMAN without a commit",
-		"a write outside the declared bounds pauses the run NEEDS_HUMAN (bounds) with one loop.terminal NEEDS_HUMAN/bounds and no commit",
+		"a write outside accepted bounds cannot commit or ship; affected graph work is blocked without widening intent",
 	],
 	"M-05": [
 		"test/accounts.test.ts",
@@ -1129,7 +1129,7 @@ const METRICS = {
 	],
 };
 
-// Shared helper for RP primary verification title (one distinctive test per RP)
+// Package verification binds one or more distinctive behavioral checks.
 const RP = {
 	"RP-00": [
 		"test/docs-routing.test.ts",
@@ -1245,6 +1245,48 @@ const RP = {
 		"test/gated-loop.test.ts",
 		"repeated real command failures replan without changing accepted success",
 		"RP-22 supersedes the two-replan pause: repeated real failures continue repairing while accepted success remains immutable",
+	],
+	"RP-22": [
+		[
+			"test/graph-peer.test.ts",
+			"built runtime acceptance preserves peer identity across restart without vendor credentials",
+			"built native peers wake, fan out, restart and replay against controlled providers without human login",
+		],
+		[
+			"test/gated-loop.test.ts",
+			"resume rejects changed accepted intent and continues only after the accepted contract is restored",
+			"protected intent survives interruption and rejects unauthorized acceptance changes",
+		],
+		[
+			"test/gated-loop.test.ts",
+			"repeated real command failures replan without changing accepted success",
+			"failed real checks trigger continued repair without changing required success",
+		],
+		[
+			"test/verification.test.ts",
+			"goal projection edits cannot turn a failed host receipt into completion",
+			"model-controlled projections cannot override independently observed failed checks",
+		],
+		[
+			"test/context.test.ts",
+			"native inference context refreshes canonical state and blocks protected drift without persisting duplicate packets",
+			"native inference rebuilds current canonical context and blocks protected drift",
+		],
+		[
+			"test/context.test.ts",
+			"measured table selection round-trips typed cells and hostile paths without treating data as references",
+			"adaptive serialization preserves exact typed data and safe source addressing",
+		],
+		[
+			"test/engineering-model-routing.test.ts",
+			"fresh host evidence changes routing after reload, without outranking operator mappings or authorizing cloud",
+			"measured outcomes survive reload while operator mappings and provider authority retain precedence",
+		],
+		[
+			"test/gated-loop.test.ts",
+			"explicit feature ownership admits implementation without creating gratuitous interface or test stubs",
+			"existing-layout feature ownership admits only declared implementation without fabricated scaffold",
+		],
 	],
 };
 
@@ -1733,13 +1775,23 @@ const gapSpecific = {
 			kind: "rp",
 			primary_owner: id,
 			coverage: "covered",
-			named_checks: [bind(triple)],
+			named_checks: (Array.isArray(triple[0]) ? triple : [triple]).map(bind),
 			failure_route: id === "RP-19" ? "Fix RP-19 proof wiring" : `Reopen ${id}`,
 		});
 	}
 
 	const reqs = [...new Set(spec.match(/\bREQ-[A-Z]+-\d+\b/g) || [])].sort();
 	const reqSpecific = {
+		"REQ-ACCEPT-01": [
+			"test/graph-peer.test.ts",
+			"built runtime acceptance preserves peer identity across restart without vendor credentials",
+			"real built native peer acceptance executes without vendor credentials or manual login",
+		],
+		"REQ-ACCEPT-02": [
+			"test/graph-peer.test.ts",
+			"built runtime acceptance preserves peer identity across restart without vendor credentials",
+			"automated acceptance can pass while vendor authentication is explicitly not exercised",
+		],
 		"REQ-DIST-01": AC["AC-01.2"],
 		"REQ-DIST-02": AC["AC-01.5"],
 		"REQ-DIST-03": AC["AC-01.3"],
@@ -1793,6 +1845,7 @@ const gapSpecific = {
 		else if (id.startsWith("REQ-RS")) owner = "RP-01";
 		else if (id.startsWith("REQ-SB")) owner = "RP-13";
 		else if (id.startsWith("REQ-SL")) owner = "RP-18";
+		else if (id.startsWith("REQ-ACCEPT")) owner = "RP-22";
 		else if (id.startsWith("REQ-DIST") || id.startsWith("REQ-CX")) owner = "RP-01A";
 
 		if (!triple) {

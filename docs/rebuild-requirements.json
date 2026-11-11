@@ -2,7 +2,15 @@
   "version": 1,
   "source": "Operator architectural rebuild mandate, 2026-09-05, sections 1–122 and execution steps 1–30",
   "principle": "Make user intent rigid. Make execution fluid.",
-  "completion": "No overall completion until all original mandate conditions, visual acceptance and live end-to-end proofs are evidenced. Titles index the original mandate; they do not replace or narrow its contents.",
+  "completion": "Required acceptance is credential-free deterministic automation of the mandate's runtime scenarios against the real built native harness. Human vendor login and subscription eligibility are optional external-provider compatibility checks, not merge prerequisites. Runtime behavior, failure, ownership, intent and independent-evidence assertions remain required; titles do not replace the original scenarios.",
+  "acceptance_policy_2026_09_07": {
+    "authority": "Operator: finish acceptance, adjusting human login requirements so it is automated",
+    "required": "Built native sessions, tools and protected state with controlled loopback provider endpoints, synthetic independent accounts, actual host receipts and bounded fault/restart scenarios",
+    "approval": "Script genuine operator dialogs without bypassing their authorization path",
+    "vendor_compatibility": "Optional attended browser login, seat eligibility and external model/service quality; report not exercised unless actually observed",
+    "historical_evidence": "The per-requirement scoped evidence and remaining_acceptance notes below retain their pre-decision provenance; they cannot certify the new automated run or imply a vendor grant was tested",
+    "authority_record": "docs/remediation-plan.md"
+  },
   "followup_2026_09_06": {
     "report": "docs/rebuild-audit.md#2026-09-06-follow-up",
     "evidence": ".kpi/proof/RP-22/followup-20260906/manifest.json",

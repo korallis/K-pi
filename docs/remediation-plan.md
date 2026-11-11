@@ -1160,6 +1160,8 @@ node scripts/pty-rows/uat-06.mjs && node scripts/pty-rows/uat-16.mjs
 **Ownership:** Main integrates the graph/control plane and owns this queue. Concurrent slices must name exclusive file ownership before writes.
 **Status:** in progress; no rebuilt-runtime acceptance is complete.
 
+**RESOLVED — Automated acceptance and PR #18 merge, operator, 2026-09-07.** Direction: “finish acceptance but adjust it as you cannot test it logged in ... requires human login ... needs to be automated”. Required acceptance now exercises the real built native runtime with controlled loopback providers, synthetic independent grants, genuine tools/host receipts and scripted approval dialogs. Vendor browser login, subscription eligibility and external service quality remain separately labelled optional compatibility checks; their absence cannot block automated acceptance and their success cannot be fabricated. Preserve all runtime failure, ownership, intent, restart and completion assertions. This supersedes earlier attended-login/live-vendor prerequisites for required acceptance, not product authorization. Required run `34102875663` failed RP-22's uncovered binding; raw reproduction is `.kpi/proof/RP-22/pr18-merge-20260907/failed-check.json`. Complete meaningful automated bindings and built scenarios, keep `check` required, then confirm the actual merge; no protection bypass.
+
 **Normal release — published 2026-09-07.** [`0.4.0`](https://github.com/korallis/K-pi/releases/tag/v0.4.0) is a non-draft, non-prerelease GitHub release and npm `latest`; `next` still points to the older `0.4.0-rc.1`. Tagged source: `25eca05703a411e883114e027f34dbc5a43bb187`. [Release workflow `34102610977`](https://github.com/korallis/K-pi/actions/runs/34102610977) succeeded through the existing build/check/smoke/pack/OIDC publication path. A fresh default install of `@korallis/k-pi` from npm reports `0.4.0` through both `kpi` and `k-pi`. The SSH fix is included. [PR #18](https://github.com/korallis/K-pi/pull/18) is updated and remains unmerged; no protection or RP-22 acceptance was changed. Complete raw receipts and precommit/tagged-revision qualifications: `.kpi/proof/RP-22/stable-release-20260907/manifest.json`. Temporary installation proof was removed after verification.
 
 **RESOLVED — Normal-release publication boundary, operator, 2026-09-07.** Direction: “push a pr and update so it creates a new release not a @next release just a normal one so we can properly test”. Authorises updating PR #18 with the SSH login repair and publishing feature-branch tag `v0.4.0` through the existing `release.yml`, as a normal GitHub release and npm `latest`, replacing `0.3.0` for default installs. This supersedes the prior prerelease-only channel restriction for this release only. No merge, protection bypass, acceptance-map weakening or RP-22 DoD completion is authorised or implied. Run the repository, workspace, separate K-π, built-harness and package gates before tagging; retain scoped login receipts and publication/install evidence under `.kpi/proof/RP-22/stable-release-20260907/`.
@@ -1198,24 +1200,26 @@ node scripts/pty-rows/uat-06.mjs && node scripts/pty-rows/uat-16.mjs
 3. Migrate the existing runtime to protected versioned intent, stable goal coverage, mutable audited execution, canonical peer identities/context, direct realtime communication, quality-first role routing, independent evidence verification, and recoverable scheduling.
 4. Preserve credential isolation, intent protection, explicit external-action approval, exclusive file ownership, and raw evidence. Document each retained invariant gate.
 5. Update the operator surface using the extracted wireframe language without inventing successful or live state.
-6. Execute every required orchestrator/adversarial scenario and live team/provider/failover/arena/context/greenfield proof. Missing authorised credentials block those proofs; simulated providers cannot satisfy them.
+6. Execute required orchestrator/adversarial, team, provider/failover, arena, context and greenfield scenarios automatically. Use real built native sessions/tools and host-owned receipts against controlled loopback providers and independent synthetic accounts; script genuine approval dialogs instead of bypassing them. Vendor-browser login and seat eligibility are optional attended compatibility evidence, never a required automation prerequisite or a claim made by fixtures.
 
 ### Verification
 
 While slices are writing, no builds, formatters, lint or tests. At stable boundaries run only affected files from the existing RP-21 verification block plus the new RP-22 regression files named by the owning slice. Record the exact command, exit code, complete output, and `git rev-parse HEAD` under `.kpi/proof/RP-22/`. Run the built binary for terminal/peer behavior and keep proof types separate: deterministic fixture, local built-runtime smoke, and authenticated live inference.
 
-Once integrated: `npm run build:offline`, `npm run verify:built`, then the mandate's real end-to-end induced-failure cycle. Before any pull request run the repository gates once. Compile/test success never substitutes for the required live proofs.
+Once integrated: `npm run build:offline`, `npm run verify:built`, then `node scripts/verify-product.mjs --skip-gates --metrics M-01,M-02,M-03,M-04,M-05,M-06` for built workflow and peer/restart acceptance. Before any pull request run the repository gates once. Unit/compile success cannot substitute for actual built end-to-end scenarios; required automation cannot depend on a human vendor login.
 
 ### DoD
 
 - [ ] All eight current-architecture maps and a source-backed control/prompt/gate audit are recorded.
 - [ ] All mandate requirements have implementations and their own scoped evidence; no orphan requirement is silently dropped.
 - [ ] Three persistent Pi peers communicate directly, use rooms, restart, replay, and complete coordinated work on the built runtime.
-- [ ] Authenticated cross-provider, multi-account, failover, cross-family routing, and architecture-arena proofs pass.
+- [ ] Controlled-provider, independent synthetic-account, failover, cross-family routing and architecture-arena acceptance passes without vendor credentials.
 - [ ] Greenfield feature navigation, context efficiency, and adaptive serialization are empirically validated without sacrificing quality.
 - [ ] UI matches the extracted design guidance and is exercised through the actual terminal.
 - [ ] The complete induced-failure self-healing graph cycle passes independently verified acceptance with preserved intent and identity.
 - [x] Final report A–R identifies removed components, retained invariants, exact evidence and all remaining risks. Scoped report: `rebuild-audit.md` §Post-migration scoped report; raw verification: `.kpi/proof/RP-22/`. This completes the report, not rebuilt-runtime acceptance.
+
+**Acceptance provenance:** These boxes refer to the required automated harness scope under the 2026-09-07 decision. Existing credential-backed observations remain historical vendor compatibility evidence, not prerequisites or replacements for automation. Unmeasured vendor/model quality remains unknown. No box is checked merely because a binding exists.
 
 ---
 

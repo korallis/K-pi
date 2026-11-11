@@ -92,6 +92,8 @@ Each AC is written so a later agent can turn it into a check. IDs are stable.
 
 RP-22 migrates the criteria below to rigid accepted intent and fluid execution. These descriptions are not checked completion claims for the full mandate. Scoped records in `.kpi/proof/RP-22` include successful offline build and built-harness startup smoke; they do not establish live provider/credential, external delivery or end-user journey proofs.
 
+**Acceptance provenance (operator decision, 2026-09-07).** Required merge/product acceptance is credential-free deterministic automation: run the real built K-π native sessions, tools and host receipts against controlled loopback-only provider endpoints and synthetic independent account grants. Preserve protected intent, policy, ownership, exact-candidate verification and failure assertions; bounded fault injection and test deadlines do not impose runtime run caps. Scripted operator input exercises genuine gated dialogs without bypassing them. Real vendor OAuth browser login, subscription/seat eligibility and external-provider compatibility are optional attended exercises, recorded separately as unperformed until exercised; they cannot block automated acceptance or be claimed from fixtures. Static fixtures/source inspection alone do not prove runtime behavior, and this decision does not relabel historical evidence or change runtime authorization.
+
 ### US-01 — Build and run the harness
 
 **Story.** As an operator, I build this repository from source and run `kpi`; K-π's commands, theme, and skills are present at startup with no install step.
@@ -212,7 +214,7 @@ RP-22 migrates the criteria below to rigid accepted intent and fluid execution. 
 **Story.** As an operator, a new Anthropic/OpenAI/xAI model appears without a k-pi release.
 
 - **AC-11.1** Extensions do not pass a `models` array when touching official ids `anthropic`, `openai`, `openai-codex`, `xai`, `zai`, `zai-coding-cn`, `kimi-coding`.
-- **AC-11.2** Cursor uses a first-party adapter for Cursor's CLI protocol: authenticated `GetUsableModels` discovery and `AgentService/Run`, not Cloud Agent provisioning or an OpenAI-compatible guess. Only discovered model ids or their native cached entries are selectable; an empty successful discovery clears stale entries and failed discovery is reported without inventing replacements. Missing capacities remain zero/unknown, modalities and reasoning are not inferred from names, and subscription price is unknown rather than advertised as free. Native `models.json` may supply explicit operator metadata. Browser PKCE login and real token renewal preserve account-pool ownership. Tools execute only through K-π's native tool/permission path; Cursor Cloud/subagent execution is forbidden. Protocol fixtures and built-artifact proof are required; authenticated live proof is recorded separately and an empty catalog is not completed integration.
+- **AC-11.2** Cursor uses a first-party adapter for Cursor's CLI protocol: authenticated `GetUsableModels` discovery and `AgentService/Run`, not Cloud Agent provisioning or an OpenAI-compatible guess. Only discovered model ids or their native cached entries are selectable; an empty successful discovery clears stale entries and failed discovery is reported without inventing replacements. Missing capacities remain zero/unknown, modalities and reasoning are not inferred from names, and subscription price is unknown rather than advertised as free. Native `models.json` may supply explicit operator metadata. Browser PKCE login and real token renewal preserve account-pool ownership. Tools execute only through K-π's native tool/permission path; Cursor Cloud/subagent execution is forbidden. Protocol fixtures and built-artifact automation are required, including successful non-empty discovery and native tool use; empty-response handling alone is not completed integration. Vendor-authenticated compatibility is optional attended evidence, never inferred from synthetic grants.
 - **AC-11.3** README documents `kpi update --models` as the operator command for official refresh. There is no `pi` bin (AC-01.2), so no operator command is spelled `pi …`.
 
 ### US-12 — Anthropic extra-usage warning
@@ -520,13 +522,15 @@ operator /k-mode <goal>
 
 ## 8. Success metrics
 
+M-01–M-06 require built-runtime evidence under §6's automated acceptance provenance, not fabricated run artifacts or vendor credentials. Independent host receipts, native tool results and negative-path assertions remain mandatory. M-05 uses distinct synthetic grants, not two labels for one grant. Optional attended vendor results are separate and do not change these verdicts.
+
 | ID | Metric | Target |
 |---|---|---|
 | M-01 | Gated fixture: healthcheck feature reaches human confirm with green gates | 1/1 |
 | M-02 | Autopilot fixture with 5 executable AC reaches `DONE` and a commit | 1/1 |
 | M-03 | Narrative/unresolved required AC cannot enter autopilot engineering or count as verified success | 1/1 |
-| M-04 | Bounds-violation fixture pauses `NEEDS_HUMAN` (`bounds`) with zero commits | 1/1 |
-| M-05 | Two Anthropic slots: exhausted slot never selected while sibling healthy | 1/1 |
+| M-04 | Bounds-violation fixture creates an `unsafe` blocker with `bounds` recovery, prevents ship and creates zero commits; independent-work draining remains required by AC-05.4/UAT-05 | 1/1 |
+| M-05 | Two synthetic independent Anthropic slots: exhausted slot never selected while sibling healthy | 1/1 |
 | M-06 | Assistant visible reply on fixture verdict < 800 chars | 1/1 |
 | M-07 | `npm run check && npm test && npm run test:kpi` green on main | always |
 

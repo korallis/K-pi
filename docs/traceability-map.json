@@ -22,13 +22,13 @@
     "metric": 7,
     "gap": 54,
     "rp": 24,
-    "req": 28,
+    "req": 30,
     "nfr": 8,
     "schema": 10,
     "event": 26,
-    "total": 354,
-    "covered": 353,
-    "uncovered": 1
+    "total": 356,
+    "covered": 356,
+    "uncovered": 0
   },
   "shared_titles": [
     {
@@ -135,6 +135,13 @@
       ]
     },
     {
+      "key": "test/gated-loop.test.ts::resume rejects changed accepted intent and continues only after the accepted contract is restored",
+      "ids": [
+        "AC-03.4",
+        "RP-22"
+      ]
+    },
+    {
       "key": "test/autopilot.test.ts::narrative acceptance cannot authorize autopilot without executable checks",
       "ids": [
         "AC-04.1",
@@ -177,7 +184,8 @@
       "ids": [
         "AC-05.3",
         "GRAPH-03",
-        "RP-21"
+        "RP-21",
+        "RP-22"
       ]
     },
     {
@@ -677,6 +685,14 @@
       ]
     },
     {
+      "key": "test/graph-peer.test.ts::built runtime acceptance preserves peer identity across restart without vendor credentials",
+      "ids": [
+        "RP-22",
+        "REQ-ACCEPT-01",
+        "REQ-ACCEPT-02"
+      ]
+    },
+    {
       "key": "test/schema-conformance.test.ts::event schema has one valid normalized branch per event type",
       "ids": [
         "SCH-event",
@@ -709,13 +725,7 @@
       ]
     }
   ],
-  "uncovered": [
-    {
-      "id": "RP-22",
-      "owner": "RP-22",
-      "reason": "no curated package-level acceptance binding"
-    }
-  ],
+  "uncovered": [],
   "entries": [
     {
       "id": "AC-01.1",
@@ -4631,7 +4641,7 @@
           "file": "test/autopilot.test.ts",
           "test_title": "an autopilot write outside bounds pauses NEEDS_HUMAN without a commit",
           "runner": "node --test --experimental-strip-types --test-name-pattern '^an autopilot write outside bounds pauses NEEDS_HUMAN without a commit$' test/autopilot.test.ts",
-          "observable": "a write outside the declared bounds pauses the run NEEDS_HUMAN (bounds) with one loop.terminal NEEDS_HUMAN/bounds and no commit"
+          "observable": "a write outside accepted bounds cannot commit or ship; affected graph work is blocked without widening intent"
         }
       ],
       "failure_route": "Reopen RP-05 for M-04"
@@ -5955,10 +5965,98 @@
       "id": "RP-22",
       "kind": "rp",
       "primary_owner": "RP-22",
-      "coverage": "uncovered",
-      "named_checks": [],
-      "uncovered_reason": "no curated package-level acceptance binding",
-      "failure_route": "Complete scoped acceptance for RP-22"
+      "coverage": "covered",
+      "named_checks": [
+        {
+          "name": "built_runtime_acceptance_preserves_peer_identity_across_restart_without_vendor_c",
+          "file": "test/graph-peer.test.ts",
+          "test_title": "built runtime acceptance preserves peer identity across restart without vendor credentials",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^built runtime acceptance preserves peer identity across restart without vendor credentials$' test/graph-peer.test.ts",
+          "observable": "built native peers wake, fan out, restart and replay against controlled providers without human login"
+        },
+        {
+          "name": "resume_rejects_changed_accepted_intent_and_continues_only_after_the_accepted_con",
+          "file": "test/gated-loop.test.ts",
+          "test_title": "resume rejects changed accepted intent and continues only after the accepted contract is restored",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^resume rejects changed accepted intent and continues only after the accepted contract is restored$' test/gated-loop.test.ts",
+          "observable": "protected intent survives interruption and rejects unauthorized acceptance changes"
+        },
+        {
+          "name": "repeated_real_command_failures_replan_without_changing_accepted_success",
+          "file": "test/gated-loop.test.ts",
+          "test_title": "repeated real command failures replan without changing accepted success",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^repeated real command failures replan without changing accepted success$' test/gated-loop.test.ts",
+          "observable": "failed real checks trigger continued repair without changing required success"
+        },
+        {
+          "name": "goal_projection_edits_cannot_turn_a_failed_host_receipt_into_completion",
+          "file": "test/verification.test.ts",
+          "test_title": "goal projection edits cannot turn a failed host receipt into completion",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^goal projection edits cannot turn a failed host receipt into completion$' test/verification.test.ts",
+          "observable": "model-controlled projections cannot override independently observed failed checks"
+        },
+        {
+          "name": "native_inference_context_refreshes_canonical_state_and_blocks_protected_drift_wi",
+          "file": "test/context.test.ts",
+          "test_title": "native inference context refreshes canonical state and blocks protected drift without persisting duplicate packets",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^native inference context refreshes canonical state and blocks protected drift without persisting duplicate packets$' test/context.test.ts",
+          "observable": "native inference rebuilds current canonical context and blocks protected drift"
+        },
+        {
+          "name": "measured_table_selection_round_trips_typed_cells_and_hostile_paths_without_treat",
+          "file": "test/context.test.ts",
+          "test_title": "measured table selection round-trips typed cells and hostile paths without treating data as references",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^measured table selection round-trips typed cells and hostile paths without treating data as references$' test/context.test.ts",
+          "observable": "adaptive serialization preserves exact typed data and safe source addressing"
+        },
+        {
+          "name": "fresh_host_evidence_changes_routing_after_reload_without_outranking_operator_map",
+          "file": "test/engineering-model-routing.test.ts",
+          "test_title": "fresh host evidence changes routing after reload, without outranking operator mappings or authorizing cloud",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^fresh host evidence changes routing after reload, without outranking operator mappings or authorizing cloud$' test/engineering-model-routing.test.ts",
+          "observable": "measured outcomes survive reload while operator mappings and provider authority retain precedence"
+        },
+        {
+          "name": "explicit_feature_ownership_admits_implementation_without_creating_gratuitous_int",
+          "file": "test/gated-loop.test.ts",
+          "test_title": "explicit feature ownership admits implementation without creating gratuitous interface or test stubs",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^explicit feature ownership admits implementation without creating gratuitous interface or test stubs$' test/gated-loop.test.ts",
+          "observable": "existing-layout feature ownership admits only declared implementation without fabricated scaffold"
+        }
+      ],
+      "failure_route": "Reopen RP-22"
+    },
+    {
+      "id": "REQ-ACCEPT-01",
+      "kind": "req",
+      "primary_owner": "RP-22",
+      "coverage": "covered",
+      "named_checks": [
+        {
+          "name": "built_runtime_acceptance_preserves_peer_identity_across_restart_without_vendor_c",
+          "file": "test/graph-peer.test.ts",
+          "test_title": "built runtime acceptance preserves peer identity across restart without vendor credentials",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^built runtime acceptance preserves peer identity across restart without vendor credentials$' test/graph-peer.test.ts",
+          "observable": "spec REQ-ACCEPT-01: real built native peer acceptance executes without vendor credentials or manual login"
+        }
+      ],
+      "failure_route": "Reopen RP-22 for REQ-ACCEPT-01"
+    },
+    {
+      "id": "REQ-ACCEPT-02",
+      "kind": "req",
+      "primary_owner": "RP-22",
+      "coverage": "covered",
+      "named_checks": [
+        {
+          "name": "built_runtime_acceptance_preserves_peer_identity_across_restart_without_vendor_c",
+          "file": "test/graph-peer.test.ts",
+          "test_title": "built runtime acceptance preserves peer identity across restart without vendor credentials",
+          "runner": "node --test --experimental-strip-types --test-name-pattern '^built runtime acceptance preserves peer identity across restart without vendor credentials$' test/graph-peer.test.ts",
+          "observable": "spec REQ-ACCEPT-02: automated acceptance can pass while vendor authentication is explicitly not exercised"
+        }
+      ],
+      "failure_route": "Reopen RP-22 for REQ-ACCEPT-02"
     },
     {
       "id": "REQ-CX-01",

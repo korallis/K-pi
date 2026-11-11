@@ -18,9 +18,11 @@
  */
 
 import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { createServer } from "node:net";
 import {
 	copyFileSync,
+	chmodSync,
 	cpSync,
 	existsSync,
 	mkdirSync,
@@ -65,12 +67,16 @@ function freePort() {
 
 function git(cwd, ...args) {
 	const result = spawnSyncCapture("git", args, cwd);
+	if (result.status !== 0) throw new Error(`git ${args.join(" ")} failed: ${result.stderr}`);
 	return result.stdout.trim();
 }
 
 function spawnSyncCapture(command, args, cwd) {
 	// Only git inspection uses this; the CLI itself is always driven async.
-	const result = spawnSync(command, args, { cwd, encoding: "utf8" });
+	const result = spawnSync(command, args, { cwd, encoding: "utf8", env: {
+		PATH: process.env.PATH, HOME: cwd, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null",
+		GIT_ALLOW_PROTOCOL: "file", GIT_TERMINAL_PROMPT: "0",
+	} });
 	return { status: result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
 }
 
@@ -108,6 +114,79 @@ function gitSnapshot(dir) {
 		status: spawnSyncCapture("git", ["status", "--porcelain"], dir).stdout,
 		log: spawnSyncCapture("git", ["log", "--oneline", "-5"], dir).stdout,
 	};
+}
+
+function installDelivery(home, subject, env) {
+	const root = join(home, "delivery");
+	const bin = join(root, "bin");
+	mkdirSync(bin, { recursive: true });
+	git(subject, "init", "--bare", "--quiet", join(root, "origin.git"));
+	git(subject, "remote", "add", "origin", join(root, "origin.git"));
+	copyFileSync(join(metricFixtures, "gh.cjs"), join(bin, "gh"));
+	chmodSync(join(bin, "gh"), 0o755);
+	env.PATH = `${bin}:${env.PATH}`;
+	env.METRIC_DELIVERY_ROOT = root;
+	return root;
+}
+
+function deliveryChecks(box, out, task, after) {
+	const branch = `kpi/${task.job_id}`;
+	const remote = spawnSyncCapture("git", ["ls-remote", "--exit-code", "origin", `refs/heads/${branch}`], box.subject);
+	const remoteHead = remote.stdout.trim().split(/\s/u)[0];
+	const pr = readJson(join(box.delivery, "pr.json"));
+	out.write("remote-delivery.json", { branch, candidate: after.head, remote_head: remoteHead, exit: remote.status, stderr: remote.stderr });
+	out.write("synthetic-pr.json", { scope: "Controlled gh API boundary, not a GitHub PR or vendor grant", record: pr });
+	out.write("gh.jsonl", existsSync(join(box.delivery, "gh.jsonl")) ? readFileSync(join(box.delivery, "gh.jsonl"), "utf8") : "");
+	return [
+		check("actual-origin-candidate", "remote-delivery.json", remote.status === 0 && remoteHead === after.head, `${remoteHead} == ${after.head}`),
+		check("synthetic-pr-boundary", "synthetic-pr.json", pr?.synthetic === true && pr.head === after.head && pr.branch === branch && pr.state === "OPEN", pr?.url ?? "absent"),
+	];
+}
+
+function hostReceiptChecks(out, task) {
+	const evidence = readJson(join(out.dir, "artifacts/evidence.json"), {});
+	const run = join(out.dir, "artifacts/runs", task.job_id ?? "missing");
+	const immutable = typeof evidence.record_path === "string" ? readJson(join(run, evidence.record_path)) : null;
+	const intact = evidence.verifier_id === "host:verification" && evidence.passed === true &&
+		immutable !== null && JSON.stringify(immutable) === JSON.stringify(evidence) &&
+		evidence.commands?.length > 0 && evidence.commands.every((receipt) => receipt.verifier_id === "host:verification" &&
+			receipt.passed === true && ["stdout", "stderr"].every((stream) => {
+				const artifact = receipt[stream];
+				const path = artifact?.path && join(run, artifact.path);
+				return path && existsSync(path) && createHash("sha256").update(readFileSync(path)).digest("hex") === artifact.sha256;
+			}));
+	return [check("independent-host-receipts", "artifacts/evidence.json", intact, `verifier=${evidence.verifier_id} passed=${evidence.passed}`)];
+}
+
+function failureRepairChecks(out, task) {
+	const root = join(out.dir, "artifacts/runs", task.job_id ?? "missing", "verification");
+	const runs = existsSync(root) ? readdirSync(root).map((id) => readJson(join(root, id, "evidence.json"))).filter(Boolean)
+		.sort((a, b) => a.started_at.localeCompare(b.started_at)) : [];
+	const failed = runs.find((record) => record.verifier_id === "host:verification" && record.passed === false &&
+		record.commands.some((command) => command.status === "exited" && command.exit !== 0));
+	const repaired = failed && runs.find((record) => record.started_at > failed.completed_at && record.passed === true &&
+		record.intent_hash === failed.intent_hash && record.tree_hash !== failed.tree_hash);
+	out.write("repair-receipts.json", { failed: failed?.record_path ?? null, repaired: repaired?.record_path ?? null, intent_hash: failed?.intent_hash ?? null });
+	return [check("host-failure-then-repair", "repair-receipts.json", Boolean(failed && repaired), `${failed?.run_id ?? "no failure"} -> ${repaired?.run_id ?? "no repair"}`)];
+}
+
+function checkpointState(out, task) {
+	const root = join(out.dir, "artifacts/runs", task.job_id ?? "missing", "graph");
+	const paths = existsSync(root) ? readdirSync(root).filter((name) => /^checkpoint-\d+\.json$/u.test(name)).sort() : [];
+	return paths.length ? readJson(join(root, paths.at(-1)), {}) : {};
+}
+
+function removeSandbox(path) {
+	if (!existsSync(path)) return;
+	chmodSync(path, 0o700);
+	for (const entry of readdirSync(path, { withFileTypes: true })) {
+		if (entry.isDirectory()) removeSandbox(join(path, entry.name));
+	}
+	rmSync(path, { recursive: true, force: true });
+}
+
+function stopCli(child, signal) {
+	try { process.kill(-child.pid, signal); } catch { /* process group already gone */ }
 }
 
 function walkFind(root, name) {
@@ -172,13 +251,16 @@ function pinLocalSlot(agentDir, baseUrl) {
 	);
 	writeFileSync(
 		join(agentDir, "local-openai-models.json"),
-		`${JSON.stringify([{ id: "uat-stub", name: "uat-stub", baseUrl }], null, 2)}\n`,
+		`${JSON.stringify({ version: 2, origins: { "uat-stub": baseUrl }, models: [{
+			id: "uat-stub", name: "uat-stub", baseUrl, contextWindow: 131072, maxTokens: 8192,
+			metadataSources: { contextWindow: "operator", maxTokens: "operator" },
+		}] }, null, 2)}\n`,
 	);
-	// The OpenAI client cannot be constructed without some key; the accounts hook
-	// nulls the header before the request leaves.
+	// Native local registration supplies its no-auth client placeholder. Do not
+	// import a synthetic credential as an extra account slot.
 	writeFileSync(
 		join(agentDir, "auth.json"),
-		`${JSON.stringify({ "local-openai": { type: "api_key", key: "proof-local-no-op" } }, null, 2)}\n`,
+		"{}\n",
 	);
 }
 
@@ -202,7 +284,11 @@ function pinRotatingPool(agentDir, baseUrl, modelId) {
 	);
 	writeFileSync(
 		join(agentDir, "models.json"),
-		`${JSON.stringify({ providers: { zai: { baseUrl } } }, null, 2)}\n`,
+		`${JSON.stringify({ providers: { zai: { baseUrl, api: "openai-completions", models: [{
+			id: modelId, name: modelId, reasoning: false, input: ["text"],
+			contextWindow: 131072, maxTokens: 8192,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		}] } } }, null, 2)}\n`,
 	);
 	writeFileSync(
 		join(agentDir, "accounts.json"),
@@ -213,7 +299,7 @@ function pinRotatingPool(agentDir, baseUrl, modelId) {
 					zai: {
 						strategy: "round-robin",
 						slots: [
-							{ id: "a", kind: "api_key", label: "a" },
+							{ id: "default", kind: "api_key", label: "a" },
 							{ id: "b", kind: "api_key", label: "b" },
 						],
 					},
@@ -232,13 +318,13 @@ function pinRotatingPool(agentDir, baseUrl, modelId) {
 	// tell the siblings apart.
 	writeFileSync(
 		join(agentDir, "auth.json"),
-		`${JSON.stringify({ zai: { type: "api_key", key: "proof-zai-preflight" } }, null, 2)}\n`,
+		`${JSON.stringify({ zai: { type: "api_key", key: "proof-slot-a" } })}\n`,
 	);
 	writeFileSync(
 		join(agentDir, "accounts.secrets.json"),
 		`${JSON.stringify(
 			{
-				"zai/a": { type: "api_key", key: "proof-slot-a" },
+				"zai/default": { type: "api_key", key: "proof-slot-a" },
 				"zai/b": { type: "api_key", key: "proof-slot-b" },
 			},
 			null,
@@ -248,36 +334,48 @@ function pinRotatingPool(agentDir, baseUrl, modelId) {
 	);
 }
 
-function startStub(port, logFile, screenplayPath) {
+function startStub(port, logFile, screenplayPath, env) {
 	return new Promise((resolveStub, reject) => {
 		const args = [stubPath, "--port", String(port), "--log", logFile];
 		if (screenplayPath) args.push("--screenplay", screenplayPath);
-		const child = spawn(process.execPath, args, { stdio: ["ignore", "pipe", "pipe"] });
+		const child = spawn(process.execPath, args, { env, stdio: ["ignore", "pipe", "pipe"] });
 		let buffer = "";
-		const timer = setTimeout(() => {
-			child.kill("SIGTERM");
-			reject(new Error("stub provider did not boot"));
-		}, 10_000);
+		let errors = "";
+		let ready = false;
+		const fail = (error) => {
+			clearTimeout(timer);
+			child.kill("SIGKILL");
+			reject(error);
+		};
+		const timer = setTimeout(() => fail(new Error(`stub provider did not boot: ${errors}`)), 10_000);
 		child.stdout.on("data", (chunk) => {
+			if (ready) return;
 			buffer += chunk.toString("utf8");
 			const newline = buffer.indexOf("\n");
-			if (newline >= 0) {
+			if (newline < 0) return;
+			try {
+				const info = JSON.parse(buffer.slice(0, newline));
+				ready = true;
 				clearTimeout(timer);
-				try {
-					resolveStub({ child, info: JSON.parse(buffer.slice(0, newline)) });
-				} catch (error) {
-					reject(error);
-				}
-			}
+				resolveStub({ child, info });
+			} catch (error) { fail(error); }
 		});
-		child.stderr.on("data", () => {});
-		child.on("error", reject);
+		child.stderr.on("data", (chunk) => { errors += chunk.toString("utf8"); });
+		child.on("error", fail);
+		child.on("exit", (code) => { if (!ready) fail(new Error(`stub exited ${code}: ${errors}`)); });
 	});
 }
 
 function baseEnv({ home, agentDir, egressLog }) {
 	const env = {
-		...process.env,
+		PATH: process.env.PATH,
+		TMPDIR: home,
+		LANG: "en_US.UTF-8",
+		XDG_CONFIG_HOME: join(home, ".config"),
+		GIT_CONFIG_NOSYSTEM: "1",
+		GIT_CONFIG_GLOBAL: "/dev/null",
+		GIT_ALLOW_PROTOCOL: "file",
+		GIT_TERMINAL_PROMPT: "0",
 		HOME: home,
 		KPI_CODING_AGENT_DIR: agentDir,
 		CI: "1",
@@ -285,7 +383,7 @@ function baseEnv({ home, agentDir, egressLog }) {
 		NO_COLOR: "1",
 		// Any connection that is not loopback is refused and logged, so a metric
 		// cannot pass by quietly reaching a real provider.
-		NODE_OPTIONS: `${process.env.NODE_OPTIONS ? `${process.env.NODE_OPTIONS} ` : ""}--require ${guardPath}`,
+		NODE_OPTIONS: `--require ${guardPath}`,
 		UAT_EGRESS_LOG: egressLog,
 	};
 	delete env.EXA_API_KEY;
@@ -316,6 +414,7 @@ function runRpc(env, cwd, lines, options = {}) {
 		const child = spawn(process.execPath, [cliPath, "--offline", "--mode", "rpc", "--model", model], {
 			cwd,
 			env,
+			detached: true,
 			stdio: ["pipe", "pipe", "pipe"],
 		});
 		let stdout = "";
@@ -323,6 +422,7 @@ function runRpc(env, cwd, lines, options = {}) {
 		let settled = false;
 		const confirms = [];
 		const answered = new Set();
+		const sentDeferred = new Set();
 		const finish = () => {
 			if (settled) return;
 			settled = true;
@@ -332,11 +432,11 @@ function runRpc(env, cwd, lines, options = {}) {
 				/* closing a dead pipe is not a failure */
 			}
 			try {
-				child.kill("SIGTERM");
+				stopCli(child, "SIGTERM");
 			} catch {
 				/* already gone */
 			}
-			setTimeout(() => resolveRpc({ status: child.exitCode, stdout, stderr, confirms }), 250);
+			setTimeout(() => { stopCli(child, "SIGKILL"); resolveRpc({ status: child.exitCode, stdout, stderr, confirms }); }, 500);
 		};
 		const answerConfirms = () => {
 			for (const line of stdout.split("\n")) {
@@ -368,6 +468,14 @@ function runRpc(env, cwd, lines, options = {}) {
 		child.stdout.on("data", (chunk) => {
 			stdout += chunk.toString("utf8");
 			answerConfirms();
+			// Dispatch from the observed lifecycle event, never an elapsed delay.
+			for (const [index, entry] of deferred.entries()) {
+				if (sentDeferred.has(index) || !entry.after.test(stdout)) continue;
+				sentDeferred.add(index);
+				for (const line of entry.lines) {
+					child.stdin.write(`${typeof line === "string" ? line : JSON.stringify(line)}\n`);
+				}
+			}
 		});
 		child.stderr.on("data", (chunk) => {
 			stderr += chunk.toString("utf8");
@@ -376,19 +484,8 @@ function runRpc(env, cwd, lines, options = {}) {
 			child.stdin.write(`${typeof line === "string" ? line : JSON.stringify(line)}\n`);
 		}
 		const startedAt = Date.now();
-		const sentDeferred = new Set();
 		const timer = setInterval(() => {
 			answerConfirms();
-			// A follow-up command has to wait for the turn it asks about: sending
-			// `get_last_assistant_text` before the assistant has finished speaking
-			// reads an empty session, not a short answer.
-			for (const [index, entry] of deferred.entries()) {
-				if (sentDeferred.has(index) || !entry.after.test(stdout)) continue;
-				sentDeferred.add(index);
-				for (const line of entry.lines) {
-					child.stdin.write(`${typeof line === "string" ? line : JSON.stringify(line)}\n`);
-				}
-			}
 			const terminal =
 				/K-π job .+ (DONE|NEEDS_HUMAN|STOPPED)\b/.test(stdout) ||
 				/K-π loop failed/.test(stdout);
@@ -434,6 +531,7 @@ function runRpcSequential(env, cwd, steps, options = {}) {
 		const child = spawn(process.execPath, [cliPath, "--offline", "--mode", "rpc", "--model", model], {
 			cwd,
 			env,
+			detached: true,
 			stdio: ["pipe", "pipe", "pipe"],
 		});
 		let stdout = "";
@@ -455,11 +553,11 @@ function runRpcSequential(env, cwd, steps, options = {}) {
 				/* closing a dead pipe is not a failure */
 			}
 			try {
-				child.kill("SIGTERM");
+				stopCli(child, "SIGTERM");
 			} catch {
 				/* already gone */
 			}
-			setTimeout(() => resolveRpc({ status: child.exitCode, stdout, stderr, confirms: [] }), 250);
+			setTimeout(() => { stopCli(child, "SIGKILL"); resolveRpc({ status: child.exitCode, stdout, stderr, confirms: [] }); }, 500);
 		};
 
 		const step = async (index) => {
@@ -495,9 +593,13 @@ async function sandbox(id, { fixture, screenplay = loopScreenplay, pin = "local"
 	if (!existsSync(cliPath)) {
 		throw new Error(`built CLI missing: ${relative(repoRoot, cliPath)} — run npm run build:offline`);
 	}
-	const home = mkdtempSync(join(tmpdir(), `kpi-proof-${id}-home-`));
+	// Unix-domain peer addresses must fit sockaddr_un even on macOS, whose
+	// default /var/folders temporary root is already long. Keep this private
+	// HOME/TMPDIR short rather than sharing the operator's temporary directory.
+	const home = mkdtempSync(join(process.platform === "win32" ? tmpdir() : "/tmp", `kpi-${id}-`));
 	const agentDir = mkdtempSync(join(tmpdir(), `kpi-proof-${id}-agent-`));
 	const subject = mkdtempSync(join(tmpdir(), `kpi-proof-${id}-subject-`));
+	try {
 	if (fixture) {
 		copyFixture(fixture, subject);
 	} else {
@@ -511,23 +613,31 @@ async function sandbox(id, { fixture, screenplay = loopScreenplay, pin = "local"
 	} else {
 		pinLocalSlot(agentDir, baseUrl);
 	}
-	const modelLog = join(tmpdir(), `kpi-proof-${id}-model.jsonl`);
+	const modelLog = join(home, "model.jsonl");
 	writeFileSync(modelLog, "");
-	const egressLog = join(tmpdir(), `kpi-proof-${id}-egress.log`);
+	const egressLog = join(home, "egress.log");
 	writeFileSync(egressLog, "");
-	const { child: stub } = await startStub(port, modelLog, screenplay);
-	return { home, agentDir, subject, port, baseUrl, modelLog, egressLog, stub, env: baseEnv({ home, agentDir, egressLog }) };
+	const env = baseEnv({ home, agentDir, egressLog });
+	const delivery = fixture === "healthcheck-gated" || fixture === "healthcheck-auto" ? installDelivery(home, subject, env) : undefined;
+	const { child: stub } = await startStub(port, modelLog, screenplay, {
+		...env, UAT_SUBJECT_DIR: subject, UAT_FAIL_FIRST_CANDIDATE: fixture === "healthcheck-auto" ? "1" : "0",
+	});
+	return { home, agentDir, subject, port, baseUrl, modelLog, egressLog, stub, env, delivery };
+	} catch (error) {
+		for (const path of [home, agentDir, subject]) removeSandbox(path);
+		throw error;
+	}
 }
 
-function teardown(box) {
-	try {
+async function teardown(box) {
+	if (box.stub.exitCode === null) {
 		box.stub.kill("SIGTERM");
-	} catch {
-		/* already gone */
+		await Promise.race([new Promise((done) => box.stub.once("exit", done)), new Promise((done) => setTimeout(done, 500))]);
+		if (box.stub.exitCode === null) box.stub.kill("SIGKILL");
 	}
 	for (const path of [box.home, box.agentDir, box.subject]) {
 		try {
-			rmSync(path, { recursive: true, force: true });
+			removeSandbox(path);
 		} catch {
 			/* best effort */
 		}
@@ -540,10 +650,14 @@ function teardown(box) {
 
 function evidenceWriter(proofRoot, id) {
 	const dir = join(proofRoot, id);
-	rmSync(dir, { recursive: true, force: true });
+	removeSandbox(dir);
 	mkdirSync(join(dir, "artifacts"), { recursive: true });
 	return {
 		dir,
+		captureSession(agentDir, suffix = "") {
+			const sessions = join(agentDir, "sessions");
+			if (existsSync(sessions)) cpSync(sessions, join(dir, `artifacts/sessions${suffix}`), { recursive: true });
+		},
 		write(name, body) {
 			const path = join(dir, name);
 			mkdirSync(dirname(path), { recursive: true });
@@ -648,7 +762,8 @@ async function collectM01(proofRoot) {
 			),
 			check("review-approved", "artifacts/verdict.json", verdictDoc.approved === true, `approved=${verdictDoc.approved}`),
 			check("terminal-done", "artifacts/state.json", state.status === "DONE", `status=${state.status ?? "absent"}`),
-			check("no-push", "git.txt", !/git push/.test(rpc.stdout), "no push in the session transcript"),
+			...hostReceiptChecks(out, task),
+			...deliveryChecks(box, out, task, after),
 			check("loopback-only", "egress.log", egress.clean, egress.clean ? "no outbound attempt" : egress.text.slice(0, 200)),
 		];
 		out.write("result.json", { id: "M-01", checks, found: Object.keys(found) });
@@ -657,7 +772,7 @@ async function collectM01(proofRoot) {
 			okDetail: "gated healthcheck reached human confirmation with green receipts and DONE",
 		});
 	} finally {
-		teardown(box);
+		await teardown(box);
 	}
 }
 
@@ -684,6 +799,7 @@ async function collectM02(proofRoot) {
 		out.write("git.txt", `BEFORE ${before.head} (${before.count})\nAFTER ${after.head} (${after.count})\nSUBJECT ${after.subject}\nBODY\n${after.body}\nLOG\n${after.log}\n`);
 		const egress = egressClean(box);
 		out.write("egress.log", egress.text);
+		out.write("model-requests.jsonl", readFileSync(box.modelLog, "utf8"));
 
 		const task = readJson(join(out.dir, "artifacts/task.json"), {});
 		const state = readJson(join(out.dir, "artifacts/state.json"), {});
@@ -695,6 +811,9 @@ async function collectM02(proofRoot) {
 		const jobMarked = typeof task.job_id === "string" && task.job_id.length > 0 && after.body.includes(task.job_id);
 
 		const checks = [
+			...hostReceiptChecks(out, task),
+			...deliveryChecks(box, out, task, after),
+			...failureRepairChecks(out, task),
 			check("autopilot-mode", "artifacts/task.json", task.mode === "autopilot", task.mode ?? "absent"),
 			check(
 				"executable-ac",
@@ -735,12 +854,12 @@ async function collectM02(proofRoot) {
 			scope: "decided from the artifacts the product wrote: task.json, state.json, events.jsonl, and git history",
 		});
 	} finally {
-		teardown(box);
+		await teardown(box);
 	}
 }
 
 // ---------------------------------------------------------------------------
-// M-03  narrative AC refuse autopilot; coding-loop.auto.json never loads
+// M-03 narrative discovery pauses before engineering without invented checks
 // ---------------------------------------------------------------------------
 
 async function collectM03(proofRoot) {
@@ -754,7 +873,7 @@ async function collectM03(proofRoot) {
 			box.env,
 			box.subject,
 			[{ id: "1", type: "prompt", message: `/kpi --mode autopilot ${goal}` }],
-			{ timeoutMs: 120_000, stopWhen: "responses" },
+			{ timeoutMs: 120_000 },
 		);
 		out.write("rpc.jsonl", rpc.stdout);
 		out.write("stderr.log", rpc.stderr);
@@ -766,32 +885,30 @@ async function collectM03(proofRoot) {
 		out.write("egress.log", egress.text);
 
 		const events = readJsonl(join(out.dir, "artifacts/events.jsonl"));
-		const refused = events.filter((event) => event.type === "ac.refused");
+		const refused = events.filter((event) => event.type === "loop.terminal" && event.recovery === "ac_quality");
 		const state = readJson(join(out.dir, "artifacts/state.json"), {});
-		// The graph writes a checkpoint on its first superstep, so the absence of
-		// one is how "coding-loop.auto.json never loaded" is observable.
-		const runsRoot = join(out.dir, "artifacts/runs");
-		const checkpoint = walkFind(runsRoot, "checkpoint-000000.json") ?? walkFind(runsRoot, "graph");
-		out.write("graph-dir.txt", checkpoint ? `present: ${relative(runsRoot, checkpoint)}\n` : "absent\n");
+		const task = readJson(join(out.dir, "artifacts/task.json"), {});
+		const engineering = events.filter((event) => event.type === "node.started" && ["plan", "implement", "test", "review", "ship", "deliver"].includes(event.node));
+		out.write("model-requests.jsonl", readFileSync(box.modelLog, "utf8"));
 
 		const checks = [
 			check(
-				"ac-refused-recorded",
+				"ac-quality-refusal-recorded",
 				"artifacts/events.jsonl",
 				refused.length === 1 && typeof refused[0].reason === "string" && refused[0].reason.length > 0,
-				refused.length === 1 ? refused[0].reason : `${refused.length} ac.refused records`,
+				refused.length === 1 ? refused[0].reason : `${refused.length} ac_quality terminal records`,
 			),
 			check(
 				"narrative-quality",
-				"artifacts/events.jsonl",
-				refused[0]?.quality === "narrative" || refused[0]?.quality === "partial",
-				`quality=${refused[0]?.quality ?? "absent"}`,
+				"artifacts/task.json",
+				task.ac?.quality === "narrative" || task.ac?.quality === "partial",
+				`quality=${task.ac?.quality ?? "absent"}`,
 			),
-			check("no-graph-checkpoint", "graph-dir.txt", checkpoint === undefined, checkpoint ? "graph state exists" : "no graph directory"),
+			check("no-engineering-node", "artifacts/events.jsonl", engineering.length === 0, `${engineering.length} engineering node starts`),
 			check(
 				"not-done",
 				"artifacts/state.json",
-				state.status !== "DONE",
+				state.status === "NEEDS_HUMAN" && state.recovery === "ac_quality",
 				`status=${state.status ?? "absent"}`,
 			),
 			check("no-commit", "git.txt", after.count === before.count, `${after.count - before.count} new commit(s)`),
@@ -800,10 +917,10 @@ async function collectM03(proofRoot) {
 		out.write("result.json", { id: "M-03", checks });
 		return verdict("M-03", "RP-05", checks, out.dir, {
 			fixture: "fixtures/narrative-ac",
-			okDetail: "narrative AC refused autopilot, ac.refused written, no graph state created",
+			okDetail: "narrative discovery refused unverified completion before engineering with ac_quality and no commit",
 		});
 	} finally {
-		teardown(box);
+		await teardown(box);
 	}
 }
 
@@ -829,6 +946,7 @@ async function collectM04(proofRoot) {
 		out.write("git.txt", `BEFORE ${before.head} (${before.count})\nAFTER ${after.head} (${after.count})\nSTATUS\n${after.status}\n`);
 		const egress = egressClean(box);
 		out.write("egress.log", egress.text);
+		out.write("model-requests.jsonl", readFileSync(box.modelLog, "utf8"));
 
 		const state = readJson(join(out.dir, "artifacts/state.json"), {});
 		const events = readJsonl(join(out.dir, "artifacts/events.jsonl"));
@@ -836,10 +954,15 @@ async function collectM04(proofRoot) {
 		// The write-attempt record RP-11 needs for ordering: a refused write is on
 		// the log before the run stops.
 		const denied = events.filter((event) => event.type === "tool.request" && event.decision === "deny");
+		const task = readJson(join(out.dir, "artifacts/task.json"), {});
+		const checkpoint = checkpointState(out, task);
+		const unsafe = checkpoint.blockers?.find((blocker) => blocker.nodes?.includes("unsafe") && blocker.resume?.includes("test"));
+		out.write("unsafe-blocker.json", { blocker: unsafe ?? null, ship: checkpoint.nodes?.ship, deliver: checkpoint.nodes?.deliver });
 
 		const checks = [
+			check("unsafe-branch-blocked-without-ship", "unsafe-blocker.json", Boolean(unsafe) && !checkpoint.nodes?.ship?.runs && !checkpoint.nodes?.deliver?.runs, unsafe?.reason ?? "unsafe blocker absent"),
 			check(
-				"terminal-needs-human-bounds",
+				"unsafe-blocker-needs-human",
 				"artifacts/state.json",
 				state.status === "NEEDS_HUMAN" && state.recovery === "bounds",
 				`status=${state.status ?? "absent"} recovery=${state.recovery ?? "absent"}`,
@@ -868,10 +991,10 @@ async function collectM04(proofRoot) {
 		out.write("result.json", { id: "M-04", checks });
 		return verdict("M-04", "RP-05", checks, out.dir, {
 			fixture: "fixtures/bounds-violation",
-			okDetail: "a write outside the declared bounds paused the run NEEDS_HUMAN (bounds) with no commit",
+			okDetail: "an out-of-bounds write routes to the unsafe blocker (bounds recovery) without ship or commit",
 		});
 	} finally {
-		teardown(box);
+		await teardown(box);
 	}
 }
 
@@ -899,7 +1022,7 @@ function accountsWidgetStates(stdout) {
 
 async function collectM05(proofRoot) {
 	const out = evidenceWriter(proofRoot, "M-05");
-	const modelId = "glm-5.3";
+	const modelId = "metric-pool-stub";
 
 	// Phase 1 isolates the question. A 200 carrying quota headers must reach the
 	// accounts layer, or nothing downstream could ever be tested. The widget is
@@ -910,6 +1033,7 @@ async function collectM05(proofRoot) {
 		modelId,
 	});
 	let headerStates = [];
+	let probeEgress;
 	try {
 		const rpc = await runRpcSequential(
 			probe.env,
@@ -921,10 +1045,15 @@ async function collectM05(proofRoot) {
 			{ model: `zai/${modelId}`, timeoutMs: 60_000, settleTimeoutMs: 8_000 },
 		);
 		headerStates = accountsWidgetStates(rpc.stdout);
-		out.write("phase1-success-headers.jsonl", rpc.stdout.slice(0, 200_000));
+		out.write("phase1-success-headers.jsonl", rpc.stdout);
 		out.write("phase1-widget-states.json", headerStates);
+		probeEgress = egressClean(probe);
+		out.write("phase1-egress.log", probeEgress.text);
+		out.write("phase1-model-requests.jsonl", readFileSync(probe.modelLog, "utf8"));
+		out.write("phase1-stderr.log", rpc.stderr);
+		out.captureSession(probe.agentDir, "-probe");
 	} finally {
-		teardown(probe);
+		await teardown(probe);
 	}
 	const recordedOnSuccess = headerStates.some((state) => /\ba \d+%/.test(state));
 
@@ -959,7 +1088,7 @@ async function collectM05(proofRoot) {
 			timeoutMs: 420_000,
 			settleTimeoutMs: 8_000,
 		});
-		out.write("rpc.jsonl", rpc.stdout.slice(0, 400_000));
+		out.write("rpc.jsonl", rpc.stdout);
 		out.write("stderr.log", rpc.stderr);
 		out.write("exit", `${rpc.status ?? "null"}\n`);
 		const requests = readJsonl(box.modelLog);
@@ -968,6 +1097,7 @@ async function collectM05(proofRoot) {
 		out.write("widget-states.json", widgetStates);
 		const egress = egressClean(box);
 		out.write("egress.log", egress.text);
+		out.captureSession(box.agentDir);
 
 		// Which slot served each request, by the hash of the bearer the accounts
 		// hook attached. The stub never logs a token, only its hash.
@@ -999,13 +1129,16 @@ async function collectM05(proofRoot) {
 		});
 
 		const checks = [
+			check("phase1-loopback-only", "phase1-egress.log", probeEgress?.clean === true, probeEgress?.text || "no outbound attempt"),
+			check("exactly-two-synthetic-siblings", "model-requests.jsonl", distinct.length === 2 &&
+				distinct.every((token) => ["proof-slot-a", "proof-slot-b"].some((key) => createHash("sha256").update(key).digest("hex").slice(0, 16) === token)), `${distinct.length} credential hashes`),
 			check(
 				"requests-reached-the-pool",
 				"model-requests.jsonl",
 				requests.length >= M05_REQUESTS,
 				`${requests.length} requests for ${M05_REQUESTS} prompts`,
 			),
-			check("one-429-served", "model-requests.jsonl", cooled !== undefined, cooled ? "429 served once" : "no 429 observed"),
+			check("one-429-served", "model-requests.jsonl", requests.filter((record) => record.response_status === 429).length === 1, `${requests.filter((record) => record.response_status === 429).length} 429 responses`),
 			check(
 				"live-response-recorded-on-success",
 				"phase1-widget-states.json",
@@ -1048,7 +1181,7 @@ async function collectM05(proofRoot) {
 				"the failure arrives through the real transport: the stub answers 429 with retry-after, and the cooldown, the route move and the credential on every later request are read back from the product's own widget and the stub's request log",
 		});
 	} finally {
-		teardown(box);
+		await teardown(box);
 	}
 }
 
@@ -1083,7 +1216,7 @@ async function collectM06(proofRoot) {
 				// Asked only once the assistant has finished its turn.
 				deferred: [
 					{
-						after: /"type":"(?:turn_end|agent_settled|message_end)"/,
+						after: /(?:^|\n)\{"type":"agent_settled"\}\r?\n/,
 						lines: [{ id: "2", type: "get_last_assistant_text" }],
 					},
 				],
@@ -1094,6 +1227,7 @@ async function collectM06(proofRoot) {
 		out.write("exit", `${rpc.status ?? "null"}\n`);
 		const egress = egressClean(box);
 		out.write("egress.log", egress.text);
+		out.captureSession(box.agentDir);
 
 		// The product's own answer to "what did you last say to the user".
 		let reply = null;
@@ -1152,7 +1286,7 @@ async function collectM06(proofRoot) {
 				"product path only: a deterministic provider stands in for the model, so this proves the rule is installed, sent, and measurable - not that a live model obeys it",
 		});
 	} finally {
-		teardown(box);
+		await teardown(box);
 	}
 }
 

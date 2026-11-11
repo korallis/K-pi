@@ -1,5 +1,5 @@
 {
-	"models": ["glm-5.3", "glm-5.3-flash", "uat-stub"],
+	"models": ["metric-pool-stub"],
 	"scenes": [
 		{
 			"node": "quota-exhausted",

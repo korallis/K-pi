@@ -6,12 +6,7 @@
     {
       "match": {},
       "dynamic": "loop-agent",
-      "turns": [
-        {
-          "content": "placeholder",
-          "finish_reason": "stop"
-        }
-      ]
+      "turns": []
     }
   ]
 }

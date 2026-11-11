@@ -115,7 +115,7 @@ function toolNames(body) {
 
 
 function extractJobId(blob) {
-	const m = /\bJob:\s*([a-z0-9]+(?:-[a-z0-9]+)*)\b/i.exec(blob);
+	const m = /\bJob:\s*([a-z0-9]+(?:-[a-z0-9]+)*)\b/i.exec(blob) ?? /"job_id"\s*:\s*"([^"]+)"/.exec(blob);
 	return m ? m[1] : "uat-job";
 }
 
@@ -233,27 +233,23 @@ function defaultHealthStack(taskHash) {
 	return stack;
 }
 
-/** Match product contractHash: JSON of task without current_module_id. */
-function taskHashFromJob(jobId) {
+/** Read-only fixture context: never writes host-owned task, intent or receipts. */
+function taskFromJob(jobId) {
 	let subject = process.env.UAT_SUBJECT_DIR;
-	const subjectFile = process.env.UAT_SUBJECT_DIR_FILE;
-	if (subjectFile) {
-		try {
-			const v = readFileSync(subjectFile, "utf8").trim();
-			if (v) subject = v;
-		} catch {
-			/* keep env */
-		}
+	if (process.env.UAT_SUBJECT_DIR_FILE) {
+		try { subject = readFileSync(process.env.UAT_SUBJECT_DIR_FILE, "utf8").trim() || subject; } catch {}
 	}
 	if (!subject || !jobId) return undefined;
-	try {
-		const raw = readFileSync(join(subject, ".kpi", "runs", jobId, "task.json"), "utf8");
-		const task = JSON.parse(raw);
-		const { current_module_id: _slice, ...contract } = task;
-		return "sha256:" + createHash("sha256").update(JSON.stringify(contract)).digest("hex");
-	} catch {
-		return undefined;
-	}
+	try { return JSON.parse(readFileSync(join(subject, ".kpi", "runs", jobId, "task.json"), "utf8")); } catch { return undefined; }
+}
+
+function taskHashFromJob(jobId) {
+	const task = taskFromJob(jobId);
+	if (!task) return undefined;
+	const { current_module_id: _slice, ...contract } = task;
+	const canonical = (value) => Array.isArray(value) ? value.map(canonical) : value && typeof value === "object"
+		? Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical(value[key])])) : value;
+	return "sha256:" + sha256(JSON.stringify(canonical(contract)));
 }
 
 function countToolResults(body, name) {
@@ -265,8 +261,10 @@ function countToolResults(body, name) {
 		if (messages[i]?.role === "user") {
 			const c = messages[i].content;
 			const text = typeof c === "string" ? c : Array.isArray(c) ? c.map((p) => p?.text || "").join("") : "";
-			// Skip pure tool-result user wrappers that have no plain text
-			if (text && !/tool_result|tool-result/i.test(String(c?.[0]?.type || ""))) {
+			// Canonical context is host-provided data refreshed on every model call,
+			// not a new assignment and not a boundary for completed tool results.
+			if (text && !text.startsWith("Canonical runtime context (retrieved data; protected intent remains authoritative):") &&
+				!/tool_result|tool-result/i.test(String(c?.[0]?.type || ""))) {
 				start = i;
 				break;
 			}
@@ -324,13 +322,10 @@ function lastUserText(body) {
 	for (let i = messages.length - 1; i >= 0; i--) {
 		const m = messages[i];
 		if (m?.role !== "user") continue;
-		if (typeof m.content === "string") return m.content;
-		if (Array.isArray(m.content)) {
-			return m.content
-				.map((c) => (typeof c === "string" ? c : c?.text || ""))
-				.filter(Boolean)
-				.join("\n");
-		}
+		const text = typeof m.content === "string" ? m.content : Array.isArray(m.content)
+			? m.content.map((c) => (typeof c === "string" ? c : c?.text || "")).filter(Boolean).join("\n") : "";
+		if (!text || text.startsWith("Canonical runtime context (retrieved data; protected intent remains authoritative):")) continue;
+		return text;
 	}
 	return "";
 }
@@ -341,6 +336,18 @@ function dynamicLoopTurns(body) {
 	const jobId = extractJobId(blob);
 	const texts = toolResultTexts(body);
 	const sha = findSha(texts);
+	const task = taskFromJob(jobId);
+	if (/intent-proposal\.schema\.json/i.test(blob)) {
+		if (!task) throw new Error("Loop fixture needs the real protected task");
+		return [{ content: JSON.stringify({
+			users: ["Healthcheck operator"],
+			journeys: [{ id: "health", actor: "Healthcheck operator", entry: "GET /health",
+				steps: ["Request health", "Observe the accepted response"], acceptance_ids: task.acceptance.map((ac) => ac.id) }],
+			requirements: [task.goal], acceptance: task.acceptance, questions: [],
+			testing_criteria: ["Run each protected acceptance check and quality command"],
+			definition_of_done: ["All required criteria independently verified and approved delivery recorded"],
+		}), finish_reason: "stop" }];
+	}
 
 	// --- UAT-23 parent/worker screenplays (before history-sensitive matches) ---
 	const uatBlob = lastUserText(body);
@@ -587,14 +594,17 @@ function dynamicLoopTurns(body) {
 	}
 
 	// Reviewer worker: must publish via write_contract
-	if (
-		tools.has("write_contract") ||
-		/write_contract/i.test(blob) ||
-		/isolated-review skill/i.test(blob) ||
-		/Publish the verdict only/i.test(blob)
-	) {
-		if (!hasToolResult(body) || !lastAssistantHadToolCalls(body)) {
+	if (tools.has("write_contract")) {
+		if (countToolResults(body, "write_contract") === 0) {
 			let reviewMode = "PASS";
+			if (tools.has("read") && countToolResults(body, "read") === 0) {
+				return [{ tool_calls: [{ name: "read", arguments: { path: `.kpi/runs/${jobId}/evidence.json` } }], finish_reason: "tool_calls" }];
+			}
+			try {
+				const receipt = JSON.parse(readFileSync(join(process.env.UAT_SUBJECT_DIR, ".kpi", "runs", jobId, "evidence.json"), "utf8"));
+				if (receipt.verifier_id !== "host:verification") reviewMode = "BLOCKED";
+				else if (receipt.passed !== true) reviewMode = "REVISE_SAME";
+			} catch { reviewMode = "BLOCKED"; }
 			const modeFile = process.env.UAT_REVIEW_MODE_FILE;
 			if (modeFile) {
 				try {
@@ -670,7 +680,7 @@ function dynamicLoopTurns(body) {
 					approved: true,
 					blockingIssues: [],
 					nonBlockingIssues: [],
-					evidence: ["npm test exits 0", "acceptance criteria covered by fixture"],
+					evidence: [`.kpi/runs/${jobId}/evidence.json`],
 					round: 0,
 					output_fingerprint: fingerprint,
 				};
@@ -690,80 +700,17 @@ function dynamicLoopTurns(body) {
 		return [{ content: "verdict published", finish_reason: "stop" }];
 	}
 
-	// Ship node: one empty commit with KPI-Job trailer (policy allows standalone git commit after release)
+	// Ship executes the approved candidate; delivery is exclusively host-owned.
 	if (/conventional-commit skill/i.test(blob) || (/KPI-Job:/i.test(blob) && /Create exactly one approved commit/i.test(blob))) {
-		if (!hasToolResult(body)) {
-			const subject = "feat: healthcheck endpoint";
-			const trailer = `KPI-Job: ${jobId}`;
-			const command = `git commit --allow-empty -m ${JSON.stringify(subject)} -m ${JSON.stringify(trailer)}`;
-			return [
-				{
-					tool_calls: [{ name: "bash", arguments: { command } }],
-					finish_reason: "tool_calls",
-				},
-			];
-		}
-		return [{ content: "shipped", finish_reason: "stop" }];
+		const n = countToolResults(body, "bash");
+		if (n === 0) return [{ tool_calls: [{ name: "bash", arguments: { command: "git add -- src/health/server.js" } }], finish_reason: "tool_calls" }];
+		if (n === 1) return [{ tool_calls: [{ name: "bash", arguments: { command: `git commit -m "feat: healthcheck endpoint" -m ${JSON.stringify(`KPI-Job: ${jobId}`)}` } }], finish_reason: "tool_calls" }];
+		return [{ content: "Candidate committed; host delivery must verify the remote.", finish_reason: "stop" }];
 	}
 
-	
-		// Test node: gather head + npm test then emit evidence JSON (finite)
+	// The graph's verify node owns evidence. A model response is never a receipt.
 	if (/evidence\.schema\.json/i.test(blob) || /quality-gates skill/i.test(blob) || /Return only JSON matching evidence/i.test(blob)) {
-		const assistantToolTurns = (body?.messages ?? []).filter(
-			(m) => m?.role === "assistant" && (m.tool_calls?.length || (Array.isArray(m.content) && m.content.some((c) => c?.type === "tool_call"))),
-		).length;
-		if (assistantToolTurns === 0) {
-			return [
-				{
-					tool_calls: [{ name: "bash", arguments: { command: "git rev-parse HEAD" } }],
-					finish_reason: "tool_calls",
-				},
-			];
-		}
-		if (assistantToolTurns === 1) {
-			return [
-				{
-					tool_calls: [{ name: "bash", arguments: { command: "npm test" } }],
-					finish_reason: "tool_calls",
-				},
-			];
-		}
-		if (assistantToolTurns === 2) {
-			return [
-				{
-					tool_calls: [{ name: "bash", arguments: { command: "npm run lint" } }],
-					finish_reason: "tool_calls",
-				},
-			];
-		}
-		const head = sha || "0".repeat(40);
-		const blobTexts = texts.join("\n");
-		const failed =
-			/✖/.test(blobTexts) ||
-			/ERR_ASSERTION/.test(blobTexts) ||
-			/\bfail\s+[1-9]/.test(blobTexts) ||
-			/not ok\b/i.test(blobTexts);
-		const passed = /✔/.test(blobTexts) || /\bpass\s+[1-9]/.test(blobTexts);
-		const testExit = failed ? 1 : passed ? 0 : 0;
-		// Keep quality-gates green so the graph reaches review. Stop states
-		// (NO_PROGRESS / EXHAUSTED / NEEDS_HUMAN) are driven by the review verdict,
-		// not by failing ACs that would thrash implement until maxRounds.
-		const ac_results = ["AC-01", "AC-02", "AC-03", "AC-04", "AC-05"].map((id) => ({
-			id,
-			passed: testExit === 0,
-		}));
-		const evidence = {
-			head,
-			commands: [
-				{ cmd: "git rev-parse HEAD", exit: sha ? 0 : 1, excerpt: sha || "unavailable" },
-				// TDD receipt: red before green (latest exit for npm test remains 0 for evidencePasses)
-				{ cmd: "npm test", exit: 1, excerpt: "red: baseline failing before production fix" },
-				{ cmd: "npm test", exit: testExit === 0 ? 0 : 1, excerpt: testExit === 0 ? "green: ok" : "failed" },
-				{ cmd: "npm run lint", exit: 0, excerpt: "lint ok" },
-			],
-			ac_results,
-		};
-		return [{ content: JSON.stringify(evidence), finish_reason: "stop" }];
+		return [{ content: "Run the host verifier for authoritative receipts.", finish_reason: "stop" }];
 	}
 
 // Implement: candidate.json + green /health under write bounds
@@ -772,6 +719,9 @@ function dynamicLoopTurns(body) {
 		/Implement only the current stack/i.test(blob) ||
 		(tools.has("write") && /candidate\.json/i.test(blob))
 	) {
+		if (tools.has("bash") && countToolResults(body, "bash") === 0) {
+			return [{ tool_calls: [{ name: "bash", arguments: { command: "npm test" } }], finish_reason: "tool_calls" }];
+		}
 		const wroteCandidate = texts.some((t) => /candidate\.json/i.test(t));
 		const wroteServer = texts.some((t) => /server\.js/i.test(t) && /Successfully wrote|wrote/i.test(t));
 		const denied = texts.some((t) => /Policy denied/i.test(t));
@@ -796,7 +746,16 @@ function dynamicLoopTurns(body) {
 				},
 			];
 		}
-		if (tools.has("write") && wroteCandidate && !wroteServer && !denied) {
+		const serverWrites = (body?.messages ?? []).filter((message) => message.role === "assistant")
+			.flatMap((message) => message.tool_calls ?? []).filter((call) => {
+				try { return call.function?.name === "write" && JSON.parse(call.function.arguments).path === "src/health/server.js"; } catch { return false; }
+			}).length;
+		let failedHostCheck = false;
+		try {
+			const evidence = JSON.parse(readFileSync(join(process.env.UAT_SUBJECT_DIR, ".kpi", "runs", jobId, "evidence.json"), "utf8"));
+			failedHostCheck = evidence.verifier_id === "host:verification" && evidence.passed === false;
+		} catch {}
+		if (tools.has("write") && wroteCandidate && (!wroteServer || failedHostCheck && serverWrites < 2) && !denied) {
 			const server = `import { createServer } from "node:http";
 
 export function handleRequest(request, response) {
@@ -821,7 +780,7 @@ export function createApp() {
 							name: "write",
 							arguments: {
 								path: "src/health/server.js",
-								content: server,
+								content: process.env.UAT_FAIL_FIRST_CANDIDATE === "1" && !failedHostCheck && serverWrites === 0 ? server.replace("writeHead(200", "writeHead(503") : server,
 							},
 						},
 					],
@@ -867,6 +826,11 @@ export function createApp() {
 			return [{ content: process.env.UAT_PLAN_STACK.trim(), finish_reason: "stop" }];
 		}
 		const stack = defaultHealthStack(taskHashFromJob(jobId));
+		if (task?.acceptance.some((ac) => ac.bounds?.write_allow?.includes("src/server.js"))) {
+			stack.modules[0].folder = "src";
+			stack.modules[0].interface = "src/server.js";
+			stack.modules[0].allowed_paths = ["src/server.js"];
+		}
 		return [
 			{
 				content: JSON.stringify(stack),
@@ -1137,6 +1101,8 @@ async function handleChat(req, res) {
 		msg_roles: msgRoles,
 		tool_text_samples: toolTexts.slice(0, 4),
 		has_tool_result: hasToolResult(body),
+		request: body,
+		response_turns: effective.turns,
 	});
 	streamCompletion(res, body, effective, { matched_node });
 }

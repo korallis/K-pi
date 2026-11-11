@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import test from "node:test";
 import { getOrCreateBackgroundBus } from "../packages/coding-agent/src/kpi/extensions/bus/spawn.ts";
 import {
@@ -93,6 +96,32 @@ test("an idle native graph peer receives a direct message without rerunning its 
 	} finally {
 		engine.dispose();
 		await bus.stopAll();
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("built runtime acceptance preserves peer identity across restart without vendor credentials", {
+	timeout: 120_000,
+}, async () => {
+	const root = await mkdtemp(join(tmpdir(), "kpi-built-peer-acceptance-"));
+	try {
+		const reportPath = join(root, "report.json");
+		const environment = { ...process.env };
+		delete environment.NODE_TEST_CONTEXT;
+		await promisify(execFile)(
+			process.execPath,
+			[
+				fileURLToPath(new URL("../scripts/rebuild-runtime-smoke.mjs", import.meta.url)),
+				"--json", reportPath,
+				"--proof-root", join(root, "proof"),
+			],
+			{ env: environment, timeout: 110_000, maxBuffer: 4 * 1024 * 1024 },
+		);
+		const result = JSON.parse(await readFile(reportPath, "utf8"));
+		assert.equal(result.pass, true, result.detail);
+		assert.equal(result.scope.kind, "automated");
+		assert.equal(result.scope.vendor_authentication, "not_exercised");
+	} finally {
 		await rm(root, { recursive: true, force: true });
 	}
 });

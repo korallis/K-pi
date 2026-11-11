@@ -2726,6 +2726,16 @@ export class GraphEngine {
 				await engine.writeCheckpoint();
 			}
 		}
+		// Restoring checkpoint state alone leaves completed native peers offline.
+		// Reattach their inboxes without rerunning assignments or approving a gate.
+		if (engine.graph.intentHash && engine.runState.status !== "completed" && !options.signal?.aborted) {
+			for (const node of engine.nodes.values()) {
+				const prior = engine.runState.nodes[node.id];
+				if (node.type === "agent" && node.workerRole === undefined && prior?.agentId && prior.runs > 0) {
+					await engine.peerBinding(node);
+				}
+			}
+		}
 		return engine;
 	}
 }

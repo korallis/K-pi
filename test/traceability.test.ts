@@ -502,6 +502,7 @@ test("uncovered or empty maps fail product preflight even when gates are skipped
 		const command = join(directory, "scripts/verify-product.mjs");
 		await copyFile(join(root, "scripts/verify-product.mjs"), command);
 		await symlink(join(root, "scripts/metric-runs.mjs"), join(directory, "scripts/metric-runs.mjs"));
+		await symlink(join(root, "scripts/rebuild-runtime-smoke.mjs"), join(directory, "scripts/rebuild-runtime-smoke.mjs"));
 		const reportPath = join(directory, "proof.json");
 		for (const entries of [
 			[{ id: "AC-01.1", primary_owner: "RP-01A", coverage: "uncovered", uncovered_reason: "missing real check" }],

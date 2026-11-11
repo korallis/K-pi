@@ -26,6 +26,7 @@ import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { BUILT_METRICS, collectBuiltMetric, evidenceFiles } from "./metric-runs.mjs";
+import { collectRebuildRuntime } from "./rebuild-runtime-smoke.mjs";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, "..");
@@ -283,6 +284,12 @@ async function main() {
 			complete: true,
 			counts: map.counts,
 		},
+		acceptance: {
+			kind: "automated",
+			requires_vendor_credentials: false,
+			vendor_compatibility: { status: "not_exercised", blocking: false },
+		},
+		rebuild: null,
 		uat: null,
 		// Product surfaces a metric wanted and did not find. Recorded rather than
 		// worked around, so a missing observable cannot be mistaken for a pass.
@@ -463,6 +470,21 @@ async function main() {
 						: result.detail,
 			});
 		}
+	}
+
+	process.stderr.write("  rebuilt runtime (native peers, controlled provider, no vendor login)\n");
+	try {
+		report.rebuild = await collectRebuildRuntime(proofRoot);
+	} catch (error) {
+		report.rebuild = { pass: false, checks: [], detail: error instanceof Error ? error.message : String(error) };
+	}
+	if (!report.rebuild.pass) {
+		failures.push({
+			id: "RP-22",
+			owner: "RP-22",
+			check: "built-runtime-acceptance",
+			message: report.rebuild.detail,
+		});
 	}
 
 	for (const id of args.metrics) {
